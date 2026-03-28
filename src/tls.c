@@ -14387,8 +14387,16 @@ static int TLSX_ECH_Parse(WOLFSSL* ssl, const byte* readBuf, word16 size,
             return MEMORY_E;
         XMEMCPY(aadCopy, ech->aad, ech->aadLen);
         /* set the ech payload of the copy to zeros */
-        XMEMSET(aadCopy + (readBuf_p - ech->aad), 0,
-            ech->innerClientHelloLen + WC_AES_BLOCK_SIZE);
+        {
+            word32 aadOffset = (word32)(readBuf_p - ech->aad);
+            word32 zeroLen = ech->innerClientHelloLen + WC_AES_BLOCK_SIZE;
+            if (readBuf_p < ech->aad ||
+                aadOffset + zeroLen > ech->aadLen) {
+                XFREE(aadCopy, ssl->heap, DYNAMIC_TYPE_TMP_BUFFER);
+                return BAD_FUNC_ARG;
+            }
+            XMEMSET(aadCopy + aadOffset, 0, zeroLen);
+        }
         /* free the old ech when this is the second client hello */
         if (ech->innerClientHello != NULL)
             XFREE(ech->innerClientHello, ssl->heap, DYNAMIC_TYPE_TMP_BUFFER);
@@ -14431,6 +14439,13 @@ static int TLSX_ECH_Parse(WOLFSSL* ssl, const byte* readBuf, word16 size,
         }
         /* if we failed to extract/expand, set state to retry configs */
         if (ret != 0) {
+            /* Propagate resource errors (e.g. MEMORY_E) rather than
+             * swallowing them — only crypto/format failures should
+             * fall back to outer ClientHello per the ECH spec. */
+            if (ret == WC_NO_ERR_TRACE(MEMORY_E)) {
+                XFREE(aadCopy, ssl->heap, DYNAMIC_TYPE_TMP_BUFFER);
+                return ret;
+            }
             XFREE(ech->innerClientHello, ssl->heap, DYNAMIC_TYPE_TMP_BUFFER);
             ech->innerClientHello = NULL;
             ech->state = ECH_WRITE_RETRY_CONFIGS;

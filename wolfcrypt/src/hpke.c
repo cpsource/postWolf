@@ -453,9 +453,12 @@ int wc_HpkeDeserializePublicKey(Hpke* hpke, void** key, const byte* in,
     return ret;
 }
 
-/* free a kem key */
+/* free a kem key
+ * hpke may be NULL — only kem and keypair are used */
 void wc_HpkeFreeKey(Hpke* hpke, word16 kem, void* keypair, void* heap)
 {
+    if (keypair == NULL)
+        return;
     switch (kem)
     {
 #if defined(HAVE_ECC)
@@ -1175,7 +1178,7 @@ int wc_HpkeContextOpenBase(Hpke* hpke, HpkeBaseContext* context, byte* aad,
     int ret;
     byte nonce[HPKE_Nn_MAX];
     WC_DECLARE_VAR(aes, Aes, 1, 0);
-    if (hpke == NULL) {
+    if (hpke == NULL || context == NULL) {
         return BAD_FUNC_ARG;
     }
 

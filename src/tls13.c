@@ -3911,6 +3911,9 @@ static int EchCalcAcceptance(WOLFSSL* ssl, byte* label, word16 labelSz,
         if (hashSz > 0) {
             ret = 0;
         }
+        else {
+            ret = (hashSz < 0) ? hashSz : WOLFSSL_FATAL_ERROR;
+        }
 
         /* restart ECH transcript hash, similar to RestartHandshakeHash but
          * don't add a cookie */
@@ -4867,8 +4870,10 @@ int SendTls13ClientHello(WOLFSSL* ssl)
         args->ech->innerClientHello =
             (byte*)XMALLOC(args->ech->innerClientHelloLen - args->ech->hpke->Nt,
             ssl->heap, DYNAMIC_TYPE_TMP_BUFFER);
-        if (args->ech->innerClientHello == NULL)
+        if (args->ech->innerClientHello == NULL) {
+            args->ech->type = 0;
             return MEMORY_E;
+        }
         /* set the padding bytes to 0 */
         XMEMSET(args->ech->innerClientHello + args->ech->innerClientHelloLen -
             args->ech->hpke->Nt - args->ech->paddingLen, 0,
@@ -4891,8 +4896,10 @@ int SendTls13ClientHello(WOLFSSL* ssl)
         /* change the outer client random */
         ret = wc_RNG_GenerateBlock(ssl->rng, args->output +
             args->clientRandomOffset, RAN_LEN);
-        if (ret != 0)
+        if (ret != 0) {
+            args->ech->type = 0;
             return ret;
+        }
         /* copy the new client random */
         XMEMCPY(ssl->arrays->clientRandom, args->output +
             args->clientRandomOffset, RAN_LEN);
@@ -4901,8 +4908,10 @@ int SendTls13ClientHello(WOLFSSL* ssl)
         ret = TLSX_WriteRequest(ssl, args->ech->innerClientHello + args->idx -
             (RECORD_HEADER_SZ + HANDSHAKE_HEADER_SZ), client_hello,
             &args->length);
-        if (ret != 0)
+        if (ret != 0) {
+            args->ech->type = 0;
             return ret;
+        }
         /* set the type to outer */
         args->ech->type = 0;
     }
@@ -5650,10 +5659,14 @@ int DoTls13ServerHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
     /* check for acceptConfirmation */
     if (ssl->echConfigs != NULL && !ssl->options.disableECH) {
         args->echX = TLSX_Find(ssl->extensions, TLSX_ECH);
+        if (args->echX == NULL || args->echX->data == NULL)
+            return WOLFSSL_FATAL_ERROR;
         /* account for hrr extension instead of server random */
         if (args->extMsgType == hello_retry_request) {
-            args->acceptOffset =
-                (word32)(((WOLFSSL_ECH*)args->echX->data)->confBuf - input);
+            byte *confBuf = ((WOLFSSL_ECH*)args->echX->data)->confBuf;
+            if (confBuf == NULL || confBuf < input)
+                return WOLFSSL_FATAL_ERROR;
+            args->acceptOffset = (word32)(confBuf - input);
             args->acceptLabel = (byte*)echHrrAcceptConfirmationLabel;
             args->acceptLabelSz = ECH_HRR_ACCEPT_CONFIRMATION_LABEL_SZ;
         }
@@ -7707,8 +7720,10 @@ int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
                     return WOLFSSL_FATAL_ERROR;
                 /* use hrr offset */
                 if (extMsgType == hello_retry_request) {
-                    acceptOffset =
-                        (word32)(((WOLFSSL_ECH*)echX->data)->confBuf - output);
+                    byte *confBuf = ((WOLFSSL_ECH*)echX->data)->confBuf;
+                    if (confBuf == NULL || confBuf < output)
+                        return WOLFSSL_FATAL_ERROR;
+                    acceptOffset = (word32)(confBuf - output);
                     acceptLabel = (byte*)echHrrAcceptConfirmationLabel;
                     acceptLabelSz = ECH_HRR_ACCEPT_CONFIRMATION_LABEL_SZ;
                 }
