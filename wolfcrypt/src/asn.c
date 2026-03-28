@@ -1245,8 +1245,6 @@ static int GetASN_Integer(const byte* input, word32 idx, int length,
  */
 int GetASN_BitString(const byte* input, word32 idx, int length)
 {
-#if (!defined(HAVE_SELFTEST) && !defined(HAVE_FIPS)) || \
-    (defined(HAVE_FIPS_VERSION) && (HAVE_FIPS_VERSION > 2))
     /* Check contents consist of one or more octets. */
     if (length == 0) {
     #ifdef WOLFSSL_DEBUG_ASN_TEMPLATE
@@ -1254,7 +1252,6 @@ int GetASN_BitString(const byte* input, word32 idx, int length)
     #endif
         return ASN_PARSE_E;
     }
-#endif
     /* Ensure unused bits value is valid range. */
     if (input[idx] > 7) {
     #ifdef WOLFSSL_DEBUG_ASN_TEMPLATE
@@ -11464,14 +11461,15 @@ int wc_DsaPublicKeyDecode(const byte* input, word32* inOutIdx, DsaKey* key,
 
     /* Validated parameters. */
     if ((input == NULL) || (inOutIdx == NULL) || (key == NULL)) {
-        ret = BAD_FUNC_ARG;
+        return BAD_FUNC_ARG;
     }
 
-    if (ret == 0) {
-        ALLOC_ASNGETDATA(dataASN, dsaPubKeyASN_Length, ret, key->heap);
-    }
+    ALLOC_ASNGETDATA(dataASN, dsaPubKeyASN_Length, ret, key->heap);
 
-    if (ret == 0) {
+    if (ret != 0)
+        return ret;
+
+    {
         int i;
 
         /* Clear dynamic data items. */
@@ -21341,11 +21339,9 @@ static int CheckCertSignature_ex(const byte* cert, word32 certSz, void* heap,
         ret = BAD_FUNC_ARG;
     }
 
-    ALLOC_ASNGETDATA(dataASN, x509CertASN_Length, ret, heap);
+    CALLOC_ASNGETDATA(dataASN, x509CertASN_Length, ret, heap);
 
     if ((ret == 0) && (!req)) {
-        /* Clear dynamic data for certificate items. */
-        XMEMSET(dataASN, 0, sizeof(ASNGetData) * x509CertASN_Length);
         /* Set OID types expected for signature and public key. */
         GetASN_OID(&dataASN[X509CERTASN_IDX_TBS_ALGOID_OID], oidSigType);
         GetASN_OID(&dataASN[X509CERTASN_IDX_TBS_SPUBKEYINFO_ALGO_OID],
@@ -21408,8 +21404,6 @@ static int CheckCertSignature_ex(const byte* cert, word32 certSz, void* heap,
 #ifndef WOLFSSL_CERT_REQ
         ret = NOT_COMPILED_IN;
 #else
-        /* Clear dynamic data for certificate request items. */
-        XMEMSET(dataASN, 0, sizeof(ASNGetData) * certReqASN_Length);
         /* Set OID types expected for signature and public key. */
         GetASN_OID(&dataASN[CERTREQASN_IDX_INFO_SPUBKEYINFO_ALGOID_OID],
                 oidKeyType);
@@ -21419,6 +21413,7 @@ static int CheckCertSignature_ex(const byte* cert, word32 certSz, void* heap,
         /* Parse certificate request. */
         ret = GetASN_Items(certReqASN, dataASN, certReqASN_Length, 1, cert,
                            &idx, certSz);
+
         if (ret == 0) {
             /* Store the data for verification in the certificate. */
             tbs = GetASNItem_Addr(dataASN[CERTREQASN_IDX_INFO_SEQ], cert);
@@ -21429,11 +21424,14 @@ static int CheckCertSignature_ex(const byte* cert, word32 certSz, void* heap,
                     dataASN[CERTREQASN_IDX_INFO_SUBJ_SEQ], cert);
             sigOID = dataASN[CERTREQASN_IDX_INFO_SIGALGO_OID].data.oid.sum;
         #ifdef WC_RSA_PSS
-            sigParams = GetASNItem_Addr(dataASN[X509CERTASN_IDX_SIGALGO_PARAMS],
-                cert);
-            sigParamsSz =
-                GetASNItem_Length(dataASN[X509CERTASN_IDX_SIGALGO_PARAMS],
-                    cert);
+            if (GetASNItem_HaveData(dataASN[X509CERTASN_IDX_SIGALGO_PARAMS])) {
+                sigParams =
+                    GetASNItem_Addr(dataASN[X509CERTASN_IDX_SIGALGO_PARAMS],
+                        cert);
+                sigParamsSz =
+                    GetASNItem_Length(dataASN[X509CERTASN_IDX_SIGALGO_PARAMS],
+                        cert);
+            }
         #endif
             GetASN_GetConstRef(&dataASN[CERTREQASN_IDX_INFO_SIGNATURE], &sig,
                     &sigSz);
@@ -30140,44 +30138,42 @@ int wc_EccPublicKeyDecode(const byte* input, word32* inOutIdx,
     int pubIdx = ECCPUBLICKEYASN_IDX_PUBKEY;
 
     if ((input == NULL) || (inOutIdx == NULL) || (key == NULL) || (inSz == 0)) {
-        ret = BAD_FUNC_ARG;
+        return BAD_FUNC_ARG;
     }
 
-    if (ret == 0) {
-        ALLOC_ASNGETDATA(dataASN, eccKeyASN_Length, ret, key->heap);
-    }
+    ALLOC_ASNGETDATA(dataASN, eccKeyASN_Length, ret, key->heap);
+    if (ret != 0)
+        return ret;
 
-    if (ret == 0) {
-        /* Clear dynamic data for ECC public key. */
-        XMEMSET(dataASN, 0, sizeof(*dataASN) * eccPublicKeyASN_Length);
+    /* Clear dynamic data for ECC public key. */
+    XMEMSET(dataASN, 0, sizeof(*dataASN) * eccPublicKeyASN_Length);
 #if !defined(WOLFSSL_SM2) || !defined(WOLFSSL_SM3)
-        /* Set required ECDSA OID and ignore the curve OID type. */
-        GetASN_ExpBuffer(&dataASN[ECCPUBLICKEYASN_IDX_ALGOID_OID], keyEcdsaOid,
-                sizeof(keyEcdsaOid));
+    /* Set required ECDSA OID and ignore the curve OID type. */
+    GetASN_ExpBuffer(&dataASN[ECCPUBLICKEYASN_IDX_ALGOID_OID], keyEcdsaOid,
+            sizeof(keyEcdsaOid));
 #else
-        GetASN_OID(&dataASN[ECCPUBLICKEYASN_IDX_ALGOID_OID], oidKeyType);
+    GetASN_OID(&dataASN[ECCPUBLICKEYASN_IDX_ALGOID_OID], oidKeyType);
 #endif
-        GetASN_OID(&dataASN[oidIdx], oidCurveType);
-        /* Decode the public ECC key. */
-        ret = GetASN_Items(eccPublicKeyASN, dataASN, eccPublicKeyASN_Length, 1,
-                           input, inOutIdx, inSz);
-        if (ret != 0) {
-            oidIdx = ECCKEYASN_IDX_CURVEID;
-        #ifdef WOLFSSL_CUSTOM_CURVES
-            specIdx = ECCKEYASN_IDX_CURVEPARAMS;
-        #endif
-            pubIdx = ECCKEYASN_IDX_PUBKEY_VAL;
+    GetASN_OID(&dataASN[oidIdx], oidCurveType);
+    /* Decode the public ECC key. */
+    ret = GetASN_Items(eccPublicKeyASN, dataASN, eccPublicKeyASN_Length, 1,
+                       input, inOutIdx, inSz);
+    if (ret != 0) {
+        oidIdx = ECCKEYASN_IDX_CURVEID;
+    #ifdef WOLFSSL_CUSTOM_CURVES
+        specIdx = ECCKEYASN_IDX_CURVEPARAMS;
+    #endif
+        pubIdx = ECCKEYASN_IDX_PUBKEY_VAL;
 
-            /* Clear dynamic data for ECC private key. */
-            XMEMSET(dataASN, 0, sizeof(*dataASN) * eccKeyASN_Length);
-            /* Check named curve OID type. */
-            GetASN_OID(&dataASN[oidIdx], oidCurveType);
-            /* Try private key format .*/
-            ret = GetASN_Items(eccKeyASN, dataASN, eccKeyASN_Length, 1, input,
-                               inOutIdx, inSz);
-            if (ret != 0) {
-                ret = ASN_PARSE_E;
-            }
+        /* Clear dynamic data for ECC private key. */
+        XMEMSET(dataASN, 0, sizeof(*dataASN) * eccKeyASN_Length);
+        /* Check named curve OID type. */
+        GetASN_OID(&dataASN[oidIdx], oidCurveType);
+        /* Try private key format .*/
+        ret = GetASN_Items(eccKeyASN, dataASN, eccKeyASN_Length, 1, input,
+                           inOutIdx, inSz);
+        if (ret != 0) {
+            ret = ASN_PARSE_E;
         }
     }
 
@@ -34364,7 +34360,7 @@ int ParseCRL(RevokedCert* rcert, DecodedCRL* dcrl, const byte* buff, word32 sz,
             GetASNItem_DataIdx(dataASN[CRLASN_IDX_TBS_REVOKEDCERTS], buff),
             GetASNItem_EndIdx(dataASN[CRLASN_IDX_TBS_REVOKEDCERTS], buff));
     }
-    if (ret == 0) {
+    if ((ret == 0) && GetASNItem_HaveIdx(dataASN[CRLASN_IDX_TBS_EXT_SEQ])) {
         /* Parse the extensions - starting after SEQUENCE OF. */
         ret = ParseCRL_Extensions(dcrl, buff,
             GetASNItem_DataIdx(dataASN[CRLASN_IDX_TBS_EXT_SEQ], buff),
