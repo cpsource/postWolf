@@ -3137,7 +3137,7 @@ typedef struct WOLFSSL_ECH {
     EchCipherSuite cipherSuite;
     word16 aadLen;
     word16 paddingLen;
-    word16 innerClientHelloLen;
+    word32 innerClientHelloLen;
     word16 kemId;
     word16 encLen;
     EchState state;
