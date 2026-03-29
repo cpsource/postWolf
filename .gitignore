@@ -1,4 +1,5 @@
 ctaocrypt/src/src/
+*#
 *.swp
 *.lo
 *.la
