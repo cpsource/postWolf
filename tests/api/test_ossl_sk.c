@@ -60,8 +60,12 @@ int test_wolfSSL_sk_push_get_node(void)
     ExpectNotNull(node1 = wolfSSL_sk_new_node(HEAP_HINT));
     ExpectNotNull(node2 = wolfSSL_sk_new_node(HEAP_HINT));
 
-    ExpectNull(wolfSSL_sk_get_node(NULL, -1));
-    ExpectNull(wolfSSL_sk_get_node(stack, -1));
+    /* [T1] These must return NULL without crashing. The original code
+     * dereferenced stack->num before checking for NULL. */
+    ExpectNull(wolfSSL_sk_get_node(NULL, -1));  /* NULL stack */
+    ExpectNull(wolfSSL_sk_get_node(NULL, 0));   /* NULL stack, valid idx */
+    ExpectNull(wolfSSL_sk_get_node(stack, -1)); /* stack is NULL here too */
+    ExpectNull(wolfSSL_sk_get_node(stack, 0));  /* stack is NULL, idx 0 */
 
     ExpectIntEQ(wolfSSL_sk_push_node(NULL, NULL), WOLFSSL_FAILURE);
     ExpectIntEQ(wolfSSL_sk_push_node(&stack, NULL), WOLFSSL_FAILURE);
@@ -298,10 +302,18 @@ int test_wolfSSL_sk_value(void)
 
     ExpectNull(wolfSSL_sk_value(NULL, -1));
     ExpectNull(wolfSSL_sk_value(NULL, 1));
-    ExpectNull(wolfSSL_sk_value(stack, -1));
+    ExpectNull(wolfSSL_sk_value(stack, -1));  /* empty stack, negative idx */
     ExpectNull(wolfSSL_sk_value(stack, 0));
 
     ExpectIntEQ(wolfSSL_sk_push(stack, data_1), 1);
+
+    /* [T4] Verify negative indices are properly rejected on a populated stack.
+     * Previously wolfSSL_sk_value(stack, -1) silently returned the head node's
+     * data. The empty-stack test above passed only by coincidence (data.generic
+     * was zero-initialized, not because the function rejected negatives). */
+    ExpectNull(wolfSSL_sk_value(stack, -1));
+    ExpectNull(wolfSSL_sk_value(stack, -100));
+
     ExpectNull(wolfSSL_sk_value(stack, 1));
     ExpectPtrEq(wolfSSL_sk_value(stack, 0), data_1);
     ExpectIntEQ(wolfSSL_sk_push(stack, data_2), 2);
@@ -397,10 +409,15 @@ int test_wolfSSL_sk_CIPHER(void)
 {
     EXPECT_DECLS;
 #if defined(WOLFSSL_QT) || defined(OPENSSL_ALL)
-    /* TODO: figure out a way to get a WOLFSSL_CIPHER to test with. */
+    /* [T2] Test cipher stack creation, num, and free.
+     * WOLFSSL_CIPHER is an opaque type so we cannot construct one directly
+     * from the test. Push/value with real ciphers would require a live
+     * WOLFSSL connection. The data-loss on cipher pop (M3) is a known
+     * design limitation — wolfSSL_sk_CIPHER_pop is stubbed to return NULL. */
     WOLFSSL_STACK* ciphers = NULL;
 
     ExpectNotNull(ciphers = wolfSSL_sk_new_cipher());
+    ExpectIntEQ(wolfSSL_sk_SSL_CIPHER_num(ciphers), 0);
 
 #ifndef NO_WOLFSSL_STUB
     ExpectNull(wolfSSL_sk_CIPHER_pop(NULL));
@@ -477,7 +494,12 @@ int test_wolfssl_lh_retrieve(void)
     /* No hash function - data present. */
     ExpectNull(wolfSSL_lh_retrieve(stack, data_1));
 
-    /* No public API to set hash function. */
+    /* [T3] Hash-based retrieval with a real hash function cannot be tested
+     * here because WOLFSSL_STACK is opaque (hash_fn is in internal.h).
+     * A proper test would require either:
+     *   - A public API to set the hash function, or
+     *   - Moving this test to an internal test file with access to internal.h.
+     * The hash==0 bug fix and collision note are in src/ssl_sk.c. */
 
     wolfSSL_sk_free(stack);
 #endif

@@ -47,7 +47,7 @@
     defined(OPENSSL_ALL) || defined(WOLFSSL_QT)
 /* Creates a generic wolfSSL stack node.
  *
- * @param [in] heap  eap hint for dynamic memory allocation.
+ * @param [in] heap  Heap hint for dynamic memory allocation.
  * @return  WOLFSSL_STACK structure on success.
  * @return  NULL when dynamic memory allocation fails.
  */
@@ -98,7 +98,9 @@ WOLFSSL_STACK* wolfSSL_sk_get_node(WOLFSSL_STACK* stack, int idx)
     int i;
     WOLFSSL_STACK* ret;
 
-    if ((idx < 0) || (idx > (int)stack->num)) {
+    /* Fix: check stack for NULL before dereferencing, and use >= for 0-based
+     * index bounds check (valid range is [0, num-1]). [M1/V1, C1] */
+    if ((stack == NULL) || (idx < 0) || (idx >= (int)stack->num)) {
         ret = NULL;
     }
     else {
@@ -303,6 +305,12 @@ void* wolfSSL_sk_pop_node(WOLFSSL_STACK* stack, int idx)
 
     /* Validate parameters. */
     if ((stack != NULL) && (stack->num != 0)) {
+        /* Fix: for positive indices, validate range before modifying the list.
+         * Negative indices (e.g., -1 from wolfSSL_sk_pop) intentionally walk
+         * to the end via unsigned wrap-around of --idx. [C3/V3] */
+        if (idx > 0 && idx >= (int)stack->num) {
+            return NULL;
+        }
         stack->num--;
         /* Popping first node handled differently. */
         if (idx == 0 || stack->next == NULL) {
@@ -360,6 +368,15 @@ WOLFSSL_STACK* wolfssl_sk_new_type(WOLF_STACK_TYPE type)
     return wolfssl_sk_new_type_ex(type, NULL);
 }
 
+/* Creates a new stack of the requested type with a heap hint.
+ *
+ * This is an internal API.
+ *
+ * @param [in] type  Type of stack.
+ * @param [in] heap  Heap hint for dynamic memory allocation.
+ * @return  Empty stack on success.
+ * @return  NULL when dynamic memory allocation fails.
+ */
 WOLFSSL_STACK* wolfssl_sk_new_type_ex(WOLF_STACK_TYPE type, void* heap)
 {
     WOLFSSL_STACK* stack = wolfSSL_sk_new_node(heap);
@@ -535,7 +552,14 @@ WOLFSSL_STACK* wolfSSL_sk_dup(WOLFSSL_STACK* stack)
         /* Update last node in linked list. */
         last = cur;
 
-        XMEMCPY(cur, stack, sizeof(WOLFSSL_STACK));
+        /* Fix: save heap before XMEMCPY overwrites it, then restore.
+         * XMEMCPY copies all fields from source including heap, which could
+         * differ in custom allocator builds. [M2] */
+        {
+            void* savedHeap = cur->heap;
+            XMEMCPY(cur, stack, sizeof(WOLFSSL_STACK));
+            cur->heap = savedHeap;
+        }
         /* We will allocate new memory for this */
         XMEMSET(&cur->data, 0, sizeof(cur->data));
         cur->next = NULL;
@@ -577,7 +601,12 @@ WOLFSSL_STACK* wolfSSL_shallow_sk_dup(WOLFSSL_STACK* stack)
             break;
         }
 
-        XMEMCPY(cur, stack, sizeof(WOLFSSL_STACK));
+        /* Fix: save and restore heap hint across XMEMCPY. [M2] */
+        {
+            void* savedHeap = cur->heap;
+            XMEMCPY(cur, stack, sizeof(WOLFSSL_STACK));
+            cur->heap = savedHeap;
+        }
         cur->next = NULL;
 
         *prev = cur;
@@ -643,6 +672,12 @@ void* wolfSSL_sk_value(const WOLFSSL_STACK* sk, int i)
 
     WOLFSSL_ENTER("wolfSSL_sk_value");
 
+    /* Fix: reject negative indices — previously i < 0 would skip the loop
+     * and silently return the head node's data. [C2/V2] */
+    if (i < 0) {
+        return NULL;
+    }
+
     for (; (sk != NULL) && (i > 0); i--) {
         sk = sk->next;
     }
@@ -660,6 +695,8 @@ void* wolfSSL_sk_value(const WOLFSSL_STACK* sk, int i)
                 val = NULL;
                 break;
         #endif
+            /* FALLTHROUGH — when OPENSSL_EXTRA is defined, CONF_VALUE uses
+             * the generic data pointer, same as the types below. [CS1] */
             case STACK_TYPE_X509:
             case STACK_TYPE_GEN_NAME:
             case STACK_TYPE_BIO:
@@ -711,6 +748,9 @@ int wolfSSL_sk_push(WOLFSSL_STACK* stack, const void *data)
  *
  * @param [in, out] stack  Stack of objects.
  * @param [in]      data   Data to store in stack.
+ * @param [in]      idx    Position to insert at. 0 inserts at the front.
+ *                         Negative values or values past the end insert at
+ *                         the tail (append).
  * @return  Number of nodes in stack on success.
  * @return  WOLFSSL_FAILURE when data is NULL.
  * @return  WOLFSSL_FATAL_ERROR when stack is NULL.
@@ -789,10 +829,13 @@ int wolfSSL_sk_insert(WOLFSSL_STACK *stack, const void *data, int idx)
 
 #if !defined(NO_CERTS) && (defined(OPENSSL_EXTRA) || \
     defined(WOLFSSL_WPAS_SMALL))
-/* Remove the top node from the stack and return its data.
+/* Remove the most recently pushed element from the stack and return its data.
+ *
+ * Uses LIFO semantics: push appends to the tail, pop removes from the tail.
+ * The -1 index causes wolfSSL_sk_pop_node to walk to the end of the list.
  *
  * @param [in, out] stack  Stack of nodes with data.
- * @return  Data in top node on success.
+ * @return  Data in most recently pushed node on success.
  * @return  NULL when stack is NULL or stack is empty.
  */
 void* wolfSSL_sk_pop(WOLFSSL_STACK* stack)
@@ -1104,7 +1147,7 @@ int wolfSSL_sk_CIPHER_push(WOLF_STACK_OF(WOLFSSL_CIPHER)* stack,
 }
 
 #ifndef NO_WOLFSSL_STUB
-/* Does not do anythting at this time.
+/* Does not do anything at this time.
  *
  * @param [in, out] stack  Stack of nodes with data.
  * @return  NULL always.
@@ -1132,7 +1175,7 @@ void wolfSSL_sk_CIPHER_free(WOLF_STACK_OF(WOLFSSL_CIPHER)* ciphers)
 
     wolfSSL_sk_free(ciphers);
 }
-#endif /* OPENSSL_ALL */
+#endif /* OPENSSL_EXTRA */
 
 #ifdef OPENSSL_EXTRA
 /* Get the number of ciphers in the stack.
@@ -1149,7 +1192,7 @@ int wolfSSL_sk_SSL_CIPHER_num(const WOLF_STACK_OF(WOLFSSL_CIPHER)* ciphers)
 
 /* Get the cipher from the stack at the index.
  *
- * @param [in] ciphers  Stack of cihers
+ * @param [in] ciphers  Stack of ciphers.
  * @param [in] i        Index of node to get cipher from.
  * @return  Cipher in node at index on success.
  * @return  NULL when no node at index.
@@ -1164,7 +1207,7 @@ WOLFSSL_CIPHER* wolfSSL_sk_SSL_CIPHER_value(WOLFSSL_STACK* ciphers, int i)
 #if defined(OPENSSL_ALL) || defined(OPENSSL_EXTRA)
 /* Get the priority level of the cipher if it is in the stack.
  *
- * Priority level is the number of ciphers minus the idex of the cipher.
+ * Priority level is the number of ciphers minus the index of the cipher.
  *
  * @param [in] ciphers  Stack of ciphers.
  * @param [in] cipher   Cipher to find in stack.
@@ -1288,20 +1331,23 @@ void *wolfSSL_lh_retrieve(WOLFSSL_STACK *stack, void *data)
         WOLFSSL_MSG("No hash function defined");
     }
     else {
-        /* Calculate hassh of data we are looking for. */
+        /* Calculate hash of data we are looking for. */
         hash = stack->hash_fn(data);
 
+        /* NOTE: This is a hash-only lookup with no equality comparison on the
+         * actual data. Hash collisions will return the wrong element. This is
+         * a known limitation of the current implementation. [CS3] */
         while (stack != NULL) {
-            /* Calculate hash if not done so yet. */
-            if (!stack->hash) {
-                sk_data = wolfssl_sk_node_get_data(stack, 0);
+            /* Always compute hash for this node's data — previously hash==0
+             * was treated as "not yet computed", which caused data that
+             * legitimately hashes to 0 to be recomputed on every lookup.
+             * Fix: unconditionally compute and compare. [CS3] */
+            sk_data = wolfssl_sk_node_get_data(stack, 0);
+            if (sk_data != NULL) {
                 stack->hash = stack->hash_fn(sk_data);
             }
             /* Return data if hash matches. */
             if (stack->hash == hash) {
-                if (sk_data == NULL) {
-                    sk_data = wolfssl_sk_node_get_data(stack, 0);
-                }
                 break;
             }
 
