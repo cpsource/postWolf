@@ -8579,8 +8579,15 @@ static int TLSX_KeyShare_GenEccKey(WOLFSSL *ssl, KeyShareEntry* kse)
         /* Cleanup on error, otherwise data owned by key share entry */
         XFREE(kse->pubKey, ssl->heap, DYNAMIC_TYPE_PUBLIC_KEY);
         kse->pubKey = NULL;
-        if (eccKey != NULL)
+        if (eccKey != NULL) {
+    #if defined(WC_ECC_NONBLOCK) && defined(WOLFSSL_ASYNC_CRYPT_SW) && \
+        defined(WC_ASYNC_ENABLE_ECC)
+            if (eccKey->nb_ctx != NULL) {
+                XFREE(eccKey->nb_ctx, ssl->heap, DYNAMIC_TYPE_TMP_BUFFER);
+            }
+    #endif
             wc_ecc_free(eccKey);
+        }
         XFREE(kse->key, ssl->heap, DYNAMIC_TYPE_PRIVATE_KEY);
         kse->key = NULL;
     }
@@ -9817,8 +9824,14 @@ static int TLSX_KeyShare_ProcessEcc_ex(WOLFSSL* ssl,
         ssl->peerEccKey = NULL;
         ssl->peerEccKeyPresent = 0;
     }
-    if (keyShareEntry->key) {
-        wc_ecc_free((ecc_key*)keyShareEntry->key);
+    if (eccKey != NULL) {
+    #if defined(WC_ECC_NONBLOCK) && defined(WOLFSSL_ASYNC_CRYPT_SW) && \
+        defined(WC_ASYNC_ENABLE_ECC)
+        if (eccKey->nb_ctx != NULL) {
+            XFREE(eccKey->nb_ctx, ssl->heap, DYNAMIC_TYPE_TMP_BUFFER);
+        }
+    #endif
+        wc_ecc_free(eccKey);
         XFREE(keyShareEntry->key, ssl->heap, DYNAMIC_TYPE_ECC);
         keyShareEntry->key = NULL;
     }
@@ -10175,6 +10188,7 @@ static int TLSX_KeyShare_ProcessPqcHybridClient(WOLFSSL* ssl,
 
     if (ret == 0) {
         keyShareEntry->key = ecc_kse->key;
+        ecc_kse->key = NULL;
 
         if ((ret == 0) &&
             ((ssl->arrays->preMasterSz + ssSzPqc) > ENCRYPT_LEN)) {
@@ -10210,6 +10224,17 @@ static int TLSX_KeyShare_ProcessPqcHybridClient(WOLFSSL* ssl,
          * here as it may already been set to the ECC shared secret size,
          * which would be too small due to the PQC offset case. */
         ForceZero(ssl->arrays->preMasterSecret, ENCRYPT_LEN);
+
+        /* Prevent FreeAll from freeing pointers owned by keyShareEntry. */
+        if (ecc_kse != NULL)
+            ecc_kse->key = NULL;
+        if (pqc_kse != NULL) {
+        #ifndef WOLFSSL_TLSX_PQC_MLKEM_STORE_OBJ
+            pqc_kse->privKey = NULL;
+        #else
+            pqc_kse->key = NULL;
+        #endif
+        }
     }
 
     TLSX_KeyShare_FreeAll(ecc_kse, ssl->heap);

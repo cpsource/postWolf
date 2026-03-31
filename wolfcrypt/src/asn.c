@@ -9151,8 +9151,13 @@ int wc_CheckPrivateKeyCert(const byte* key, word32 keySz, DecodedCert* der,
         if (ret == 0) {
             if (der->sapkiOID == RSAk || der->sapkiOID == ECDSAk) {
                 /* Simply copy the data */
-                XMEMCPY(decodedPubKey, der->sapkiDer, der->sapkiLen);
-                pubKeyLen = der->sapkiLen;
+                if ((word32)der->sapkiLen > pubKeyLen) {
+                    ret = BUFFER_E;
+                }
+                else {
+                    XMEMCPY(decodedPubKey, der->sapkiDer, der->sapkiLen);
+                    pubKeyLen = der->sapkiLen;
+                }
             }
             else {
             #if defined(WC_ENABLE_ASYM_KEY_IMPORT)
@@ -16212,6 +16217,10 @@ int ConfirmSignature(SignatureCtx* sigCtx,
                         WOLFSSL_MSG("Verify Signature is too small");
                         ERROR_OUT(BUFFER_E, exit_cs);
                     }
+                    else if (sigSz > MAX_ENCODED_SIG_SZ) {
+                        WOLFSSL_MSG("Verify Signature is too big");
+                        ERROR_OUT(BUFFER_E, exit_cs);
+                    }
                 #ifndef WOLFSSL_NO_MALLOC
                     sigCtx->key.dsa = (DsaKey*)XMALLOC(sizeof(DsaKey),
                                                 sigCtx->heap, DYNAMIC_TYPE_DSA);
@@ -17254,6 +17263,75 @@ int wolfssl_local_MatchBaseName(int type, const char* name, int nameSz,
     return 1;
 }
 
+static int MatchUriNameConstraint(const char* uri, int uriSz, const char* base,
+    int baseSz)
+{
+    const char* hostStart;
+    const char* hostEnd;
+    const char* p;
+    const char* uriEnd;
+    int hostSz;
+
+    if (uri == NULL || uriSz <= 0 || base == NULL || baseSz <= 0) {
+        return 0;
+    }
+
+    uriEnd = uri + uriSz;
+    hostStart = NULL;
+    for (p = uri; p < uriEnd - 2; p++) {
+        if (p[0] == ':' && p[1] == '/' && p[2] == '/') {
+            hostStart = p + 3;
+            break;
+        }
+    }
+    if (hostStart == NULL || hostStart >= uriEnd) {
+        return 0;
+    }
+
+    for (p = hostStart; p < uriEnd; p++) {
+        if (*p == '@') {
+            hostStart = p + 1;
+            break;
+        }
+        if (*p == '/' || *p == '?' || *p == '#') {
+            break;
+        }
+        if (*p == '[') {
+            break;
+        }
+    }
+    if (hostStart >= uriEnd) {
+        return 0;
+    }
+
+    if (*hostStart == '[') {
+        hostStart++;
+        hostEnd = hostStart;
+        while (hostEnd < uriEnd && *hostEnd != ']') {
+            hostEnd++;
+        }
+        if (hostEnd >= uriEnd) {
+            return 0;
+        }
+        hostSz = (int)(hostEnd - hostStart);
+    }
+    else {
+        hostEnd = hostStart;
+        while (hostEnd < uriEnd && *hostEnd != ':' && *hostEnd != '/' &&
+               *hostEnd != '?' && *hostEnd != '#') {
+            hostEnd++;
+        }
+        hostSz = (int)(hostEnd - hostStart);
+    }
+
+    if (hostSz <= 0) {
+        return 0;
+    }
+
+    return wolfssl_local_MatchBaseName(ASN_DNS_TYPE, hostStart, hostSz, base,
+        baseSz);
+}
+
 /* Check if IP address matches a name constraint.
  * IP name constraints contain IP address and subnet mask.
  * IPv4: ip is 4 bytes, constraint is 8 bytes (4 IP + 4 mask)
@@ -17317,6 +17395,13 @@ static int PermittedListOk(DNS_entry* name, Base_entry* dnsList, byte nameType)
                     break;
                 }
             }
+            else if (nameType == ASN_URI_TYPE) {
+                if (MatchUriNameConstraint(name->name, name->len,
+                        current->name, current->nameSz)) {
+                    match = 1;
+                    break;
+                }
+            }
             else if (name->len >= current->nameSz &&
                 wolfssl_local_MatchBaseName(nameType, name->name, name->len,
                                             current->name, current->nameSz)) {
@@ -17357,6 +17442,13 @@ static int IsInExcludedList(DNS_entry* name, Base_entry* dnsList, byte nameType)
                     break;
                 }
             }
+            else if (nameType == ASN_URI_TYPE) {
+                if (MatchUriNameConstraint(name->name, name->len,
+                        current->name, current->nameSz)) {
+                    ret = 1;
+                    break;
+                }
+            }
             else if (name->len >= current->nameSz &&
                 wolfssl_local_MatchBaseName(nameType, name->name, name->len,
                                             current->name, current->nameSz)) {
@@ -17374,7 +17466,7 @@ static int IsInExcludedList(DNS_entry* name, Base_entry* dnsList, byte nameType)
 static int ConfirmNameConstraints(Signer* signer, DecodedCert* cert)
 {
     const byte nameTypes[] = {ASN_RFC822_TYPE, ASN_DNS_TYPE, ASN_DIR_TYPE,
-                              ASN_IP_TYPE};
+                              ASN_IP_TYPE, ASN_URI_TYPE};
     int i;
 
     if (signer == NULL || cert == NULL)
@@ -17434,6 +17526,9 @@ static int ConfirmNameConstraints(Signer* signer, DecodedCert* cert)
                     subjectDnsName.len = cert->subjectRawLen;
                     subjectDnsName.name = (char *)cert->subjectRaw;
                 }
+                break;
+            case ASN_URI_TYPE:
+                name = cert->altNames;
                 break;
             default:
                 /* Other types of names are ignored for now.
@@ -34084,11 +34179,27 @@ static int ParseCRL_Extensions(DecodedCRL* dcrl, const byte* buf, word32 idx,
 
                     if (ret == 0) {
                         int crlNumLen = 0;
+                        word32 rawIdx = localIdx;
                         word32 tmpIdx = localIdx;
                         ret = GetASNInt(buf, &tmpIdx, &crlNumLen, maxIdx);
                         if (ret == 0 && (crlNumLen > CRL_MAX_NUM_SZ)) {
                             WOLFSSL_MSG("CRL number exceeds limitation");
                             ret = BUFFER_E;
+                        }
+                        /* RFC 5280 s5.2.3: CRL number must be non-negative.
+                         * Check the raw encoding before GetASNInt strips
+                         * the leading-zero pad: skip past the INTEGER tag
+                         * and length, then reject if the first content byte
+                         * has its high bit set (negative value). A leading
+                         * 0x00 pad means the value is positive. */
+                        if (ret == 0) {
+                            int rawLen = 0;
+                            (void)GetASNHeader(buf, ASN_INTEGER,
+                                &rawIdx, &rawLen, maxIdx);
+                            if (rawLen > 0 && (buf[rawIdx] & 0x80) != 0) {
+                                WOLFSSL_MSG("CRL number is negative");
+                                ret = ASN_PARSE_E;
+                            }
                         }
                         if (ret == 0) {
                             ret = GetInt(m, buf, &localIdx, maxIdx);

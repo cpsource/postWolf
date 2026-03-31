@@ -2979,15 +2979,14 @@ int DecryptTls13(WOLFSSL* ssl, byte* output, const byte* input, word16 sz,
 {
     int    ret    = 0;
     word16 dataSz;
-    if (sz < ssl->specs.aead_mac_size) {
-        WOLFSSL_ERROR_VERBOSE(BUFFER_ERROR);
-        return BUFFER_ERROR;
-    }
-    dataSz = sz - ssl->specs.aead_mac_size;
     word16 macSz  = ssl->specs.aead_mac_size;
     word32 nonceSz = 0;
 
     WOLFSSL_ENTER("DecryptTls13");
+    if (sz < ssl->specs.aead_mac_size) {
+        return BAD_FUNC_ARG;
+    }
+    dataSz = sz - ssl->specs.aead_mac_size;
 
 #if defined(WOLFSSL_RENESAS_TSIP_TLS)
     ret = tsip_Tls13AesDecrypt(ssl, output, input, sz);
@@ -5930,7 +5929,7 @@ static int DoTls13CertificateRequest(WOLFSSL* ssl, const byte* input,
      * Increase size to handle other implementations sending more than one byte.
      * That is, allocate extra space, over one byte, to hold the context value.
      */
-    certReqCtx = (CertReqCtx*)XMALLOC(sizeof(CertReqCtx) + len - 1, ssl->heap,
+    certReqCtx = (CertReqCtx*)XMALLOC(sizeof(CertReqCtx) + (len == 0 ? 0 : len - 1), ssl->heap,
                                                        DYNAMIC_TYPE_TMP_BUFFER);
     if (certReqCtx == NULL)
         return MEMORY_E;
@@ -8837,11 +8836,7 @@ static word32 NextCert(byte* data, word32 length, word32* idx)
 {
     word32 len;
 
-    /* Is index at or past end of list. */
-    if (*idx >= length)
-        return 0;
-
-    /* Need at least 3 bytes for the length field. */
+    /* Would index read past end of list? */
     if (*idx + 3 > length)
         return 0;
 
@@ -10791,6 +10786,9 @@ static int DoTls13CertificateVerify(WOLFSSL* ssl, byte* input,
                 }
 
                 tmpIdx += OPAQUE16_LEN + args->sigSz;
+                if (tmpIdx - args->idx + OPAQUE16_LEN > args->sz) {
+                    ERROR_OUT(BUFFER_ERROR, exit_dcv);
+                }
                 ato16(input + tmpIdx, &tmpSz);
                 args->altSignatureSz = tmpSz;
 
