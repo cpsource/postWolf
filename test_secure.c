@@ -68,12 +68,14 @@ static test_round_t rounds[] = {
         { WOLFSSL_SECP256R1MLKEM768 },
         1
     },
+#ifndef WOLFSSL_TLS_NO_MLKEM_STANDALONE
     {
         "PQ Only (ML-KEM-1024)",
         BASE_PORT + 2,
         { WOLFSSL_ML_KEM_1024 },
         1
     },
+#endif
 };
 
 #define NUM_ROUNDS (sizeof(rounds) / sizeof(rounds[0]))

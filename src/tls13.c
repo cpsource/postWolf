@@ -4747,8 +4747,29 @@ int SendTls13ClientHello(WOLFSSL* ssl)
 
             /* set the type to outer */
             args->ech->type = 0;
-            /* set innerClientHelloLen to ClientHelloInner + padding + tag */
-            args->ech->paddingLen = 31 - ((args->length - 1) % 32);
+            /* set innerClientHelloLen to ClientHelloInner + padding + tag
+             * RFC 9849 Section 6.1.7: pad using maximum_name_length */
+            {
+                byte maxNL = args->ech->echConfig->maximumNameLength;
+                word16 extraPad = 0;
+                word32 paddedLen;
+
+                if (maxNL > 0 && args->ech->privateName != NULL) {
+                    word16 nameLen =
+                        (word16)XSTRLEN(args->ech->privateName);
+                    if (maxNL > nameLen)
+                        extraPad = maxNL - nameLen;
+                }
+                else if (maxNL > 0) {
+                    /* no SNI: pad as if server_name extension of maxNL
+                     * were present (name + 9 bytes framing) */
+                    extraPad = maxNL + 9;
+                }
+
+                paddedLen = args->length + extraPad;
+                args->ech->paddingLen =
+                    (word16)(31 - ((paddedLen - 1) % 32)) + extraPad;
+            }
             args->ech->innerClientHelloLen = args->length +
                 args->ech->paddingLen + args->ech->hpke->Nt;
             /* set the length back to before we computed ClientHelloInner size */

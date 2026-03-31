@@ -33,6 +33,14 @@
 int wolfSSL_CTX_GenerateEchConfig(WOLFSSL_CTX* ctx, const char* publicName,
     word16 kemId, word16 kdfId, word16 aeadId)
 {
+    return wolfSSL_CTX_GenerateEchConfigEx(ctx, publicName, kemId, kdfId,
+        aeadId, 0);
+}
+
+/* create the hpke key and ech config with maximumNameLength */
+int wolfSSL_CTX_GenerateEchConfigEx(WOLFSSL_CTX* ctx, const char* publicName,
+    word16 kemId, word16 kdfId, word16 aeadId, byte maxNameLen)
+{
     int ret = 0;
     WOLFSSL_EchConfig* newConfig;
     word16 encLen = HPKE_Npk_MAX;
@@ -131,6 +139,7 @@ int wolfSSL_CTX_GenerateEchConfig(WOLFSSL_CTX* ctx, const char* publicName,
         else {
             XMEMCPY(newConfig->publicName, publicName,
                 XSTRLEN(publicName) + 1);
+            newConfig->maximumNameLength = maxNameLen;
         }
     }
 
@@ -399,8 +408,8 @@ int GetEchConfig(WOLFSSL_EchConfig* config, byte* output, word32* outputLen)
         output += 2;
     }
 
-    /* set maximum name length to 0 */
-    *output = 0;
+    /* maximum_name_length (RFC 9849 Section 4) */
+    *output = config->maximumNameLength;
     output++;
 
     /* publicName len */
@@ -616,7 +625,8 @@ int SetEchConfigsEx(WOLFSSL_EchConfig** outputConfigs, void* heap,
             echConfig += 4;
         }
 
-        /* ignore the maximum name length */
+        /* maximum_name_length (RFC 9849 Section 4) */
+        workingConfig->maximumNameLength = *echConfig;
         idx++;
         if (idx >= length) {
             ret = BUFFER_E;
@@ -656,14 +666,14 @@ int SetEchConfigsEx(WOLFSSL_EchConfig** outputConfigs, void* heap,
         workingConfig->publicName[publicNameLen] = '\0';
         echConfig += publicNameLen;
 
-        /* TODO: Parse ECHConfigExtension */
-        /*       --> for now just ignore it */
+        /* Parse ECHConfigExtensions (RFC 9849 Section 4.1) */
         idx += 2;
         if (idx > length) {
             ret = BUFFER_E;
             break;
         }
         ato16(echConfig, &extensionsLen);
+        echConfig += 2;
 
         idx += extensionsLen;
         if (idx != length) {
@@ -671,22 +681,64 @@ int SetEchConfigsEx(WOLFSSL_EchConfig** outputConfigs, void* heap,
             break;
         }
 
-        /* KEM or ciphersuite not supported, free this config and then try to
-         * parse another */
-        if (EchConfigGetSupportedCipherSuite(workingConfig) < 0) {
-            XFREE(workingConfig->cipherSuites, heap, DYNAMIC_TYPE_TMP_BUFFER);
-            XFREE(workingConfig->publicName, heap, DYNAMIC_TYPE_TMP_BUFFER);
-            XFREE(workingConfig->raw, heap, DYNAMIC_TYPE_TMP_BUFFER);
-            XFREE(workingConfig, heap, DYNAMIC_TYPE_TMP_BUFFER);
-            workingConfig = lastConfig;
+        {
+            int skipConfig = 0;
+            word16 extParsed = 0;
 
-            if (workingConfig != NULL) {
-                workingConfig->next = NULL;
+            while (extParsed < extensionsLen) {
+                word16 extType;
+                word16 extDataLen;
+
+                /* need at least 4 bytes for type + length */
+                if (extParsed + 4 > extensionsLen) {
+                    ret = BUFFER_E;
+                    break;
+                }
+
+                ato16(echConfig, &extType);
+                echConfig += 2;
+                ato16(echConfig, &extDataLen);
+                echConfig += 2;
+                extParsed += 4;
+
+                if (extParsed + extDataLen > extensionsLen) {
+                    ret = BUFFER_E;
+                    break;
+                }
+
+                /* Unknown mandatory extension (high bit set) means this
+                 * config is unusable (RFC 9849 Section 4.1) */
+                if (extType & 0x8000) {
+                    skipConfig = 1;
+                }
+
+                echConfig += extDataLen;
+                extParsed += extDataLen;
             }
-            else {
-                /* if one (or more) of the leading configs are unsupported then
-                 * this case will be hit */
-                configList = NULL;
+
+            if (ret != 0)
+                break;
+
+            /* Skip config if it has unknown mandatory extensions or
+             * unsupported KEM/ciphersuite */
+            if (skipConfig ||
+                EchConfigGetSupportedCipherSuite(workingConfig) < 0) {
+                XFREE(workingConfig->cipherSuites, heap,
+                    DYNAMIC_TYPE_TMP_BUFFER);
+                XFREE(workingConfig->publicName, heap,
+                    DYNAMIC_TYPE_TMP_BUFFER);
+                XFREE(workingConfig->raw, heap, DYNAMIC_TYPE_TMP_BUFFER);
+                XFREE(workingConfig, heap, DYNAMIC_TYPE_TMP_BUFFER);
+                workingConfig = lastConfig;
+
+                if (workingConfig != NULL) {
+                    workingConfig->next = NULL;
+                }
+                else {
+                    /* if one (or more) of the leading configs are
+                     * unsupported then this case will be hit */
+                    configList = NULL;
+                }
             }
         }
 

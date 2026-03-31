@@ -3121,6 +3121,7 @@ typedef struct WOLFSSL_EchConfig {
     word16 kemId;
     byte configId;
     byte numCipherSuites;
+    byte maximumNameLength;
     byte receiverPubkey[HPKE_Npk_MAX];
 } WOLFSSL_EchConfig;
 

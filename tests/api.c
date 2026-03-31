@@ -15079,6 +15079,157 @@ static int test_wolfSSL_Tls13_ECH_enable_disable(void)
     return EXPECT_RESULT();
 }
 
+/* Test that maximumNameLength round-trips through generate/serialize/parse */
+static int test_wolfSSL_Tls13_ECH_max_name_length(void)
+{
+    EXPECT_DECLS;
+#if !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX* sCtx = NULL;
+    WOLFSSL_CTX* cCtx = NULL;
+    byte configBuf[256];
+    word32 configLen = sizeof(configBuf);
+    int i;
+    int maxNLOffset = -1;
+
+    /* Generate server config with maximumNameLength = 128 */
+    ExpectNotNull(sCtx = wolfSSL_CTX_new(wolfTLSv1_3_server_method()));
+    ExpectIntEQ(WOLFSSL_SUCCESS, wolfSSL_CTX_GenerateEchConfigEx(sCtx,
+        "ech-public.example.com", 0, 0, 0, 128));
+
+    /* Serialize */
+    ExpectIntEQ(WOLFSSL_SUCCESS, wolfSSL_CTX_GetEchConfigs(sCtx, configBuf,
+        &configLen));
+
+    /* Find maximumNameLength byte: it's immediately before the publicName
+     * length byte. publicName is "ech-public.example.com" (22 bytes).
+     * Scan for the 22-byte length prefix followed by the known name. */
+    if (EXPECT_SUCCESS()) {
+        for (i = 4; i < (int)configLen - 23; i++) {
+            if (configBuf[i] == 22 &&
+                XMEMCMP(&configBuf[i + 1], "ech-public.example.com", 22) == 0) {
+                maxNLOffset = i - 1;
+                break;
+            }
+        }
+    }
+    ExpectIntGE(maxNLOffset, 0);
+    if (EXPECT_SUCCESS()) {
+        ExpectIntEQ(configBuf[maxNLOffset], 128);
+    }
+
+    /* Parse into a client context and verify it accepted the config */
+    ExpectNotNull(cCtx = wolfSSL_CTX_new(wolfTLSv1_3_client_method()));
+    ExpectIntEQ(WOLFSSL_SUCCESS, wolfSSL_CTX_SetEchConfigs(cCtx, configBuf,
+        configLen));
+
+    wolfSSL_CTX_free(cCtx);
+    wolfSSL_CTX_free(sCtx);
+#endif /* !NO_WOLFSSL_CLIENT && !NO_WOLFSSL_SERVER */
+
+    return EXPECT_RESULT();
+}
+
+/* Test that configs with unknown mandatory extensions are rejected,
+ * and configs with non-mandatory unknown extensions are accepted. */
+static int test_wolfSSL_Tls13_ECH_mandatory_extension(void)
+{
+    EXPECT_DECLS;
+#if !defined(NO_WOLFSSL_CLIENT) && !defined(NO_WOLFSSL_SERVER)
+    WOLFSSL_CTX* sCtx = NULL;
+    WOLFSSL_CTX* cCtx = NULL;
+    byte configBuf[256];
+    word32 configLen = sizeof(configBuf);
+    byte modBuf[280];
+    word32 modLen;
+    int i;
+    int extOffset = -1;
+    word16 contentLen;
+
+    /* Generate a valid config */
+    ExpectNotNull(sCtx = wolfSSL_CTX_new(wolfTLSv1_3_server_method()));
+    ExpectIntEQ(WOLFSSL_SUCCESS, wolfSSL_CTX_GenerateEchConfig(sCtx,
+        "ech-test.example.com", 0, 0, 0));
+    ExpectIntEQ(WOLFSSL_SUCCESS, wolfSSL_CTX_GetEchConfigs(sCtx, configBuf,
+        &configLen));
+
+    /* Find the trailing extensions (last 2 bytes should be 0x0000 for
+     * zero-length extensions, preceded by the publicName). Scan for the
+     * publicName to locate the extensions offset. */
+    if (EXPECT_SUCCESS()) {
+        for (i = 4; i < (int)configLen - 21; i++) {
+            if (configBuf[i] == 20 &&
+                XMEMCMP(&configBuf[i + 1], "ech-test.example.com", 20) == 0) {
+                extOffset = i + 1 + 20; /* right after publicName */
+                break;
+            }
+        }
+    }
+    ExpectIntGE(extOffset, 0);
+
+    /* Verify the extensions length is currently 0 */
+    if (EXPECT_SUCCESS()) {
+        word16 extLen;
+        ato16(&configBuf[extOffset], &extLen);
+        ExpectIntEQ(extLen, 0);
+    }
+
+    /* --- Test 1: mandatory unknown extension (high bit set) ---
+     * Insert a 4-byte extension: type=0x8001, length=0, into the config.
+     * This requires:
+     *   - changing extensions length from 0 to 4
+     *   - inserting 4 bytes (type + length)
+     *   - updating the ECHConfig content length (+4)
+     *   - updating the ECHConfigList total length (+4)
+     */
+    if (EXPECT_SUCCESS()) {
+        XMEMCPY(modBuf, configBuf, extOffset);
+        /* extensions length = 4 */
+        modBuf[extOffset] = 0x00;
+        modBuf[extOffset + 1] = 0x04;
+        /* extension type = 0x8001 (mandatory) */
+        modBuf[extOffset + 2] = 0x80;
+        modBuf[extOffset + 3] = 0x01;
+        /* extension data length = 0 */
+        modBuf[extOffset + 4] = 0x00;
+        modBuf[extOffset + 5] = 0x00;
+        modLen = extOffset + 6;
+
+        /* update ECHConfig content length (bytes [4..5]) */
+        ato16(&configBuf[4], &contentLen);
+        c16toa(contentLen + 4, &modBuf[4]);
+
+        /* update ECHConfigList total length (bytes [0..1]) */
+        ato16(&configBuf[0], &contentLen);
+        c16toa(contentLen + 4, &modBuf[0]);
+    }
+
+    /* This config should be rejected (only config has mandatory unknown ext) */
+    ExpectNotNull(cCtx = wolfSSL_CTX_new(wolfTLSv1_3_client_method()));
+    ExpectIntNE(WOLFSSL_SUCCESS, wolfSSL_CTX_SetEchConfigs(cCtx, modBuf,
+        modLen));
+    wolfSSL_CTX_free(cCtx);
+    cCtx = NULL;
+
+    /* --- Test 2: non-mandatory unknown extension (high bit clear) ---
+     * Same as above but with type=0x0001 */
+    if (EXPECT_SUCCESS()) {
+        /* change extension type to 0x0001 (non-mandatory) */
+        modBuf[extOffset + 2] = 0x00;
+        modBuf[extOffset + 3] = 0x01;
+    }
+
+    /* This config should be accepted */
+    ExpectNotNull(cCtx = wolfSSL_CTX_new(wolfTLSv1_3_client_method()));
+    ExpectIntEQ(WOLFSSL_SUCCESS, wolfSSL_CTX_SetEchConfigs(cCtx, modBuf,
+        modLen));
+
+    wolfSSL_CTX_free(cCtx);
+    wolfSSL_CTX_free(sCtx);
+#endif /* !NO_WOLFSSL_CLIENT && !NO_WOLFSSL_SERVER */
+
+    return EXPECT_RESULT();
+}
+
 #endif /* HAVE_ECH && WOLFSSL_TLS13 */
 
 #if defined(HAVE_IO_TESTS_DEPENDENCIES) && \
@@ -35054,6 +35205,8 @@ TEST_CASE testCases[] = {
     TEST_DECL(test_wolfSSL_Tls13_ECH_disable_conn),
 #endif
     TEST_DECL(test_wolfSSL_Tls13_ECH_enable_disable),
+    TEST_DECL(test_wolfSSL_Tls13_ECH_max_name_length),
+    TEST_DECL(test_wolfSSL_Tls13_ECH_mandatory_extension),
 #endif /* WOLFSSL_TLS13 && HAVE_ECH */
 
     TEST_DECL(test_wolfSSL_X509_TLS_version_test_1),
