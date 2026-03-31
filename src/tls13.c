@@ -5985,7 +5985,7 @@ static int DoTls13CertificateRequest(WOLFSSL* ssl, const byte* input,
         ssl->options.sendVerify = SEND_BLANK_CERT;
 #else
         WOLFSSL_MSG("Certificate required but none set on client");
-        SendAlert(ssl, alert_fatal, illegal_parameter);
+        SendAlert(ssl, alert_fatal, certificate_required);
         WOLFSSL_ERROR_VERBOSE(NO_CERT_ERROR);
         return NO_CERT_ERROR;
 #endif

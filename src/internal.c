@@ -35338,6 +35338,17 @@ static int DoSessionTicket(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
                 return bad_certificate_status_response;
             case WC_NO_ERR_TRACE(OUT_OF_ORDER_E):
                 return unexpected_message;
+            case WC_NO_ERR_TRACE(ASN_AFTER_DATE_E):
+            case WC_NO_ERR_TRACE(ASN_BEFORE_DATE_E):
+                return certificate_expired;
+            case WC_NO_ERR_TRACE(CRL_CERT_REVOKED):
+                return certificate_revoked;
+            case WC_NO_ERR_TRACE(ASN_NO_SIGNER_E):
+                return unknown_ca;
+            case WC_NO_ERR_TRACE(ASN_SIG_CONFIRM_E):
+                return bad_certificate;
+            case WC_NO_ERR_TRACE(NO_CERT_ERROR):
+                return certificate_required;
             default:
                 return invalid_alert;
         }
