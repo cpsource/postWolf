@@ -108,6 +108,7 @@ automatically.
 | `-m <msg>` | Message to echo | `Hello QUIC+MTC!` |
 | `--ca-url <url>` | MTC CA/Log server URL | `http://localhost:8443` |
 | `--verify-index <N>` | MTC cert index to verify | (none) |
+| `--revoke-index <N>` | Mark MTC index N as revoked (repeatable) | (none) |
 | `--no-mtc` | Disable MTC verification | |
 | `-?` | Show help | |
 
@@ -147,13 +148,50 @@ When `--ca-url` and `--verify-index` are provided:
    - Checks certificate expiry
 3. Reports VALID or INVALID
 
-### Future: Inline MTC in TLS
+### Inline MTC in TLS
 
-In a full implementation, the MTC proof would be carried inside the
-TLS Certificate message via the `id-alg-mtcProof` signature algorithm
-OID, and verification would happen in wolfSSL's `ProcessPeerCerts()`
-rather than out-of-band. The OID is registered (`CTC_MTC_PROOF`) but
-the inline verification hook is not yet wired.
+The server can load an MTC certificate directly from a `~/.TPM` store
+directory using `--mtc-store`. The certificate carries the MTC proof
+in the X.509 signatureValue field with the `id-alg-mtcProof` OID.
+wolfSSL verifies the Merkle inclusion proof during the TLS handshake
+in `ProcessPeerCerts()`.
+
+### MTC Revocation
+
+The client can mark MTC certificate indices as revoked using
+`--revoke-index <N>` (repeatable). During the TLS handshake, wolfSSL
+extracts the certificate's log index from the MTC proof and checks it
+against the revocation list. If the index is revoked, the handshake
+fails with `CRL_CERT_REVOKED`.
+
+**Example — reject a revoked cert:**
+```bash
+# Server uses MTC cert at index 1
+./quic_mtc_server -p 4500 --no-mtc -c mtc-cert.pem -k mtc-key.pem
+
+# Client marks index 1 as revoked — handshake will fail
+./quic_mtc_client -p 4500 --no-mtc -A mtc-ca.pem --revoke-index 1 -m "test"
+```
+
+**Programmatic revocation (wolfSSL API):**
+```c
+/* Mark individual indices as revoked */
+wolfSSL_MTC_RevokeIndex(ctx, 1);
+wolfSSL_MTC_RevokeIndex(ctx, 42);
+
+/* Or load a batch */
+unsigned int revoked[] = {1, 42, 100};
+wolfSSL_MTC_LoadRevocationList(ctx, revoked, 3);
+
+/* Check programmatically */
+if (wolfSSL_MTC_IsRevoked(ctx, 1))
+    printf("Index 1 is revoked\n");
+```
+
+The MTC CA server also provides revocation endpoints:
+- `POST /revoke` — revoke a certificate by index
+- `GET /revoked` — get the full signed revocation list
+- `GET /revoked/<N>` — check if a specific index is revoked
 
 ## Files
 

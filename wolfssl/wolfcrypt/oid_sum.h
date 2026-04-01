@@ -1668,7 +1668,7 @@ enum Ctc_SigType {
     /* 0x2b,0xce,0x0f,0x06,0x09,0x07  */
     CTC_SPHINCS_SMALL_LEVEL5    = 0x06f0c922,    /* 1.3.9999.6.9.7 */
     /* 0x2b,0x06,0x01,0x04,0x01,0x82,0xda,0x4b,0x2f,0x00  */
-    CTC_MTC_PROOF               = 0x0482db21     /* 1.3.6.1.4.1.44363.47.0 */
+    CTC_MTC_PROOF               = 0x4fdb84fa     /* 1.3.6.1.4.1.44363.47.0 */
 #endif
 };
 

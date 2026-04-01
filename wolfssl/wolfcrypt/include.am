@@ -18,6 +18,8 @@ nobase_include_HEADERS+= \
                          wolfssl/wolfcrypt/ecc.h \
                          wolfssl/wolfcrypt/curve25519.h \
                          wolfssl/wolfcrypt/ed25519.h \
+                         wolfssl/wolfcrypt/mtc.h \
+                         wolfssl/wolfcrypt/mtc_api.h \
                          wolfssl/wolfcrypt/fe_operations.h \
                          wolfssl/wolfcrypt/ge_operations.h \
                          wolfssl/wolfcrypt/curve448.h \

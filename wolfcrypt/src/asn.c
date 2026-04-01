@@ -22368,6 +22368,9 @@ int ParseCertRelative(DecodedCert* cert, int type, int verify, void* cm,
         /* MTC certificates: verify Merkle inclusion proof instead of
          * traditional CA chain signature. The signatureValue field contains
          * the serialized MtcProof structure. */
+        printf("[MTC-ASN] signatureOID=%u CTC_MTC_PROOF=%u match=%d\n",
+            cert->signatureOID, CTC_MTC_PROOF,
+            cert->signatureOID == CTC_MTC_PROOF);
         if (cert->signatureOID == CTC_MTC_PROOF) {
             MtcProof proof;
             byte leafHash[MTC_HASH_SZ];
@@ -22392,24 +22395,16 @@ int ParseCertRelative(DecodedCert* cert, int type, int verify, void* cm,
                 return ret;
             }
 
-            /* Verify the Merkle inclusion proof */
-            /* The leaf index is embedded as (cert index = start of proof
-             * range). For a proper implementation, the index would be
-             * extracted from a certificate extension. For now, use a
-             * linear search from proof.start. */
+            /* Verify the Merkle inclusion proof using the cert index
+             * embedded in the proof wire format. */
             {
-                word64 idx64;
                 int proofValid = 0;
 
-                /* Try each possible index in the subtree range */
-                for (idx64 = proof.start; idx64 < proof.end; idx64++) {
-                    if (wc_MtcVerifyInclusionProof(leafHash, &proof,
-                                                    idx64) == 0) {
-                        proofValid = 1;
-                        cert->mtcCertIndex = (word32)idx64;
-                        WOLFSSL_MSG("MTC inclusion proof verified");
-                        break;
-                    }
+                if (wc_MtcVerifyInclusionProof(leafHash, &proof,
+                                                proof.certIndex) == 0) {
+                    proofValid = 1;
+                    cert->mtcCertIndex = (word32)proof.certIndex;
+                    WOLFSSL_MSG("MTC inclusion proof verified");
                 }
 
                 if (!proofValid) {

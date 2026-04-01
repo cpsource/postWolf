@@ -77,7 +77,8 @@ static int cli_extend_max_streams(ngtcp2_conn *conn, uint64_t max_streams,
 /* ------------------------------------------------------------------ */
 
 static int client_init(QmtcPeer *c, const char *host, int port,
-                       const char *ca_file)
+                       const char *ca_file,
+                       const int *revoked_indices, int revoked_count)
 {
     ngtcp2_callbacks cb;
     ngtcp2_settings settings;
@@ -118,12 +119,31 @@ static int client_init(QmtcPeer *c, const char *host, int port,
     ngtcp2_crypto_wolfssl_configure_client_context(c->ssl_ctx);
     wolfSSL_CTX_load_verify_locations(c->ssl_ctx, ca_file, NULL);
 
+    /* Load MTC revocation list if provided */
+    if (revoked_indices != NULL && revoked_count > 0) {
+        int ri;
+        printf("[client] loading %d revoked MTC indices\n", revoked_count);
+        for (ri = 0; ri < revoked_count; ri++) {
+            wolfSSL_MTC_RevokeIndex(c->ssl_ctx,
+                (unsigned int)revoked_indices[ri]);
+            printf("[client]   revoked index: %d\n", revoked_indices[ri]);
+        }
+    }
+
     c->ssl = wolfSSL_new(c->ssl_ctx);
     if (c->ssl == NULL) return -1;
 
     wolfSSL_set_connect_state(c->ssl);
     wolfSSL_set_alpn_protos(c->ssl, qmtc_alpn, sizeof(qmtc_alpn));
-    wolfSSL_set_verify(c->ssl, SSL_VERIFY_NONE, NULL);
+    /* Use SSL_VERIFY_PEER to enable cert verification (including
+     * MTC revocation checks). For MTC certs, the CA file is the
+     * cert itself (self-referencing for proof-based trust). */
+    if (revoked_count > 0) {
+        wolfSSL_set_verify(c->ssl, SSL_VERIFY_PEER, NULL);
+    }
+    else {
+        wolfSSL_set_verify(c->ssl, SSL_VERIFY_NONE, NULL);
+    }
     wolfSSL_UseSNI(c->ssl, WOLFSSL_SNI_HOST_NAME,
         host, (unsigned short)strlen(host));
 
@@ -196,6 +216,7 @@ static void usage(const char *prog)
     printf("  --ca-url <url>     MTC CA/Log server URL (default: %s)\n",
            QMTC_DEFAULT_CA_URL);
     printf("  --verify-index <N> MTC cert index to verify after handshake\n");
+    printf("  --revoke-index <N> Mark MTC index N as revoked (can repeat)\n");
     printf("  --no-mtc           Disable MTC verification\n");
     printf("  -?                 Show this help\n");
 }
@@ -213,6 +234,8 @@ int main(int argc, char *argv[])
     int no_mtc = 0;
     int loops;
     int msg_loaded = 0;
+    int revoked_indices[64];
+    int revoked_count = 0;
 
     /* Parse args */
     for (i = 1; i < argc; i++) {
@@ -228,6 +251,10 @@ int main(int argc, char *argv[])
             ca_url = argv[++i];
         else if (strcmp(argv[i], "--verify-index") == 0 && i + 1 < argc)
             verify_index = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--revoke-index") == 0 && i + 1 < argc) {
+            if (revoked_count < 64)
+                revoked_indices[revoked_count++] = atoi(argv[++i]);
+        }
         else if (strcmp(argv[i], "--no-mtc") == 0)
             no_mtc = 1;
         else if (strcmp(argv[i], "-?") == 0) {
@@ -262,7 +289,9 @@ int main(int argc, char *argv[])
     }
 
     /* --- QUIC connection --- */
-    if (client_init(&client, host, port, ca_file) != 0) {
+    if (client_init(&client, host, port, ca_file,
+                    revoked_count > 0 ? revoked_indices : NULL,
+                    revoked_count) != 0) {
         fprintf(stderr, "client_init failed\n");
         wolfSSL_Cleanup();
         return 1;

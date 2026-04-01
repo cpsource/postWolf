@@ -16738,18 +16738,27 @@ int ProcessPeerCerts(WOLFSSL* ssl, byte* input, word32* inOutIdx,
                 #endif /* HAVE_CRL */
 
                 #ifdef HAVE_MTC
-                    /* MTC revocation check — if cert was verified via
-                     * MTC proof, check the log index against the
-                     * revocation list stored in the CTX. */
+                    /* MTC revocation check — parse the cert's MTC proof
+                     * to extract the log index, then check against the
+                     * revocation list. */
                     if (ret == 0 &&
                         args->dCert->signatureOID == CTC_MTC_PROOF &&
                         ssl->ctx->mtcRevocationList != NULL) {
-                        word32 mtcIdx = args->dCert->mtcCertIndex;
-                        if (wc_MtcRevocationList_IsRevoked(
-                                ssl->ctx->mtcRevocationList, mtcIdx)) {
-                            WOLFSSL_MSG("MTC certificate index is revoked");
-                            ret = CRL_CERT_REVOKED;
-                            args->fatal = 0;
+                        MtcProof mtcProof;
+                        int mtcRet = wc_MtcParseProof(
+                            args->dCert->signature,
+                            args->dCert->sigLength, &mtcProof);
+                        if (mtcRet == 0) {
+                            word32 mtcIdx = (word32)mtcProof.certIndex;
+                            printf("[MTC-CRL] cert index=%u\n", mtcIdx);
+                            if (wc_MtcRevocationList_IsRevoked(
+                                    ssl->ctx->mtcRevocationList, mtcIdx)) {
+                                printf("[MTC-CRL] INDEX %u IS REVOKED\n",
+                                    mtcIdx);
+                                ret = CRL_CERT_REVOKED;
+                                args->fatal = 1;
+                            }
+                            wc_MtcFreeProof(&mtcProof);
                         }
                     }
                 #endif /* HAVE_MTC */

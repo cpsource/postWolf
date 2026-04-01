@@ -29,6 +29,7 @@ extern "C" {
 
 /* Parsed Merkle Tree Certificate proof (from X.509 signatureValue) */
 typedef struct MtcProof {
+    word64   certIndex;             /* Certificate log index */
     word64   start;                 /* Subtree start index */
     word64   end;                   /* Subtree end index (exclusive) */
     byte*    inclusionPath;         /* Concatenated SHA-256 hashes */

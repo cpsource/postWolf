@@ -399,3 +399,70 @@ periodically.
 | Bootstrap (once) | — | GETs CA public key + tree state, caches locally |
 | Every connection | Presents in-memory MTC cert | Verifies Merkle proof against cached tree state |
 | Cert expiry | Re-enrolls (`MTC_Renew`) | Refreshes tree state |
+| Revocation | — | Loads revocation list, rejects revoked indices |
+
+---
+
+## Appendix E: Revocation
+
+MTC certificates are revoked by **log index**, not serial number. The
+CA maintains a list of revoked indices. Clients load this list and
+reject any certificate whose log index appears in it.
+
+### Server Side
+
+The MTC CA server provides revocation endpoints:
+
+```bash
+# Revoke a certificate
+curl -X POST http://localhost:8444/revoke \
+  -H "Content-Type: application/json" \
+  -d '{"cert_index": 1, "reason": "key compromise"}'
+
+# Get the full revocation list (signed by CA)
+curl http://localhost:8444/revoked
+
+# Check a specific index
+curl http://localhost:8444/revoked/1
+```
+
+The revocation list is signed by the CA's Ed25519 key to prevent
+tampering. It is persisted to both PostgreSQL (Neon) and local files.
+
+### Client Side (wolfSSL)
+
+```c
+WOLFSSL_CTX* ctx = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
+
+/* Mark specific indices as revoked */
+wolfSSL_MTC_RevokeIndex(ctx, 1);
+wolfSSL_MTC_RevokeIndex(ctx, 42);
+
+/* Or load a batch from the CA's revocation list */
+unsigned int revoked[] = {1, 42, 100};
+wolfSSL_MTC_LoadRevocationList(ctx, revoked, 3);
+
+/* Now any TLS handshake with a cert at index 1, 42, or 100
+ * will fail with CRL_CERT_REVOKED */
+```
+
+### How It Works Internally
+
+During the TLS handshake in `ProcessPeerCerts()`:
+1. wolfSSL detects the `id-alg-mtcProof` signature algorithm
+2. Parses the MTC proof to extract the certificate's log index
+3. Checks the index against the `MtcRevocationList` in `WOLFSSL_CTX`
+4. If found, returns `CRL_CERT_REVOKED` and the handshake fails
+
+### QUIC+MTC Example
+
+```bash
+# Server uses MTC cert (index 1)
+./quic_mtc_server -p 4500 --no-mtc -c mtc-cert.pem -k mtc-key.pem
+
+# Client rejects index 1 — handshake fails
+./quic_mtc_client -p 4500 --no-mtc -A mtc-ca.pem --revoke-index 1
+
+# Client without revocation — handshake succeeds
+./quic_mtc_client -p 4500 --no-mtc -A mtc-ca.pem -m "hello"
+```

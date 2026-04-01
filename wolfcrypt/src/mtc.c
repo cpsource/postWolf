@@ -201,7 +201,8 @@ int wc_MtcVerifyCosignature(const byte* subtreeHash,
 
 /* Parse an MTCProof from raw bytes.
  *
- * Wire format (draft-ietf-plants-merkle-tree-certs Section 5.3):
+ * Wire format:
+ *   certIndex:      8 bytes (big-endian uint64)
  *   start:          8 bytes (big-endian uint64)
  *   end:            8 bytes (big-endian uint64)
  *   pathCount:      2 bytes (big-endian uint16)
@@ -219,9 +220,16 @@ int wc_MtcParseProof(const byte* input, word32 inputSz, MtcProof* proof)
 
     XMEMSET(proof, 0, sizeof(MtcProof));
 
-    /* Need at least: start(8) + end(8) + pathCount(2) + subtreeHash(32) */
-    if (inputSz < 50)
+    /* Need at least: certIndex(8) + start(8) + end(8) + pathCount(2) + subtreeHash(32) */
+    if (inputSz < 58)
         return BUFFER_E;
+
+    /* certIndex (8 bytes big-endian) */
+    proof->certIndex = ((word64)input[idx] << 56) | ((word64)input[idx+1] << 48) |
+                       ((word64)input[idx+2] << 40) | ((word64)input[idx+3] << 32) |
+                       ((word64)input[idx+4] << 24) | ((word64)input[idx+5] << 16) |
+                       ((word64)input[idx+6] << 8)  | (word64)input[idx+7];
+    idx += 8;
 
     /* start (8 bytes big-endian) */
     proof->start = ((word64)input[idx] << 56) | ((word64)input[idx+1] << 48) |

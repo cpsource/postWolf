@@ -66,7 +66,10 @@ def serialize_mtc_proof(cert_json):
 
     path_count = len(proof_hashes)
 
-    buf = struct.pack(">QQ", start, end)
+    cert_index = sc["index"]
+
+    buf = struct.pack(">Q", cert_index)   # cert index (8 bytes)
+    buf += struct.pack(">QQ", start, end)
     buf += struct.pack(">H", path_count)
     for h in proof_hashes:
         buf += bytes.fromhex(h)
