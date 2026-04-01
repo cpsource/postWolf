@@ -39,6 +39,11 @@ struct json_object *mtc_db_load_certificate(PGconn *conn, int index);
 int  mtc_db_load_all_certificates(PGconn *conn,
                                    struct json_object ***out, int *count);
 
+/* --- Revocations --- */
+int  mtc_db_save_revocation(PGconn *conn, int cert_index, const char *reason);
+int  mtc_db_load_revocations(PGconn *conn, int *indices, int max_count);
+int  mtc_db_is_revoked(PGconn *conn, int cert_index);
+
 /* --- CA config (key persistence) --- */
 int  mtc_db_save_config(PGconn *conn, const char *key, const char *value);
 char *mtc_db_load_config(PGconn *conn, const char *key);

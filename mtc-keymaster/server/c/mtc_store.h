@@ -43,6 +43,11 @@ typedef struct {
     /* Landmarks (tree sizes) */
     int              landmarks[MTC_MAX_LANDMARKS];
     int              landmark_count;
+
+    /* Revocations */
+    int             *revoked_indices;
+    int              revocation_count;
+    int              revocation_capacity;
 } MtcStore;
 
 int  mtc_store_init(MtcStore *store, const char *data_dir,
@@ -67,5 +72,10 @@ int  mtc_store_cosign(MtcStore *store, int start, int end,
 
 /* Get CA public key PEM */
 int  mtc_store_get_public_key_pem(MtcStore *store, char *out, int maxSz);
+
+/* Revocation */
+int  mtc_store_revoke(MtcStore *store, int cert_index, const char *reason);
+int  mtc_store_is_revoked(MtcStore *store, int cert_index);
+struct json_object *mtc_store_get_revocation_list(MtcStore *store);
 
 #endif

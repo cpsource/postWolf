@@ -352,8 +352,25 @@ int mtc_store_load(MtcStore *store)
             }
         }
 
-        printf("[store] loaded %d entries, %d certs, %d landmarks from DB\n",
-               store->tree.size, store->cert_count, store->landmark_count);
+        /* Revocations */
+        {
+            int rev_buf[MTC_MAX_CERTS];
+            int rev_count = mtc_db_load_revocations(store->db, rev_buf,
+                MTC_MAX_CERTS);
+            if (rev_count > 0) {
+                store->revocation_capacity = rev_count * 2;
+                store->revoked_indices = (int*)malloc(
+                    (size_t)store->revocation_capacity * sizeof(int));
+                memcpy(store->revoked_indices, rev_buf,
+                    (size_t)rev_count * sizeof(int));
+                store->revocation_count = rev_count;
+            }
+        }
+
+        printf("[store] loaded %d entries, %d certs, %d landmarks, "
+               "%d revocations from DB\n",
+               store->tree.size, store->cert_count, store->landmark_count,
+               store->revocation_count);
         return 0;
     }
 
@@ -574,4 +591,126 @@ int mtc_store_get_public_key_pem(MtcStore *store, char *out, int maxSz)
     ret = wc_DerToPem(der, (word32)derSz, (byte*)out, (word32)maxSz,
         ED25519_TYPE);
     return ret;
+}
+
+/* ------------------------------------------------------------------ */
+/* Revocation                                                          */
+/* ------------------------------------------------------------------ */
+
+int mtc_store_revoke(MtcStore *store, int cert_index, const char *reason)
+{
+    /* Check not already revoked */
+    if (mtc_store_is_revoked(store, cert_index))
+        return 0; /* Already revoked */
+
+    /* Grow array if needed */
+    if (store->revocation_count >= store->revocation_capacity) {
+        int newcap = store->revocation_capacity == 0 ? 64
+                     : store->revocation_capacity * 2;
+        int *tmp = (int*)realloc(store->revoked_indices,
+            (size_t)newcap * sizeof(int));
+        if (!tmp) return -1;
+        store->revoked_indices = tmp;
+        store->revocation_capacity = newcap;
+    }
+
+    /* Insert sorted */
+    {
+        int i = store->revocation_count;
+        while (i > 0 && store->revoked_indices[i - 1] > cert_index) {
+            store->revoked_indices[i] = store->revoked_indices[i - 1];
+            i--;
+        }
+        store->revoked_indices[i] = cert_index;
+        store->revocation_count++;
+    }
+
+    /* Persist to DB */
+    if (store->use_db && store->db)
+        mtc_db_save_revocation(store->db, cert_index, reason);
+
+    /* Persist to file */
+    {
+        char path[512];
+        struct json_object *arr = json_object_new_array();
+        int i;
+        const char *s;
+        for (i = 0; i < store->revocation_count; i++)
+            json_object_array_add(arr,
+                json_object_new_int(store->revoked_indices[i]));
+        snprintf(path, sizeof(path), "%s/revocations.json", store->data_dir);
+        s = json_object_to_json_string(arr);
+        {
+            FILE *f = fopen(path, "w");
+            if (f) { fputs(s, f); fclose(f); }
+        }
+        json_object_put(arr);
+    }
+
+    printf("[store] revoked cert index %d (reason: %s)\n",
+           cert_index, reason ? reason : "unspecified");
+    return 0;
+}
+
+int mtc_store_is_revoked(MtcStore *store, int cert_index)
+{
+    /* Binary search on sorted array */
+    int lo = 0, hi = store->revocation_count - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (store->revoked_indices[mid] == cert_index)
+            return 1;
+        else if (store->revoked_indices[mid] < cert_index)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
+    return 0;
+}
+
+struct json_object *mtc_store_get_revocation_list(MtcStore *store)
+{
+    struct json_object *obj = json_object_new_object();
+    struct json_object *arr = json_object_new_array();
+    int i;
+    uint8_t sig[64];
+    int sig_sz = 0;
+
+    json_object_object_add(obj, "log_id",
+        json_object_new_string(store->log_id));
+
+    for (i = 0; i < store->revocation_count; i++)
+        json_object_array_add(arr,
+            json_object_new_int(store->revoked_indices[i]));
+    json_object_object_add(obj, "revoked", arr);
+
+    json_object_object_add(obj, "count",
+        json_object_new_int(store->revocation_count));
+    json_object_object_add(obj, "updated_at",
+        json_object_new_double((double)time(NULL)));
+
+    /* Sign the revocation list with the CA key */
+    {
+        const char *payload = json_object_to_json_string(arr);
+        ed25519_key key;
+        word32 idx = 0;
+        word32 outSz = sizeof(sig);
+
+        if (wc_ed25519_init(&key) == 0 &&
+            wc_Ed25519PrivateKeyDecode(store->ca_priv_key, &idx, &key,
+                (word32)store->ca_priv_key_sz) == 0) {
+            if (wc_ed25519_sign_msg((const byte*)payload,
+                    (word32)strlen(payload), sig, &outSz, &key) == 0) {
+                char sig_hex[129];
+                sig_sz = (int)outSz;
+                for (i = 0; i < sig_sz; i++)
+                    snprintf(sig_hex + i * 2, 3, "%02x", sig[i]);
+                json_object_object_add(obj, "signature",
+                    json_object_new_string(sig_hex));
+            }
+            wc_ed25519_free(&key);
+        }
+    }
+
+    return obj;
 }

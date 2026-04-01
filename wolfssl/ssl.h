@@ -4594,6 +4594,12 @@ WOLFSSL_API int wolfSSL_MTC_AddCosigner(WOLFSSL_CTX* ctx,
     const unsigned char* id, unsigned int idSz,
     const unsigned char* pubKey, unsigned int pubKeySz, int sigAlg);
 
+/* MTC Revocation */
+WOLFSSL_API int wolfSSL_MTC_LoadRevocationList(WOLFSSL_CTX* ctx,
+    const unsigned int* indices, int count);
+WOLFSSL_API int wolfSSL_MTC_RevokeIndex(WOLFSSL_CTX* ctx, unsigned int index);
+WOLFSSL_API int wolfSSL_MTC_IsRevoked(WOLFSSL_CTX* ctx, unsigned int index);
+
 /* Load MTC certificate + key from a ~/.TPM store directory.
  * storePath: directory containing certificate.json and private_key.pem
  *            (e.g., "~/.TPM/test.example.com")

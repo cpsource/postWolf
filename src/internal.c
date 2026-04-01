@@ -16736,6 +16736,24 @@ int ProcessPeerCerts(WOLFSSL* ssl, byte* input, word32* inOutIdx,
                         }
                     }
                 #endif /* HAVE_CRL */
+
+                #ifdef HAVE_MTC
+                    /* MTC revocation check — if cert was verified via
+                     * MTC proof, check the log index against the
+                     * revocation list stored in the CTX. */
+                    if (ret == 0 &&
+                        args->dCert->signatureOID == CTC_MTC_PROOF &&
+                        ssl->ctx->mtcRevocationList != NULL) {
+                        word32 mtcIdx = args->dCert->mtcCertIndex;
+                        if (wc_MtcRevocationList_IsRevoked(
+                                ssl->ctx->mtcRevocationList, mtcIdx)) {
+                            WOLFSSL_MSG("MTC certificate index is revoked");
+                            ret = CRL_CERT_REVOKED;
+                            args->fatal = 0;
+                        }
+                    }
+                #endif /* HAVE_MTC */
+
                     (void)doLookup;
                 }
             #endif /* HAVE_OCSP || HAVE_CRL */

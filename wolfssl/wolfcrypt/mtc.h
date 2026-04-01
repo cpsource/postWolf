@@ -99,6 +99,19 @@ WOLFSSL_API int wc_MtcParseProof(const byte* input, word32 inputSz,
 /* Free dynamically allocated fields in an MtcProof. */
 WOLFSSL_API void wc_MtcFreeProof(MtcProof* proof);
 
+/* MTC Revocation List — sorted array of revoked certificate indices. */
+typedef struct MtcRevocationList {
+    word32  *indices;      /* Sorted array of revoked log indices */
+    int      count;        /* Number of entries */
+    int      capacity;     /* Allocated slots */
+} MtcRevocationList;
+
+WOLFSSL_API int  wc_MtcRevocationList_Init(MtcRevocationList* list);
+WOLFSSL_API int  wc_MtcRevocationList_Add(MtcRevocationList* list, word32 index);
+WOLFSSL_API int  wc_MtcRevocationList_IsRevoked(const MtcRevocationList* list,
+    word32 index);
+WOLFSSL_API void wc_MtcRevocationList_Free(MtcRevocationList* list);
+
 #ifdef __cplusplus
 }
 #endif

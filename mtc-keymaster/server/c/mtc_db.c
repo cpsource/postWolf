@@ -117,6 +117,13 @@ int mtc_db_init_schema(PGconn *conn)
         "CREATE TABLE IF NOT EXISTS mtc_ca_config ("
         "  key TEXT PRIMARY KEY,"
         "  value TEXT NOT NULL"
+        ");"
+        "CREATE TABLE IF NOT EXISTS mtc_revocations ("
+        "  id SERIAL PRIMARY KEY,"
+        "  cert_index INTEGER NOT NULL,"
+        "  reason TEXT,"
+        "  revoked_at DOUBLE PRECISION NOT NULL,"
+        "  created_at TIMESTAMPTZ DEFAULT now()"
         ");";
 
     res = PQexec(conn, sql);
@@ -428,6 +435,78 @@ int mtc_db_load_all_certificates(PGconn *conn,
 
     PQclear(res);
     return rows;
+}
+
+/* ------------------------------------------------------------------ */
+/* Revocations                                                         */
+/* ------------------------------------------------------------------ */
+
+int mtc_db_save_revocation(PGconn *conn, int cert_index, const char *reason)
+{
+    PGresult *res;
+    char idx_str[16], ts_str[32];
+    const char *params[3];
+
+    snprintf(idx_str, sizeof(idx_str), "%d", cert_index);
+    snprintf(ts_str, sizeof(ts_str), "%.6f", (double)time(NULL));
+    params[0] = idx_str;
+    params[1] = reason ? reason : "unspecified";
+    params[2] = ts_str;
+
+    res = PQexecParams(conn,
+        "INSERT INTO mtc_revocations (cert_index, reason, revoked_at) "
+        "VALUES ($1, $2, $3)",
+        3, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "[db] save_revocation failed: %s\n",
+            PQerrorMessage(conn));
+        PQclear(res);
+        return -1;
+    }
+    PQclear(res);
+    return 0;
+}
+
+int mtc_db_load_revocations(PGconn *conn, int *indices, int max_count)
+{
+    PGresult *res;
+    int i, rows;
+
+    res = PQexec(conn,
+        "SELECT cert_index FROM mtc_revocations ORDER BY cert_index");
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        PQclear(res);
+        return 0;
+    }
+
+    rows = PQntuples(res);
+    if (rows > max_count) rows = max_count;
+
+    for (i = 0; i < rows; i++)
+        indices[i] = atoi(PQgetvalue(res, i, 0));
+
+    PQclear(res);
+    return rows;
+}
+
+int mtc_db_is_revoked(PGconn *conn, int cert_index)
+{
+    PGresult *res;
+    char idx_str[16];
+    const char *params[1];
+    int found;
+
+    snprintf(idx_str, sizeof(idx_str), "%d", cert_index);
+    params[0] = idx_str;
+
+    res = PQexecParams(conn,
+        "SELECT 1 FROM mtc_revocations WHERE cert_index = $1 LIMIT 1",
+        1, NULL, params, NULL, NULL, 0);
+
+    found = (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0);
+    PQclear(res);
+    return found;
 }
 
 /* ------------------------------------------------------------------ */

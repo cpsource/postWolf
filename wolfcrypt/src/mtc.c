@@ -294,4 +294,87 @@ void wc_MtcFreeProof(MtcProof* proof)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Revocation list                                                     */
+/* ------------------------------------------------------------------ */
+
+int wc_MtcRevocationList_Init(MtcRevocationList* list)
+{
+    if (list == NULL)
+        return BAD_FUNC_ARG;
+    XMEMSET(list, 0, sizeof(*list));
+    return 0;
+}
+
+int wc_MtcRevocationList_Add(MtcRevocationList* list, word32 index)
+{
+    int i;
+
+    if (list == NULL)
+        return BAD_FUNC_ARG;
+
+    /* Grow if needed */
+    if (list->count >= list->capacity) {
+        int newcap = list->capacity == 0 ? 64 : list->capacity * 2;
+        word32 *tmp = (word32*)XMALLOC((word32)newcap * sizeof(word32),
+            NULL, DYNAMIC_TYPE_TMP_BUFFER);
+        if (tmp == NULL)
+            return MEMORY_E;
+        if (list->indices != NULL) {
+            XMEMCPY(tmp, list->indices, (word32)list->count * sizeof(word32));
+            XFREE(list->indices, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+        }
+        list->indices = tmp;
+        list->capacity = newcap;
+    }
+
+    /* Insert sorted */
+    i = list->count;
+    while (i > 0 && list->indices[i - 1] > index) {
+        list->indices[i] = list->indices[i - 1];
+        i--;
+    }
+    /* Skip duplicate */
+    if (i > 0 && list->indices[i - 1] == index)
+        return 0;
+    list->indices[i] = index;
+    list->count++;
+    return 0;
+}
+
+int wc_MtcRevocationList_IsRevoked(const MtcRevocationList* list,
+    word32 index)
+{
+    int lo, hi;
+
+    if (list == NULL || list->count == 0)
+        return 0;
+
+    /* Binary search */
+    lo = 0;
+    hi = list->count - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (list->indices[mid] == index)
+            return 1;
+        else if (list->indices[mid] < index)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
+    return 0;
+}
+
+void wc_MtcRevocationList_Free(MtcRevocationList* list)
+{
+    if (list == NULL)
+        return;
+    if (list->indices != NULL) {
+        XFREE(list->indices, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+        list->indices = NULL;
+    }
+    list->count = 0;
+    list->capacity = 0;
+}
+
 #endif /* HAVE_MTC */

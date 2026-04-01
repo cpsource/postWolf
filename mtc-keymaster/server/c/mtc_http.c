@@ -624,6 +624,71 @@ static void handle_trust_anchors(int fd, MtcStore *store)
 }
 
 /* ------------------------------------------------------------------ */
+/* Revocation handlers                                                 */
+/* ------------------------------------------------------------------ */
+
+static void handle_revoke(int fd, MtcStore *store,
+                          const char *body, int body_len)
+{
+    struct json_object *req, *val;
+    int cert_index;
+    const char *reason = NULL;
+
+    (void)body_len;
+    req = json_tokener_parse(body);
+    if (!req) {
+        http_send_error(fd, 400, "invalid JSON");
+        return;
+    }
+
+    if (!json_object_object_get_ex(req, "cert_index", &val)) {
+        http_send_error(fd, 400, "missing 'cert_index'");
+        json_object_put(req);
+        return;
+    }
+    cert_index = json_object_get_int(val);
+
+    if (json_object_object_get_ex(req, "reason", &val))
+        reason = json_object_get_string(val);
+
+    if (mtc_store_revoke(store, cert_index, reason) != 0) {
+        http_send_error(fd, 500, "revocation failed");
+        json_object_put(req);
+        return;
+    }
+
+    {
+        struct json_object *resp = json_object_new_object();
+        json_object_object_add(resp, "revoked", json_object_new_boolean(1));
+        json_object_object_add(resp, "cert_index",
+            json_object_new_int(cert_index));
+        json_object_object_add(resp, "reason",
+            json_object_new_string(reason ? reason : "unspecified"));
+        http_send_json_obj(fd, 200, resp);
+        json_object_put(resp);
+    }
+    json_object_put(req);
+}
+
+static void handle_revoked_list(int fd, MtcStore *store)
+{
+    struct json_object *list = mtc_store_get_revocation_list(store);
+    http_send_json_obj(fd, 200, list);
+    json_object_put(list);
+}
+
+static void handle_revoked_check(int fd, MtcStore *store, int index)
+{
+    struct json_object *obj = json_object_new_object();
+    int revoked = mtc_store_is_revoked(store, index);
+
+    json_object_object_add(obj, "cert_index", json_object_new_int(index));
+    json_object_object_add(obj, "revoked", json_object_new_boolean(revoked));
+    http_send_json_obj(fd, 200, obj);
+    json_object_put(obj);
+}
+
+/* ------------------------------------------------------------------ */
 /* Request parsing and dispatch                                        */
 /* ------------------------------------------------------------------ */
 
@@ -691,6 +756,13 @@ static void handle_request(int fd, MtcStore *store)
         else if (strcmp(path, "/trust-anchors") == 0) {
             handle_trust_anchors(fd, store);
         }
+        else if (strcmp(path, "/revoked") == 0) {
+            handle_revoked_list(fd, store);
+        }
+        else if (strncmp(path, "/revoked/", 9) == 0) {
+            int index = atoi(path + 9);
+            handle_revoked_check(fd, store, index);
+        }
         else if (strcmp(path, "/ca/public-key") == 0) {
             handle_ca_public_key(fd, store);
         }
@@ -701,6 +773,9 @@ static void handle_request(int fd, MtcStore *store)
     else if (strcmp(method, "POST") == 0) {
         if (strcmp(path, "/certificate/request") == 0) {
             handle_certificate_request(fd, store, body, body_len);
+        }
+        else if (strcmp(path, "/revoke") == 0) {
+            handle_revoke(fd, store, body, body_len);
         }
         else {
             http_send_error(fd, 404, "not found");

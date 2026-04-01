@@ -136,6 +136,9 @@ loaded directly by wolfSSL for TLS 1.3 handshakes over QUIC or TCP.
 | GET | `/certificate/<N>` | Retrieve issued certificate |
 | GET | `/trust-anchors` | List trust anchor IDs |
 | GET | `/ca/public-key` | CA's Ed25519 public key |
+| POST | `/revoke` | Revoke a certificate by index |
+| GET | `/revoked` | Full revocation list (signed by CA) |
+| GET | `/revoked/<N>` | Check if specific index is revoked |
 
 ### Certificate Request Body
 
@@ -194,6 +197,9 @@ python3 main.py --server URL [command] [args]
 | `list` | Show local certificates in `~/.TPM` |
 | `find <query>` | Search certificates by subject |
 | `demo` | Run the full workflow (bootstrap, enroll, verify) |
+| `revoke <index>` | Revoke a certificate by log index |
+| `check-revoked <index>` | Check if an index is revoked |
+| `list-revoked` | Show all revoked indices |
 
 ## Local Storage
 
@@ -338,3 +344,58 @@ state is sufficient.
 This is the same as how browsers work — you don't re-download the
 Let's Encrypt root CA every time you visit a website. You already
 have it.
+
+---
+
+## Appendix C: When Is ~/.TPM Read?
+
+`~/.TPM` is not reloaded on each connection. It is read **once** at
+server startup.
+
+1. **Enrollment** (one-time setup, before any connections) —
+   `MTC_Enroll` creates the files in `~/.TPM/{subject}/`
+2. **Server starts** — `wolfSSL_CTX_use_MTC_certificate()` reads
+   `private_key.pem` and `certificate.json` from disk, builds the
+   DER cert in memory
+3. **All connections** — use the in-memory cert, no disk I/O
+
+`~/.TPM` is only touched again if:
+- The cert expires and you re-enroll (`MTC_Renew`)
+- You restart the server process
+
+---
+
+## Appendix D: What Gets Downloaded and Where Is It Stored?
+
+### Server Side (Enrollment)
+
+| What | Source | Stored at |
+|------|--------|-----------|
+| EC-P256 private key | Generated locally | `~/.TPM/{subject}/private_key.pem` |
+| EC-P256 public key | Generated locally | `~/.TPM/{subject}/public_key.pem` |
+| MTC certificate JSON (inclusion proof, cosignatures, trust anchor ID) | HTTP POST to MTC CA `/certificate/request` | `~/.TPM/{subject}/certificate.json` |
+| Certificate index | From the CA response | `~/.TPM/{subject}/index` |
+
+### Client Side (Bootstrap)
+
+| What | Source | Stored at |
+|------|--------|-----------|
+| CA's Ed25519 public key | HTTP GET to MTC CA `/ca/public-key` | Local trust store (JSON) |
+| Log ID, tree size, root hash | HTTP GET to MTC CA `/log` | Local trust store |
+| Landmark subtree hashes (optional) | HTTP GET to MTC CA `/log` | Local trust store |
+
+The Python client tools (`tools/python/trust_store.py`) write the
+trust state to a local JSON file. In the C examples, `MTC_Verify()`
+currently hits the CA's HTTP API at runtime rather than caching —
+a production implementation would cache the CA public key and tree
+state locally (like a browser's root CA store) and only refresh
+periodically.
+
+### What Happens on Each Connection
+
+| When | Server does | Client does |
+|------|-------------|-------------|
+| Enrollment (once) | POSTs to CA, saves cert + keys to `~/.TPM` | — |
+| Bootstrap (once) | — | GETs CA public key + tree state, caches locally |
+| Every connection | Presents in-memory MTC cert | Verifies Merkle proof against cached tree state |
+| Cert expiry | Re-enrolls (`MTC_Renew`) | Refreshes tree state |

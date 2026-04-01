@@ -22406,6 +22406,7 @@ int ParseCertRelative(DecodedCert* cert, int type, int verify, void* cm,
                     if (wc_MtcVerifyInclusionProof(leafHash, &proof,
                                                     idx64) == 0) {
                         proofValid = 1;
+                        cert->mtcCertIndex = (word32)idx64;
                         WOLFSSL_MSG("MTC inclusion proof verified");
                         break;
                     }

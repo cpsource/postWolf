@@ -4311,9 +4311,10 @@ struct WOLFSSL_CTX {
 #endif /* WOLFSSL_TEST_APPLE_NATIVE_CERT_VALIDATION */
 
 #ifdef HAVE_MTC
-    MtcCosigner*  mtcCosigners;       /* Trusted cosigner public keys */
-    int           mtcCosignerCount;
-    char*         mtcStorePath;        /* Certificate store path (default ~/.TPM) */
+    MtcCosigner*         mtcCosigners;       /* Trusted cosigner public keys */
+    int                  mtcCosignerCount;
+    char*                mtcStorePath;        /* Certificate store path (default ~/.TPM) */
+    MtcRevocationList*   mtcRevocationList;   /* Revoked MTC cert indices */
 #endif
 };
 

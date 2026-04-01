@@ -3225,6 +3225,55 @@ int wolfSSL_MTC_AddCosigner(WOLFSSL_CTX* ctx,
     return WOLFSSL_SUCCESS;
 }
 
+int wolfSSL_MTC_LoadRevocationList(WOLFSSL_CTX* ctx,
+    const unsigned int* indices, int count)
+{
+    int i, ret;
+
+    if (ctx == NULL || (indices == NULL && count > 0))
+        return BAD_FUNC_ARG;
+
+    if (ctx->mtcRevocationList == NULL) {
+        ctx->mtcRevocationList = (MtcRevocationList*)XMALLOC(
+            sizeof(MtcRevocationList), ctx->heap, DYNAMIC_TYPE_TMP_BUFFER);
+        if (ctx->mtcRevocationList == NULL)
+            return MEMORY_E;
+        wc_MtcRevocationList_Init(ctx->mtcRevocationList);
+    }
+
+    for (i = 0; i < count; i++) {
+        ret = wc_MtcRevocationList_Add(ctx->mtcRevocationList,
+            (word32)indices[i]);
+        if (ret != 0)
+            return ret;
+    }
+    return WOLFSSL_SUCCESS;
+}
+
+int wolfSSL_MTC_RevokeIndex(WOLFSSL_CTX* ctx, unsigned int index)
+{
+    if (ctx == NULL)
+        return BAD_FUNC_ARG;
+
+    if (ctx->mtcRevocationList == NULL) {
+        ctx->mtcRevocationList = (MtcRevocationList*)XMALLOC(
+            sizeof(MtcRevocationList), ctx->heap, DYNAMIC_TYPE_TMP_BUFFER);
+        if (ctx->mtcRevocationList == NULL)
+            return MEMORY_E;
+        wc_MtcRevocationList_Init(ctx->mtcRevocationList);
+    }
+
+    return wc_MtcRevocationList_Add(ctx->mtcRevocationList, (word32)index);
+}
+
+int wolfSSL_MTC_IsRevoked(WOLFSSL_CTX* ctx, unsigned int index)
+{
+    if (ctx == NULL || ctx->mtcRevocationList == NULL)
+        return 0;
+    return wc_MtcRevocationList_IsRevoked(ctx->mtcRevocationList,
+        (word32)index);
+}
+
 #endif /* HAVE_MTC */
 
 #ifdef HAVE_MAX_FRAGMENT

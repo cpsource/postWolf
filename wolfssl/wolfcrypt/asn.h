@@ -1751,6 +1751,9 @@ struct DecodedCert {
     word32  sigParamsIndex;          /* start of signature parameters    */
     word32  sigParamsLength;         /* length of signature parameters   */
 #endif
+#ifdef HAVE_MTC
+    word32  mtcCertIndex;            /* MTC log index verified by proof  */
+#endif
     int     version;                 /* cert version, 1 or 3             */
     DNS_entry* altNames;             /* alt names list of dns entries    */
 #ifndef IGNORE_NAME_CONSTRAINTS
