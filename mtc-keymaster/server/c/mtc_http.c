@@ -1,3 +1,5 @@
+#define _GNU_SOURCE  /* for strcasestr */
+
 /* mtc_http.c — Minimal single-threaded HTTP server for MTC CA.
  *
  * Handles the REST API endpoints matching the Python server.
@@ -390,6 +392,177 @@ static void handle_certificate_request(int fd, MtcStore *store,
     json_object_put(req);
 }
 
+static void handle_log_entry(int fd, MtcStore *store, int index)
+{
+    struct json_object *obj;
+    char hash_hex[MTC_HASH_SIZE * 2 + 1];
+    uint8_t lh[MTC_HASH_SIZE];
+
+    if (index < 0 || index >= store->tree.size) {
+        http_send_error(fd, 404, "entry not found");
+        return;
+    }
+
+    mtc_hash_leaf(store->tree.entries[index], store->tree.entry_sizes[index], lh);
+    to_hex(lh, MTC_HASH_SIZE, hash_hex);
+
+    obj = json_object_new_object();
+    json_object_object_add(obj, "index", json_object_new_int(index));
+
+    /* Entry type: first byte is 0x00 (null) or 0x01 (tbs) */
+    if (store->tree.entry_sizes[index] > 0 &&
+        store->tree.entries[index][0] == 0x01) {
+        /* TBS entry — the JSON is after the 0x01 prefix */
+        char *json_str = (char*)malloc((size_t)store->tree.entry_sizes[index]);
+        memcpy(json_str, store->tree.entries[index] + 1,
+            (size_t)(store->tree.entry_sizes[index] - 1));
+        json_str[store->tree.entry_sizes[index] - 1] = 0;
+        {
+            struct json_object *data = json_tokener_parse(json_str);
+            json_object_object_add(obj, "type", json_object_new_int(1));
+            json_object_object_add(obj, "data",
+                data ? data : json_object_new_null());
+        }
+        free(json_str);
+    }
+    else {
+        json_object_object_add(obj, "type", json_object_new_int(0));
+        json_object_object_add(obj, "data", json_object_new_null());
+    }
+
+    json_object_object_add(obj, "leaf_hash",
+        json_object_new_string(hash_hex));
+
+    http_send_json_obj(fd, 200, obj);
+    json_object_put(obj);
+}
+
+static void handle_checkpoint(int fd, MtcStore *store)
+{
+    struct json_object *cp;
+
+    if (store->checkpoint_count > 0) {
+        http_send_json_obj(fd, 200,
+            store->checkpoints[store->checkpoint_count - 1]);
+        return;
+    }
+
+    cp = mtc_store_checkpoint(store);
+    http_send_json_obj(fd, 200, cp);
+    json_object_put(cp);
+}
+
+static void handle_consistency(int fd, MtcStore *store, const char *path)
+{
+    /* Parse ?old=N&new=M from the query string */
+    const char *qs;
+    int old_size = 0, new_size = 0;
+    uint8_t *proof = NULL;
+    int proof_count = 0;
+    uint8_t old_root[MTC_HASH_SIZE], new_root[MTC_HASH_SIZE];
+    char hash_hex[MTC_HASH_SIZE * 2 + 1];
+    struct json_object *obj, *proof_arr;
+    int i;
+
+    qs = strchr(path, '?');
+    if (qs) {
+        const char *p = qs + 1;
+        while (*p) {
+            if (strncmp(p, "old=", 4) == 0)
+                old_size = atoi(p + 4);
+            else if (strncmp(p, "new=", 4) == 0)
+                new_size = atoi(p + 4);
+            p = strchr(p, '&');
+            if (!p) break;
+            p++;
+        }
+    }
+
+    if (old_size < 1 || new_size > store->tree.size || old_size > new_size) {
+        http_send_error(fd, 400, "invalid sizes");
+        return;
+    }
+
+    if (mtc_tree_consistency_proof(&store->tree, old_size, new_size,
+                                    &proof, &proof_count) != 0) {
+        http_send_error(fd, 500, "consistency proof failed");
+        return;
+    }
+
+    mtc_tree_root_hash(&store->tree, old_size, old_root);
+    mtc_tree_root_hash(&store->tree, new_size, new_root);
+
+    obj = json_object_new_object();
+    json_object_object_add(obj, "old_size", json_object_new_int(old_size));
+    json_object_object_add(obj, "new_size", json_object_new_int(new_size));
+
+    to_hex(old_root, MTC_HASH_SIZE, hash_hex);
+    json_object_object_add(obj, "old_root",
+        json_object_new_string(hash_hex));
+    to_hex(new_root, MTC_HASH_SIZE, hash_hex);
+    json_object_object_add(obj, "new_root",
+        json_object_new_string(hash_hex));
+
+    proof_arr = json_object_new_array();
+    for (i = 0; i < proof_count; i++) {
+        to_hex(proof + i * MTC_HASH_SIZE, MTC_HASH_SIZE, hash_hex);
+        json_object_array_add(proof_arr, json_object_new_string(hash_hex));
+    }
+    json_object_object_add(obj, "proof", proof_arr);
+
+    http_send_json_obj(fd, 200, obj);
+    json_object_put(obj);
+    free(proof);
+}
+
+static void handle_search_certificates(int fd, MtcStore *store, const char *path)
+{
+    const char *qs, *qval = NULL;
+    struct json_object *obj, *arr;
+    int i;
+
+    qs = strchr(path, '?');
+    if (qs) {
+        const char *p = qs + 1;
+        if (strncmp(p, "q=", 2) == 0)
+            qval = p + 2;
+    }
+
+    if (!qval || *qval == 0) {
+        http_send_error(fd, 400, "requires ?q=<subject>");
+        return;
+    }
+
+    obj = json_object_new_object();
+    json_object_object_add(obj, "query", json_object_new_string(qval));
+
+    arr = json_object_new_array();
+    for (i = 0; i < store->cert_count; i++) {
+        struct json_object *cert, *sc, *tbs, *val;
+        if (!store->certificates[i]) continue;
+
+        cert = store->certificates[i];
+        if (json_object_object_get_ex(cert, "standalone_certificate", &sc) &&
+            json_object_object_get_ex(sc, "tbs_entry", &tbs) &&
+            json_object_object_get_ex(tbs, "subject", &val)) {
+            const char *subj = json_object_get_string(val);
+            /* Case-insensitive substring match */
+            if (strcasestr(subj, qval)) {
+                struct json_object *result = json_object_new_object();
+                json_object_object_add(result, "index",
+                    json_object_new_int(i));
+                json_object_object_add(result, "subject",
+                    json_object_new_string(subj));
+                json_object_array_add(arr, result);
+            }
+        }
+    }
+
+    json_object_object_add(obj, "results", arr);
+    http_send_json_obj(fd, 200, obj);
+    json_object_put(obj);
+}
+
 static void handle_ca_public_key(int fd, MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();
@@ -490,9 +663,22 @@ static void handle_request(int fd, MtcStore *store)
         else if (strcmp(path, "/log") == 0) {
             handle_log_state(fd, store);
         }
+        else if (strncmp(path, "/log/entry/", 11) == 0) {
+            int index = atoi(path + 11);
+            handle_log_entry(fd, store, index);
+        }
         else if (strncmp(path, "/log/proof/", 11) == 0) {
             int index = atoi(path + 11);
             handle_log_proof(fd, store, index);
+        }
+        else if (strcmp(path, "/log/checkpoint") == 0) {
+            handle_checkpoint(fd, store);
+        }
+        else if (strncmp(path, "/log/consistency", 16) == 0) {
+            handle_consistency(fd, store, path);
+        }
+        else if (strncmp(path, "/certificate/search", 19) == 0) {
+            handle_search_certificates(fd, store, path);
         }
         else if (strncmp(path, "/certificate/", 13) == 0) {
             int index = atoi(path + 13);
