@@ -71,7 +71,8 @@ static int srv_handshake_completed(ngtcp2_conn *conn, void *user_data)
 static int server_init(QmtcPeer *s, const uint8_t *initial_pkt, size_t pktlen,
                        struct sockaddr *client_addr, socklen_t client_addrlen,
                        int fd, struct sockaddr_in *bind_addr,
-                       const char *cert_file, const char *key_file)
+                       const char *cert_file, const char *key_file,
+                       const char *mtc_store)
 {
     ngtcp2_pkt_hd hd;
     ngtcp2_callbacks cb;
@@ -102,10 +103,22 @@ static int server_init(QmtcPeer *s, const uint8_t *initial_pkt, size_t pktlen,
     if (s->ssl_ctx == NULL) return -1;
 
     ngtcp2_crypto_wolfssl_configure_server_context(s->ssl_ctx);
-    wolfSSL_CTX_use_certificate_file(s->ssl_ctx, cert_file,
-        WOLFSSL_FILETYPE_PEM);
-    wolfSSL_CTX_use_PrivateKey_file(s->ssl_ctx, key_file,
-        WOLFSSL_FILETYPE_PEM);
+
+    if (mtc_store != NULL) {
+        /* Load MTC certificate directly from ~/.TPM store */
+        printf("[server] loading MTC cert from: %s\n", mtc_store);
+        if (wolfSSL_CTX_use_MTC_certificate(s->ssl_ctx, mtc_store)
+                != WOLFSSL_SUCCESS) {
+            fprintf(stderr, "wolfSSL_CTX_use_MTC_certificate failed\n");
+            return -1;
+        }
+    }
+    else {
+        wolfSSL_CTX_use_certificate_file(s->ssl_ctx, cert_file,
+            WOLFSSL_FILETYPE_PEM);
+        wolfSSL_CTX_use_PrivateKey_file(s->ssl_ctx, key_file,
+            WOLFSSL_FILETYPE_PEM);
+    }
 
     s->ssl = wolfSSL_new(s->ssl_ctx);
     if (s->ssl == NULL) return -1;
@@ -182,6 +195,8 @@ static void usage(const char *prog)
            QMTC_DEFAULT_CA_URL);
     printf("  --subject <name> MTC certificate subject\n");
     printf("  --store <path>   MTC cert store path (default: ~/.TPM)\n");
+    printf("  --mtc-store <dir> Load MTC cert+key from ~/.TPM/<subject> dir\n");
+    printf("                   (uses wolfSSL_CTX_use_MTC_certificate)\n");
     printf("  --no-mtc         Disable MTC, use X.509 only\n");
     printf("  -h               Show this help\n");
 }
@@ -196,6 +211,7 @@ int main(int argc, char *argv[])
     const char *ca_url = QMTC_DEFAULT_CA_URL;
     const char *subject = "urn:quic-mtc:server";
     const char *store_path = NULL;
+    const char *mtc_store_dir = NULL;
     int no_mtc = 0;
     int use_mtc = 0;
     struct sockaddr_in bind_addr;
@@ -220,6 +236,8 @@ int main(int argc, char *argv[])
             subject = argv[++i];
         else if (strcmp(argv[i], "--store") == 0 && i + 1 < argc)
             store_path = argv[++i];
+        else if (strcmp(argv[i], "--mtc-store") == 0 && i + 1 < argc)
+            mtc_store_dir = argv[++i];
         else if (strcmp(argv[i], "--no-mtc") == 0)
             no_mtc = 1;
         else if (strcmp(argv[i], "-h") == 0) {
@@ -287,7 +305,8 @@ int main(int argc, char *argv[])
 
     if (server_init(&server, buf, (size_t)nread,
                     (struct sockaddr *)&client_addr, client_addrlen,
-                    srv_fd, &bind_addr, cert_file, key_file) != 0) {
+                    srv_fd, &bind_addr, cert_file, key_file,
+                    mtc_store_dir) != 0) {
         fprintf(stderr, "server_init failed\n");
         close(srv_fd);
         return 1;

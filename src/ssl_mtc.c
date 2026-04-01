@@ -760,5 +760,508 @@ mtc_cert_t **MTC_List(int *count) {
     return NULL;
 }
 
+/* ----------------------------------------------------------------------- */
+/* wolfSSL_CTX_use_MTC_certificate                                         */
+/*                                                                         */
+/* Load MTC certificate from a ~/.TPM store directory. Reads               */
+/* certificate.json, builds X.509 DER with id-alg-mtcProof, and loads     */
+/* the cert + key into the WOLFSSL_CTX.                                    */
+/* ----------------------------------------------------------------------- */
+
+/* DER encoding helpers */
+static int mtc_der_length(int len, byte *out)
+{
+    if (len < 0x80) {
+        out[0] = (byte)len;
+        return 1;
+    }
+    else if (len < 0x100) {
+        out[0] = 0x81;
+        out[1] = (byte)len;
+        return 2;
+    }
+    else {
+        out[0] = 0x82;
+        out[1] = (byte)(len >> 8);
+        out[2] = (byte)(len & 0xff);
+        return 3;
+    }
+}
+
+/* MTC proof OID: 1.3.6.1.4.1.44363.47.0
+ * Encoded: 2b 06 01 04 01 82 da 4b 2f 00 */
+static const byte mtcProofOidDer[] = {
+    0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0xda, 0x4b, 0x2f, 0x00
+};
+
+/* EC P-256 OID for SubjectPublicKeyInfo */
+static const byte ecPubKeyAlgDer[] = {
+    0x30, 0x13,
+    0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,  /* id-ecPublicKey */
+    0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07  /* P-256 */
+};
+
+/* Read an entire file into a malloc'd buffer. Caller frees. */
+static byte *mtc_read_file(const char *path, long *outSz)
+{
+    FILE *f;
+    byte *buf;
+    long sz;
+
+    f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); return NULL; }
+    buf = (byte *)malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return NULL; }
+    if ((long)fread(buf, 1, (size_t)sz, f) != sz) {
+        fclose(f); free(buf); return NULL;
+    }
+    buf[sz] = 0;
+    fclose(f);
+    *outSz = sz;
+    return buf;
+}
+
+/* Serialize MTC proof from JSON into wire format:
+ *   start(8) + end(8) + pathCount(2) + path(N*32) + subtreeHash(32) */
+static int mtc_serialize_proof(struct json_object *sc, byte *out, int maxSz)
+{
+    struct json_object *val, *proof_arr;
+    int64_t start_val, end_val;
+    int path_count, i, idx = 0;
+    const char *hash_hex;
+
+    if (!json_object_object_get_ex(sc, "subtree_start", &val)) return -1;
+    start_val = json_object_get_int64(val);
+
+    if (!json_object_object_get_ex(sc, "subtree_end", &val)) return -1;
+    end_val = json_object_get_int64(val);
+
+    if (!json_object_object_get_ex(sc, "inclusion_proof", &proof_arr)) return -1;
+    path_count = (int)json_object_array_length(proof_arr);
+
+    if (!json_object_object_get_ex(sc, "subtree_hash", &val)) return -1;
+    hash_hex = json_object_get_string(val);
+
+    /* Check buffer size: 8 + 8 + 2 + path_count*32 + 32 */
+    if (18 + path_count * 32 + 32 > maxSz) return -1;
+
+    /* start (big-endian 64) */
+    for (i = 7; i >= 0; i--)
+        out[idx++] = (byte)(start_val >> (i * 8));
+
+    /* end (big-endian 64) */
+    for (i = 7; i >= 0; i--)
+        out[idx++] = (byte)(end_val >> (i * 8));
+
+    /* pathCount (big-endian 16) */
+    out[idx++] = (byte)(path_count >> 8);
+    out[idx++] = (byte)(path_count & 0xff);
+
+    /* inclusion path hashes */
+    for (i = 0; i < path_count; i++) {
+        struct json_object *h = json_object_array_get_idx(proof_arr, (size_t)i);
+        const char *hex = json_object_get_string(h);
+        int j;
+        for (j = 0; j < 32 && hex[j*2] && hex[j*2+1]; j++) {
+            unsigned int byte_val;
+            sscanf(hex + j * 2, "%02x", &byte_val);
+            out[idx++] = (byte)byte_val;
+        }
+    }
+
+    /* subtree hash */
+    {
+        int j;
+        for (j = 0; j < 32 && hash_hex[j*2] && hash_hex[j*2+1]; j++) {
+            unsigned int byte_val;
+            sscanf(hash_hex + j * 2, "%02x", &byte_val);
+            out[idx++] = (byte)byte_val;
+        }
+    }
+
+    return idx;
+}
+
+/* Build a minimal X.509 DER certificate with:
+ *   - subject CN from JSON
+ *   - EC P-256 public key from the generated key
+ *   - signatureAlgorithm = id-alg-mtcProof
+ *   - signatureValue = serialized MTC proof
+ *
+ * Returns malloc'd DER buffer, caller frees. Sets *outSz. */
+static byte *mtc_build_cert_der(struct json_object *cert_json,
+    const byte *pubKeyDer, int pubKeyDerSz,
+    int *outSz)
+{
+    struct json_object *sc, *tbs, *val;
+    const char *subject;
+    byte proof[2048];
+    int proofSz;
+    byte subjectDer[256], spkiDer[256], validityDer[64];
+    int subjectDerSz, spkiDerSz, validityDerSz;
+    byte tbsDer[4096], certDer[4096];
+    int tbsSz, certSz;
+    int idx;
+    byte lenBuf[4];
+    int lenSz;
+
+    *outSz = 0;
+
+    if (!json_object_object_get_ex(cert_json, "standalone_certificate", &sc))
+        return NULL;
+    if (!json_object_object_get_ex(sc, "tbs_entry", &tbs))
+        return NULL;
+    if (!json_object_object_get_ex(tbs, "subject", &val))
+        return NULL;
+    subject = json_object_get_string(val);
+
+    /* Serialize MTC proof */
+    proofSz = mtc_serialize_proof(sc, proof, (int)sizeof(proof));
+    if (proofSz < 0) return NULL;
+
+    /* Build Subject: SEQUENCE { SET { SEQUENCE { OID(CN), UTF8(subject) } } } */
+    {
+        int cnLen = (int)strlen(subject);
+        byte oid_cn[] = {0x06, 0x03, 0x55, 0x04, 0x03};  /* OID 2.5.4.3 */
+        byte utf8Tag = 0x0c;
+        int seqInner, setInner;
+
+        idx = 0;
+        /* inner SEQUENCE: OID + UTF8STRING */
+        seqInner = (int)sizeof(oid_cn) + 1 + 1 + cnLen; /* oid + tag + len + str */
+        if (cnLen >= 0x80) return NULL; /* keep it simple */
+
+        /* SET */
+        setInner = 1 + 1 + seqInner; /* seq tag + len + content */
+
+        /* outer SEQUENCE (Subject) */
+        subjectDer[idx++] = 0x30;
+        lenSz = mtc_der_length(1 + 1 + setInner, lenBuf);
+        memcpy(subjectDer + idx, lenBuf, lenSz); idx += lenSz;
+
+        /* SET */
+        subjectDer[idx++] = 0x31;
+        lenSz = mtc_der_length(1 + 1 + seqInner, lenBuf);
+        memcpy(subjectDer + idx, lenBuf, lenSz); idx += lenSz;
+
+        /* inner SEQUENCE */
+        subjectDer[idx++] = 0x30;
+        lenSz = mtc_der_length(seqInner, lenBuf);
+        memcpy(subjectDer + idx, lenBuf, lenSz); idx += lenSz;
+
+        /* OID */
+        memcpy(subjectDer + idx, oid_cn, sizeof(oid_cn)); idx += sizeof(oid_cn);
+
+        /* UTF8STRING */
+        subjectDer[idx++] = utf8Tag;
+        subjectDer[idx++] = (byte)cnLen;
+        memcpy(subjectDer + idx, subject, cnLen); idx += cnLen;
+
+        subjectDerSz = idx;
+    }
+
+    /* Build SubjectPublicKeyInfo */
+    {
+        /* SEQUENCE { algId, BIT STRING { 0x00, pubkey } } */
+        int bitStrInner = 1 + pubKeyDerSz;  /* 0x00 + key bytes */
+
+        idx = 0;
+        spkiDer[idx++] = 0x30;
+        lenSz = mtc_der_length((int)sizeof(ecPubKeyAlgDer) + 1 + 1 + bitStrInner +
+            (bitStrInner >= 0x80 ? 2 : 0), lenBuf);
+        /* Recalculate properly */
+        {
+            int algSz = (int)sizeof(ecPubKeyAlgDer);
+            byte bsLenBuf[4];
+            int bsLenSz = mtc_der_length(bitStrInner, bsLenBuf);
+            int totalInner = algSz + 1 + bsLenSz + bitStrInner;
+
+            idx = 0;
+            spkiDer[idx++] = 0x30;
+            lenSz = mtc_der_length(totalInner, lenBuf);
+            memcpy(spkiDer + idx, lenBuf, lenSz); idx += lenSz;
+
+            memcpy(spkiDer + idx, ecPubKeyAlgDer, algSz); idx += algSz;
+
+            spkiDer[idx++] = 0x03; /* BIT STRING */
+            memcpy(spkiDer + idx, bsLenBuf, bsLenSz); idx += bsLenSz;
+            spkiDer[idx++] = 0x00; /* 0 unused bits */
+            memcpy(spkiDer + idx, pubKeyDer, pubKeyDerSz); idx += pubKeyDerSz;
+        }
+        spkiDerSz = idx;
+    }
+
+    /* Build Validity: SEQUENCE { UTCTime, UTCTime } */
+    {
+        double nb = 0, na = 0;
+        time_t nb_t, na_t;
+        struct tm nb_tm, na_tm;
+        char nbStr[16], naStr[16];
+
+        if (json_object_object_get_ex(tbs, "not_before", &val))
+            nb = json_object_get_double(val);
+        if (json_object_object_get_ex(tbs, "not_after", &val))
+            na = json_object_get_double(val);
+
+        nb_t = (time_t)nb;
+        na_t = (time_t)na;
+        gmtime_r(&nb_t, &nb_tm);
+        gmtime_r(&na_t, &na_tm);
+
+        snprintf(nbStr, sizeof(nbStr), "%02d%02d%02d%02d%02d%02dZ",
+            nb_tm.tm_year % 100, nb_tm.tm_mon + 1, nb_tm.tm_mday,
+            nb_tm.tm_hour, nb_tm.tm_min, nb_tm.tm_sec);
+        snprintf(naStr, sizeof(naStr), "%02d%02d%02d%02d%02d%02dZ",
+            na_tm.tm_year % 100, na_tm.tm_mon + 1, na_tm.tm_mday,
+            na_tm.tm_hour, na_tm.tm_min, na_tm.tm_sec);
+
+        idx = 0;
+        validityDer[idx++] = 0x30;
+        validityDer[idx++] = 2 + 13 + 2 + 13; /* two UTCTime fields */
+        validityDer[idx++] = 0x17; validityDer[idx++] = 13;
+        memcpy(validityDer + idx, nbStr, 13); idx += 13;
+        validityDer[idx++] = 0x17; validityDer[idx++] = 13;
+        memcpy(validityDer + idx, naStr, 13); idx += 13;
+        validityDerSz = idx;
+    }
+
+    /* Build TBSCertificate */
+    {
+        /* version [0] EXPLICIT INTEGER 2 (v3) */
+        byte version[] = {0xa0, 0x03, 0x02, 0x01, 0x02};
+        /* serialNumber INTEGER (small random) */
+        byte serial[6];
+        /* signatureAlgorithm (MTC proof OID) */
+        byte sigAlgSeq[2 + sizeof(mtcProofOidDer)];
+
+        serial[0] = 0x02; serial[1] = 0x04;
+        {
+            WC_RNG rng;
+            wc_InitRng(&rng);
+            wc_RNG_GenerateBlock(&rng, serial + 2, 4);
+            wc_FreeRng(&rng);
+            serial[2] &= 0x7f; /* ensure positive */
+        }
+
+        /* sigAlg SEQUENCE { OID } */
+        sigAlgSeq[0] = 0x30;
+        sigAlgSeq[1] = sizeof(mtcProofOidDer);
+        memcpy(sigAlgSeq + 2, mtcProofOidDer, sizeof(mtcProofOidDer));
+
+        /* Issuer = same as subject (self-referencing for MTC) */
+
+        /* Assemble TBS */
+        {
+            int innerSz = (int)sizeof(version) + (int)sizeof(serial) +
+                (int)sizeof(sigAlgSeq) + subjectDerSz /* issuer */ +
+                validityDerSz + subjectDerSz /* subject */ + spkiDerSz;
+
+            idx = 0;
+            tbsDer[idx++] = 0x30;
+            lenSz = mtc_der_length(innerSz, lenBuf);
+            memcpy(tbsDer + idx, lenBuf, lenSz); idx += lenSz;
+
+            memcpy(tbsDer + idx, version, sizeof(version));
+            idx += sizeof(version);
+            memcpy(tbsDer + idx, serial, sizeof(serial));
+            idx += sizeof(serial);
+            memcpy(tbsDer + idx, sigAlgSeq, sizeof(sigAlgSeq));
+            idx += sizeof(sigAlgSeq);
+            /* Issuer */
+            memcpy(tbsDer + idx, subjectDer, subjectDerSz);
+            idx += subjectDerSz;
+            /* Validity */
+            memcpy(tbsDer + idx, validityDer, validityDerSz);
+            idx += validityDerSz;
+            /* Subject */
+            memcpy(tbsDer + idx, subjectDer, subjectDerSz);
+            idx += subjectDerSz;
+            /* SPKI */
+            memcpy(tbsDer + idx, spkiDer, spkiDerSz);
+            idx += spkiDerSz;
+
+            tbsSz = idx;
+        }
+    }
+
+    /* Build Certificate: SEQUENCE { TBS, sigAlg, sigVal } */
+    {
+        byte sigAlgOuter[2 + sizeof(mtcProofOidDer)];
+        byte sigValHdr[4];
+        int sigValInner = 1 + proofSz; /* 0x00 unused bits + proof */
+        int sigValHdrSz;
+        int outerInner;
+
+        sigAlgOuter[0] = 0x30;
+        sigAlgOuter[1] = sizeof(mtcProofOidDer);
+        memcpy(sigAlgOuter + 2, mtcProofOidDer, sizeof(mtcProofOidDer));
+
+        sigValHdr[0] = 0x03; /* BIT STRING */
+        sigValHdrSz = 1 + mtc_der_length(sigValInner, sigValHdr + 1);
+
+        outerInner = tbsSz + (int)sizeof(sigAlgOuter) +
+            sigValHdrSz + sigValInner;
+
+        idx = 0;
+        certDer[idx++] = 0x30;
+        lenSz = mtc_der_length(outerInner, lenBuf);
+        memcpy(certDer + idx, lenBuf, lenSz); idx += lenSz;
+
+        memcpy(certDer + idx, tbsDer, tbsSz); idx += tbsSz;
+        memcpy(certDer + idx, sigAlgOuter, sizeof(sigAlgOuter));
+        idx += sizeof(sigAlgOuter);
+
+        /* signatureValue BIT STRING */
+        certDer[idx++] = 0x03;
+        {
+            int sl = mtc_der_length(sigValInner, lenBuf);
+            memcpy(certDer + idx, lenBuf, sl); idx += sl;
+        }
+        certDer[idx++] = 0x00; /* 0 unused bits */
+        memcpy(certDer + idx, proof, proofSz); idx += proofSz;
+
+        certSz = idx;
+    }
+
+    {
+        byte *result = (byte *)malloc(certSz);
+        if (!result) return NULL;
+        memcpy(result, certDer, certSz);
+        *outSz = certSz;
+        return result;
+    }
+}
+
+int wolfSSL_CTX_use_MTC_certificate(WOLFSSL_CTX* ctx, const char* storePath)
+{
+    char path[512];
+    byte *jsonBuf = NULL, *certDer = NULL;
+    long jsonSz = 0;
+    int certDerSz = 0;
+    struct json_object *cert_json = NULL;
+    ecc_key eccKey;
+    byte pubDer[256];
+    int pubDerSz;
+    int ret;
+
+    if (ctx == NULL || storePath == NULL)
+        return BAD_FUNC_ARG;
+
+    WOLFSSL_ENTER("wolfSSL_CTX_use_MTC_certificate");
+
+    /* Load private key */
+    XSNPRINTF(path, sizeof(path), "%s/private_key.pem", storePath);
+    printf("[MTC] loading key: %s\n", path);
+    ret = wolfSSL_CTX_use_PrivateKey_file(ctx, path, WOLFSSL_FILETYPE_PEM);
+    if (ret != WOLFSSL_SUCCESS) {
+        printf("[MTC] failed to load private key: %d\n", ret);
+        return ret;
+    }
+
+    /* Read certificate.json */
+    XSNPRINTF(path, sizeof(path), "%s/certificate.json", storePath);
+    printf("[MTC] loading cert: %s\n", path);
+    jsonBuf = mtc_read_file(path, &jsonSz);
+    if (jsonBuf == NULL) {
+        printf("[MTC] failed to read certificate.json\n");
+        return WOLFSSL_FAILURE;
+    }
+
+    cert_json = json_tokener_parse((char*)jsonBuf);
+    free(jsonBuf);
+    if (cert_json == NULL) {
+        printf("[MTC] failed to parse certificate.json\n");
+        return WOLFSSL_FAILURE;
+    }
+
+    /* Get the EC public key from the loaded private key context.
+     * We need to export it for the X.509 cert's SPKI field. */
+    {
+        WC_RNG rng;
+        wc_InitRng(&rng);
+        wc_ecc_init(&eccKey);
+        /* Generate a fresh key matching what's in the PEM — actually we
+         * need the public key from the context. Since we already loaded
+         * the private key, extract public from it. */
+        wc_ecc_free(&eccKey);
+        wc_FreeRng(&rng);
+    }
+
+    /* For the SPKI, just use an uncompressed EC point.
+     * Read the public_key.pem to get the actual public key. */
+    XSNPRINTF(path, sizeof(path), "%s/public_key.pem", storePath);
+    {
+        byte *pubPem;
+        long pubPemSz = 0;
+        word32 inOutIdx = 0;
+
+        pubPem = mtc_read_file(path, &pubPemSz);
+        if (pubPem == NULL) {
+            json_object_put(cert_json);
+            printf("[MTC] failed to read public_key.pem\n");
+            return WOLFSSL_FAILURE;
+        }
+
+        /* Convert PEM to DER */
+        pubDerSz = wc_PubKeyPemToDer(pubPem, (int)pubPemSz, pubDer,
+            (int)sizeof(pubDer));
+        free(pubPem);
+
+        if (pubDerSz < 0) {
+            json_object_put(cert_json);
+            printf("[MTC] PEM to DER failed: %d\n", pubDerSz);
+            return WOLFSSL_FAILURE;
+        }
+
+        /* Parse SubjectPublicKeyInfo to extract just the EC point */
+        wc_ecc_init(&eccKey);
+        ret = wc_EccPublicKeyDecode(pubDer, &inOutIdx, &eccKey,
+            (word32)pubDerSz);
+        if (ret == 0) {
+            /* Export uncompressed point */
+            word32 pointSz = sizeof(pubDer);
+            ret = wc_ecc_export_x963(&eccKey, pubDer, &pointSz);
+            pubDerSz = (int)pointSz;
+        }
+        wc_ecc_free(&eccKey);
+
+        if (ret != 0) {
+            json_object_put(cert_json);
+            printf("[MTC] EC key decode failed: %d\n", ret);
+            return WOLFSSL_FAILURE;
+        }
+    }
+
+    /* Build the X.509 DER with MTC proof */
+    certDer = mtc_build_cert_der(cert_json, pubDer, pubDerSz, &certDerSz);
+    json_object_put(cert_json);
+
+    if (certDer == NULL || certDerSz <= 0) {
+        printf("[MTC] failed to build cert DER\n");
+        if (certDer) free(certDer);
+        return WOLFSSL_FAILURE;
+    }
+
+    printf("[MTC] built MTC cert DER: %d bytes\n", certDerSz);
+
+    /* Load the DER cert into the context */
+    ret = wolfSSL_CTX_use_certificate_buffer(ctx, certDer, certDerSz,
+        WOLFSSL_FILETYPE_ASN1);
+    free(certDer);
+
+    if (ret != WOLFSSL_SUCCESS) {
+        printf("[MTC] failed to load cert: %d\n", ret);
+    }
+    else {
+        printf("[MTC] certificate loaded successfully\n");
+    }
+
+    return ret;
+}
+
 #endif /* HAVE_MTC_API */
 #endif /* HAVE_MTC */

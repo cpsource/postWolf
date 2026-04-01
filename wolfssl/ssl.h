@@ -4593,6 +4593,14 @@ WOLFSSL_API int wolfSSL_MTC_SetStorePath(WOLFSSL_CTX* ctx, const char* path);
 WOLFSSL_API int wolfSSL_MTC_AddCosigner(WOLFSSL_CTX* ctx,
     const unsigned char* id, unsigned int idSz,
     const unsigned char* pubKey, unsigned int pubKeySz, int sigAlg);
+
+/* Load MTC certificate + key from a ~/.TPM store directory.
+ * storePath: directory containing certificate.json and private_key.pem
+ *            (e.g., "~/.TPM/test.example.com")
+ * Internally builds an X.509 cert with id-alg-mtcProof signature from
+ * the JSON proof data and loads it into the context. */
+WOLFSSL_API int wolfSSL_CTX_use_MTC_certificate(WOLFSSL_CTX* ctx,
+    const char* storePath);
 #endif /* HAVE_MTC */
 
 /* Application-Layer Protocol Negotiation */
