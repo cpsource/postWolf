@@ -29,6 +29,7 @@ static void usage(const char *prog)
     printf("  --host HOST      Bind address (default: 0.0.0.0)\n");
     printf("  --port PORT      Bind port (default: 8443)\n");
     printf("  --data-dir DIR   Data storage directory (default: ./mtc-data)\n");
+    printf("  --tokenpath FILE .env file to read MERKLE_NEON from\n");
     printf("  --ca-name NAME   CA name (default: MTC-CA-C)\n");
     printf("  --log-id ID      Log identifier (default: 32473.2)\n");
     printf("  -h               Show this help\n");
@@ -39,6 +40,7 @@ int main(int argc, char *argv[])
     const char *host = "0.0.0.0";
     int port = 8443;
     const char *data_dir = "./mtc-data";
+    const char *tokenpath = NULL;
     const char *ca_name = "MTC-CA-C";
     const char *log_id = "32473.2";
     MtcStore store;
@@ -52,6 +54,8 @@ int main(int argc, char *argv[])
             port = atoi(argv[++i]);
         else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc)
             data_dir = argv[++i];
+        else if (strcmp(argv[i], "--tokenpath") == 0 && i + 1 < argc)
+            tokenpath = argv[++i];
         else if (strcmp(argv[i], "--ca-name") == 0 && i + 1 < argc)
             ca_name = argv[++i];
         else if (strcmp(argv[i], "--log-id") == 0 && i + 1 < argc)
@@ -65,6 +69,10 @@ int main(int argc, char *argv[])
 
     /* Ignore SIGPIPE from closed connections */
     signal(SIGPIPE, SIG_IGN);
+
+    /* Set token path for MERKLE_NEON lookup */
+    if (tokenpath)
+        mtc_db_set_tokenpath(tokenpath);
 
     /* Initialize store */
     if (mtc_store_init(&store, data_dir, ca_name, log_id) != 0) {

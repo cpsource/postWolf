@@ -173,13 +173,16 @@ int mtc_store_init(MtcStore *store, const char *data_dir,
             store->use_db = 1;
             mtc_db_init_schema(store->db);
             printf("[store] using PostgreSQL (Neon) for persistence\n");
+            fflush(stdout);
         }
         else {
             printf("[store] PostgreSQL unavailable, falling back to files\n");
+            fflush(stdout);
         }
     }
     else {
         printf("[store] MERKLE_NEON not set, using file-based storage\n");
+        fflush(stdout);
     }
 
     mtc_tree_init(&store->tree);
@@ -371,6 +374,7 @@ int mtc_store_load(MtcStore *store)
                "%d revocations from DB\n",
                store->tree.size, store->cert_count, store->landmark_count,
                store->revocation_count);
+        fflush(stdout);
         return 0;
     }
 
@@ -445,6 +449,7 @@ int mtc_store_load(MtcStore *store)
 
     printf("[store] loaded %d entries, %d certs, %d landmarks\n",
            store->tree.size, store->cert_count, store->landmark_count);
+    fflush(stdout);
     return 0;
 }
 

@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=ubuntu
 Group=ubuntu
-ExecStart=/home/ubuntu/wolfssl/mtc-keymaster/server/c/mtc_server --port 8444 --data-dir /home/ubuntu/.mtc-ca-data --ca-name MTC-CA-C --log-id 32473.2
+ExecStart=/home/ubuntu/wolfssl/mtc-keymaster/server/c/mtc_server --port 8444 --data-dir /home/ubuntu/.mtc-ca-data --tokenpath /home/ubuntu/.env --ca-name MTC-CA-C --log-id 32473.2
 Restart=on-failure
 RestartSec=5
 Environment=HOME=/home/ubuntu

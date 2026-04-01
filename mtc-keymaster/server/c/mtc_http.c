@@ -823,6 +823,7 @@ int mtc_http_serve(const char *host, int port, MtcStore *store)
     printf("  Log ID:   %s\n", store->log_id);
     printf("  Log size: %d entries\n", store->tree.size);
     printf("  Data dir: %s\n\n", store->data_dir);
+    fflush(stdout);
 
     for (;;) {
         struct sockaddr_in cli_addr;

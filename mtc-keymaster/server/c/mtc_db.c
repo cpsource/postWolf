@@ -1,59 +1,82 @@
 /* mtc_db.c — PostgreSQL (Neon) persistence for MTC CA server.
  *
  * Same schema as the Python server's db.py. Reads MERKLE_NEON from
- * environment or ~/.env for the connection string. */
+ * environment, --tokenpath file, or ~/.env for the connection string. */
 
 #include "mtc_db.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ------------------------------------------------------------------ */
 /* Connection string                                                   */
 /* ------------------------------------------------------------------ */
 
+static char s_tokenpath[512] = {0};
+
+void mtc_db_set_tokenpath(const char *path)
+{
+    if (path)
+        snprintf(s_tokenpath, sizeof(s_tokenpath), "%s", path);
+}
+
+/* Scan a file for a MERKLE_NEON= line, write value into dst.
+ * Returns 1 on success, 0 if not found or file unreadable. */
+static int scan_env_file(const char *filepath, char *dst, int dstSz)
+{
+    FILE *f;
+    char line[1024];
+
+    f = fopen(filepath, "r");
+    if (!f) return 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "MERKLE_NEON=", 12) == 0) {
+            char *val = line + 12;
+            /* Strip quotes and newline */
+            while (*val == '"' || *val == '\'') val++;
+            {
+                int len = (int)strlen(val);
+                while (len > 0 && (val[len-1] == '\n' || val[len-1] == '\r' ||
+                       val[len-1] == '"' || val[len-1] == '\''))
+                    val[--len] = 0;
+            }
+            snprintf(dst, (size_t)dstSz, "%s", val);
+            fclose(f);
+            return 1;
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
 const char *mtc_db_get_connstr(void)
 {
     static char connstr[1024] = {0};
     const char *env;
-    FILE *f;
 
     if (connstr[0])
         return connstr;
 
-    /* Check environment first */
+    /* 1. Check environment variable */
     env = getenv("MERKLE_NEON");
     if (env && *env) {
         snprintf(connstr, sizeof(connstr), "%s", env);
         return connstr;
     }
 
-    /* Fall back to ~/.env */
+    /* 2. Check --tokenpath file */
+    if (s_tokenpath[0] && scan_env_file(s_tokenpath, connstr, sizeof(connstr)))
+        return connstr;
+
+    /* 3. Fall back to ~/.env */
     {
         const char *home = getenv("HOME");
         char path[512];
-        char line[1024];
         if (!home) home = "/tmp";
         snprintf(path, sizeof(path), "%s/.env", home);
-        f = fopen(path, "r");
-        if (!f) return NULL;
-        while (fgets(line, sizeof(line), f)) {
-            if (strncmp(line, "MERKLE_NEON=", 12) == 0) {
-                char *val = line + 12;
-                /* Strip quotes and newline */
-                while (*val == '"' || *val == '\'') val++;
-                {
-                    int len = (int)strlen(val);
-                    while (len > 0 && (val[len-1] == '\n' || val[len-1] == '\r' ||
-                           val[len-1] == '"' || val[len-1] == '\''))
-                        val[--len] = 0;
-                }
-                snprintf(connstr, sizeof(connstr), "%s", val);
-                fclose(f);
-                return connstr;
-            }
-        }
-        fclose(f);
+        if (scan_env_file(path, connstr, sizeof(connstr)))
+            return connstr;
     }
 
     return NULL;
@@ -77,6 +100,7 @@ PGconn *mtc_db_connect(void)
     }
 
     printf("[db] connected to Neon PostgreSQL\n");
+    fflush(stdout);
     return conn;
 }
 

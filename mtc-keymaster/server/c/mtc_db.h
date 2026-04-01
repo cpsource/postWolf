@@ -7,7 +7,13 @@
 #include <json-c/json.h>
 #include <stdint.h>
 
-/* Get connection string from ~/.env (MERKLE_NEON) or environment.
+/* Set an explicit path to search for MERKLE_NEON (e.g. --tokenpath). */
+void mtc_db_set_tokenpath(const char *path);
+
+/* Get connection string.  Precedence:
+ *   1. $MERKLE_NEON environment variable
+ *   2. --tokenpath file  (MERKLE_NEON= line)
+ *   3. ~/.env fallback   (MERKLE_NEON= line)
  * Returns NULL if not found. */
 const char *mtc_db_get_connstr(void);
 
