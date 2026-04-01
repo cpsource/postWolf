@@ -237,3 +237,104 @@ The store path is configurable via `--store` flag or
 - [RFC 9162](https://www.rfc-editor.org/rfc/rfc9162) -- Certificate Transparency Version 2.0
 - [RFC 9000](https://www.rfc-editor.org/rfc/rfc9000) -- QUIC
 - [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446) -- TLS 1.3
+
+---
+
+## Appendix: Why MTC?
+
+Two parties can talk over QUIC + TLS 1.3 without MTC — regular X.509
+certs or even pre-shared keys work fine. MTC solves a different problem:
+**how do you trust the cert the server presents when the parties don't
+know each other in advance?**
+
+### Traditional X.509
+
+- You need a CA that both parties trust
+- The CA signs the server's cert
+- The client checks that signature chain
+
+### MTC
+
+- Trust comes from a Merkle tree log instead of a CA signature
+- Useful when you want **transparency** (anyone can audit the log)
+- Useful for **post-quantum** (Merkle proofs are small even with PQ,
+  unlike PQ signatures which are huge)
+- Useful for **short-lived certs** at scale (47-day certs x millions
+  of domains)
+
+For two parties that already trust each other — like your own client
+and server — you don't need MTC. You could pre-share a self-signed
+cert, use a PSK, or pin a public key. MTC matters when operating at
+**web scale** with parties that don't know each other and need a
+public trust mechanism.
+
+### What Gets Downloaded by Whom
+
+When two parties don't trust one another:
+
+**Before any connection:**
+
+1. **Server** enrolls with an MTC CA — gets a certificate anchored in
+   the Merkle tree, stored in `~/.TPM/{subject}/`
+2. **Client** bootstraps trust with the same MTC CA — fetches the CA's
+   public key and log state
+
+**During the QUIC/TLS handshake:**
+
+3. **Server** presents its MTC certificate (the Merkle proof is in the
+   signature field)
+4. **Client** verifies the proof — checks that the cert is in the
+   Merkle tree
+
+**What each side needs:**
+
+| Party | Has | Got it from |
+|-------|-----|-------------|
+| Server | Private key + MTC cert | MTC CA (enrollment) |
+| Client | CA's public key + log state (tree root, landmarks) | MTC CA (bootstrap) |
+
+**The trust model:**
+
+- The client doesn't trust the server directly
+- The client trusts the **MTC CA's log** — it's append-only, auditable
+- The server's cert is provably in that log (Merkle inclusion proof)
+- The CA can't secretly issue certs without them appearing in the log
+  (that's the transparency guarantee)
+
+Both parties download from the MTC CA, but different things. The server
+gets its cert, the client gets the trust anchor (CA public key + tree
+state) to verify it. This is similar to web PKI today — the server
+gets a cert from Let's Encrypt, your browser trusts Let's Encrypt's
+root CA. The difference is MTC makes the CA's behavior auditable via
+the Merkle tree.
+
+---
+
+## Appendix B: Reconnecting Parties
+
+When two parties have communicated before and want to connect again,
+the flow is shorter.
+
+**First connection:**
+1. Server enrolls with MTC CA (gets cert + key)
+2. Client bootstraps trust with MTC CA (gets CA key + tree state)
+3. TLS handshake + Merkle proof verification
+
+**Subsequent connections:**
+1. TLS handshake + Merkle proof verification
+
+Both sides already have what they need:
+
+- **Server** still has its cert and key in `~/.TPM/{subject}/` — no
+  re-enrollment unless the cert expired
+- **Client** already has the CA's public key and cached tree state in
+  its local trust store — no re-bootstrap needed
+
+The only thing that might change is the client periodically refreshing
+the tree state (new root hash, new landmarks) to verify newer
+certificates. But for verifying the same server's cert, the cached
+state is sufficient.
+
+This is the same as how browsers work — you don't re-download the
+Let's Encrypt root CA every time you visit a website. You already
+have it.
