@@ -1,9 +1,10 @@
-/* mtc_store.h — File-based persistence for MTC CA server */
+/* mtc_store.h — Persistence for MTC CA server (PostgreSQL or file-based) */
 
 #ifndef MTC_STORE_H
 #define MTC_STORE_H
 
 #include "mtc_merkle.h"
+#include "mtc_db.h"
 #include <json-c/json.h>
 
 /* Maximum certificates and landmarks */
@@ -13,6 +14,8 @@
 
 typedef struct {
     char             data_dir[512];
+    PGconn          *db;              /* PostgreSQL connection (NULL = file mode) */
+    int              use_db;          /* 1 if using PostgreSQL, 0 for files */
 
     /* CA identity */
     char             ca_name[64];

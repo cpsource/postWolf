@@ -1,7 +1,7 @@
-/* mtc_store.c — File-based persistence and CA operations.
+/* mtc_store.c — Persistence and CA operations.
  *
- * Stores log entries, certificates, checkpoints, and the CA key
- * in a local directory instead of PostgreSQL. */
+ * Uses PostgreSQL (Neon) when MERKLE_NEON is set, otherwise falls
+ * back to file-based JSON storage in data_dir. */
 
 #include "mtc_store.h"
 #include <stdio.h>
@@ -68,11 +68,29 @@ static int init_ca_key(MtcStore *store)
     WC_RNG rng;
     int ret;
 
+    /* Try to load from DB first */
+    if (store->use_db && store->db) {
+        char *hex = mtc_db_load_config(store->db, "ca_private_key_hex");
+        if (hex) {
+            int i, len = (int)strlen(hex) / 2;
+            if (len <= (int)sizeof(store->ca_priv_key)) {
+                for (i = 0; i < len; i++) {
+                    unsigned int bv;
+                    sscanf(hex + i * 2, "%02x", &bv);
+                    store->ca_priv_key[i] = (uint8_t)bv;
+                }
+                store->ca_priv_key_sz = len;
+            }
+            free(hex);
+        }
+    }
+
     snprintf(path, sizeof(path), "%s/ca_key.der", store->data_dir);
 
-    /* Try to load existing key */
-    store->ca_priv_key_sz = read_file(path, store->ca_priv_key,
-        (int)sizeof(store->ca_priv_key));
+    /* Try to load from file if not from DB */
+    if (store->ca_priv_key_sz <= 0)
+        store->ca_priv_key_sz = read_file(path, store->ca_priv_key,
+            (int)sizeof(store->ca_priv_key));
 
     if (store->ca_priv_key_sz > 0) {
         /* Extract public key from private */
@@ -109,6 +127,15 @@ static int init_ca_key(MtcStore *store)
             store->ca_priv_key_sz = ret;
             write_file(path, store->ca_priv_key, store->ca_priv_key_sz);
             chmod(path, 0600);
+
+            /* Also save to DB */
+            if (store->use_db && store->db) {
+                char hex[256];
+                int j;
+                for (j = 0; j < store->ca_priv_key_sz; j++)
+                    snprintf(hex + j * 2, 3, "%02x", store->ca_priv_key[j]);
+                mtc_db_save_config(store->db, "ca_private_key_hex", hex);
+            }
             ret = 0;
         }
     }
@@ -138,6 +165,22 @@ int mtc_store_init(MtcStore *store, const char *data_dir,
     snprintf(store->cosigner_id, sizeof(store->cosigner_id), "%s.ca", log_id);
 
     mkdirp(data_dir);
+
+    /* Try to connect to PostgreSQL (Neon) */
+    if (mtc_db_get_connstr() != NULL) {
+        store->db = mtc_db_connect();
+        if (store->db) {
+            store->use_db = 1;
+            mtc_db_init_schema(store->db);
+            printf("[store] using PostgreSQL (Neon) for persistence\n");
+        }
+        else {
+            printf("[store] PostgreSQL unavailable, falling back to files\n");
+        }
+    }
+    else {
+        printf("[store] MERKLE_NEON not set, using file-based storage\n");
+    }
 
     mtc_tree_init(&store->tree);
 
@@ -254,6 +297,66 @@ int mtc_store_load(MtcStore *store)
     struct json_object *arr, *entry;
     int i, count;
 
+    /* Load from PostgreSQL if available */
+    if (store->use_db && store->db) {
+        struct json_object *db_entries = NULL;
+        int n;
+
+        /* Entries */
+        n = mtc_db_load_entries(store->db, &db_entries);
+        if (n > 0 && db_entries) {
+            count = (int)json_object_array_length(db_entries);
+            for (i = 0; i < count; i++) {
+                struct json_object *e = json_object_array_get_idx(db_entries, (size_t)i);
+                struct json_object *val;
+                if (json_object_object_get_ex(e, "serialized_hex", &val)) {
+                    const char *hex = json_object_get_string(val);
+                    int entry_sz = 0;
+                    uint8_t entry_bytes[4096];
+                    int j;
+
+                    if (json_object_object_get_ex(e, "serialized_len", &val))
+                        entry_sz = json_object_get_int(val);
+
+                    for (j = 0; j < entry_sz && hex[j*2] && hex[j*2+1]; j++) {
+                        unsigned int bv;
+                        sscanf(hex + j * 2, "%02x", &bv);
+                        entry_bytes[j] = (uint8_t)bv;
+                    }
+                    mtc_tree_append(&store->tree, entry_bytes, entry_sz);
+                }
+            }
+            json_object_put(db_entries);
+        }
+
+        /* Landmarks */
+        store->landmark_count = mtc_db_load_landmarks(store->db,
+            store->landmarks, MTC_MAX_LANDMARKS);
+
+        /* Certificates */
+        {
+            struct json_object **certs = NULL;
+            int cert_count = 0;
+            mtc_db_load_all_certificates(store->db, &certs, &cert_count);
+            if (certs && cert_count > 0) {
+                if (cert_count > store->cert_capacity) {
+                    store->cert_capacity = cert_count * 2;
+                    store->certificates = (struct json_object**)realloc(
+                        store->certificates,
+                        (size_t)store->cert_capacity * sizeof(struct json_object*));
+                }
+                for (i = 0; i < cert_count; i++)
+                    store->certificates[i] = certs[i];
+                store->cert_count = cert_count;
+                free(certs);
+            }
+        }
+
+        printf("[store] loaded %d entries, %d certs, %d landmarks from DB\n",
+               store->tree.size, store->cert_count, store->landmark_count);
+        return 0;
+    }
+
     /* Load entries */
     snprintf(path, sizeof(path), "%s/entries.json", store->data_dir);
     sz = read_file(path, buf, (int)sizeof(buf) - 1);
@@ -336,10 +439,33 @@ int mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz)
 {
     int idx = mtc_tree_append(&store->tree, entry, entrySz);
 
+    /* Persist entry to DB */
+    if (store->use_db && store->db) {
+        uint8_t lh[MTC_HASH_SIZE];
+        int entry_type = (entrySz > 0 && entry[0] == 0x01) ? 1 : 0;
+        const char *tbs_json = NULL;
+        char *tbs_str = NULL;
+
+        mtc_hash_leaf(entry, entrySz, lh);
+
+        if (entry_type == 1 && entrySz > 1) {
+            tbs_str = (char*)malloc((size_t)entrySz);
+            memcpy(tbs_str, entry + 1, (size_t)(entrySz - 1));
+            tbs_str[entrySz - 1] = 0;
+            tbs_json = tbs_str;
+        }
+
+        mtc_db_save_entry(store->db, idx, entry_type, tbs_json,
+            entry, entrySz, lh);
+        free(tbs_str);
+    }
+
     /* Check for landmark */
     if (store->tree.size % MTC_LANDMARK_INTERVAL == 0 &&
         store->landmark_count < MTC_MAX_LANDMARKS) {
         store->landmarks[store->landmark_count++] = store->tree.size;
+        if (store->use_db && store->db)
+            mtc_db_save_landmark(store->db, store->tree.size);
     }
 
     return idx;
@@ -368,6 +494,12 @@ struct json_object *mtc_store_checkpoint(MtcStore *store)
 
     if (store->checkpoint_count < 256) {
         store->checkpoints[store->checkpoint_count++] = json_object_get(cp);
+    }
+
+    /* Persist to DB */
+    if (store->use_db && store->db) {
+        mtc_db_save_checkpoint(store->db, store->log_id,
+            store->tree.size, root_hex, (double)time(NULL));
     }
 
     return cp;

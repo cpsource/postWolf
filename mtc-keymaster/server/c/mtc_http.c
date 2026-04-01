@@ -380,6 +380,10 @@ static void handle_certificate_request(int fd, MtcStore *store,
 
         /* Persist */
         mtc_store_save(store);
+        if (store->use_db && store->db) {
+            const char *cert_str = json_object_to_json_string(result);
+            mtc_db_save_certificate(store->db, index, cert_str);
+        }
 
         http_send_json_obj(fd, 201, result);
 
