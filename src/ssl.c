@@ -512,6 +512,9 @@ static WOLFSSL_X509_OBJECT* wolfSSL_X509_OBJECT_dup(WOLFSSL_X509_OBJECT* obj)
 #define WOLFSSL_SSL_ECH_INCLUDED
 #include "src/ssl_ech.c"
 
+#define WOLFSSL_SSL_MTC_INCLUDED
+#include "src/ssl_mtc.c"
+
 #ifdef OPENSSL_EXTRA
 static int wolfSSL_parse_cipher_list(WOLFSSL_CTX* ctx, WOLFSSL* ssl,
         Suites* suites, const char* list);
@@ -3124,6 +3127,105 @@ int wolfSSL_UseTrustedCA(WOLFSSL* ssl, byte type,
 
 #endif /* HAVE_TRUSTED_CA */
 
+#ifdef HAVE_TRUST_ANCHOR_IDS
+
+int wolfSSL_UseTrustAnchorId(WOLFSSL* ssl, const unsigned char* id,
+    unsigned int idSz)
+{
+    if (ssl == NULL || id == NULL || idSz == 0)
+        return BAD_FUNC_ARG;
+
+    return TLSX_UseTrustAnchors(&ssl->extensions, id, (word16)idSz,
+        ssl->heap);
+}
+
+int wolfSSL_CTX_UseTrustAnchorId(WOLFSSL_CTX* ctx, const unsigned char* id,
+    unsigned int idSz)
+{
+    if (ctx == NULL || id == NULL || idSz == 0)
+        return BAD_FUNC_ARG;
+
+    return TLSX_UseTrustAnchors(&ctx->extensions, id, (word16)idSz,
+        ctx->heap);
+}
+
+#endif /* HAVE_TRUST_ANCHOR_IDS */
+
+#ifdef HAVE_MTC
+
+int wolfSSL_MTC_SetStorePath(WOLFSSL_CTX* ctx, const char* path)
+{
+    if (ctx == NULL || path == NULL)
+        return BAD_FUNC_ARG;
+
+    if (ctx->mtcStorePath != NULL)
+        XFREE(ctx->mtcStorePath, ctx->heap, DYNAMIC_TYPE_TMP_BUFFER);
+
+    {
+        word32 pathLen = (word32)XSTRLEN(path) + 1;
+        ctx->mtcStorePath = (char*)XMALLOC(pathLen, ctx->heap,
+            DYNAMIC_TYPE_TMP_BUFFER);
+        if (ctx->mtcStorePath == NULL)
+            return MEMORY_E;
+        XMEMCPY(ctx->mtcStorePath, path, pathLen);
+    }
+    return WOLFSSL_SUCCESS;
+}
+
+int wolfSSL_MTC_AddCosigner(WOLFSSL_CTX* ctx,
+    const unsigned char* id, unsigned int idSz,
+    const unsigned char* pubKey, unsigned int pubKeySz, int sigAlg)
+{
+    MtcCosigner* cosigner;
+    MtcCosigner* newList;
+    int count;
+
+    if (ctx == NULL || id == NULL || idSz == 0 ||
+        pubKey == NULL || pubKeySz == 0)
+        return BAD_FUNC_ARG;
+
+    count = ctx->mtcCosignerCount + 1;
+
+    /* Grow the cosigner array */
+    newList = (MtcCosigner*)XMALLOC(sizeof(MtcCosigner) * count,
+        ctx->heap, DYNAMIC_TYPE_TMP_BUFFER);
+    if (newList == NULL)
+        return MEMORY_E;
+
+    /* Copy existing entries */
+    if (ctx->mtcCosigners != NULL && ctx->mtcCosignerCount > 0) {
+        XMEMCPY(newList, ctx->mtcCosigners,
+            sizeof(MtcCosigner) * ctx->mtcCosignerCount);
+        XFREE(ctx->mtcCosigners, ctx->heap, DYNAMIC_TYPE_TMP_BUFFER);
+    }
+    ctx->mtcCosigners = newList;
+
+    /* Initialize new entry */
+    cosigner = &ctx->mtcCosigners[ctx->mtcCosignerCount];
+    XMEMSET(cosigner, 0, sizeof(MtcCosigner));
+
+    cosigner->id = (byte*)XMALLOC(idSz, ctx->heap, DYNAMIC_TYPE_TMP_BUFFER);
+    if (cosigner->id == NULL)
+        return MEMORY_E;
+    XMEMCPY(cosigner->id, id, idSz);
+    cosigner->idSz = (word16)idSz;
+
+    cosigner->pubKey = (byte*)XMALLOC(pubKeySz, ctx->heap,
+        DYNAMIC_TYPE_TMP_BUFFER);
+    if (cosigner->pubKey == NULL) {
+        XFREE(cosigner->id, ctx->heap, DYNAMIC_TYPE_TMP_BUFFER);
+        cosigner->id = NULL;
+        return MEMORY_E;
+    }
+    XMEMCPY(cosigner->pubKey, pubKey, pubKeySz);
+    cosigner->pubKeySz = (word16)pubKeySz;
+    cosigner->sigAlg = sigAlg;
+
+    ctx->mtcCosignerCount = count;
+    return WOLFSSL_SUCCESS;
+}
+
+#endif /* HAVE_MTC */
 
 #ifdef HAVE_MAX_FRAGMENT
 #ifndef NO_WOLFSSL_CLIENT

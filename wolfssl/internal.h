@@ -120,6 +120,9 @@
 #ifdef HAVE_ED448
     #include <wolfssl/wolfcrypt/ed448.h>
 #endif
+#ifdef HAVE_MTC
+    #include <wolfssl/wolfcrypt/mtc.h>
+#endif
 #ifdef HAVE_CURVE448
     #include <wolfssl/wolfcrypt/curve448.h>
 #endif
@@ -2971,6 +2974,7 @@ typedef struct Options Options;
 #define TLSXT_POST_HANDSHAKE_AUTH        0x0031
 #define TLSXT_SIGNATURE_ALGORITHMS_CERT  0x0032
 #define TLSXT_KEY_SHARE                  0x0033
+#define TLSXT_TRUST_ANCHORS             0x0034 /* draft-ietf-tls-trust-anchor-ids */
 #define TLSXT_CONNECTION_ID              0x0036
 #define TLSXT_KEY_QUIC_TP_PARAMS         0x0039 /* RFC 9001, ch. 8.2 */
 #define TLSXT_ECH                        0xfe0d /* RFC 9849 */
@@ -3046,6 +3050,9 @@ typedef enum {
 #endif
 #if defined(WOLFSSL_TLS13) && defined(WOLFSSL_DUAL_ALG_CERTS)
     TLSX_CKS                        = TLSXT_CKS,
+#endif
+#ifdef HAVE_TRUST_ANCHOR_IDS
+    TLSX_TRUST_ANCHORS              = TLSXT_TRUST_ANCHORS,
 #endif
     TLSX_RENEGOTIATION_INFO         = TLSXT_RENEGOTIATION_INFO,
 #ifdef WOLFSSL_QUIC
@@ -3164,6 +3171,18 @@ WOLFSSL_LOCAL int GetEchConfigsEx(WOLFSSL_EchConfig* configs,
     byte* output, word32* outputLen);
 
 WOLFSSL_LOCAL void FreeEchConfigs(WOLFSSL_EchConfig* configs, void* heap);
+#endif
+
+#ifdef HAVE_TRUST_ANCHOR_IDS
+/* Trust Anchor ID entry (draft-ietf-tls-trust-anchor-ids) */
+typedef struct TrustAnchorId {
+    byte*                     id;      /* Trust anchor identifier */
+    word16                    idSz;    /* Identifier length */
+    struct TrustAnchorId*     next;    /* Linked list */
+} TrustAnchorId;
+
+WOLFSSL_LOCAL int TLSX_UseTrustAnchors(TLSX** extensions, const byte* id,
+    word16 idSz, void* heap);
 #endif
 
 struct TLSX {
@@ -4290,6 +4309,12 @@ struct WOLFSSL_CTX {
 #ifdef WOLFSSL_TEST_APPLE_NATIVE_CERT_VALIDATION
     CFMutableArrayRef testTrustedCAs;
 #endif /* WOLFSSL_TEST_APPLE_NATIVE_CERT_VALIDATION */
+
+#ifdef HAVE_MTC
+    MtcCosigner*  mtcCosigners;       /* Trusted cosigner public keys */
+    int           mtcCosignerCount;
+    char*         mtcStorePath;        /* Certificate store path (default ~/.TPM) */
+#endif
 };
 
 WOLFSSL_LOCAL

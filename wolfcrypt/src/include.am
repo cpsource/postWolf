@@ -179,6 +179,10 @@ if BUILD_PKCS11
 src_libwolfssl@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/wc_pkcs11.c
 endif
 
+if BUILD_MTC
+src_libwolfssl@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/mtc.c
+endif
+
 if BUILD_DEVCRYPTO
 src_libwolfssl@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/port/devcrypto/devcrypto_ecdsa.c
 src_libwolfssl@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/port/devcrypto/devcrypto_x25519.c

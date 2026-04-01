@@ -3203,6 +3203,164 @@ int TLSX_UseTrustedCA(TLSX** extensions, byte type,
 #endif /* HAVE_TRUSTED_CA */
 
 /******************************************************************************/
+/* Trust Anchor IDs                                                          */
+/* draft-ietf-tls-trust-anchor-ids                                           */
+/******************************************************************************/
+
+#ifdef HAVE_TRUST_ANCHOR_IDS
+
+static void TLSX_TrustAnchor_FreeAll(TrustAnchorId* list, void* heap)
+{
+    TrustAnchorId* entry;
+    while (list != NULL) {
+        entry = list;
+        list = list->next;
+        if (entry->id != NULL)
+            XFREE(entry->id, heap, DYNAMIC_TYPE_TLSX);
+        XFREE(entry, heap, DYNAMIC_TYPE_TLSX);
+    }
+    (void)heap;
+}
+
+/* Wire format: 2-byte total list length, then each ID prefixed by 1-byte len */
+static word16 TLSX_TrustAnchor_GetSize(TrustAnchorId* list)
+{
+    word16 length = OPAQUE16_LEN; /* list length field */
+    TrustAnchorId* entry = list;
+    while (entry != NULL) {
+        length += OPAQUE8_LEN + entry->idSz; /* 1-byte len + id */
+        entry = entry->next;
+    }
+    return length;
+}
+
+static word16 TLSX_TrustAnchor_Write(TrustAnchorId* list, byte* output)
+{
+    word16 offset = 0;
+    word16 listLen = 0;
+    TrustAnchorId* entry;
+
+    /* Calculate inner list length */
+    for (entry = list; entry != NULL; entry = entry->next)
+        listLen += OPAQUE8_LEN + entry->idSz;
+
+    /* Write list length */
+    c16toa(listLen, output + offset);
+    offset += OPAQUE16_LEN;
+
+    /* Write each entry */
+    for (entry = list; entry != NULL; entry = entry->next) {
+        output[offset++] = (byte)entry->idSz;
+        XMEMCPY(output + offset, entry->id, entry->idSz);
+        offset += entry->idSz;
+    }
+
+    return offset;
+}
+
+static int TLSX_TrustAnchor_Parse(WOLFSSL* ssl, const byte* input,
+    word16 length, byte isRequest)
+{
+    word16 listLen;
+    word16 idx = 0;
+    TLSX* extension;
+
+    if (length < OPAQUE16_LEN)
+        return BUFFER_ERROR;
+
+    ato16(input, &listLen);
+    idx += OPAQUE16_LEN;
+
+    if (idx + listLen > length)
+        return BUFFER_ERROR;
+
+    /* Parse each trust anchor ID */
+    while (idx < OPAQUE16_LEN + listLen) {
+        byte idSz;
+        if (idx >= length)
+            return BUFFER_ERROR;
+        idSz = input[idx++];
+        if (idx + idSz > length)
+            return BUFFER_ERROR;
+
+        if (isRequest) {
+            /* Server receiving client trust anchors -- store for cert selection */
+            int ret = TLSX_UseTrustAnchors(&ssl->extensions,
+                input + idx, idSz, ssl->heap);
+            if (ret != 0)
+                return ret;
+        }
+        idx += idSz;
+    }
+
+    /* Mark the extension as present */
+    extension = TLSX_Find(ssl->extensions, TLSX_TRUST_ANCHORS);
+    if (extension != NULL)
+        extension->resp = !isRequest;
+
+    (void)ssl;
+    return 0;
+}
+
+int TLSX_UseTrustAnchors(TLSX** extensions, const byte* id, word16 idSz,
+    void* heap)
+{
+    TrustAnchorId* entry;
+    TLSX* extension;
+    int ret;
+
+    if (extensions == NULL || id == NULL || idSz == 0)
+        return BAD_FUNC_ARG;
+
+    entry = (TrustAnchorId*)XMALLOC(sizeof(TrustAnchorId), heap,
+        DYNAMIC_TYPE_TLSX);
+    if (entry == NULL)
+        return MEMORY_E;
+    XMEMSET(entry, 0, sizeof(TrustAnchorId));
+
+    entry->id = (byte*)XMALLOC(idSz, heap, DYNAMIC_TYPE_TLSX);
+    if (entry->id == NULL) {
+        XFREE(entry, heap, DYNAMIC_TYPE_TLSX);
+        return MEMORY_E;
+    }
+    XMEMCPY(entry->id, id, idSz);
+    entry->idSz = idSz;
+
+    /* Append to existing extension or create new */
+    extension = TLSX_Find(*extensions, TLSX_TRUST_ANCHORS);
+    if (extension != NULL) {
+        /* Prepend to existing list */
+        entry->next = (TrustAnchorId*)extension->data;
+        extension->data = entry;
+    }
+    else {
+        entry->next = NULL;
+        ret = TLSX_Push(extensions, TLSX_TRUST_ANCHORS, entry, heap);
+        if (ret != 0) {
+            XFREE(entry->id, heap, DYNAMIC_TYPE_TLSX);
+            XFREE(entry, heap, DYNAMIC_TYPE_TLSX);
+            return ret;
+        }
+    }
+
+    return 0;
+}
+
+#define TAID_FREE_ALL  TLSX_TrustAnchor_FreeAll
+#define TAID_GET_SIZE  TLSX_TrustAnchor_GetSize
+#define TAID_WRITE     TLSX_TrustAnchor_Write
+#define TAID_PARSE     TLSX_TrustAnchor_Parse
+
+#else /* HAVE_TRUST_ANCHOR_IDS */
+
+#define TAID_FREE_ALL(list, heap) WC_DO_NOTHING
+#define TAID_GET_SIZE(list)       0
+#define TAID_WRITE(a, b)          0
+#define TAID_PARSE(a, b, c, d)    0
+
+#endif /* HAVE_TRUST_ANCHOR_IDS */
+
+/******************************************************************************/
 /* Max Fragment Length Negotiation                                            */
 /******************************************************************************/
 
@@ -14609,6 +14767,13 @@ void TLSX_FreeAll(TLSX* list, void* heap)
                 TCA_FREE_ALL((TCA*)extension->data, heap);
                 break;
 
+#ifdef HAVE_TRUST_ANCHOR_IDS
+            case TLSX_TRUST_ANCHORS:
+                WOLFSSL_MSG("Trust Anchor IDs extension free");
+                TAID_FREE_ALL((TrustAnchorId*)extension->data, heap);
+                break;
+#endif
+
             case TLSX_MAX_FRAGMENT_LENGTH:
                 WOLFSSL_MSG("Max Fragment Length extension free");
                 MFL_FREE_ALL(extension->data, heap);
@@ -14817,6 +14982,14 @@ static int TLSX_GetSize(TLSX* list, byte* semaphore, byte msgType,
                     length += TCA_GET_SIZE((TCA*)extension->data);
                 break;
 
+#ifdef HAVE_TRUST_ANCHOR_IDS
+            case TLSX_TRUST_ANCHORS:
+                if (isRequest)
+                    length += TAID_GET_SIZE(
+                        (TrustAnchorId*)extension->data);
+                break;
+#endif
+
             case TLSX_MAX_FRAGMENT_LENGTH:
                 length += MFL_GET_SIZE(extension->data);
                 break;
@@ -15019,6 +15192,16 @@ static int TLSX_Write(TLSX* list, byte* output, byte* semaphore,
                     offset += TCA_WRITE((TCA*)extension->data, output + offset);
                 }
                 break;
+
+#ifdef HAVE_TRUST_ANCHOR_IDS
+            case TLSX_TRUST_ANCHORS:
+                WOLFSSL_MSG("Trust Anchor IDs extension to write");
+                if (isRequest) {
+                    offset += TAID_WRITE(
+                        (TrustAnchorId*)extension->data, output + offset);
+                }
+                break;
+#endif
 
             case TLSX_MAX_FRAGMENT_LENGTH:
                 WOLFSSL_MSG("Max Fragment Length extension to write");
@@ -17139,6 +17322,19 @@ int TLSX_Parse(WOLFSSL* ssl, const byte* input, word16 length, byte msgType,
                 }
                 ret = TCA_PARSE(ssl, input + offset, size, isRequest);
                 break;
+
+#ifdef HAVE_TRUST_ANCHOR_IDS
+            case TLSX_TRUST_ANCHORS:
+                WOLFSSL_MSG("Trust Anchor IDs extension received");
+            #ifdef WOLFSSL_DEBUG_TLS
+                WOLFSSL_BUFFER(input + offset, size);
+            #endif
+                if (msgType != client_hello &&
+                    msgType != encrypted_extensions)
+                    return EXT_NOT_ALLOWED;
+                ret = TAID_PARSE(ssl, input + offset, size, isRequest);
+                break;
+#endif
 
             case TLSX_MAX_FRAGMENT_LENGTH:
                 WOLFSSL_MSG("Max Fragment Length extension received");

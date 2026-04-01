@@ -7534,6 +7534,45 @@ AC_ARG_ENABLE([trustedca],
 AS_IF([test "x$ENABLED_TRUSTED_CA" = "xyes"],
       [AM_CFLAGS="$AM_CFLAGS -DHAVE_TLS_EXTENSIONS -DHAVE_TRUSTED_CA"])
 
+# Trust Anchor IDs Extension (draft-ietf-tls-trust-anchor-ids)
+AC_ARG_ENABLE([trust-anchor-ids],
+    [AS_HELP_STRING([--enable-trust-anchor-ids],[Enable Trust Anchor IDs extension (default: disabled)])],
+    [ ENABLED_TRUST_ANCHOR_IDS=$enableval ],
+    [ ENABLED_TRUST_ANCHOR_IDS=no ]
+    )
+
+# Merkle Tree Certificates (draft-ietf-plants-merkle-tree-certs)
+AC_ARG_ENABLE([mtc],
+    [AS_HELP_STRING([--enable-mtc],[Enable Merkle Tree Certificates (default: disabled)])],
+    [ ENABLED_MTC=$enableval ],
+    [ ENABLED_MTC=no ]
+    )
+if test "$ENABLED_MTC" = "yes"
+then
+    ENABLED_TRUST_ANCHOR_IDS=yes
+    AM_CFLAGS="$AM_CFLAGS -DHAVE_MTC"
+
+    test "$enable_tls13" = "" && enable_tls13=yes
+    test "$enable_sha256" = "" && enable_sha256=yes
+    test "$enable_ed25519" = "" && enable_ed25519=yes
+    test "$enable_tlsx" = "" && enable_tlsx=yes
+
+    # Check for libcurl and json-c for the MTC C API
+    PKG_CHECK_MODULES([CURL], [libcurl], [have_curl=yes], [have_curl=no])
+    PKG_CHECK_MODULES([JSONC], [json-c], [have_jsonc=yes], [have_jsonc=no])
+    if test "$have_curl" = "yes" && test "$have_jsonc" = "yes"; then
+        AM_CFLAGS="$AM_CFLAGS -DHAVE_MTC_API $CURL_CFLAGS $JSONC_CFLAGS"
+        AM_LDFLAGS="$AM_LDFLAGS $CURL_LIBS $JSONC_LIBS"
+    fi
+fi
+if test "$ENABLED_TRUST_ANCHOR_IDS" = "yes"
+then
+    AM_CFLAGS="$AM_CFLAGS -DHAVE_TLS_EXTENSIONS -DHAVE_TRUST_ANCHOR_IDS"
+
+    test "$enable_tls13" = "" && enable_tls13=yes
+    test "$enable_tlsx" = "" && enable_tlsx=yes
+fi
+
 # Truncated HMAC
 AC_ARG_ENABLE([truncatedhmac],
     [AS_HELP_STRING([--enable-truncatedhmac],[Enable Truncated HMAC (default: disabled)])],
@@ -11468,6 +11507,7 @@ AM_CONDITIONAL([BUILD_LEANPSK],[test "x$ENABLED_LEANPSK" = "xyes"])
 AM_CONDITIONAL([BUILD_LEANTLS],[test "x$ENABLED_LEANTLS" = "xyes"])
 AM_CONDITIONAL([BUILD_LOWMEM],[test "x$ENABLED_LOWRESOURCE" = "xyes"])
 AM_CONDITIONAL([BUILD_PKCALLBACKS],  [ test "x$ENABLED_PKCALLBACKS" = "xyes"])
+AM_CONDITIONAL([BUILD_MTC],[test "x$ENABLED_MTC" = "xyes"])
 AM_CONDITIONAL([BUILD_CRYPTOAUTHLIB],[test "x$ENABLED_CRYPTOAUTHLIB" = "xyes"])
 AM_CONDITIONAL([BUILD_SNIFFER],  [ test "x$ENABLED_SNIFFER"   = "xyes" || test "x$ENABLED_USERSETTINGS" = "xyes"])
 AM_CONDITIONAL([BUILD_SNIFFTEST],[ test "x$ENABLED_SNIFFTEST" = "xyes"])

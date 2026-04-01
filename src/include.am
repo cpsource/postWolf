@@ -27,6 +27,7 @@ EXTRA_DIST += src/ssl_bn.c
 EXTRA_DIST += src/ssl_certman.c
 EXTRA_DIST += src/ssl_crypto.c
 EXTRA_DIST += src/ssl_ech.c
+EXTRA_DIST += src/ssl_mtc.c
 EXTRA_DIST += src/ssl_load.c
 EXTRA_DIST += src/ssl_misc.c
 EXTRA_DIST += src/ssl_p7p12.c

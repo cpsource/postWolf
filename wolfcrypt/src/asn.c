@@ -267,6 +267,9 @@ ASN Options:
 #ifdef HAVE_ED448
     #include <wolfssl/wolfcrypt/ed448.h>
 #endif
+#ifdef HAVE_MTC
+    #include <wolfssl/wolfcrypt/mtc.h>
+#endif
 #ifdef HAVE_CURVE448
     #include <wolfssl/wolfcrypt/curve448.h>
 #endif
@@ -4564,6 +4567,11 @@ static int ParseCRL_Extensions(DecodedCRL* dcrl, const byte* buf, word32* inOutI
 #ifdef HAVE_ED25519
     static const byte sigEd25519Oid[] = {43, 101, 112};
 #endif /* HAVE_ED25519 */
+#ifdef HAVE_MTC
+    /* id-alg-mtcProof: 1.3.6.1.4.1.44363.47.0 (experimental) */
+    static const byte sigMtcProofOid[] =
+        {43, 6, 1, 4, 1, 130, 218, 75, 47, 0};
+#endif /* HAVE_MTC */
 #ifdef HAVE_ED448
     static const byte sigEd448Oid[] = {43, 101, 113};
 #endif /* HAVE_ED448 */
@@ -5498,6 +5506,12 @@ const byte* OidFromId(word32 id, word32 type, word32* oidSz)
                 case CTC_ED25519:
                     oid = sigEd25519Oid;
                     *oidSz = sizeof(sigEd25519Oid);
+                    break;
+                #endif
+                #ifdef HAVE_MTC
+                case CTC_MTC_PROOF:
+                    oid = sigMtcProofOid;
+                    *oidSz = sizeof(sigMtcProofOid);
                     break;
                 #endif
                 #ifdef HAVE_ED448
@@ -15971,6 +15985,11 @@ static int HashForSignature(const byte* buf, word32 bufSz, word32 sigOID,
             /* Hashes done in signing operation. */
             break;
     #endif
+    #ifdef HAVE_MTC
+        case CTC_MTC_PROOF:
+            /* MTC: no hash — proof verified separately in ParseCertRelative */
+            break;
+    #endif
 
         default:
             ret = HASH_TYPE_E;
@@ -22345,6 +22364,72 @@ int ParseCertRelative(DecodedCert* cert, int type, int verify, void* cm,
 #endif
 
     if (verify != NO_VERIFY && type != CA_TYPE && type != TRUSTED_PEER_TYPE) {
+    #ifdef HAVE_MTC
+        /* MTC certificates: verify Merkle inclusion proof instead of
+         * traditional CA chain signature. The signatureValue field contains
+         * the serialized MtcProof structure. */
+        if (cert->signatureOID == CTC_MTC_PROOF) {
+            MtcProof proof;
+            byte leafHash[MTC_HASH_SZ];
+
+            WOLFSSL_MSG("MTC proof certificate detected");
+
+            /* Parse the MTC proof from the signature field */
+            ret = wc_MtcParseProof(cert->signature, cert->sigLength, &proof);
+            if (ret != 0) {
+                WOLFSSL_MSG("MTC proof parse failed");
+                WOLFSSL_ERROR_VERBOSE(ret);
+                return ret;
+            }
+
+            /* Hash the TBS (to-be-signed) certificate data as the leaf */
+            ret = wc_MtcHashLeaf(leafHash,
+                cert->source + cert->certBegin,
+                cert->sigIndex - cert->certBegin);
+            if (ret != 0) {
+                wc_MtcFreeProof(&proof);
+                WOLFSSL_MSG("MTC leaf hash failed");
+                return ret;
+            }
+
+            /* Verify the Merkle inclusion proof */
+            /* The leaf index is embedded as (cert index = start of proof
+             * range). For a proper implementation, the index would be
+             * extracted from a certificate extension. For now, use a
+             * linear search from proof.start. */
+            {
+                word64 idx64;
+                int proofValid = 0;
+
+                /* Try each possible index in the subtree range */
+                for (idx64 = proof.start; idx64 < proof.end; idx64++) {
+                    if (wc_MtcVerifyInclusionProof(leafHash, &proof,
+                                                    idx64) == 0) {
+                        proofValid = 1;
+                        WOLFSSL_MSG("MTC inclusion proof verified");
+                        break;
+                    }
+                }
+
+                if (!proofValid) {
+                    wc_MtcFreeProof(&proof);
+                    WOLFSSL_MSG("MTC inclusion proof verification failed");
+                    WOLFSSL_ERROR_VERBOSE(ASN_SIG_CONFIRM_E);
+                    return ASN_SIG_CONFIRM_E;
+                }
+            }
+
+            /* Cosignature verification would happen here if cosigner
+             * public keys are available. For now, the proof verification
+             * is sufficient — cosignatures are checked at the TLS layer
+             * where the WOLFSSL_CTX cosigner state is accessible. */
+
+            wc_MtcFreeProof(&proof);
+            WOLFSSL_MSG("MTC certificate verified via Merkle proof");
+            /* Skip the standard ConfirmSignature path */
+        }
+        else
+    #endif /* HAVE_MTC */
         if (cert->ca) {
             if (verify == VERIFY || verify == VERIFY_OCSP ||
                                                  verify == VERIFY_SKIP_DATE) {

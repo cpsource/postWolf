@@ -4579,6 +4579,22 @@ WOLFSSL_API int wolfSSL_UseTrustedCA(WOLFSSL* ssl, unsigned char type,
             const unsigned char* certId, unsigned int certIdSz);
 #endif /* HAVE_TRUSTED_CA */
 
+/* Trust Anchor IDs (draft-ietf-tls-trust-anchor-ids) */
+#ifdef HAVE_TRUST_ANCHOR_IDS
+WOLFSSL_API int wolfSSL_UseTrustAnchorId(WOLFSSL* ssl,
+    const unsigned char* id, unsigned int idSz);
+WOLFSSL_API int wolfSSL_CTX_UseTrustAnchorId(WOLFSSL_CTX* ctx,
+    const unsigned char* id, unsigned int idSz);
+#endif /* HAVE_TRUST_ANCHOR_IDS */
+
+/* Merkle Tree Certificates (draft-ietf-plants-merkle-tree-certs) */
+#ifdef HAVE_MTC
+WOLFSSL_API int wolfSSL_MTC_SetStorePath(WOLFSSL_CTX* ctx, const char* path);
+WOLFSSL_API int wolfSSL_MTC_AddCosigner(WOLFSSL_CTX* ctx,
+    const unsigned char* id, unsigned int idSz,
+    const unsigned char* pubKey, unsigned int pubKeySz, int sigAlg);
+#endif /* HAVE_MTC */
+
 /* Application-Layer Protocol Negotiation */
 #ifdef HAVE_ALPN
 
