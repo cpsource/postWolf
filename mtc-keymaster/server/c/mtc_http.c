@@ -14,8 +14,13 @@
 #include <arpa/inet.h>
 #include <time.h>
 
+#include <netinet/in.h>
+#include <resolv.h>
+#include <arpa/nameser.h>
+
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/sha256.h>
+#include <wolfssl/wolfcrypt/asn.h>
 
 #define HTTP_BUF_SZ  65536
 #define MAX_PATH_SZ  512
@@ -189,6 +194,169 @@ static void handle_get_certificate(int fd, MtcStore *store, int index)
     http_send_json_obj(fd, 200, store->certificates[index]);
 }
 
+/* ------------------------------------------------------------------ */
+/* DNS TXT validation for CA certificates                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Query DNS for _mtc-ca.<domain> TXT record and check for a matching
+ * fingerprint string: "v=mtc-ca1; fp=sha256:<hex>"
+ *
+ * Returns 1 if a matching record is found, 0 otherwise.
+ */
+static int validate_ca_dns_txt(const char *domain, const char *fp_hex)
+{
+    char qname[256];
+    char expected[256];
+    unsigned char answer[4096];
+    int ans_len, i;
+    ns_msg msg;
+    ns_rr rr;
+
+    snprintf(qname, sizeof(qname), "_mtc-ca.%s", domain);
+    snprintf(expected, sizeof(expected), "v=mtc-ca1; fp=sha256:%s", fp_hex);
+
+    ans_len = res_query(qname, ns_c_in, ns_t_txt, answer, sizeof(answer));
+    if (ans_len < 0) {
+        printf("[ca-validate] DNS query failed for %s\n", qname);
+        return 0;
+    }
+
+    if (ns_initparse(answer, ans_len, &msg) < 0) {
+        printf("[ca-validate] failed to parse DNS response for %s\n", qname);
+        return 0;
+    }
+
+    for (i = 0; i < ns_msg_count(msg, ns_s_an); i++) {
+        if (ns_parserr(&msg, ns_s_an, i, &rr) == 0 &&
+            ns_rr_type(rr) == ns_t_txt) {
+            const unsigned char *rdata = ns_rr_rdata(rr);
+            int rdlen = ns_rr_rdlen(rr);
+            /* TXT rdata: first byte is string length, then the string */
+            if (rdlen > 1) {
+                int txt_len = rdata[0];
+                if (txt_len <= rdlen - 1) {
+                    char txt[512];
+                    if (txt_len >= (int)sizeof(txt))
+                        txt_len = (int)sizeof(txt) - 1;
+                    memcpy(txt, rdata + 1, txt_len);
+                    txt[txt_len] = '\0';
+                    printf("[ca-validate] TXT record: \"%s\"\n", txt);
+                    if (strcmp(txt, expected) == 0) {
+                        printf("[ca-validate] MATCH for %s\n", qname);
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+
+    printf("[ca-validate] no matching TXT record for %s\n", qname);
+    return 0;
+}
+
+/**
+ * Check if the certificate request includes a CA certificate (PEM) in
+ * the extensions. If so, parse it, verify CA:TRUE + pathlen:0, extract
+ * the SAN DNS name, compute the public key fingerprint, and validate
+ * against the DNS TXT record.
+ *
+ * Returns: 1 = OK (not a CA, or CA validated), 0 = rejected.
+ */
+static int validate_ca_cert_if_present(struct json_object *extensions)
+{
+    struct json_object *ca_cert_val;
+    const char *ca_cert_pem;
+    DecodedCert decoded;
+    int ret;
+    const unsigned char *pem_bytes;
+    unsigned char der_buf[4096];
+    int der_sz;
+    char fp_hex[65];
+
+    if (!extensions)
+        return 1; /* No extensions, not a CA request */
+
+    if (!json_object_object_get_ex(extensions, "ca_certificate_pem", &ca_cert_val))
+        return 1; /* No CA cert in request, OK */
+
+    ca_cert_pem = json_object_get_string(ca_cert_val);
+    if (!ca_cert_pem || strlen(ca_cert_pem) == 0)
+        return 1;
+
+    printf("[ca-validate] CA certificate PEM found in request, validating...\n");
+
+    /* Convert PEM to DER */
+    pem_bytes = (const unsigned char *)ca_cert_pem;
+    der_sz = (int)sizeof(der_buf);
+    ret = wc_CertPemToDer(pem_bytes, (int)strlen(ca_cert_pem),
+                          der_buf, der_sz, CERT_TYPE);
+    if (ret < 0) {
+        printf("[ca-validate] PEM to DER conversion failed: %d\n", ret);
+        return 0;
+    }
+    der_sz = ret;
+
+    /* Parse the certificate */
+    wc_InitDecodedCert(&decoded, der_buf, (word32)der_sz, NULL);
+    ret = wc_ParseCert(&decoded, CERT_TYPE, NO_VERIFY, NULL);
+    if (ret != 0) {
+        printf("[ca-validate] certificate parse failed: %d\n", ret);
+        wc_FreeDecodedCert(&decoded);
+        return 0;
+    }
+
+    /* Check Basic Constraints: CA:TRUE */
+    if (!decoded.isCA) {
+        printf("[ca-validate] certificate is not a CA (isCA=0)\n");
+        wc_FreeDecodedCert(&decoded);
+        return 0;
+    }
+    printf("[ca-validate] CA:TRUE, pathlen:%d\n", decoded.pathLength);
+
+    /* Extract SAN DNS name */
+    {
+        DNS_entry *san = decoded.altNames;
+        char domain[256] = {0};
+
+        while (san) {
+            if (san->type == ASN_DNS_TYPE && san->name) {
+                snprintf(domain, sizeof(domain), "%s", san->name);
+                break;
+            }
+            san = san->next;
+        }
+
+        if (domain[0] == '\0') {
+            printf("[ca-validate] no SAN DNS name found in CA cert\n");
+            wc_FreeDecodedCert(&decoded);
+            return 0;
+        }
+
+        printf("[ca-validate] SAN DNS: %s\n", domain);
+
+        /* Compute SHA-256 fingerprint of the public key DER */
+        {
+            wc_Sha256 sha;
+            uint8_t h[32];
+
+            wc_InitSha256(&sha);
+            wc_Sha256Update(&sha, decoded.publicKey,
+                            (word32)decoded.pubKeySize);
+            wc_Sha256Final(&sha, h);
+            wc_Sha256Free(&sha);
+            to_hex(h, 32, fp_hex);
+        }
+
+        printf("[ca-validate] public key fingerprint: %s\n", fp_hex);
+
+        wc_FreeDecodedCert(&decoded);
+
+        /* Check DNS */
+        return validate_ca_dns_txt(domain, fp_hex);
+    }
+}
+
 static void handle_certificate_request(int fd, MtcStore *store,
                                         const char *body, int body_len)
 {
@@ -227,6 +395,15 @@ static void handle_certificate_request(int fd, MtcStore *store,
         validity_days = json_object_get_int(val);
 
     json_object_object_get_ex(req, "extensions", &extensions);
+
+    /* Validate CA certificate against DNS TXT if present */
+    if (!validate_ca_cert_if_present(extensions)) {
+        http_send_error(fd, 403,
+            "CA certificate rejected: DNS validation failed — "
+            "no matching _mtc-ca.<domain> TXT record found");
+        json_object_put(req);
+        return;
+    }
 
     /* Build TBS entry */
     {
