@@ -18,10 +18,15 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import sys
 from pathlib import Path
+
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.x509.oid import ExtensionOID
 
 from mtc_client import MTCClient
 
@@ -112,6 +117,117 @@ def cmd_enroll(client: MTCClient, subject: str, algorithm: str = "EC-P256",
     if "landmark_certificate" in result:
         lc = result["landmark_certificate"]
         print(f"  Landmark cert also available: landmark #{lc['landmark_id']}")
+
+    return result
+
+
+def cmd_enroll_ca(client: MTCClient, cert_path: str):
+    """Register a CA certificate in the MTC log and store locally."""
+    # Load and parse the X.509 CA cert
+    with open(cert_path, "rb") as f:
+        data = f.read()
+
+    if b"-----BEGIN CERTIFICATE-----" in data:
+        cert = x509.load_pem_x509_certificate(data)
+        pem_str = data.decode()
+    else:
+        cert = x509.load_der_x509_certificate(data)
+        pem_str = cert.public_bytes(serialization.Encoding.PEM).decode()
+
+    # Check Basic Constraints
+    try:
+        bc = cert.extensions.get_extension_for_oid(
+            ExtensionOID.BASIC_CONSTRAINTS)
+        if not bc.value.ca:
+            print("ERROR: Certificate does not have CA:TRUE")
+            sys.exit(1)
+        pathlen = bc.value.path_length
+    except x509.ExtensionNotFound:
+        print("ERROR: No Basic Constraints extension found")
+        sys.exit(1)
+
+    subject_str = cert.subject.rfc4514_string()
+    print(f"CA Certificate: {subject_str}")
+    print(f"Basic Constraints: CA:TRUE, pathlen:{pathlen}")
+
+    # Determine if this is a root (no pathlen constraint or pathlen > 0)
+    # vs intermediate (pathlen:0). Root CAs skip DNS validation.
+    is_root = pathlen is None or pathlen > 0
+
+    # Extract public key PEM
+    pub_pem = cert.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+
+    # Compute fingerprint
+    pub_der = cert.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    fp = hashlib.sha256(pub_der).hexdigest()
+    print(f"Public key SHA-256: {fp}")
+
+    # Build subject name for storage
+    # Use CN or first SAN DNS name
+    try:
+        san = cert.extensions.get_extension_for_oid(
+            ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+        dns_names = san.value.get_values_for_type(x509.DNSName)
+    except x509.ExtensionNotFound:
+        dns_names = []
+
+    cns = cert.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)
+    ca_subject = dns_names[0] if dns_names else (cns[0].value if cns else "unknown-ca")
+
+    if is_root:
+        print(f"Root CA detected — skipping DNS validation")
+    else:
+        print(f"Intermediate CA — DNS validation will be performed by server")
+
+    # Build extensions with the CA cert PEM
+    extensions = {
+        "ca_certificate_pem": pem_str,
+        "is_ca": True,
+        "ca_fingerprint": f"sha256:{fp}",
+    }
+    if is_root:
+        extensions["root_ca"] = True
+
+    print(f"\nRegistering CA '{ca_subject}' with server...")
+
+    # Request certificate from server
+    # For root CAs, the server won't find ca_certificate_pem SAN to check DNS,
+    # so it passes through. For intermediates, DNS TXT is checked.
+    result = client.request_certificate(
+        subject=ca_subject,
+        public_key_pem=pub_pem,
+        validity_days=365,
+        extensions=extensions,
+    )
+
+    idx = result["index"]
+    print(f"  Registered in log: index #{idx}")
+
+    # Save to ~/.TPM/<subject>/
+    safe = ca_subject.replace("/", "_").replace(":", "_")
+    subdir = TPM_DIR / safe
+    subdir.mkdir(parents=True, exist_ok=True)
+
+    cert_out = subdir / "certificate.json"
+    with open(cert_out, "w") as f:
+        json.dump(result, f, indent=2)
+
+    # Also save the original X.509 CA cert
+    ca_cert_path = subdir / "ca_cert.pem"
+    ca_cert_path.write_text(pem_str)
+
+    (subdir / "public_key.pem").write_text(pub_pem)
+    (subdir / "index").write_text(str(idx))
+
+    print(f"  Saved to: {subdir}")
+    print(f"  CA cert:  {ca_cert_path}")
+    print(f"  MTC cert: {cert_out}")
 
     return result
 
@@ -268,6 +384,10 @@ def main():
     sub.add_parser("monitor", help="Check log consistency")
     sub.add_parser("landmarks", help="Fetch and cache landmarks")
 
+    p_enroll_ca = sub.add_parser("enroll-ca",
+        help="Register a CA certificate (root or intermediate)")
+    p_enroll_ca.add_argument("cert", help="Path to CA certificate (PEM or DER)")
+
     p_enroll = sub.add_parser("enroll", help="Generate key + request certificate")
     p_enroll.add_argument("subject", help="Certificate subject (e.g. example.com)")
     p_enroll.add_argument("--algorithm", default="EC-P256", choices=["EC-P256", "Ed25519"])
@@ -306,6 +426,9 @@ def main():
 
     elif args.command == "landmarks":
         cmd_landmarks(client)
+
+    elif args.command == "enroll-ca":
+        cmd_enroll_ca(client, args.cert)
 
     elif args.command == "enroll":
         ext = {}

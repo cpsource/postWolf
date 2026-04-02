@@ -270,8 +270,9 @@ static int validate_ca_cert_if_present(struct json_object *extensions)
     DecodedCert decoded;
     int ret;
     const unsigned char *pem_bytes;
-    unsigned char der_buf[4096];
+    unsigned char der_buf[8192];
     int der_sz;
+    int pem_len;
     char fp_hex[65];
 
     if (!extensions)
@@ -284,18 +285,34 @@ static int validate_ca_cert_if_present(struct json_object *extensions)
     if (!ca_cert_pem || strlen(ca_cert_pem) == 0)
         return 1;
 
+    /* Root CAs (explicitly flagged) skip DNS validation */
+    {
+        struct json_object *root_val;
+        if (json_object_object_get_ex(extensions, "root_ca", &root_val) &&
+            json_object_get_boolean(root_val)) {
+            printf("[ca-validate] root CA — DNS validation skipped\n");
+            return 1;
+        }
+    }
+
     printf("[ca-validate] CA certificate PEM found in request, validating...\n");
 
     /* Convert PEM to DER */
     pem_bytes = (const unsigned char *)ca_cert_pem;
+    pem_len = (int)strlen(ca_cert_pem);
+    printf("[ca-validate] PEM length: %d bytes\n", pem_len);
+    if (pem_len > 6000) {
+        printf("[ca-validate] PEM too large\n");
+        return 0;
+    }
     der_sz = (int)sizeof(der_buf);
-    ret = wc_CertPemToDer(pem_bytes, (int)strlen(ca_cert_pem),
-                          der_buf, der_sz, CERT_TYPE);
+    ret = wc_CertPemToDer(pem_bytes, pem_len, der_buf, der_sz, CERT_TYPE);
     if (ret < 0) {
         printf("[ca-validate] PEM to DER conversion failed: %d\n", ret);
         return 0;
     }
     der_sz = ret;
+    printf("[ca-validate] DER size: %d bytes\n", der_sz);
 
     /* Parse the certificate */
     wc_InitDecodedCert(&decoded, der_buf, (word32)der_sz, NULL);
@@ -409,7 +426,7 @@ static void handle_certificate_request(int fd, MtcStore *store,
     {
         struct json_object *tbs, *sc, *result, *checkpoint;
         struct json_object *proof_arr, *cosig_arr, *cosig;
-        uint8_t entry_buf[4096];
+        uint8_t *entry_buf = NULL;
         int entry_sz;
         int index;
         double now = (double)time(NULL);
@@ -468,9 +485,10 @@ static void handle_certificate_request(int fd, MtcStore *store,
 
             ser_str = json_object_to_json_string_ext(ser,
                 JSON_C_TO_STRING_PLAIN);
+            entry_sz = 1 + (int)strlen(ser_str);
+            entry_buf = (uint8_t *)malloc(entry_sz);
             entry_buf[0] = 0x01;
             memcpy(entry_buf + 1, ser_str, strlen(ser_str));
-            entry_sz = 1 + (int)strlen(ser_str);
             json_object_put(ser);
         }
 
@@ -568,6 +586,7 @@ static void handle_certificate_request(int fd, MtcStore *store,
         json_object_put(tbs);
         json_object_put(checkpoint);
         free(proof);
+        free(entry_buf);
     }
 
     json_object_put(req);
@@ -899,6 +918,26 @@ static void handle_request(int fd, MtcStore *store)
     if (body) {
         body += 4;
         body_len = n - (int)(body - buf);
+    }
+
+    /* If Content-Length says there's more body to read, keep reading */
+    if (body) {
+        char *cl = strcasestr(buf, "Content-Length:");
+        if (cl) {
+            int content_len = atoi(cl + 15);
+            int max_body = (int)(sizeof(buf) - 1) - (int)(body - buf);
+            if (content_len > max_body)
+                content_len = max_body;
+            if (content_len > 0) {
+                while (body_len < content_len) {
+                    int r = (int)recv(fd, body + body_len,
+                                      content_len - body_len, 0);
+                    if (r <= 0) break;
+                    body_len += r;
+                }
+                body[body_len] = 0;
+            }
+        }
     }
 
     /* Dispatch */
