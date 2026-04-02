@@ -178,7 +178,8 @@ def cmd_enroll_ca(client: MTCClient, cert_path: str):
         dns_names = []
 
     cns = cert.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)
-    ca_subject = dns_names[0] if dns_names else (cns[0].value if cns else "unknown-ca")
+    base_name = dns_names[0] if dns_names else (cns[0].value if cns else "unknown-ca")
+    ca_subject = base_name + "-ca"
 
     if is_root:
         print(f"Root CA detected — skipping DNS validation")
