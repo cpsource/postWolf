@@ -352,14 +352,23 @@ static int validate_ca_cert_if_present(struct json_object *extensions)
 
         printf("[ca-validate] SAN DNS: %s\n", domain);
 
-        /* Compute SHA-256 fingerprint of the public key DER */
+        /* Compute SHA-256 fingerprint of SubjectPublicKeyInfo DER */
         {
             wc_Sha256 sha;
             uint8_t h[32];
+            uint8_t spki_buf[1024];
+            word32 spki_sz = sizeof(spki_buf);
+
+            ret = wc_GetSubjectPubKeyInfoDerFromCert(
+                der_buf, (word32)der_sz, spki_buf, &spki_sz);
+            if (ret != 0) {
+                printf("[ca-validate] failed to extract SPKI: %d\n", ret);
+                wc_FreeDecodedCert(&decoded);
+                return 0;
+            }
 
             wc_InitSha256(&sha);
-            wc_Sha256Update(&sha, decoded.publicKey,
-                            (word32)decoded.pubKeySize);
+            wc_Sha256Update(&sha, spki_buf, spki_sz);
             wc_Sha256Final(&sha, h);
             wc_Sha256Free(&sha);
             to_hex(h, 32, fp_hex);
@@ -922,20 +931,26 @@ static void handle_request(int fd, MtcStore *store)
 
     /* If Content-Length says there's more body to read, keep reading */
     if (body) {
-        char *cl = strcasestr(buf, "Content-Length:");
-        if (cl) {
-            int content_len = atoi(cl + 15);
-            int max_body = (int)(sizeof(buf) - 1) - (int)(body - buf);
-            if (content_len > max_body)
-                content_len = max_body;
-            if (content_len > 0) {
-                while (body_len < content_len) {
-                    int r = (int)recv(fd, body + body_len,
-                                      content_len - body_len, 0);
-                    if (r <= 0) break;
-                    body_len += r;
+        /* Search for Content-Length only in headers (before body) */
+        char saved = body[-4]; /* save char at \r\n\r\n boundary */
+        body[-4] = 0;         /* temporarily null-terminate headers */
+        {
+            char *cl = strcasestr(buf, "Content-Length:");
+            body[-4] = saved;
+            if (cl) {
+                int content_len = atoi(cl + 15);
+                int max_body = (int)(sizeof(buf) - 1) - (int)(body - buf);
+                if (content_len > max_body)
+                    content_len = max_body;
+                if (content_len > 0) {
+                    while (body_len < content_len) {
+                        int r = (int)recv(fd, body + body_len,
+                                          content_len - body_len, 0);
+                        if (r <= 0) break;
+                        body_len += r;
+                    }
+                    body[body_len] = 0;
                 }
-                body[body_len] = 0;
             }
         }
     }

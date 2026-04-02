@@ -242,14 +242,17 @@ int mtc_store_save(MtcStore *store)
         struct json_object *arr = json_object_new_array();
         for (i = 0; i < store->tree.size; i++) {
             struct json_object *entry = json_object_new_object();
-            char hex[1024];
+            int esz = store->tree.entry_sizes[i];
+            int hexsz = esz * 2 + 1;
+            char *hex = (char*)malloc(hexsz);
             int j;
-            for (j = 0; j < store->tree.entry_sizes[i] && j < 512; j++)
+            for (j = 0; j < esz; j++)
                 snprintf(hex + j * 2, 3, "%02x", store->tree.entries[i][j]);
             json_object_object_add(entry, "hex", json_object_new_string(hex));
             json_object_object_add(entry, "size",
-                json_object_new_int(store->tree.entry_sizes[i]));
+                json_object_new_int(esz));
             json_object_array_add(arr, entry);
+            free(hex);
         }
         snprintf(path, sizeof(path), "%s/entries.json", store->data_dir);
         {
@@ -315,18 +318,21 @@ int mtc_store_load(MtcStore *store)
                 if (json_object_object_get_ex(e, "serialized_hex", &val)) {
                     const char *hex = json_object_get_string(val);
                     int entry_sz = 0;
-                    uint8_t entry_bytes[4096];
                     int j;
 
                     if (json_object_object_get_ex(e, "serialized_len", &val))
                         entry_sz = json_object_get_int(val);
 
-                    for (j = 0; j < entry_sz && hex[j*2] && hex[j*2+1]; j++) {
-                        unsigned int bv;
-                        sscanf(hex + j * 2, "%02x", &bv);
-                        entry_bytes[j] = (uint8_t)bv;
+                    if (entry_sz > 0) {
+                        uint8_t *entry_bytes = (uint8_t*)malloc(entry_sz);
+                        for (j = 0; j < entry_sz && hex[j*2] && hex[j*2+1]; j++) {
+                            unsigned int bv;
+                            sscanf(hex + j * 2, "%02x", &bv);
+                            entry_bytes[j] = (uint8_t)bv;
+                        }
+                        mtc_tree_append(&store->tree, entry_bytes, entry_sz);
+                        free(entry_bytes);
                     }
-                    mtc_tree_append(&store->tree, entry_bytes, entry_sz);
                 }
             }
             json_object_put(db_entries);
@@ -392,18 +398,21 @@ int mtc_store_load(MtcStore *store)
                 if (json_object_object_get_ex(entry, "hex", &val)) {
                     const char *hex = json_object_get_string(val);
                     int entry_sz = 0;
-                    uint8_t entry_bytes[512];
                     int j;
 
                     if (json_object_object_get_ex(entry, "size", &val))
                         entry_sz = json_object_get_int(val);
 
-                    for (j = 0; j < entry_sz && hex[j*2] && hex[j*2+1]; j++) {
-                        unsigned int bv;
-                        sscanf(hex + j * 2, "%02x", &bv);
-                        entry_bytes[j] = (uint8_t)bv;
+                    if (entry_sz > 0) {
+                        uint8_t *entry_bytes = (uint8_t*)malloc(entry_sz);
+                        for (j = 0; j < entry_sz && hex[j*2] && hex[j*2+1]; j++) {
+                            unsigned int bv;
+                            sscanf(hex + j * 2, "%02x", &bv);
+                            entry_bytes[j] = (uint8_t)bv;
+                        }
+                        mtc_tree_append(&store->tree, entry_bytes, entry_sz);
+                        free(entry_bytes);
                     }
-                    mtc_tree_append(&store->tree, entry_bytes, entry_sz);
                 }
             }
             json_object_put(arr);

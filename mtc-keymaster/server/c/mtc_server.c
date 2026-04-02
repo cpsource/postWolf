@@ -37,6 +37,8 @@ static void usage(const char *prog)
 
 int main(int argc, char *argv[])
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     const char *host = "0.0.0.0";
     int port = 8443;
     const char *data_dir = "./mtc-data";
