@@ -164,7 +164,7 @@ static int wolfSSL_BIO_MEMORY_read(WOLFSSL_BIO* bio, void* buf, int len)
             /* Resize the memory so we are not taking up more than necessary.
              * memmove reverts internally to memcpy if areas don't overlap */
             XMEMMOVE(bio->mem_buf->data, bio->mem_buf->data + bio->rdIdx,
-                    (long unsigned int)bio->wrSz - (size_t)bio->rdIdx);
+                    (size_t)bio->wrSz - (size_t)bio->rdIdx);
             bio->wrSz -= bio->rdIdx;
             bio->rdIdx = 0;
             /* Resize down to WOLFSSL_BIO_RESIZE_THRESHOLD for fewer
@@ -952,6 +952,7 @@ int wolfSSL_BIO_up_ref(WOLFSSL_BIO* bio)
     #ifdef WOLFSSL_REFCNT_ERROR_RETURN
         if (ret != 0) {
             WOLFSSL_MSG("Failed to lock BIO mutex");
+            return WOLFSSL_FAILURE;
         }
     #else
         (void)ret;
@@ -984,6 +985,9 @@ void wolfSSL_BIO_ADDR_clear(WOLFSSL_BIO_ADDR *addr) {
 }
 
 socklen_t wolfSSL_BIO_ADDR_size(const WOLFSSL_BIO_ADDR *addr) {
+    if (addr == NULL) {
+        return 0;
+    }
     switch (addr->sa.sa_family) {
 #ifndef WOLFSSL_NO_BIO_ADDR_IN
     case AF_INET:
@@ -1315,8 +1319,8 @@ size_t wolfSSL_BIO_ctrl_pending(WOLFSSL_BIO *bio)
         /* these are wrappers only, get next bio */
         while (bio->next != NULL) {
             bio = bio->next;
-            if (bio->type == WOLFSSL_BIO_MD ||
-                    bio->type == WOLFSSL_BIO_BASE64) {
+            if (bio->type != WOLFSSL_BIO_MD &&
+                    bio->type != WOLFSSL_BIO_BASE64) {
                 break;
             }
         }
@@ -2094,6 +2098,11 @@ WOLFSSL_BIO_METHOD *wolfSSL_BIO_meth_new(int type, const char *name)
         return NULL;
     }
     XMEMSET(meth, 0, sizeof(WOLFSSL_BIO_METHOD));
+    if (type < 0 || type > 255) {
+        WOLFSSL_MSG("BIO method type out of range");
+        XFREE(meth, NULL, DYNAMIC_TYPE_OPENSSL);
+        return NULL;
+    }
     meth->type = (byte)type;
     XSTRNCPY(meth->name, name, MAX_BIO_METHOD_NAME - 1);
 
@@ -2848,19 +2857,23 @@ int wolfSSL_BIO_flush(WOLFSSL_BIO* bio)
         #ifdef WOLFSSL_NO_REALLOC
                 tmp = b->ip;
                 b->ip = (char*)XMALLOC(newLen+1, b->heap, DYNAMIC_TYPE_OPENSSL);
-                if (b->ip != NULL && tmp != NULL) {
-                    XMEMCPY(b->ip, tmp, newLen);
+                if (b->ip == NULL) {
+                    b->ip = tmp; /* restore original on failure */
+                    WOLFSSL_MSG("Hostname realloc failed.");
+                    return WOLFSSL_FAILURE;
+                }
+                if (tmp != NULL) {
                     XFREE(tmp, b->heap, DYNAMIC_TYPE_OPENSSL);
                     tmp = NULL;
-            }
+                }
         #else
                 b->ip = (char*)XREALLOC(b->ip, newLen + 1, b->heap,
                     DYNAMIC_TYPE_OPENSSL);
-        #endif
                 if (b->ip == NULL) {
                     WOLFSSL_MSG("Hostname realloc failed.");
                     return WOLFSSL_FAILURE;
                 }
+        #endif
             }
         }
 
