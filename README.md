@@ -1,9 +1,10 @@
 # wolfSSL Embedded SSL/TLS Library
 
 > **Note**: This is a copy of the [upstream wolfSSL repository](https://github.com/wolfSSL/wolfssl)
-> with additional bug fixes and security patches in the `issues/` subdirectory
-> that have not been accepted upstream (or may never be). See `issues/` for
-> details, including analysis, reproducer programs, and git patches.
+> with additional bug fixes and security patches that have not been accepted
+> upstream (or may never be). The issues directory is now maintained in a
+> private repository at [cpsource/wolfssl-issues](https://github.com/cpsource/wolfssl-issues),
+> including analysis, reproducer programs, and git patches.
 
 The [wolfSSL embedded SSL library](https://www.wolfssl.com/products/wolfssl/)
 (formerly CyaSSL) is a lightweight SSL/TLS library written in ANSI C and
