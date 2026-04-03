@@ -15,7 +15,15 @@ all: mtc_server
 mtc_server: $(SRCS) mtc_merkle.h mtc_store.h mtc_http.h mtc_db.h
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDFLAGS)
 
-clean:
-	rm -f mtc_server
+make-mtc-checkpoint: mtc_checkendpoint.c mtc_checkendpoint.h mtc_db.c mtc_db.h
+	$(CC) -Wall -Wextra -O2 -DTEST_MAIN \
+		$(shell pkg-config --cflags json-c) \
+		$(shell pkg-config --cflags libpq) \
+		-o mtc_checkendpoint mtc_checkendpoint.c mtc_db.c \
+		$(shell pkg-config --libs json-c) \
+		$(shell pkg-config --libs libpq) -lcurl
 
-.PHONY: all clean
+clean:
+	rm -f mtc_server mtc_checkendpoint
+
+.PHONY: all clean make-mtc-checkpoint
