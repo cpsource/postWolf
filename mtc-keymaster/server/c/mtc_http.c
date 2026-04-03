@@ -6,6 +6,7 @@
  * Uses raw sockets — no external HTTP library needed. */
 
 #include "mtc_http.h"
+#include "mtc_checkendpoint.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1064,6 +1065,21 @@ int mtc_http_serve(const char *host, int port, MtcStore *store)
         if (cli_fd < 0) {
             perror("accept");
             continue;
+        }
+
+        /* Check client IP against AbuseIPDB */
+        {
+            char ip_str[INET6_ADDRSTRLEN];
+            inet_ntop(AF_INET, &cli_addr.sin_addr, ip_str, sizeof(ip_str));
+
+            int abuse_score = mtc_checkendpoint(ip_str);
+            if (abuse_score >= mtc_get_abuse_threshold()) {
+                printf("[http] rejected %s (abuse score %d)\n",
+                       ip_str, abuse_score);
+                http_send_error(cli_fd, 403, "Forbidden");
+                close(cli_fd);
+                continue;
+            }
         }
 
         handle_request(cli_fd, store);

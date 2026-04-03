@@ -55,6 +55,21 @@ The IP address should be url-encoded, because IPv6 addresses use colons, which a
 | maxAgeInDays | no | 30 | 1 | 365 |
 | verbose | no | | | |
 
+## Abuse Confidence Score Thresholds
+
+The `abuseConfidenceScore` ranges from 0 to 100. Higher scores indicate more abusive behavior.
+
+| Score Range | Risk Level | Recommended Action |
+|-------------|------------|-------------------|
+| 0           | None       | Allow — no reports filed |
+| 1–25        | Low        | Allow — few reports, likely false positives |
+| 26–50       | Medium     | Allow with caution — some abuse history |
+| 51–74       | High       | Consider blocking — significant abuse history |
+| 75–99       | Very High  | Block — multiple independent reporters confirm abuse |
+| 100         | Certain    | Block — confirmed abusive IP |
+
+The server uses a default threshold of **75**. IPs with a score at or above this threshold are rejected with a 403 Forbidden response. The threshold can be adjusted with the `--abuse-threshold` command line switch.
+
 ## REPORTS Endpoint
 
 ## Appendix: Calling Example Using curl

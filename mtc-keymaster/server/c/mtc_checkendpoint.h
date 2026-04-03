@@ -12,4 +12,9 @@ int mtc_init(void);
  * -2 means no API key configured. */
 int mtc_checkendpoint(char *ipaddr);
 
+/* Set/get the abuse confidence score threshold for rejecting requests.
+ * Default is 75.  Scores >= threshold cause rejection. */
+void mtc_set_abuse_threshold(int threshold);
+int  mtc_get_abuse_threshold(void);
+
 #endif

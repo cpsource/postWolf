@@ -21,6 +21,7 @@
 
 #include "mtc_store.h"
 #include "mtc_http.h"
+#include "mtc_checkendpoint.h"
 
 static void usage(const char *prog)
 {
@@ -32,6 +33,7 @@ static void usage(const char *prog)
     printf("  --tokenpath FILE .env file to read MERKLE_NEON from\n");
     printf("  --ca-name NAME   CA name (default: MTC-CA-C)\n");
     printf("  --log-id ID      Log identifier (default: 32473.2)\n");
+    printf("  --abuse-threshold N  AbuseIPDB score threshold (default: 75)\n");
     printf("  -h               Show this help\n");
 }
 
@@ -62,6 +64,8 @@ int main(int argc, char *argv[])
             ca_name = argv[++i];
         else if (strcmp(argv[i], "--log-id") == 0 && i + 1 < argc)
             log_id = argv[++i];
+        else if (strcmp(argv[i], "--abuse-threshold") == 0 && i + 1 < argc)
+            mtc_set_abuse_threshold(atoi(argv[++i]));
         else if (strcmp(argv[i], "-h") == 0) {
             usage(argv[0]); return 0;
         }
@@ -75,6 +79,17 @@ int main(int argc, char *argv[])
     /* Set token path for MERKLE_NEON lookup */
     if (tokenpath)
         mtc_db_set_tokenpath(tokenpath);
+
+    /* Initialize AbuseIPDB module (non-fatal if key missing) */
+    {
+        int rc = mtc_init();
+        if (rc == -2)
+            printf("[server] AbuseIPDB key not found, IP checking disabled\n");
+        else if (rc < 0)
+            fprintf(stderr, "[server] AbuseIPDB init failed (%d)\n", rc);
+        else
+            printf("[server] AbuseIPDB module initialized\n");
+    }
 
     /* Initialize store */
     if (mtc_store_init(&store, data_dir, ca_name, log_id) != 0) {

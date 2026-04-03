@@ -21,9 +21,10 @@
 /* Module state                                                        */
 /* ------------------------------------------------------------------ */
 
-static char    s_api_key[256] = {0};
-static PGconn *s_conn         = NULL;
-static int     s_verbose      = 0;
+static char    s_api_key[256]    = {0};
+static PGconn *s_conn           = NULL;
+static int     s_verbose        = 0;
+static int     s_abuse_threshold = 75;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -182,6 +183,16 @@ static int db_cache_insert(const char *ipaddr, const char *json_response,
 /* ------------------------------------------------------------------ */
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
+
+void mtc_set_abuse_threshold(int threshold)
+{
+    s_abuse_threshold = threshold;
+}
+
+int mtc_get_abuse_threshold(void)
+{
+    return s_abuse_threshold;
+}
 
 int mtc_init(void)
 {

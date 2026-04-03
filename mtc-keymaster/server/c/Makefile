@@ -8,11 +8,12 @@ LDFLAGS += $(shell pkg-config --libs json-c)
 LDFLAGS += $(shell pkg-config --libs libpq)
 LDFLAGS += -lresolv
 
-SRCS = mtc_server.c mtc_merkle.c mtc_store.c mtc_http.c mtc_db.c
+SRCS = mtc_server.c mtc_merkle.c mtc_store.c mtc_http.c mtc_db.c mtc_checkendpoint.c
+LDFLAGS += -lcurl
 
 all: mtc_server
 
-mtc_server: $(SRCS) mtc_merkle.h mtc_store.h mtc_http.h mtc_db.h
+mtc_server: $(SRCS) mtc_merkle.h mtc_store.h mtc_http.h mtc_db.h mtc_checkendpoint.h
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDFLAGS)
 
 make-mtc-checkpoint: mtc_checkendpoint.c mtc_checkendpoint.h mtc_db.c mtc_db.h
