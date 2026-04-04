@@ -1672,7 +1672,7 @@ static int ProcessBufferCertPublicKey(WOLFSSL_CTX* ctx, WOLFSSL* ssl,
                     ECC_KEY_SIZE_E);
             }
             break;
-    #endif /* HAVE_ED25519 */
+    #endif /* WOLFSSL_SM2 && WOLFSSL_SM3 */
     #ifdef HAVE_ED25519
         case ED25519k:
             keyType = ed25519_sa_algo;
@@ -1882,7 +1882,7 @@ static int ProcessBufferCertAltPublicKey(WOLFSSL_CTX* ctx, WOLFSSL* ssl,
                     ECC_KEY_SIZE_E);
             }
             break;
-    #endif /* HAVE_ED25519 */
+    #endif /* WOLFSSL_SM2 && WOLFSSL_SM3 */
     #ifdef HAVE_ED25519
         case ED25519k:
             keyType = ed25519_sa_algo;
@@ -4684,7 +4684,7 @@ int wolfSSL_use_AltPrivateKey_Id(WOLFSSL* ssl, const unsigned char* id, long sz,
         #endif
         }
         if (AllocDer(&ssl->buffers.altKey, (word32)sz, ALT_PRIVATEKEY_TYPE,
-                ssl->heap) == 0) {
+                ssl->heap) != 0) {
             ret = 0;
         }
     }
@@ -4732,7 +4732,7 @@ int wolfSSL_use_AltPrivateKey_Label(WOLFSSL* ssl, const char* label, int devId)
         #endif
         }
         if (AllocDer(&ssl->buffers.altKey, (word32)sz, ALT_PRIVATEKEY_TYPE,
-                ssl->heap) == 0) {
+                ssl->heap) != 0) {
             ret = 0;
         }
     }
@@ -5202,7 +5202,7 @@ int wolfSSL_add1_chain_cert(WOLFSSL* ssl, WOLFSSL_X509* x509)
     }
 
     /* Increase reference count on X509 object before adding. */
-    if ((ret == 1) && ((ret == wolfSSL_X509_up_ref(x509)) == 1)) {
+    if ((ret == 1) && ((ret = wolfSSL_X509_up_ref(x509)) == 1)) {
         /* Add this to the chain. */
         if ((ret = wolfSSL_add0_chain_cert(ssl, x509)) != 1) {
             /* Decrease reference count on error as not stored. */
@@ -5864,7 +5864,7 @@ long wolfSSL_CTX_set_tmp_dh(WOLFSSL_CTX* ctx, WOLFSSL_DH* dh)
         pSz = wolfSSL_BN_bn2bin(dh->p, p);
         gSz = wolfSSL_BN_bn2bin(dh->g, g);
         /* Check encoding worked. */
-        if ((pSz < 0) && (gSz < 0)) {
+        if ((pSz <= 0) || (gSz <= 0)) {
             ret = WOLFSSL_FATAL_ERROR;
         }
     }
