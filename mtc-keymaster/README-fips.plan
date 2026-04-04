@@ -1,0 +1,194 @@
+# Plan: Server-Verified FIPS Source Checksums for wolfssl-new
+
+## Context
+
+OpenSSL's FIPS integrity system stores SHA256 checksums of source files in the same repository as the source. An attacker with write access can modify both a source file and its checksum — nothing downstream detects it. The HMAC key is public, so rebuilding and re-running `fipsinstall` produces valid MACs for the tampered binary.
+
+wolfssl-new has the same weakness in `fips-hash.sh` / `fips_test.c`. However, wolfssl-new already has a **Merkle Tree Certificate (MTC) transparency log** with Ed25519 cosignatures, inclusion proofs, and a REST API — implemented as a **C server** (`mtc-keymaster/server/c/`). We can leverage this infrastructure to anchor FIPS source checksums in the append-only server-side log, making tampering detectable.
+
+**Goal:** At build time, log a signed manifest of FIPS source file checksums to the C MTC server. At verification time, any party can check local source files against the server-logged manifest using inclusion proofs and Ed25519 signatures — with or without network access.
+
+## Approach
+
+### What Gets Logged
+
+A **FIPS Build Manifest** — a canonical JSON document listing every FIPS source file and its SHA256 hash. The SHA256 of this manifest becomes a leaf in the Merkle tree via `mtc_tree_append()`.
+
+Entry type byte: `0x02` (new — existing types are `0x00` null, `0x01` TBS certificate).
+
+```json
+{
+  "type": "fips-build-manifest",
+  "version": 1,
+  "package": "wolfssl-new",
+  "git_commit": "abc123...",
+  "git_tag": "v5.9.0",
+  "timestamp": 1712188800.0,
+  "files": [
+    {"path": "wolfcrypt/src/aes.c", "sha256": "0e22ea..."},
+    {"path": "wolfcrypt/src/fips.c", "sha256": "c049a9..."}
+  ]
+}
+```
+
+Files array sorted by `path`. Canonical form uses json-c with sorted keys and no extra whitespace — matching the deterministic serialization used for TBS entries in `mtc_http.c:481-503`.
+
+### Phase 1: C Server Extensions
+
+**File: `mtc-keymaster/server/c/mtc_http.c`**
+
+Add endpoint handlers following the `handle_certificate_request()` pattern (lines 395-593):
+
+- `handle_fips_manifest_submit()` — `POST /fips/manifest`
+  1. Parse JSON body with `json_tokener_parse()`
+  2. Validate required fields: `package`, `git_commit`, `files[]` with `path` + `sha256`
+  3. Build canonical JSON string (sorted keys via `json_object_object_add()` in sorted order)
+  4. Prefix with `0x02` byte, append canonical JSON → entry buffer
+  5. Call `mtc_store_add_entry(store, entry_buf, entry_sz)` → returns index
+  6. Call `mtc_tree_inclusion_proof()` for proof
+  7. Call `mtc_tree_subtree_hash()` + `mtc_store_cosign()` for Ed25519 signature
+  8. Build response JSON with index, proof, cosignature, subtree hash
+  9. Persist via `mtc_store_save()` + `mtc_db_save_fips_manifest()`
+  10. Return 201 Created
+
+- `handle_fips_manifest_get()` — `GET /fips/manifest/<index>`
+  1. Extract index from path
+  2. Validate entry exists and has type byte `0x02`
+  3. Return stored manifest JSON
+
+- `handle_fips_manifest_proof()` — `GET /fips/manifest/<index>/proof`
+  1. Call `mtc_tree_inclusion_proof()` with current tree size
+  2. Call `mtc_store_cosign()` for fresh signature
+  3. Return proof + cosignature
+
+- `handle_fips_manifest_search()` — `GET /fips/manifest/search?package=X&tag=Y`
+  1. Scan entries with type `0x02`, filter by metadata
+  2. Return matching indices + summaries
+
+Add routing in `handle_request()` (lines 901-1019):
+```c
+} else if (strcmp(method, "POST") == 0 && strcmp(path, "/fips/manifest") == 0) {
+    handle_fips_manifest_submit(client_fd, store, body);
+} else if (strcmp(method, "GET") == 0 && strncmp(path, "/fips/manifest/", 15) == 0) {
+    if (strstr(path, "/proof"))
+        handle_fips_manifest_proof(client_fd, store, path);
+    else if (strstr(path, "search"))
+        handle_fips_manifest_search(client_fd, store, query);
+    else
+        handle_fips_manifest_get(client_fd, store, path);
+}
+```
+
+**File: `mtc-keymaster/server/c/mtc_db.c`**
+
+Add `mtc_fips_manifests` table to schema initialization (`mtc_db_init_schema()`):
+```sql
+CREATE TABLE IF NOT EXISTS mtc_fips_manifests (
+    index       INTEGER PRIMARY KEY,
+    manifest    TEXT NOT NULL,
+    package     TEXT,
+    git_tag     TEXT,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_fips_package ON mtc_fips_manifests(package);
+CREATE INDEX IF NOT EXISTS idx_fips_tag ON mtc_fips_manifests(git_tag);
+```
+
+Add functions following `mtc_db_save_certificate()` / `mtc_db_load_certificates()` pattern:
+- `mtc_db_save_fips_manifest(MtcDb *db, int index, const char *manifest_json, const char *package, const char *git_tag)`
+- `mtc_db_search_fips_manifests(MtcDb *db, const char *package, const char *tag, ...)`
+
+**File: `mtc-keymaster/server/c/mtc_store.c`**
+
+Add entry type detection for `0x02` in `mtc_store_add_entry()` (lines 469-503):
+```c
+if (entrySz > 0 && entry[0] == 0x02) {
+    entry_type = 2;  /* FIPS manifest */
+    /* extract package/tag for DB indexing */
+}
+```
+
+Add file-based fallback persistence for manifests in `mtc_store_save()`:
+- Write to `{data_dir}/fips_manifests.json`
+
+**File: `mtc-keymaster/server/c/mtc_store.h`**
+
+Add to `MtcStore`:
+```c
+struct json_object **fips_manifests;
+int fips_manifest_count;
+```
+
+**No changes needed to `mtc_merkle.c`** — `mtc_tree_append()`, `mtc_tree_inclusion_proof()`, `mtc_tree_subtree_hash()`, and `mtc_store_cosign()` all work with arbitrary entry data.
+
+### Phase 2: Client Tooling
+
+**New file: `fips-manifest-submit.sh`**
+1. Enumerate FIPS source files (from `fips-check.sh`'s `FIPS_FILES` + `WOLFCRYPT_FILES`)
+2. Compute `sha256sum` for each file
+3. Build manifest JSON using `jq` (files sorted by path)
+4. `curl -X POST -H "Content-Type: application/json" -d @manifest.json http://$MTC_SERVER/fips/manifest`
+5. Save response to `fips-manifest-receipt.json` (contains index, proof, cosignature)
+
+**New file: `fips-manifest-verify.sh`**
+- **Online mode:** recompute local checksums → query `GET /fips/manifest/<index>` → compare → query `GET /fips/manifest/<index>/proof` → verify inclusion proof + cosignature
+- **Offline mode:** recompute local checksums → verify against receipt's cached proof + cosignature using pinned CA public key (32 bytes, embedded in script or config)
+
+Both scripts use `curl` + `jq` + `openssl dgst` (or wolfssl equivalent) — no compilation required.
+
+### Phase 3: Build Integration
+
+**File: `debian/rules`**
+- In `override_dh_auto_build` (FIPS path): call `./fips-manifest-submit.sh` after `fips-hash.sh`'s second `make` pass
+
+**File: `Makefile.am`**
+- Add `fips-manifest-submit` and `fips-manifest-verify` targets
+
+**Ship `fips-manifest-receipt.json`** with the package (add to `EXTRA_DIST`) so downstream can verify offline.
+
+### Reused Existing C Code
+
+| Component | Existing Code | Reuse |
+|-----------|---------------|-------|
+| Merkle tree | `mtc_merkle.c`: `mtc_tree_append()`, `mtc_tree_inclusion_proof()`, `mtc_tree_subtree_hash()` | Direct — works for any entry data |
+| Ed25519 cosigning | `mtc_store.c:539-583`: `mtc_store_cosign()` | Direct — signs any subtree range |
+| Entry persistence | `mtc_store.c:469-503`: `mtc_store_add_entry()` | Direct — just add type 0x02 detection |
+| DB persistence | `mtc_db.c`: `mtc_db_save_certificate()` pattern | Copy for `mtc_db_save_fips_manifest()` |
+| HTTP routing | `mtc_http.c:901-1019`: `handle_request()` | Add new routes to existing dispatch |
+| HTTP helpers | `mtc_http.c`: `http_send_json()`, `http_send_error()` | Direct |
+| JSON handling | `mtc_http.c:395-593`: `handle_certificate_request()` | Pattern for `handle_fips_manifest_submit()` |
+| File I/O | `mtc_store.c`: `write_file()`, `read_file()` | Direct for file-based fallback |
+| Key management | `mtc_store.c:64-152`: CA key load/generate | Direct — same Ed25519 key signs manifests |
+
+### Files to Create/Modify
+
+| File | Action |
+|------|--------|
+| `fips-manifest-submit.sh` | **Create** — build-time submission script |
+| `fips-manifest-verify.sh` | **Create** — verification script (online + offline) |
+| `mtc-keymaster/server/c/mtc_http.c` | **Modify** — add 4 FIPS manifest endpoint handlers + routing |
+| `mtc-keymaster/server/c/mtc_db.c` | **Modify** — add `mtc_fips_manifests` table + CRUD functions |
+| `mtc-keymaster/server/c/mtc_store.c` | **Modify** — add type 0x02 detection + manifest persistence |
+| `mtc-keymaster/server/c/mtc_store.h` | **Modify** — add manifest fields to `MtcStore` struct |
+| `debian/rules` | **Modify** — call submit script in FIPS build path |
+| `Makefile.am` | **Modify** — add new targets |
+
+### Verification
+
+1. Build C server: `cd mtc-keymaster/server/c && make`
+2. Start server: `./mtc_server --port 8080 --datadir /tmp/mtc-test`
+3. Run `./fips-manifest-submit.sh` — confirm receipt saved with index + proof + cosignature
+4. Tamper with a FIPS source file, run `./fips-manifest-verify.sh` — confirm **failure**
+5. Restore file, run `./fips-manifest-verify.sh` — confirm **pass**
+6. Test offline: stop server, verify using cached receipt — confirm **pass**
+7. Test search: `curl localhost:8080/fips/manifest/search?package=wolfssl-new`
+8. Test retrieval: `curl localhost:8080/fips/manifest/0`
+
+### Security Properties
+
+- **Tamper detection:** Attacker modifies source + local checksums → server manifest doesn't match → detected
+- **Replay prevention:** Each manifest gets a unique log index; receipt pins the index
+- **Append-only:** Merkle tree is append-only; forging history requires breaking SHA-256
+- **Offline capable:** Receipt contains full proof + Ed25519 cosignature; only CA public key (32 bytes) needed
+- **Duplicate detection:** Monitor can detect two manifests for the same git tag, flagging the duplicate submission
+- **Binding to binary:** Manifest is submitted after `fips-hash.sh`, so it includes the updated `fips_test.c` with the runtime hash — linking source checksums to the binary integrity constant
