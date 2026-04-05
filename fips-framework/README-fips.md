@@ -20,7 +20,7 @@ wolfssl-new anchors FIPS source checksums in an **external, append-only Merkle T
 
 - The MTC C server (`mtc-keymaster/server/c/mtc_server`) built and running
 - PostgreSQL (Neon) database configured, or a local data directory for file-based storage
-- `jq` and `curl` installed on the build machine
+- `fips-framework/` tools built (see `fips-framework/README.md`)
 
 ### Initial Server Setup
 
@@ -60,7 +60,7 @@ make                 # Rebuild with updated hash in fips_test.c
 
 ```bash
 # Set the MTC server URL
-export MTC_SERVER=https://mtc.example.com:8080
+export MTC_SERVER=factsorlie.com:8080
 
 # Submit checksums of all FIPS source files to the server
 ./fips-framework/fips-manifest-submit
@@ -116,30 +116,21 @@ make fips-manifest-submit   # after the FIPS build completes
 
 ### Managing the Server
 
-**View all logged manifests:**
-```bash
-curl http://localhost:8080/fips/manifest/search?package=wolfssl-new
-```
+All queries use TLS 1.3+ECH connections to `factsorlie.com`. The
+`fips-manifest-submit` and `fips-manifest-verify` tools handle this
+directly via wolfSSL. For administrative queries, the server also
+accepts requests from any TLS client.
 
-**Retrieve a specific manifest:**
-```bash
-curl http://localhost:8080/fips/manifest/42
-```
+**Server REST endpoints:**
 
-**Get a fresh inclusion proof** (proof updates as the tree grows):
-```bash
-curl http://localhost:8080/fips/manifest/42/proof
-```
-
-**Check log consistency** (verify the tree has only grown, never been rewritten):
-```bash
-curl "http://localhost:8080/log/consistency?old=42&new=100"
-```
-
-**Export the CA public key** (for distribution to verifiers):
-```bash
-curl http://localhost:8080/ca/public-key
-```
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/fips/manifest` | POST | Submit a new manifest |
+| `/fips/manifest/<index>` | GET | Retrieve a stored manifest |
+| `/fips/manifest/<index>/proof` | GET | Get fresh inclusion proof |
+| `/fips/manifest/search?package=X&tag=Y` | GET | Search manifests |
+| `/log/consistency?old=N&new=M` | GET | Check tree consistency |
+| `/ca/public-key` | GET | Export the CA public key |
 
 ### Key Rotation
 
@@ -163,9 +154,9 @@ Old receipts signed with the compromised key should be considered invalid. The a
 - The `fips-manifest-verify` tool (built from `fips-framework/`, linked against wolfCrypt)
 - The CA Ed25519 public key (32 bytes — published on the project website, DNS TXT record, or pinned in `fips-framework/config/ca-pubkey.h`)
 
-No OpenSSL or shell dependencies (`curl`, `jq`) are required. All
-cryptographic verification (SHA-256, Ed25519 signature, Merkle proof replay)
-uses wolfCrypt natively.
+No OpenSSL or shell dependencies are required. All cryptographic verification
+(SHA-256, Ed25519 signature, Merkle proof replay) and server communication
+(TLS 1.3+ECH) use wolfCrypt/wolfSSL natively.
 
 ### Online Verification (Recommended)
 
@@ -173,7 +164,7 @@ Online verification queries the MTC server for the latest proof and compares you
 
 ```bash
 # Set the MTC server URL
-export MTC_SERVER=https://mtc.example.com:8080
+export MTC_SERVER=factsorlie.com:8080
 
 # Verify your local source against the server
 ./fips-framework/fips-manifest-verify
@@ -197,7 +188,7 @@ FIPS Manifest Verification: PASS
   Git tag:    v5.9.0
   Log index:  42
   Expires:    2027-04-05T00:00:00Z (valid)
-  Publisher:  example.com-builder (log entry verified)
+  Publisher:  factsorlie.com-builder (log entry verified)
   Rollback:   OK (v5.9.0 >= last accepted v5.8.0)
   Files:      127 verified
   Proof:      inclusion proof valid (depth 7)
@@ -493,7 +484,7 @@ Each legitimate CA must publish its Ed25519 public key through at least one inde
 
 | Channel | Mechanism | Strength |
 |---------|-----------|----------|
-| **DNS TXT record** | `_mtc-ca-key.example.com TXT "v=mtc-ca1; pk=ed25519:<hex>"` | Strong — requires domain control; can be verified programmatically |
+| **DNS TXT record** | `_mtc-ca-key.factsorlie.com TXT "v=mtc-ca1; pk=ed25519:<hex>"` | Strong — requires domain control; can be verified programmatically |
 | **Project website** | Published on an HTTPS page the domain owner controls | Moderate — relies on TLS + domain control |
 | **Package metadata** | Pinned in `.deb` control file, RPM spec, or `MANIFEST` | Moderate — relies on package signing chain |
 | **Git signed tag** | CA public key committed and signed with maintainer's GPG key | Strong — relies on GPG web of trust |
@@ -506,14 +497,10 @@ When a downstream user receives a kit containing source code, a FIPS manifest re
 **Step 1: Identify the leaf publisher**
 
 The receipt and leaf certificate identify who published this kit:
-```bash
-# Who published this kit?
-jq '.leaf_subject' fips-manifest-receipt.json
-# Example output: "example.com-builder"
-
-# Which CA authorized them?
-jq '.cosignature.cosigner_id' fips-manifest-receipt.json
-# Example output: "32473.2.ca"
+The receipt file identifies the publisher and CA:
+```
+leaf_subject:        "factsorlie.com-builder"
+cosigner_id:         "32473.2.ca"
 ```
 
 **Step 2: Obtain the CA's public key out-of-band**
@@ -521,64 +508,37 @@ jq '.cosignature.cosigner_id' fips-manifest-receipt.json
 The CA — not the leaf — is the trust anchor. Get the CA's key independently:
 ```bash
 # DNS lookup
-dig TXT _mtc-ca-key.example.com +short
+dig TXT _mtc-ca-key.factsorlie.com +short
 # Example output: "v=mtc-ca1; pk=ed25519:MCowBQYDK2VwAyEA..."
 
-# Or use a pinned key from local config
-export MTC_CA_PUBKEY="MCowBQYDK2VwAyEA..."
+# Or use the pinned key compiled into fips-manifest-verify
+# (from fips-framework/config/ca-pubkey.h)
 ```
 
-**Step 3: Verify the CA was enrolled legitimately**
+**Step 3: Verify the kit**
 
-Query the server for the CA's log entry and confirm its public key hash matches the out-of-band key:
+The `fips-manifest-verify` tool handles all remaining steps in a single
+invocation — CA enrollment check, leaf authorization, source integrity,
+and optional revocation check:
+
 ```bash
-# Search for the CA certificate in the log
-curl "$MTC_SERVER/certificate/search?q=example.com-ca"
+./fips-framework/fips-manifest-verify --receipt fips-manifest-receipt.json \
+                                      --source-dir wolfcrypt/src
 
-# Retrieve the CA entry and check the public key hash
-curl "$MTC_SERVER/certificate/42" | jq '.tbs_entry.subject_public_key_hash'
-
-# Compare against the hash of the out-of-band public key
-echo -n "$MTC_CA_PUBKEY" | sha256sum
-```
-
-If the hashes match, the CA enrollment is confirmed authentic.
-
-**Step 4: Verify the leaf was authorized by this CA**
-
-Confirm the leaf certificate was issued under the verified CA:
-```bash
-# Retrieve the leaf certificate
-curl "$MTC_SERVER/certificate/55" | jq '.tbs_entry'
-
-# Verify:
-#   - The leaf's subject domain matches the CA's domain
-#   - The leaf's inclusion proof is valid
-#   - The leaf has CA:FALSE in extensions (it's a leaf, not a CA)
-#   - The leaf was issued while the CA was active (not revoked)
-```
-
-**Step 5: Verify the kit's source integrity**
-
-Now that the leaf publisher is confirmed legitimate, verify the FIPS manifest they submitted:
-```bash
-./fips-framework/fips-manifest-verify
-
-# The script checks:
+# The tool verifies:
+#   - CA's log entry matches the pinned public key
+#   - Leaf was authorized by this CA (inclusion proof valid)
+#   - Leaf was not revoked
 #   - Local file hashes match the manifest
-#   - Inclusion proof is valid (hash chain to root)
-#   - Cosignature is valid (Ed25519 verify with CA public key)
+#   - Merkle inclusion proof is valid (hash chain to root)
+#   - Ed25519 cosignature is valid
 ```
 
-**Step 6: Check for revocation (optional)**
-
+For offline verification (no server contact):
 ```bash
-# Check if the leaf certificate has been revoked
-curl "$MTC_SERVER/revoked/55"
-# Returns: {"revoked": false} or {"revoked": true, "reason": "..."}
-
-# Check if the CA itself has been revoked
-curl "$MTC_SERVER/revoked/42"
+./fips-framework/fips-manifest-verify --receipt fips-manifest-receipt.json \
+                                      --source-dir wolfcrypt/src \
+                                      --offline
 ```
 
 ### Trust Hierarchy Summary

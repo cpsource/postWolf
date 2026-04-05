@@ -126,7 +126,7 @@ int fips_manifest_count;
 
 All client tooling lives in `fips-framework/`, a self-contained directory
 that builds two C tools against wolfCrypt. No shell script dependencies
-(`jq`, `curl`), no OpenSSL dependency.
+no OpenSSL, `curl`, or `jq` dependency.
 
 ```
 fips-framework/
@@ -163,7 +163,8 @@ Verification steps:
 - **Offline mode:** recompute local hashes → replay inclusion proof from receipt → verify Ed25519 cosignature with pinned CA key from `config/ca-pubkey.h`
 
 Ed25519 verification uses `wc_ed25519_verify_msg()` from wolfCrypt.
-SHA-256 uses `wc_Sha256Hash()`. HTTP uses minimal socket code (no libcurl).
+SHA-256 uses `wc_Sha256Hash()`. Server communication uses wolfSSL TLS 1.3+ECH
+directly (no HTTP, no libcurl).
 
 **What ships with the kit:**
 - `fips-manifest-receipt.json` — manifest + inclusion proof + cosignature (self-contained)
@@ -219,8 +220,8 @@ dependency is the pinned CA public key (32 bytes, obtained out-of-band).
 4. Tamper with a FIPS source file, run `./fips-manifest-verify.sh` — confirm **failure**
 5. Restore file, run `./fips-manifest-verify.sh` — confirm **pass**
 6. Test offline: stop server, verify using cached receipt — confirm **pass**
-7. Test search: `curl localhost:8080/fips/manifest/search?package=wolfssl-new`
-8. Test retrieval: `curl localhost:8080/fips/manifest/0`
+7. Test search: `./fips-framework/fips-manifest-verify --search --package wolfssl-new`
+8. Test retrieval: `./fips-framework/fips-manifest-verify --get-manifest 0`
 
 ### Security Properties
 
