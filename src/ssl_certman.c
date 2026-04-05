@@ -108,20 +108,21 @@ WOLFSSL_CERT_MANAGER* wolfSSL_CertManagerNew_ex(void* heap)
         /* Reset all fields. */
         XMEMSET(cm, 0, sizeof(WOLFSSL_CERT_MANAGER));
 
-        /* Create a mutex for use when modify table of stored CAs. */
-        if (wc_InitMutex(&cm->caLock) != 0) {
-            WOLFSSL_MSG("Bad mutex init");
-            err = 1;
-        }
-    }
-    if (!err) {
-        /* Initialize reference count. */
+        /* Initialize reference count first so CertManagerFree works on
+         * cleanup if a later init step fails. */
         wolfSSL_RefInit(&cm->ref, &err);
     #ifdef WOLFSSL_REFCNT_ERROR_RETURN
         if (err != 0) {
             WOLFSSL_MSG("Bad reference count init");
         }
     #endif
+    }
+    if (!err) {
+        /* Create a mutex for use when modify table of stored CAs. */
+        if (wc_InitMutex(&cm->caLock) != 0) {
+            WOLFSSL_MSG("Bad mutex init");
+            err = 1;
+        }
     }
 #ifdef WOLFSSL_TRUST_PEER_CERT
     /* Create a mutex for use when modify table of trusted peers. */
@@ -2857,7 +2858,7 @@ int AddTrustedPeer(WOLFSSL_CERT_MANAGER* cm, DerBuffer** pDer, int verify)
     InitDecodedCert(cert, der->buffer, der->length, cm->heap);
     if ((ret = ParseCert(cert, TRUSTED_PEER_TYPE, verify, cm)) != 0) {
         FreeDecodedCert(cert);
-        XFREE(cert, NULL, DYNAMIC_TYPE_DCERT);
+        XFREE(cert, cm->heap, DYNAMIC_TYPE_DCERT);
         FreeDer(&der);
         return ret;
     }
@@ -2872,13 +2873,6 @@ int AddTrustedPeer(WOLFSSL_CERT_MANAGER* cm, DerBuffer** pDer, int verify)
         return MEMORY_E;
     }
     XMEMSET(peerCert, 0, sizeof(TrustedPeerCert));
-
-    #ifndef IGNORE_NAME_CONSTRAINTS
-        if (peerCert->permittedNames)
-            FreeNameSubtrees(peerCert->permittedNames, cm->heap);
-        if (peerCert->excludedNames)
-            FreeNameSubtrees(peerCert->excludedNames, cm->heap);
-    #endif
 
     if (AlreadyTrustedPeer(cm, cert)) {
         WOLFSSL_MSG("\tAlready have this CA, not adding again");
