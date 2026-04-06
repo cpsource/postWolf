@@ -3061,6 +3061,7 @@ int wolfSSL_X509_add_altname_ex(WOLFSSL_X509* x509, const char* name,
     newAltName->type = type;
     newAltName->len = (int)nameSz;
     newAltName->name = nameCopy;
+    newAltName->nameStored = 1;
     x509->altNames = newAltName;
 
     return WOLFSSL_SUCCESS;
@@ -4259,7 +4260,8 @@ char* wolfSSL_X509_get_next_altname(WOLFSSL_X509* cert)
         return NULL;
     }
 
-    ret = cert->altNamesNext->name;
+    /* unsafe cast required for ABI compatibility. */
+    ret = (char *)(wc_ptr_t)cert->altNamesNext->name;
 #ifdef WOLFSSL_IP_ALT_NAME
     /* return the IP address as a string */
     if (cert->altNamesNext->type == ASN_IP_TYPE) {
@@ -4419,8 +4421,14 @@ const byte* wolfSSL_X509_notBefore(WOLFSSL_X509* x509)
 {
     WOLFSSL_ENTER("wolfSSL_X509_notBefore");
 
-    if (x509 == NULL)
+    if (x509 == NULL) {
         return NULL;
+    }
+
+    if (x509->notBefore.length < 0 ||
+            x509->notBefore.length > (int)sizeof(x509->notBeforeData) - 2) {
+        return NULL;
+    }
 
     XMEMSET(x509->notBeforeData, 0, sizeof(x509->notBeforeData));
     x509->notBeforeData[0] = (byte)x509->notBefore.type;
@@ -4437,8 +4445,14 @@ const byte* wolfSSL_X509_notAfter(WOLFSSL_X509* x509)
 {
     WOLFSSL_ENTER("wolfSSL_X509_notAfter");
 
-    if (x509 == NULL)
+    if (x509 == NULL) {
         return NULL;
+    }
+
+    if (x509->notAfter.length < 0 ||
+            x509->notAfter.length > (int)sizeof(x509->notAfterData) - 2) {
+        return NULL;
+    }
 
     XMEMSET(x509->notAfterData, 0, sizeof(x509->notAfterData));
     x509->notAfterData[0] = (byte)x509->notAfter.type;
@@ -11856,25 +11870,28 @@ static int CertFromX509(Cert* cert, WOLFSSL_X509* x509)
         return WOLFSSL_FAILURE;
     }
 
-    if (x509->authKeyIdSz < sizeof(cert->akid)) {
     #ifdef WOLFSSL_AKID_NAME
-        cert->rawAkid = 0;
-        if (x509->authKeyIdSrc) {
-            XMEMCPY(cert->akid, x509->authKeyIdSrc, x509->authKeyIdSrcSz);
-            cert->akidSz = (int)x509->authKeyIdSrcSz;
-            cert->rawAkid = 1;
+    cert->rawAkid = 0;
+    if (x509->authKeyIdSrc) {
+        if (x509->authKeyIdSrcSz > sizeof(cert->akid)) {
+            WOLFSSL_MSG("Auth Key ID too large");
+            WOLFSSL_ERROR_VERBOSE(BUFFER_E);
+            return WOLFSSL_FAILURE;
         }
-        else
-    #endif
-        if (x509->authKeyId) {
-            XMEMCPY(cert->akid, x509->authKeyId, x509->authKeyIdSz);
-            cert->akidSz = (int)x509->authKeyIdSz;
-        }
+        XMEMCPY(cert->akid, x509->authKeyIdSrc, x509->authKeyIdSrcSz);
+        cert->akidSz = (int)x509->authKeyIdSrcSz;
+        cert->rawAkid = 1;
     }
-    else {
-        WOLFSSL_MSG("Auth Key ID too large");
-        WOLFSSL_ERROR_VERBOSE(BUFFER_E);
-        return WOLFSSL_FAILURE;
+    else
+    #endif
+    if (x509->authKeyId) {
+        if (x509->authKeyIdSz > sizeof(cert->akid)) {
+            WOLFSSL_MSG("Auth Key ID too large");
+            WOLFSSL_ERROR_VERBOSE(BUFFER_E);
+            return WOLFSSL_FAILURE;
+        }
+        XMEMCPY(cert->akid, x509->authKeyId, x509->authKeyIdSz);
+        cert->akidSz = (int)x509->authKeyIdSz;
     }
 
     for (i = 0; i < x509->certPoliciesNb; i++) {
@@ -13192,7 +13209,7 @@ static WOLFSSL_X509 *loadX509orX509REQFromPemBio(WOLFSSL_BIO *bp,
             pem = newPem;
             pemSz = newSz;
         }
-        else if (i > pemSz) {
+        else if (i >= pemSz) {
             /* Buffer full for non-streaming source - this shouldn't happen */
             break;
         }
@@ -16060,6 +16077,10 @@ int wolfSSL_X509_set_notAfter(WOLFSSL_X509* x509, const WOLFSSL_ASN1_TIME* t)
         return WOLFSSL_FAILURE;
     }
 
+    if (t->length < 0 || t->length > CTC_DATE_SIZE - 2) {
+        return WOLFSSL_FAILURE;
+    }
+
     x509->notAfter.type = t->type;
     x509->notAfter.length = t->length;
 
@@ -16071,6 +16092,10 @@ int wolfSSL_X509_set_notAfter(WOLFSSL_X509* x509, const WOLFSSL_ASN1_TIME* t)
 int wolfSSL_X509_set_notBefore(WOLFSSL_X509* x509, const WOLFSSL_ASN1_TIME* t)
 {
     if (x509 == NULL || t == NULL) {
+        return WOLFSSL_FAILURE;
+    }
+
+    if (t->length < 0 || t->length > CTC_DATE_SIZE - 2) {
         return WOLFSSL_FAILURE;
     }
 

@@ -213,6 +213,7 @@ ECC Curve Sizes:
 
 #include <wolfssl/wolfcrypt/ecc.h>
 #include <wolfssl/wolfcrypt/asn.h>
+#include <wolfssl/wolfcrypt/hash.h>
 
 #ifdef WOLFSSL_HAVE_SP_ECC
 #include <wolfssl/wolfcrypt/sp.h>
@@ -221,10 +222,6 @@ ECC Curve Sizes:
 #ifdef HAVE_ECC_ENCRYPT
     #include <wolfssl/wolfcrypt/kdf.h>
     #include <wolfssl/wolfcrypt/aes.h>
-#endif
-
-#ifdef HAVE_X963_KDF
-    #include <wolfssl/wolfcrypt/hash.h>
 #endif
 
 #ifdef WOLF_CRYPTO_CB
@@ -3919,7 +3916,7 @@ static int ecc_check_order_minus_1(const mp_int* k, ecc_point* tG, ecc_point* R,
          */
         err = mp_sub_d(order, 1, t);
         if (err == MP_OKAY) {
-            int kIsMinusOne = (mp_cmp((mp_int*)k, t) == MP_EQ);
+            int kIsMinusOne = (mp_cmp((const mp_int*)k, t) == MP_EQ);
             err = mp_cond_copy(tG->x, kIsMinusOne, R->x);
             if (err == MP_OKAY) {
                 err = mp_sub(modulus, tG->y, t);
@@ -4424,7 +4421,8 @@ static int wc_ecc_cmp_param(const char* curveParam,
     if (encType == WC_TYPE_HEX_STR) {
         if ((word32)XSTRLEN(curveParam) != paramSz)
             return -1;
-        return (XSTRNCMP(curveParam, (char*) param, paramSz) == 0) ? 0 : -1;
+        return (XSTRNCMP(curveParam, (const char*) param, paramSz) == 0)
+            ? 0 : -1;
     }
 
 #ifdef WOLFSSL_SMALL_STACK
@@ -6777,7 +6775,9 @@ int wc_ecc_sign_hash(const byte* in, word32 inlen, byte* out, word32 *outlen,
     if (in == NULL || out == NULL || outlen == NULL || key == NULL) {
         return ECC_BAD_ARG_E;
     }
-    if (inlen > WC_MAX_DIGEST_SIZE) {
+    if ((inlen > WC_MAX_DIGEST_SIZE) ||
+        (inlen < WC_MIN_DIGEST_SIZE))
+    {
         return BAD_LENGTH_E;
     }
 
@@ -7297,6 +7297,11 @@ int wc_ecc_sign_hash_ex(const byte* in, word32 inlen, WC_RNG* rng,
 
    if (in == NULL || r == NULL || s == NULL || key == NULL || rng == NULL) {
        return ECC_BAD_ARG_E;
+   }
+   if ((inlen > WC_MAX_DIGEST_SIZE) ||
+       (inlen < WC_MIN_DIGEST_SIZE))
+   {
+       return BAD_LENGTH_E;
    }
 
    /* is this a private key? */
@@ -7915,21 +7920,21 @@ int wc_ecc_sign_set_k(const byte* k, word32 klen, ecc_key* key)
 #endif /* !HAVE_ECC_SIGN */
 
 #ifdef WOLFSSL_CUSTOM_CURVES
-void wc_ecc_free_curve(const ecc_set_type* curve, void* heap)
+void wc_ecc_free_curve(ecc_set_type* curve, void* heap)
 {
 #ifndef WOLFSSL_ECC_CURVE_STATIC
     if (curve->prime != NULL)
-        XFREE((void*)curve->prime, heap, DYNAMIC_TYPE_ECC_BUFFER);
+        XFREE((void*)(wc_ptr_t)curve->prime, heap, DYNAMIC_TYPE_ECC_BUFFER);
     if (curve->Af != NULL)
-        XFREE((void*)curve->Af, heap, DYNAMIC_TYPE_ECC_BUFFER);
+        XFREE((void*)(wc_ptr_t)curve->Af, heap, DYNAMIC_TYPE_ECC_BUFFER);
     if (curve->Bf != NULL)
-        XFREE((void*)curve->Bf, heap, DYNAMIC_TYPE_ECC_BUFFER);
+        XFREE((void*)(wc_ptr_t)curve->Bf, heap, DYNAMIC_TYPE_ECC_BUFFER);
     if (curve->order != NULL)
-        XFREE((void*)curve->order, heap, DYNAMIC_TYPE_ECC_BUFFER);
+        XFREE((void*)(wc_ptr_t)curve->order, heap, DYNAMIC_TYPE_ECC_BUFFER);
     if (curve->Gx != NULL)
-        XFREE((void*)curve->Gx, heap, DYNAMIC_TYPE_ECC_BUFFER);
+        XFREE((void*)(wc_ptr_t)curve->Gx, heap, DYNAMIC_TYPE_ECC_BUFFER);
     if (curve->Gy != NULL)
-        XFREE((void*)curve->Gy, heap, DYNAMIC_TYPE_ECC_BUFFER);
+        XFREE((void*)(wc_ptr_t)curve->Gy, heap, DYNAMIC_TYPE_ECC_BUFFER);
 #endif
 
     XFREE((void*)curve, heap, DYNAMIC_TYPE_ECC_BUFFER);
@@ -8041,7 +8046,7 @@ int wc_ecc_free(ecc_key* key)
 
 #ifdef WOLFSSL_CUSTOM_CURVES
     if (key->deallocSet && key->dp != NULL)
-        wc_ecc_free_curve(key->dp, key->heap);
+        wc_ecc_free_curve((ecc_set_type *)(wc_ptr_t)key->dp, key->heap);
 #endif
 
 #ifdef WOLFSSL_CHECK_MEM_ZERO
@@ -8575,7 +8580,10 @@ int wc_ecc_verify_hash(const byte* sig, word32 siglen, const byte* hash,
     if (sig == NULL || hash == NULL || res == NULL || key == NULL) {
         return ECC_BAD_ARG_E;
     }
-    if (hashlen > WC_MAX_DIGEST_SIZE) {
+
+    /* Check hash length */
+    if ((hashlen > WC_MAX_DIGEST_SIZE) ||
+        (hashlen < WC_MIN_DIGEST_SIZE)) {
         return BAD_LENGTH_E;
     }
 
@@ -9282,6 +9290,12 @@ int wc_ecc_verify_hash_ex(mp_int *r, mp_int *s, const byte* hash,
 
    if (r == NULL || s == NULL || hash == NULL || res == NULL || key == NULL)
        return ECC_BAD_ARG_E;
+
+    /* Check hash length */
+    if ((hashlen > WC_MAX_DIGEST_SIZE) ||
+        (hashlen < WC_MIN_DIGEST_SIZE)) {
+        return BAD_LENGTH_E;
+    }
 
    /* default to invalid signature */
    *res = 0;
@@ -13867,7 +13881,7 @@ enum ecSrvState {
 
 
 struct ecEncCtx {
-    const byte* kdfSalt;   /* optional salt for kdf */
+    byte* kdfSalt;         /* optional salt for kdf */
     const byte* kdfInfo;   /* optional info for kdf */
     const byte* macSalt;   /* optional salt for mac */
     word32    kdfSaltSz;   /* size of kdfSalt */
