@@ -157,7 +157,6 @@
 #include <wolfssl/error-ssl.h>
 #include <wolfssl/wolfcrypt/asn.h>
 #include <wolfssl/wolfcrypt/dh.h>
-#include <wolfssl/wolfcrypt/hash.h>
 #ifdef NO_INLINE
     #include <wolfssl/wolfcrypt/misc.h>
 #else
@@ -5720,12 +5719,6 @@ int EccVerify(WOLFSSL* ssl, const byte* in, word32 inSz, const byte* out,
         keySz = keyBufInfo->length;
     }
 #endif
-
-    /* Check hash length */
-    if ((outSz > WC_MAX_DIGEST_SIZE) ||
-        (outSz < WC_MIN_DIGEST_SIZE)) {
-        return BAD_LENGTH_E;
-    }
 
     (void)ssl;
     (void)keyBufInfo;
@@ -20046,14 +20039,9 @@ int ChachaAEADDecrypt(WOLFSSL* ssl, byte* plain, const byte* input,
     byte tag[POLY1305_AUTH_SZ];
     byte poly[CHACHA20_256_KEY_SIZE]; /* generated key for mac */
     int ret    = 0;
-    int msgLen = 0;
+    int msgLen = (sz - ssl->specs.aead_mac_size);
     Keys* keys = &ssl->keys;
     byte* seq = NULL;
-
-    if (sz < ssl->specs.aead_mac_size) {
-        return BAD_FUNC_ARG;
-    }
-    msgLen = (sz - ssl->specs.aead_mac_size);
 
     #ifdef CHACHA_AEAD_TEST
        int i;

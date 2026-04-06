@@ -4712,8 +4712,8 @@ int wolfSSL_i2d_ASN1_TYPE(WOLFSSL_ASN1_TYPE* at, unsigned char** pp)
             ret = wolfSSL_i2d_ASN1_UTF8STRING(at->value.utf8string, pp);
             break;
         case WOLFSSL_V_ASN1_GENERALIZEDTIME:
-            ret = i2d_ASN1_STRING(at->value.generalizedtime, pp,
-                                  ASN_GENERALIZED_TIME);
+            ret = i2d_ASN1_STRING((WOLFSSL_ASN1_STRING*)at->value.generalizedtime,
+                                  pp, ASN_GENERALIZED_TIME);
             break;
         case WOLFSSL_V_ASN1_SEQUENCE:
             ret = wolfSSL_i2d_ASN1_SEQUENCE(at->value.sequence, pp);

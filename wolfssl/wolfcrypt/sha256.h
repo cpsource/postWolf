@@ -116,10 +116,12 @@
 #endif
 
 /* in bytes */
-#define WC_SHA256              WC_HASH_TYPE_SHA256
-#define WC_SHA256_BLOCK_SIZE   64
-#define WC_SHA256_DIGEST_SIZE  32
-#define WC_SHA256_PAD_SIZE     56
+enum {
+    WC_SHA256              =  WC_HASH_TYPE_SHA256,
+    WC_SHA256_BLOCK_SIZE   = 64,
+    WC_SHA256_DIGEST_SIZE  = 32,
+    WC_SHA256_PAD_SIZE     = 56
+};
 
 
 #ifdef WOLFSSL_TI_HASH
@@ -301,10 +303,12 @@ WOLFSSL_API void wc_Sha256SizeSet(wc_Sha256* sha256, word32 len);
 #endif
 
 /* in bytes */
-#define WC_SHA224             WC_HASH_TYPE_SHA224
-#define WC_SHA224_BLOCK_SIZE  WC_SHA256_BLOCK_SIZE
-#define WC_SHA224_DIGEST_SIZE 28
-#define WC_SHA224_PAD_SIZE    WC_SHA256_PAD_SIZE
+enum {
+    WC_SHA224              =   WC_HASH_TYPE_SHA224,
+    WC_SHA224_BLOCK_SIZE   =   WC_SHA256_BLOCK_SIZE,
+    WC_SHA224_DIGEST_SIZE  =   28,
+    WC_SHA224_PAD_SIZE     =   WC_SHA256_PAD_SIZE
+};
 
 
 #ifndef WC_SHA224_TYPE_DEFINED

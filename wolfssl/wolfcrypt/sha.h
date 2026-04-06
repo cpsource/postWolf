@@ -101,10 +101,12 @@
 #endif
 
 /* in bytes */
-#define WC_SHA              WC_HASH_TYPE_SHA
-#define WC_SHA_BLOCK_SIZE   64
-#define WC_SHA_DIGEST_SIZE  20
-#define WC_SHA_PAD_SIZE     56
+enum {
+    WC_SHA              =  WC_HASH_TYPE_SHA,
+    WC_SHA_BLOCK_SIZE   = 64,
+    WC_SHA_DIGEST_SIZE  = 20,
+    WC_SHA_PAD_SIZE     = 56
+};
 
 
 #if defined(WOLFSSL_TI_HASH)

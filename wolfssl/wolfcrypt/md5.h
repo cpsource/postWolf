@@ -55,14 +55,16 @@
     #define Md5             wc_Md5
     #define MD5_BLOCK_SIZE  WC_MD5_BLOCK_SIZE
     #define MD5_DIGEST_SIZE WC_MD5_DIGEST_SIZE
-    #define MD5_PAD_SIZE    WC_MD5_PAD_SIZE
+    #define WC_MD5_PAD_SIZE WC_MD5_PAD_SIZE
 #endif
 
 /* in bytes */
-#define WC_MD5             WC_HASH_TYPE_MD5
-#define WC_MD5_BLOCK_SIZE  64
-#define WC_MD5_DIGEST_SIZE 16
-#define WC_MD5_PAD_SIZE    56
+enum {
+    WC_MD5             =  WC_HASH_TYPE_MD5,
+    WC_MD5_BLOCK_SIZE  = 64,
+    WC_MD5_DIGEST_SIZE = 16,
+    WC_MD5_PAD_SIZE    = 56
+};
 
 
 #ifdef WOLFSSL_MICROCHIP_PIC32MZ
