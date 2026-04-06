@@ -106,7 +106,8 @@
         int lock_valid;
     #endif
     } SessionRow;
-    #define SIZEOF_SESSION_ROW (sizeof(WOLFSSL_SESSION) + (sizeof(int) * 2))
+    #define SIZEOF_SESSION_ROW (sizeof(WOLFSSL_SESSION) * SESSIONS_PER_ROW \
+                                + (sizeof(int) * 2))
 
     static WC_THREADSHARED SessionRow SessionCache[SESSION_ROWS];
 
@@ -2199,8 +2200,7 @@ int wolfSSL_GetSessionAtIndex(int idx, WOLFSSL_SESSION* session)
     cacheSession = &sessRow->Sessions[col];
 #endif
     if (cacheSession) {
-        XMEMCPY(session, cacheSession, sizeof(WOLFSSL_SESSION));
-        result = WOLFSSL_SUCCESS;
+        result = wolfSSL_DupSession(cacheSession, session, 0);
     }
     else {
         result = WOLFSSL_FAILURE;
