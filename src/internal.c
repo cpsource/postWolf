@@ -19400,7 +19400,12 @@ static int Dtls13UpdateWindow(WOLFSSL* ssl)
         /* zero based index */
         w64Decrement(&diff64);
 
-        /* FIXME: check that diff64 < DTLS_WORDS_BITS */
+        /* Check that diff64 fits in the window before truncating to 32 bits.
+         * If high word is non-zero, the sequence is far outside the window. */
+        if (w64GetHigh32(diff64) != 0) {
+            WOLFSSL_MSG("Sequence number diff too large for DTLS window");
+            return 0;
+        }
         diff = w64GetLow32(diff64);
         wordIndex = ((int)diff) / DTLS_WORD_BITS;
         wordOffset = ((int)diff) % DTLS_WORD_BITS;
