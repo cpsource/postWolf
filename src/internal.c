@@ -1180,6 +1180,8 @@ static int ImportKeyState(WOLFSSL* ssl, const byte* exp, word32 len, byte ver,
         word16 i, wordCount, wordAdj = 0;
 
         /* do window */
+        if (idx + OPAQUE16_LEN > len)
+            return BUFFER_E;
         ato16(exp + idx, &wordCount);
         idx += OPAQUE16_LEN;
 
@@ -1188,6 +1190,8 @@ static int ImportKeyState(WOLFSSL* ssl, const byte* exp, word32 len, byte ver,
             wordCount = WOLFSSL_DTLS_WINDOW_WORDS;
         }
 
+        if (idx + (wordCount * OPAQUE32_LEN) + wordAdj > len)
+            return BUFFER_E;
         XMEMSET(keys->peerSeq[0].window, 0xFF, DTLS_SEQ_SZ);
         for (i = 0; i < wordCount; i++) {
             ato32(exp + idx, &keys->peerSeq[0].window[i]);
@@ -1196,6 +1200,9 @@ static int ImportKeyState(WOLFSSL* ssl, const byte* exp, word32 len, byte ver,
         idx += wordAdj;
 
         /* do prevWindow */
+        wordAdj = 0;
+        if (idx + OPAQUE16_LEN > len)
+            return BUFFER_E;
         ato16(exp + idx, &wordCount);
         idx += OPAQUE16_LEN;
 
@@ -1204,6 +1211,8 @@ static int ImportKeyState(WOLFSSL* ssl, const byte* exp, word32 len, byte ver,
             wordCount = WOLFSSL_DTLS_WINDOW_WORDS;
         }
 
+        if (idx + (wordCount * OPAQUE32_LEN) + wordAdj > len)
+            return BUFFER_E;
         XMEMSET(keys->peerSeq[0].prevWindow, 0xFF, DTLS_SEQ_SZ);
         for (i = 0; i < wordCount; i++) {
             ato32(exp + idx, &keys->peerSeq[0].prevWindow[i]);
@@ -9692,8 +9701,9 @@ static DtlsFragBucket* DtlsMsgCombineFragBuckets(DtlsMsg* msg,
         }
         else {
             /* data -> cur. memcpy as much possible as its faster. */
-            XMEMMOVE(newBucket->buf + dataSz, cur->buf,
-                    cur->m.m.sz - (offsetEnd - cur->m.m.offset));
+            word32 skipInCur = offsetEnd - cur->m.m.offset;
+            XMEMMOVE(newBucket->buf + dataSz, cur->buf + skipInCur,
+                    cur->m.m.sz - skipInCur);
             XMEMCPY(newBucket->buf, data, dataSz);
         }
     }
@@ -9854,22 +9864,25 @@ int DtlsMsgSet(DtlsMsg* msg, word32 seq, word16 epoch, const byte* data, byte ty
                     msg->fragBucketListCount++;
                 }
             }
-            else if (prev == NULL && fragOffsetEnd < cur->m.m.offset) {
-                    /* This is the new first fragment we have received */
+            else if (fragOffsetEnd < cur->m.m.offset) {
+                    /* Fragment is entirely before cur with a gap */
+                    DtlsFragBucket** prev_next;
                     if (msg->fragBucketListCount >= DTLS_FRAG_POOL_SZ) {
                         WOLFSSL_ERROR_VERBOSE(DTLS_TOO_MANY_FRAGMENTS_E);
                         return DTLS_TOO_MANY_FRAGMENTS_E;
                     }
-                    msg->fragBucketList = DtlsMsgCreateFragBucket(fragOffset, data,
+                    prev_next = prev != NULL
+                            ? &prev->m.m.next : &msg->fragBucketList;
+                    *prev_next = DtlsMsgCreateFragBucket(fragOffset, data,
                             fragSz, heap);
-                    if (msg->fragBucketList != NULL) {
-                        msg->fragBucketList->m.m.next = cur;
+                    if (*prev_next != NULL) {
+                        (*prev_next)->m.m.next = cur;
                         msg->bytesReceived += fragSz;
                         msg->fragBucketListCount++;
                     }
                     else {
                         /* reset on error */
-                        msg->fragBucketList = cur;
+                        *prev_next = cur;
                     }
             }
             else {
@@ -13347,6 +13360,9 @@ int MatchDomainName(const char* pattern, int patternLen, const char* str,
                 wildcardEligible = 0;
             }
 
+            if (strLen == 0)
+                return 0;
+
             /* Simple case, pattern match exactly */
             if (p != (char)XTOLOWER((unsigned char) *str))
                 return 0;
@@ -13384,7 +13400,7 @@ int CheckForAltNames(DecodedCert* dCert, const char* domain, word32 domainLen,
 {
     int match = 0;
     DNS_entry* altName = NULL;
-    char *buf;
+    const char *buf;
     word32 len;
 
     WOLFSSL_MSG("Checking AltNames");
@@ -13743,11 +13759,34 @@ static int CopyREQAttributes(WOLFSSL_X509* x509, DecodedCert* dCert)
 }
 #endif /* WOLFSSL_CERT_REQ */
 
+/* Copy an ASN-encoded date (type + length + data) into a WOLFSSL_ASN1_TIME.
+ * srcDate: ASN date buffer where [0]=type, [1]=length, [2..]=date bytes.
+ * srcDateLen: total length of srcDate (0 means no date present). */
+static void CopyDateToASN1_TIME(const byte* srcDate, int srcDateLen,
+                                WOLFSSL_ASN1_TIME* dst)
+{
+    if (srcDateLen >= 2) {
+        /* Clamp the date length to the maximum allowed size.
+         * This needs to match the size of WOLFSSL_ASN1_TIME minus the
+         * the type and length fields. */
+        const int maxSz = CTC_DATE_SIZE - 2;
+        const int copySz = (int)min(srcDate[1], maxSz);
+        dst->type = srcDate[0];
+        dst->length = copySz;
+        XMEMCPY(dst->data, &srcDate[2], copySz);
+    }
+    else {
+        dst->length = 0;
+    }
+}
+
 /* Copy parts X509 needs from Decoded cert, 0 on success */
 int CopyDecodedToX509(WOLFSSL_X509* x509, DecodedCert* dCert)
 {
     int ret = 0;
+#ifdef WOLFSSL_SEP
     int minSz;
+#endif
 
     if (x509 == NULL || dCert == NULL ||
         dCert->subjectCNLen < 0)
@@ -13820,22 +13859,10 @@ int CopyDecodedToX509(WOLFSSL_X509* x509, DecodedCert* dCert)
         x509->hwSerialNumSz = 0;
 #endif /* WOLFSSL_SEP */
 
-    if (dCert->beforeDateLen > 0) {
-        minSz = (int)min(dCert->beforeDate[1], MAX_DATE_SZ);
-        x509->notBefore.type = dCert->beforeDate[0];
-        x509->notBefore.length = minSz;
-        XMEMCPY(x509->notBefore.data, &dCert->beforeDate[2], minSz);
-    }
-    else
-        x509->notBefore.length = 0;
-    if (dCert->afterDateLen > 0) {
-        minSz = (int)min(dCert->afterDate[1], MAX_DATE_SZ);
-        x509->notAfter.type = dCert->afterDate[0];
-        x509->notAfter.length = minSz;
-        XMEMCPY(x509->notAfter.data, &dCert->afterDate[2], minSz);
-    }
-    else
-        x509->notAfter.length = 0;
+    CopyDateToASN1_TIME(dCert->beforeDate, dCert->beforeDateLen,
+        &x509->notBefore);
+    CopyDateToASN1_TIME(dCert->afterDate, dCert->afterDateLen,
+        &x509->notAfter);
 
     if (dCert->publicKey != NULL && dCert->pubKeySize != 0) {
         x509->pubKey.buffer = (byte*)XMALLOC(
@@ -14217,29 +14244,10 @@ int CopyDecodedAcertToX509(WOLFSSL_X509_ACERT* x509, DecodedAcert* dAcert)
     }
 
     /* Copy before and after dates. */
-    {
-        int minSz = 0;
-
-        if (dAcert->beforeDateLen > 0) {
-            minSz = (int)min(dAcert->beforeDate[1], MAX_DATE_SZ);
-            x509->notBefore.type = dAcert->beforeDate[0];
-            x509->notBefore.length = minSz;
-            XMEMCPY(x509->notBefore.data, &dAcert->beforeDate[2], minSz);
-        }
-        else {
-            x509->notBefore.length = 0;
-        }
-
-        if (dAcert->afterDateLen > 0) {
-            minSz = (int)min(dAcert->afterDate[1], MAX_DATE_SZ);
-            x509->notAfter.type = dAcert->afterDate[0];
-            x509->notAfter.length = minSz;
-            XMEMCPY(x509->notAfter.data, &dAcert->afterDate[2], minSz);
-        }
-        else {
-            x509->notAfter.length = 0;
-        }
-    }
+    CopyDateToASN1_TIME(dAcert->beforeDate, dAcert->beforeDateLen,
+        &x509->notBefore);
+    CopyDateToASN1_TIME(dAcert->afterDate, dAcert->afterDateLen,
+        &x509->notAfter);
 
     /* Copy the signature. */
     if (dAcert->signature != NULL && dAcert->sigLength != 0 &&
@@ -19746,7 +19754,9 @@ static int DoDtlsHandShakeMsg(WOLFSSL* ssl, byte* input, word32* inOutIdx,
 #if (!defined(NO_PUBLIC_GCM_SET_IV) && \
     ((defined(HAVE_FIPS) || defined(HAVE_SELFTEST)) && \
     (!defined(HAVE_FIPS_VERSION) || (HAVE_FIPS_VERSION < 2)))) || \
-    (defined(HAVE_POLY1305) && defined(HAVE_CHACHA))
+    (defined(HAVE_POLY1305) && defined(HAVE_CHACHA)) || \
+    defined(HAVE_ARIA) || \
+    defined(WOLFSSL_SM4_GCM) || defined(WOLFSSL_SM4_CCM)
 static WC_INLINE void AeadIncrementExpIV(WOLFSSL* ssl)
 {
     int i;
@@ -20733,10 +20743,9 @@ static WC_INLINE int Encrypt(WOLFSSL* ssl, byte* out, const byte* input,
                 sizeof(ssl->encrypt.sanityCheck));
         #endif
 
-        #if defined(BUILD_AESGCM) || defined(HAVE_AESCCM) || defined(HAVE_ARIA)
+        #if defined(BUILD_AESGCM) || defined(HAVE_AESCCM)
             if (ssl->specs.bulk_cipher_algorithm == wolfssl_aes_ccm ||
-                ssl->specs.bulk_cipher_algorithm == wolfssl_aes_gcm ||
-                ssl->specs.bulk_cipher_algorithm == wolfssl_aria_gcm)
+                ssl->specs.bulk_cipher_algorithm == wolfssl_aes_gcm)
             {
                 /* finalize authentication cipher */
 #if !defined(NO_PUBLIC_GCM_SET_IV) && \
@@ -20747,7 +20756,17 @@ static WC_INLINE int Encrypt(WOLFSSL* ssl, byte* out, const byte* input,
                 if (ssl->encrypt.nonce)
                     ForceZero(ssl->encrypt.nonce, AESGCM_NONCE_SZ);
             }
-        #endif /* BUILD_AESGCM || HAVE_AESCCM || HAVE_ARIA */
+        #endif /* BUILD_AESGCM || HAVE_AESCCM */
+        #ifdef HAVE_ARIA
+            if (ssl->specs.bulk_cipher_algorithm == wolfssl_aria_gcm)
+            {
+                /* finalize authentication cipher -- wc_AriaEncrypt is
+                 * stateless, so the explicit IV must always advance */
+                AeadIncrementExpIV(ssl);
+                if (ssl->encrypt.nonce)
+                    ForceZero(ssl->encrypt.nonce, AESGCM_NONCE_SZ);
+            }
+        #endif /* HAVE_ARIA */
         #if defined(WOLFSSL_SM4_GCM) || defined(WOLFSSL_SM4_CCM)
             if (ssl->specs.bulk_cipher_algorithm == wolfssl_sm4_ccm ||
                 ssl->specs.bulk_cipher_algorithm == wolfssl_sm4_gcm)
@@ -31043,7 +31062,7 @@ static void MakePSKPreMasterSecret(Arrays* arrays, byte use_psk_key)
             XMEMSET(pms, 0, sz);
             pms += sz;
         }
-        c16toa(arrays->psk_keySz, pms);
+        c16toa((word16)arrays->psk_keySz, pms);
         pms += OPAQUE16_LEN;
         XMEMCPY(pms, arrays->psk_key, arrays->psk_keySz);
         arrays->preMasterSz = sz + arrays->psk_keySz + OPAQUE16_LEN * 2;
@@ -35370,17 +35389,6 @@ static int DoSessionTicket(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
                 return bad_certificate_status_response;
             case WC_NO_ERR_TRACE(OUT_OF_ORDER_E):
                 return unexpected_message;
-            case WC_NO_ERR_TRACE(ASN_AFTER_DATE_E):
-            case WC_NO_ERR_TRACE(ASN_BEFORE_DATE_E):
-                return certificate_expired;
-            case WC_NO_ERR_TRACE(CRL_CERT_REVOKED):
-                return certificate_revoked;
-            case WC_NO_ERR_TRACE(ASN_NO_SIGNER_E):
-                return unknown_ca;
-            case WC_NO_ERR_TRACE(ASN_SIG_CONFIRM_E):
-                return bad_certificate;
-            case WC_NO_ERR_TRACE(NO_CERT_ERROR):
-                return certificate_required;
             default:
                 return invalid_alert;
         }
