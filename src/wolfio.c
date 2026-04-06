@@ -1699,6 +1699,7 @@ int wolfIO_DecodeUrl(const char* url, int urlSz, char* outName, char* outPath,
                 if (port[j] < '0' || port[j] > '9') return WOLFSSL_FATAL_ERROR;
                 bigPort = (bigPort * 10) + (word32)(port[j] - '0');
             }
+            if (bigPort > 65535) return WOLFSSL_FATAL_ERROR;
             if (outPort)
                 *outPort = (word16)bigPort;
         }
@@ -3699,6 +3700,9 @@ static int isotp_receive_multi_frame(struct isotp_wolfssl_ctx *ctx)
         }
         /* Last 7 bytes or whatever we got after the first byte is data */
         frame_len = ctx->frame.length - 1;
+        /* Clamp to remaining expected data to prevent unsigned underflow */
+        if (frame_len > data_size)
+            frame_len = (byte)data_size;
         XMEMCPY(ctx->buf_ptr, &ctx->frame.data[1], frame_len);
         ctx->buf_ptr += frame_len;
         ctx->buf_length += frame_len;
