@@ -3361,15 +3361,16 @@ int wolfSSL_ASN1_STRING_print(WOLFSSL_BIO *bio, WOLFSSL_ASN1_STRING *str)
         int i;
 
         len = str->length;
-        /* Convert all unprintable characters to '.'. */
+        /* Write each character, substituting '.' for unprintable chars.
+         * Do NOT modify the source string (non-destructive). */
         for (i = 0; i < len; i++) {
-            if (wolfssl_unprintable_char(str->data[i])) {
-                str->data[i] = '.';
+            char c = str->data[i];
+            if (wolfssl_unprintable_char(c))
+                c = '.';
+            if (wolfSSL_BIO_write(bio, &c, 1) != 1) {
+                len = 0;
+                break;
             }
-        }
-        /* Write string to BIO. */
-        if (wolfSSL_BIO_write(bio, str->data, len) != len) {
-            len = 0;
         }
     }
 
@@ -4711,7 +4712,8 @@ int wolfSSL_i2d_ASN1_TYPE(WOLFSSL_ASN1_TYPE* at, unsigned char** pp)
             ret = wolfSSL_i2d_ASN1_UTF8STRING(at->value.utf8string, pp);
             break;
         case WOLFSSL_V_ASN1_GENERALIZEDTIME:
-            ret = wolfSSL_i2d_ASN1_GENERALSTRING(at->value.utf8string, pp);
+            ret = i2d_ASN1_STRING(at->value.generalizedtime, pp,
+                                  ASN_GENERALIZED_TIME);
             break;
         case WOLFSSL_V_ASN1_SEQUENCE:
             ret = wolfSSL_i2d_ASN1_SEQUENCE(at->value.sequence, pp);
