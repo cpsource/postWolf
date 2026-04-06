@@ -91,8 +91,6 @@ void DtlsResetState(WOLFSSL* ssl)
     ssl->options.handShakeState = NULL_STATE;
     ssl->options.seenUnifiedHdr = 0;
     ssl->msgsReceived.got_client_hello = 0;
-    ssl->keys.dtls_handshake_number = 0;
-    ssl->keys.dtls_expected_peer_handshake_number = 0;
     XMEMSET(ssl->keys.peerSeq, 0, sizeof(ssl->keys.peerSeq));
     ssl->options.tls = 0;
     ssl->options.tls1_1 = 0;
