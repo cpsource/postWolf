@@ -2157,12 +2157,7 @@ int wolfSSL_PEM_write_mem_DSAPrivateKey(WOLFSSL_DSA* dsa,
     }
     XMEMSET(*pem, 0, (size_t)((*pLen)+1));
 
-    if (XMEMCPY(*pem, tmp, (size_t)*pLen) == NULL) {
-        WOLFSSL_MSG("XMEMCPY failed");
-        XFREE(pem, NULL, DYNAMIC_TYPE_KEY);
-        XFREE(tmp, NULL, DYNAMIC_TYPE_PEM);
-        return 0;
-    }
+    XMEMCPY(*pem, tmp, (size_t)*pLen);
     XFREE(tmp, NULL, DYNAMIC_TYPE_PEM);
 
     return 1;
@@ -4959,8 +4954,7 @@ static int _DH_compute_key(unsigned char* key, const WOLFSSL_BIGNUM* otherPub,
              * correctly.
              */
             if (keySz < padded_keySz) {
-                XMEMMOVE(key, key + (padded_keySz - keySz),
-                         padded_keySz - keySz);
+                XMEMMOVE(key + (padded_keySz - keySz), key, keySz);
                 XMEMSET(key, 0, padded_keySz - keySz);
                 keySz = padded_keySz;
             }
