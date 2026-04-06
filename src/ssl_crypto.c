@@ -2530,27 +2530,20 @@ int wolfSSL_DES_set_key(WOLFSSL_const_DES_cblock* key,
 
 /* Set the key schedule from the DES key.
  *
- * TODO: OpenSSL checks parity and weak keys.
+ * Checks parity and rejects weak/semi-weak keys (OpenSSL compatible).
  *
  * @param [in]  key       DES key data.
  * @param [out] schedule  DES key schedule.
  * @return  0 on success.
+ * @return  -1 when parity is not odd.
+ * @return  -2 when key or schedule is NULL or key is weak.
  */
 int wolfSSL_DES_key_sched(WOLFSSL_const_DES_cblock* key,
     WOLFSSL_DES_key_schedule* schedule)
 {
     WOLFSSL_ENTER("wolfSSL_DES_key_sched");
 
-    /* Check parameters are usable. */
-    if ((key == NULL) || (schedule == NULL)) {
-        WOLFSSL_MSG("Null argument passed in");
-    }
-    else {
-        /* Copy the key data into the schedule. */
-        XMEMCPY(schedule, key, sizeof(WOLFSSL_const_DES_cblock));
-    }
-
-    return 0;
+    return wolfSSL_DES_set_key_checked(key, schedule);
 }
 
 /* Encrypt with DES-CBC to create a checksum.
