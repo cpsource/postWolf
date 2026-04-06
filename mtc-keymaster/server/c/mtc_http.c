@@ -22,15 +22,50 @@
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/sha256.h>
 #include <wolfssl/wolfcrypt/asn.h>
+#include <wolfssl/wolfcrypt/coding.h>
 
 #define HTTP_BUF_SZ  65536
 #define MAX_PATH_SZ  512
 
 /* ------------------------------------------------------------------ */
+/* I/O abstraction — TLS (slc) or plain socket                         */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    slc_conn_t *tls;   /* non-NULL when using TLS */
+    int         fd;    /* raw fd (used when tls == NULL, i.e., plain mode) */
+} client_io;
+
+static int cio_read(client_io *io, void *buf, int sz)
+{
+    if (io->tls)
+        return slc_read(io->tls, buf, sz);
+    return (int)recv(io->fd, buf, (size_t)sz, 0);
+}
+
+static int cio_write(client_io *io, const void *buf, int sz)
+{
+    if (io->tls)
+        return slc_write(io->tls, buf, sz);
+    return (int)send(io->fd, buf, (size_t)sz, 0);
+}
+
+static void cio_close(client_io *io)
+{
+    if (io->tls) {
+        slc_close(io->tls);
+        io->tls = NULL;
+    } else if (io->fd >= 0) {
+        close(io->fd);
+    }
+    io->fd = -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* HTTP response helpers                                               */
 /* ------------------------------------------------------------------ */
 
-static void http_send_json(int fd, int status, const char *json_str)
+static void http_send_json(client_io *io, int status, const char *json_str)
 {
     char hdr[512];
     int hdr_len, body_len;
@@ -45,21 +80,21 @@ static void http_send_json(int fd, int status, const char *json_str)
         (status == 404 ? "Not Found" : "Bad Request")),
         body_len);
 
-    send(fd, hdr, (size_t)hdr_len, 0);
-    send(fd, json_str, (size_t)body_len, 0);
+    cio_write(io, hdr, hdr_len);
+    cio_write(io, json_str, body_len);
 }
 
-static void http_send_json_obj(int fd, int status, struct json_object *obj)
+static void http_send_json_obj(client_io *io, int status, struct json_object *obj)
 {
     const char *s = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PRETTY);
-    http_send_json(fd, status, s);
+    http_send_json(io, status, s);
 }
 
-static void http_send_error(int fd, int status, const char *msg)
+static void http_send_error(client_io *io, int status, const char *msg)
 {
     struct json_object *obj = json_object_new_object();
     json_object_object_add(obj, "error", json_object_new_string(msg));
-    http_send_json_obj(fd, status, obj);
+    http_send_json_obj(io, status, obj);
     json_object_put(obj);
 }
 
@@ -78,7 +113,7 @@ static void to_hex(const uint8_t *data, int sz, char *out)
 /* API handlers                                                        */
 /* ------------------------------------------------------------------ */
 
-static void handle_index(int fd, MtcStore *store)
+static void handle_index(client_io *io, MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();
     json_object_object_add(obj, "server",
@@ -92,11 +127,11 @@ static void handle_index(int fd, MtcStore *store)
         json_object_new_string(store->log_id));
     json_object_object_add(obj, "tree_size",
         json_object_new_int(store->tree.size));
-    http_send_json_obj(fd, 200, obj);
+    http_send_json_obj(io, 200, obj);
     json_object_put(obj);
 }
 
-static void handle_log_state(int fd, MtcStore *store)
+static void handle_log_state(client_io *io, MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();
     struct json_object *lm_arr = json_object_new_array();
@@ -122,11 +157,11 @@ static void handle_log_state(int fd, MtcStore *store)
         json_object_array_add(lm_arr, json_object_new_int(store->landmarks[i]));
     json_object_object_add(obj, "landmarks", lm_arr);
 
-    http_send_json_obj(fd, 200, obj);
+    http_send_json_obj(io, 200, obj);
     json_object_put(obj);
 }
 
-static void handle_log_proof(int fd, MtcStore *store, int index)
+static void handle_log_proof(client_io *io, MtcStore *store, int index)
 {
     struct json_object *obj;
     uint8_t *proof = NULL;
@@ -137,7 +172,7 @@ static void handle_log_proof(int fd, MtcStore *store, int index)
     int i, start = 0, end = store->tree.size;
 
     if (index < 0 || index >= store->tree.size) {
-        http_send_error(fd, 404, "entry not found");
+        http_send_error(io, 404, "entry not found");
         return;
     }
 
@@ -148,7 +183,7 @@ static void handle_log_proof(int fd, MtcStore *store, int index)
     /* Get inclusion proof */
     if (mtc_tree_inclusion_proof(&store->tree, index, start, end,
                                   &proof, &proof_count) != 0) {
-        http_send_error(fd, 500, "proof generation failed");
+        http_send_error(io, 500, "proof generation failed");
         return;
     }
 
@@ -181,18 +216,18 @@ static void handle_log_proof(int fd, MtcStore *store, int index)
     json_object_object_add(obj, "proof", proof_arr);
     json_object_object_add(obj, "valid", json_object_new_boolean(1));
 
-    http_send_json_obj(fd, 200, obj);
+    http_send_json_obj(io, 200, obj);
     json_object_put(obj);
     free(proof);
 }
 
-static void handle_get_certificate(int fd, MtcStore *store, int index)
+static void handle_get_certificate(client_io *io, MtcStore *store, int index)
 {
     if (index < 0 || index >= store->cert_count || !store->certificates[index]) {
-        http_send_error(fd, 404, "certificate not found");
+        http_send_error(io, 404, "certificate not found");
         return;
     }
-    http_send_json_obj(fd, 200, store->certificates[index]);
+    http_send_json_obj(io, 200, store->certificates[index]);
 }
 
 /* ------------------------------------------------------------------ */
@@ -384,30 +419,31 @@ static int validate_ca_cert_if_present(struct json_object *extensions)
     }
 }
 
-static void handle_certificate_request(int fd, MtcStore *store,
+static void handle_certificate_request(client_io *io, MtcStore *store,
                                         const char *body, int body_len)
 {
     struct json_object *req, *val;
     const char *subject, *pub_key_pem, *key_algo;
+    (void)body_len;
     int validity_days;
     struct json_object *extensions = NULL;
 
     /* Parse request */
     req = json_tokener_parse(body);
     if (!req) {
-        http_send_error(fd, 400, "invalid JSON");
+        http_send_error(io, 400, "invalid JSON");
         return;
     }
 
     if (!json_object_object_get_ex(req, "subject", &val)) {
-        http_send_error(fd, 400, "missing 'subject'");
+        http_send_error(io, 400, "missing 'subject'");
         json_object_put(req);
         return;
     }
     subject = json_object_get_string(val);
 
     if (!json_object_object_get_ex(req, "public_key_pem", &val)) {
-        http_send_error(fd, 400, "missing 'public_key_pem'");
+        http_send_error(io, 400, "missing 'public_key_pem'");
         json_object_put(req);
         return;
     }
@@ -425,7 +461,7 @@ static void handle_certificate_request(int fd, MtcStore *store,
 
     /* Validate CA certificate against DNS TXT if present */
     if (!validate_ca_cert_if_present(extensions)) {
-        http_send_error(fd, 403,
+        http_send_error(io, 403,
             "CA certificate rejected: DNS validation failed — "
             "no matching _mtc-ca.<domain> TXT record found");
         json_object_put(req);
@@ -590,7 +626,7 @@ static void handle_certificate_request(int fd, MtcStore *store,
             mtc_db_save_certificate(store->db, index, cert_str);
         }
 
-        http_send_json_obj(fd, 201, result);
+        http_send_json_obj(io, 201, result);
 
         json_object_put(result);
         json_object_put(tbs);
@@ -602,14 +638,14 @@ static void handle_certificate_request(int fd, MtcStore *store,
     json_object_put(req);
 }
 
-static void handle_log_entry(int fd, MtcStore *store, int index)
+static void handle_log_entry(client_io *io, MtcStore *store, int index)
 {
     struct json_object *obj;
     char hash_hex[MTC_HASH_SIZE * 2 + 1];
     uint8_t lh[MTC_HASH_SIZE];
 
     if (index < 0 || index >= store->tree.size) {
-        http_send_error(fd, 404, "entry not found");
+        http_send_error(io, 404, "entry not found");
         return;
     }
 
@@ -643,26 +679,26 @@ static void handle_log_entry(int fd, MtcStore *store, int index)
     json_object_object_add(obj, "leaf_hash",
         json_object_new_string(hash_hex));
 
-    http_send_json_obj(fd, 200, obj);
+    http_send_json_obj(io, 200, obj);
     json_object_put(obj);
 }
 
-static void handle_checkpoint(int fd, MtcStore *store)
+static void handle_checkpoint(client_io *io, MtcStore *store)
 {
     struct json_object *cp;
 
     if (store->checkpoint_count > 0) {
-        http_send_json_obj(fd, 200,
+        http_send_json_obj(io, 200,
             store->checkpoints[store->checkpoint_count - 1]);
         return;
     }
 
     cp = mtc_store_checkpoint(store);
-    http_send_json_obj(fd, 200, cp);
+    http_send_json_obj(io, 200, cp);
     json_object_put(cp);
 }
 
-static void handle_consistency(int fd, MtcStore *store, const char *path)
+static void handle_consistency(client_io *io, MtcStore *store, const char *path)
 {
     /* Parse ?old=N&new=M from the query string */
     const char *qs;
@@ -689,13 +725,13 @@ static void handle_consistency(int fd, MtcStore *store, const char *path)
     }
 
     if (old_size < 1 || new_size > store->tree.size || old_size > new_size) {
-        http_send_error(fd, 400, "invalid sizes");
+        http_send_error(io, 400, "invalid sizes");
         return;
     }
 
     if (mtc_tree_consistency_proof(&store->tree, old_size, new_size,
                                     &proof, &proof_count) != 0) {
-        http_send_error(fd, 500, "consistency proof failed");
+        http_send_error(io, 500, "consistency proof failed");
         return;
     }
 
@@ -720,12 +756,12 @@ static void handle_consistency(int fd, MtcStore *store, const char *path)
     }
     json_object_object_add(obj, "proof", proof_arr);
 
-    http_send_json_obj(fd, 200, obj);
+    http_send_json_obj(io, 200, obj);
     json_object_put(obj);
     free(proof);
 }
 
-static void handle_search_certificates(int fd, MtcStore *store, const char *path)
+static void handle_search_certificates(client_io *io, MtcStore *store, const char *path)
 {
     const char *qs, *qval = NULL;
     struct json_object *obj, *arr;
@@ -739,7 +775,7 @@ static void handle_search_certificates(int fd, MtcStore *store, const char *path
     }
 
     if (!qval || *qval == 0) {
-        http_send_error(fd, 400, "requires ?q=<subject>");
+        http_send_error(io, 400, "requires ?q=<subject>");
         return;
     }
 
@@ -769,11 +805,11 @@ static void handle_search_certificates(int fd, MtcStore *store, const char *path
     }
 
     json_object_object_add(obj, "results", arr);
-    http_send_json_obj(fd, 200, obj);
+    http_send_json_obj(io, 200, obj);
     json_object_put(obj);
 }
 
-static void handle_ca_public_key(int fd, MtcStore *store)
+static void handle_ca_public_key(client_io *io, MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();
     char pem[1024];
@@ -793,11 +829,11 @@ static void handle_ca_public_key(int fd, MtcStore *store)
             json_object_new_string(pem));
     }
 
-    http_send_json_obj(fd, 200, obj);
+    http_send_json_obj(io, 200, obj);
     json_object_put(obj);
 }
 
-static void handle_trust_anchors(int fd, MtcStore *store)
+static void handle_trust_anchors(client_io *io, MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();
     struct json_object *arr = json_object_new_array();
@@ -825,7 +861,7 @@ static void handle_trust_anchors(int fd, MtcStore *store)
     }
 
     json_object_object_add(obj, "trust_anchors", arr);
-    http_send_json_obj(fd, 200, obj);
+    http_send_json_obj(io, 200, obj);
     json_object_put(obj);
 }
 
@@ -833,7 +869,7 @@ static void handle_trust_anchors(int fd, MtcStore *store)
 /* Revocation handlers                                                 */
 /* ------------------------------------------------------------------ */
 
-static void handle_revoke(int fd, MtcStore *store,
+static void handle_revoke(client_io *io, MtcStore *store,
                           const char *body, int body_len)
 {
     struct json_object *req, *val;
@@ -843,12 +879,12 @@ static void handle_revoke(int fd, MtcStore *store,
     (void)body_len;
     req = json_tokener_parse(body);
     if (!req) {
-        http_send_error(fd, 400, "invalid JSON");
+        http_send_error(io, 400, "invalid JSON");
         return;
     }
 
     if (!json_object_object_get_ex(req, "cert_index", &val)) {
-        http_send_error(fd, 400, "missing 'cert_index'");
+        http_send_error(io, 400, "missing 'cert_index'");
         json_object_put(req);
         return;
     }
@@ -858,7 +894,7 @@ static void handle_revoke(int fd, MtcStore *store,
         reason = json_object_get_string(val);
 
     if (mtc_store_revoke(store, cert_index, reason) != 0) {
-        http_send_error(fd, 500, "revocation failed");
+        http_send_error(io, 500, "revocation failed");
         json_object_put(req);
         return;
     }
@@ -870,27 +906,27 @@ static void handle_revoke(int fd, MtcStore *store,
             json_object_new_int(cert_index));
         json_object_object_add(resp, "reason",
             json_object_new_string(reason ? reason : "unspecified"));
-        http_send_json_obj(fd, 200, resp);
+        http_send_json_obj(io, 200, resp);
         json_object_put(resp);
     }
     json_object_put(req);
 }
 
-static void handle_revoked_list(int fd, MtcStore *store)
+static void handle_revoked_list(client_io *io, MtcStore *store)
 {
     struct json_object *list = mtc_store_get_revocation_list(store);
-    http_send_json_obj(fd, 200, list);
+    http_send_json_obj(io, 200, list);
     json_object_put(list);
 }
 
-static void handle_revoked_check(int fd, MtcStore *store, int index)
+static void handle_revoked_check(client_io *io, MtcStore *store, int index)
 {
     struct json_object *obj = json_object_new_object();
     int revoked = mtc_store_is_revoked(store, index);
 
     json_object_object_add(obj, "cert_index", json_object_new_int(index));
     json_object_object_add(obj, "revoked", json_object_new_boolean(revoked));
-    http_send_json_obj(fd, 200, obj);
+    http_send_json_obj(io, 200, obj);
     json_object_put(obj);
 }
 
@@ -898,7 +934,41 @@ static void handle_revoked_check(int fd, MtcStore *store, int index)
 /* Request parsing and dispatch                                        */
 /* ------------------------------------------------------------------ */
 
-static void handle_request(int fd, MtcStore *store)
+/* ECH config endpoint — serves the server's ECH config as base64 */
+static slc_ctx_t *g_slc_ctx = NULL;  /* set by mtc_http_serve */
+
+static void handle_ech_configs(client_io *io, MtcStore *store)
+{
+    (void)store;
+#ifdef HAVE_ECH
+    if (g_slc_ctx != NULL) {
+        unsigned char raw[1024];
+        int sz = (int)sizeof(raw);
+        if (slc_ctx_get_ech_configs(g_slc_ctx, raw, &sz) == 0 && sz > 0) {
+            /* Base64 encode */
+            word32 b64Sz = 0;
+            Base64_Encode(raw, (word32)sz, NULL, &b64Sz);
+            if (b64Sz > 0) {
+                char *b64 = (char *)malloc(b64Sz + 1);
+                if (b64 != NULL) {
+                    Base64_Encode(raw, (word32)sz, (byte *)b64, &b64Sz);
+                    b64[b64Sz] = '\0';
+                    /* Strip any trailing newlines from Base64_Encode */
+                    while (b64Sz > 0 && (b64[b64Sz-1] == '\n' ||
+                           b64[b64Sz-1] == '\r'))
+                        b64[--b64Sz] = '\0';
+                    http_send_json(io, 200, b64);
+                    free(b64);
+                    return;
+                }
+            }
+        }
+    }
+#endif
+    http_send_error(io, 404, "ECH not configured");
+}
+
+static void handle_request(client_io *io, MtcStore *store)
 {
     char buf[HTTP_BUF_SZ];
     int n;
@@ -906,13 +976,13 @@ static void handle_request(int fd, MtcStore *store)
     char *body = NULL;
     int body_len = 0;
 
-    n = (int)recv(fd, buf, sizeof(buf) - 1, 0);
+    n = cio_read(io, buf, (int)sizeof(buf) - 1);
     if (n <= 0) return;
     buf[n] = 0;
 
     /* Parse method and path */
     if (sscanf(buf, "%15s %511s", method, path) != 2) {
-        http_send_error(fd, 400, "bad request");
+        http_send_error(io, 400, "bad request");
         return;
     }
 
@@ -945,8 +1015,8 @@ static void handle_request(int fd, MtcStore *store)
                     content_len = max_body;
                 if (content_len > 0) {
                     while (body_len < content_len) {
-                        int r = (int)recv(fd, body + body_len,
-                                          content_len - body_len, 0);
+                        int r = cio_read(io, body + body_len,
+                                         content_len - body_len);
                         if (r <= 0) break;
                         body_len += r;
                     }
@@ -959,62 +1029,65 @@ static void handle_request(int fd, MtcStore *store)
     /* Dispatch */
     if (strcmp(method, "GET") == 0) {
         if (strcmp(path, "/") == 0 || strcmp(path, "") == 0) {
-            handle_index(fd, store);
+            handle_index(io, store);
         }
         else if (strcmp(path, "/log") == 0) {
-            handle_log_state(fd, store);
+            handle_log_state(io, store);
         }
         else if (strncmp(path, "/log/entry/", 11) == 0) {
             int index = atoi(path + 11);
-            handle_log_entry(fd, store, index);
+            handle_log_entry(io, store, index);
         }
         else if (strncmp(path, "/log/proof/", 11) == 0) {
             int index = atoi(path + 11);
-            handle_log_proof(fd, store, index);
+            handle_log_proof(io, store, index);
         }
         else if (strcmp(path, "/log/checkpoint") == 0) {
-            handle_checkpoint(fd, store);
+            handle_checkpoint(io, store);
         }
         else if (strncmp(path, "/log/consistency", 16) == 0) {
-            handle_consistency(fd, store, path);
+            handle_consistency(io, store, path);
         }
         else if (strncmp(path, "/certificate/search", 19) == 0) {
-            handle_search_certificates(fd, store, path);
+            handle_search_certificates(io, store, path);
         }
         else if (strncmp(path, "/certificate/", 13) == 0) {
             int index = atoi(path + 13);
-            handle_get_certificate(fd, store, index);
+            handle_get_certificate(io, store, index);
         }
         else if (strcmp(path, "/trust-anchors") == 0) {
-            handle_trust_anchors(fd, store);
+            handle_trust_anchors(io, store);
         }
         else if (strcmp(path, "/revoked") == 0) {
-            handle_revoked_list(fd, store);
+            handle_revoked_list(io, store);
         }
         else if (strncmp(path, "/revoked/", 9) == 0) {
             int index = atoi(path + 9);
-            handle_revoked_check(fd, store, index);
+            handle_revoked_check(io, store, index);
         }
         else if (strcmp(path, "/ca/public-key") == 0) {
-            handle_ca_public_key(fd, store);
+            handle_ca_public_key(io, store);
+        }
+        else if (strcmp(path, "/ech/configs") == 0) {
+            handle_ech_configs(io, store);
         }
         else {
-            http_send_error(fd, 404, "not found");
+            http_send_error(io, 404, "not found");
         }
     }
     else if (strcmp(method, "POST") == 0) {
         if (strcmp(path, "/certificate/request") == 0) {
-            handle_certificate_request(fd, store, body, body_len);
+            handle_certificate_request(io, store, body, body_len);
         }
         else if (strcmp(path, "/revoke") == 0) {
-            handle_revoke(fd, store, body, body_len);
+            handle_revoke(io, store, body, body_len);
         }
         else {
-            http_send_error(fd, 404, "not found");
+            http_send_error(io, 404, "not found");
         }
     }
     else {
-        http_send_error(fd, 405, "method not allowed");
+        http_send_error(io, 405, "method not allowed");
     }
 }
 
@@ -1022,35 +1095,43 @@ static void handle_request(int fd, MtcStore *store)
 /* Server main loop                                                    */
 /* ------------------------------------------------------------------ */
 
-int mtc_http_serve(const char *host, int port, MtcStore *store)
+int mtc_http_serve(const char *host, int port, MtcStore *store,
+                   const mtc_tls_cfg_t *tls_cfg)
 {
-    int srv_fd, cli_fd;
-    struct sockaddr_in addr;
-    int opt = 1;
+    int listen_fd;
+    slc_ctx_t *ctx = NULL;
+    int use_tls = (tls_cfg != NULL && tls_cfg->cert_file != NULL);
 
-    srv_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (srv_fd < 0) { perror("socket"); return -1; }
+    /* Set up TLS context if configured */
+    if (use_tls) {
+        slc_cfg_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.role            = SLC_SERVER;
+        cfg.cert_file       = tls_cfg->cert_file;
+        cfg.key_file        = tls_cfg->key_file;
+        cfg.ca_file         = tls_cfg->ca_file;
+        cfg.ech_public_name = tls_cfg->ech_public_name;
 
-    setsockopt(srv_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((unsigned short)port);
-    if (host && strcmp(host, "0.0.0.0") != 0)
-        inet_pton(AF_INET, host, &addr.sin_addr);
-    else
-        addr.sin_addr.s_addr = INADDR_ANY;
-
-    if (bind(srv_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind"); close(srv_fd); return -1;
+        ctx = slc_ctx_new(&cfg);
+        if (ctx == NULL) {
+            fprintf(stderr, "slc_ctx_new failed\n");
+            return -1;
+        }
+        g_slc_ctx = ctx;  /* for /ech/configs endpoint */
     }
 
-    if (listen(srv_fd, 5) < 0) {
-        perror("listen"); close(srv_fd); return -1;
+    /* Listen */
+    listen_fd = slc_listen(host, port);
+    if (listen_fd < 0) {
+        fprintf(stderr, "slc_listen failed on %s:%d\n",
+                host ? host : "0.0.0.0", port);
+        if (ctx) slc_ctx_free(ctx);
+        return -1;
     }
 
-    printf("MTC CA/Log Server (C) listening on %s:%d\n",
-           host ? host : "0.0.0.0", port);
+    printf("MTC CA/Log Server (C) listening on %s:%d%s\n",
+           host ? host : "0.0.0.0", port,
+           use_tls ? " (TLS 1.3)" : " (plain)");
     printf("  CA Name:  %s\n", store->ca_name);
     printf("  Log ID:   %s\n", store->log_id);
     printf("  Log size: %d entries\n", store->tree.size);
@@ -1058,34 +1139,57 @@ int mtc_http_serve(const char *host, int port, MtcStore *store)
     fflush(stdout);
 
     for (;;) {
-        struct sockaddr_in cli_addr;
-        socklen_t cli_len = sizeof(cli_addr);
+        client_io cio;
+        memset(&cio, 0, sizeof(cio));
+        cio.fd = -1;
 
-        cli_fd = accept(srv_fd, (struct sockaddr *)&cli_addr, &cli_len);
-        if (cli_fd < 0) {
-            perror("accept");
-            continue;
-        }
-
-        /* Check client IP against AbuseIPDB */
-        {
-            char ip_str[INET6_ADDRSTRLEN];
-            inet_ntop(AF_INET, &cli_addr.sin_addr, ip_str, sizeof(ip_str));
-
-            int abuse_score = mtc_checkendpoint(ip_str);
-            if (abuse_score >= mtc_get_abuse_threshold()) {
-                printf("[http] rejected %s (abuse score %d)\n",
-                       ip_str, abuse_score);
-                http_send_error(cli_fd, 403, "Forbidden");
-                close(cli_fd);
+        if (use_tls) {
+            /* TLS accept */
+            cio.tls = slc_accept(ctx, listen_fd);
+            if (cio.tls == NULL) {
+                fprintf(stderr, "[tls] accept/handshake failed\n");
+                continue;
+            }
+            cio.fd = slc_get_fd(cio.tls);
+        } else {
+            /* Plain accept */
+            struct sockaddr_in cli_addr;
+            socklen_t cli_len = sizeof(cli_addr);
+            cio.fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
+            if (cio.fd < 0) {
+                perror("accept");
                 continue;
             }
         }
 
-        handle_request(cli_fd, store);
-        close(cli_fd);
+        /* Check client IP against AbuseIPDB */
+        {
+            struct sockaddr_in peer;
+            socklen_t peer_len = sizeof(peer);
+            if (getpeername(cio.fd, (struct sockaddr *)&peer, &peer_len) == 0) {
+                char ip_str[INET6_ADDRSTRLEN];
+                inet_ntop(AF_INET, &peer.sin_addr, ip_str, sizeof(ip_str));
+
+                int abuse_score = mtc_checkendpoint(ip_str);
+                if (abuse_score >= mtc_get_abuse_threshold()) {
+                    printf("[http] rejected %s (abuse score %d)\n",
+                           ip_str, abuse_score);
+                    /* Send error on the raw cio before closing */
+                    http_send_error(&cio, 403, "Forbidden");
+                    cio_close(&cio);
+                    continue;
+                }
+            }
+        }
+
+        handle_request(&cio, store);
+        cio_close(&cio);
     }
 
-    close(srv_fd);
+    close(listen_fd);
+    if (ctx) {
+        g_slc_ctx = NULL;
+        slc_ctx_free(ctx);
+    }
     return 0;
 }

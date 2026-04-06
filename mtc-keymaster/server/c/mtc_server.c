@@ -34,6 +34,10 @@ static void usage(const char *prog)
     printf("  --ca-name NAME   CA name (default: MTC-CA-C)\n");
     printf("  --log-id ID      Log identifier (default: 32473.2)\n");
     printf("  --abuse-threshold N  AbuseIPDB score threshold (default: 75)\n");
+    printf("  --tls-cert FILE  PEM server certificate (enables TLS)\n");
+    printf("  --tls-key FILE   PEM server private key\n");
+    printf("  --tls-ca FILE    CA cert for client verification\n");
+    printf("  --ech-name NAME  ECH public name (e.g., factsorlie.com)\n");
     printf("  -h               Show this help\n");
 }
 
@@ -47,7 +51,12 @@ int main(int argc, char *argv[])
     const char *tokenpath = NULL;
     const char *ca_name = "MTC-CA-C";
     const char *log_id = "32473.2";
+    const char *tls_cert = NULL;
+    const char *tls_key = NULL;
+    const char *tls_ca = NULL;
+    const char *ech_name = NULL;
     MtcStore store;
+    mtc_tls_cfg_t tls_cfg;
     int i;
 
     /* Parse args */
@@ -66,6 +75,14 @@ int main(int argc, char *argv[])
             log_id = argv[++i];
         else if (strcmp(argv[i], "--abuse-threshold") == 0 && i + 1 < argc)
             mtc_set_abuse_threshold(atoi(argv[++i]));
+        else if (strcmp(argv[i], "--tls-cert") == 0 && i + 1 < argc)
+            tls_cert = argv[++i];
+        else if (strcmp(argv[i], "--tls-key") == 0 && i + 1 < argc)
+            tls_key = argv[++i];
+        else if (strcmp(argv[i], "--tls-ca") == 0 && i + 1 < argc)
+            tls_ca = argv[++i];
+        else if (strcmp(argv[i], "--ech-name") == 0 && i + 1 < argc)
+            ech_name = argv[++i];
         else if (strcmp(argv[i], "-h") == 0) {
             usage(argv[0]); return 0;
         }
@@ -97,8 +114,15 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    /* Set up TLS config (NULL if no --tls-cert given → plain mode) */
+    memset(&tls_cfg, 0, sizeof(tls_cfg));
+    tls_cfg.cert_file       = tls_cert;
+    tls_cfg.key_file        = tls_key;
+    tls_cfg.ca_file         = tls_ca;
+    tls_cfg.ech_public_name = ech_name;
+
     /* Run HTTP server (blocks) */
-    mtc_http_serve(host, port, &store);
+    mtc_http_serve(host, port, &store, tls_cert ? &tls_cfg : NULL);
 
     mtc_store_free(&store);
     wolfSSL_Cleanup();
