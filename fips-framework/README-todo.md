@@ -1,5 +1,43 @@
 # FIPS Integrity System — TODO
 
+## Priority 0: Code TODOs (in-tree)
+
+### 0a. MTC verification during TLS handshake
+**File:** `socket-level-wrapper/slc.c:273`
+
+`slc_connect` and `slc_accept` need to verify the peer's certificate against
+the MTC Merkle tree when MTC is configured (`slc_ctx_set_mtc` was called).
+Currently stubbed — TLS 1.3 cert chain validation works, but the Merkle proof
++ Ed25519 cosignature checks are not yet wired in.
+
+**What's needed:**
+1. Hash the peer cert's subject key ID after TLS handshake completes
+2. Query MTC server: `GET /certificate/search?subject_key_hash=<hash>`
+3. Retrieve inclusion proof for the leaf
+4. Replay Merkle proof (hash chain from leaf to root)
+5. Verify Ed25519 cosignature against `ctx->ca_pubkey` using `wc_ed25519_verify_msg()`
+6. Check revocation: `GET /revoked/<index>`
+7. Reject connection if any step fails
+
+**Depends on:** FIPS framework tools being functional (same verification logic).
+
+### 0b. Pin actual CA public key
+**File:** `fips-framework/config/ca-pubkey.h:20`
+
+The placeholder is 32 zero-bytes. Replace with the real CA Ed25519 public key
+exported from `~/.mtc-ca-data/ca_key.der`.
+
+**How:**
+```bash
+# Extract public key from the DER private key
+openssl pkey -in ~/.mtc-ca-data/ca_key.der -inform DER -pubout -outform DER | \
+    tail -c 32 | xxd -i
+```
+
+Then paste the bytes into `ca-pubkey.h`.
+
+---
+
 ## Priority 1: Easy Wins (add now)
 
 ### 1. Manifest `expires` field
