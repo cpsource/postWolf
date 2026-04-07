@@ -127,10 +127,11 @@ int test_wolfSSL_DES(void)
         ExpectIntEQ(DES_set_key_checked(&semiWeakKey[i], &key), -2);
     }
 
-    /* check DES_key_sched API */
+    /* check DES_key_sched API — delegates to DES_set_key_checked,
+     * so NULL args return -2 and weak/bad-parity keys are rejected. */
     XMEMSET(key, 1, sizeof(DES_key_schedule));
-    ExpectIntEQ(DES_key_sched(&myDes, NULL), 0);
-    ExpectIntEQ(DES_key_sched(NULL, &key),   0);
+    ExpectIntEQ(DES_key_sched(&myDes, NULL), -2);
+    ExpectIntEQ(DES_key_sched(NULL, &key),   -2);
     ExpectIntEQ(DES_key_sched(&myDes, &key), 0);
     /* compare arrays, should be the same */
     for (i = 0; i < sizeof(DES_key_schedule); i++) {

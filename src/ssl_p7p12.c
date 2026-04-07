@@ -881,10 +881,6 @@ int wolfSSL_PKCS7_encode_certs(PKCS7* pkcs7, WOLFSSL_STACK* certs,
 
     p7 = (WOLFSSL_PKCS7*)pkcs7;
 
-    /* take ownership of certs */
-    p7->certs = certs;
-    /* TODO: takes ownership even on failure below but not on above failure. */
-
     if (pkcs7->certList) {
         WOLFSSL_MSG("wolfSSL_PKCS7_encode_certs called multiple times on same "
                     "struct");
@@ -892,38 +888,40 @@ int wolfSSL_PKCS7_encode_certs(PKCS7* pkcs7, WOLFSSL_STACK* certs,
     }
 
     if (certs) {
+        WOLFSSL_STACK* iter = certs;
         /* Save some of the values */
         int hashOID = pkcs7->hashOID;
         byte version = pkcs7->version;
 
-        if (!certs->data.x509 || !certs->data.x509->derCert) {
+        if (!iter->data.x509 || !iter->data.x509->derCert) {
             WOLFSSL_MSG("Missing cert");
             return WOLFSSL_FAILURE;
         }
 
-        if (wc_PKCS7_InitWithCert(pkcs7, certs->data.x509->derCert->buffer,
-                                      certs->data.x509->derCert->length) != 0) {
+        if (wc_PKCS7_InitWithCert(pkcs7, iter->data.x509->derCert->buffer,
+                                      iter->data.x509->derCert->length) != 0) {
             WOLFSSL_MSG("wc_PKCS7_InitWithCert error");
             return WOLFSSL_FAILURE;
         }
-        certs = certs->next;
+        iter = iter->next;
 
         pkcs7->hashOID = hashOID;
         pkcs7->version = version;
-    }
 
-    /* Add the certs to the PKCS7 struct */
-    while (certs) {
-        if (!certs->data.x509 || !certs->data.x509->derCert) {
-            WOLFSSL_MSG("Missing cert");
-            return WOLFSSL_FAILURE;
+        /* Add the remaining certs to the PKCS7 struct */
+        while (iter) {
+            if (!iter->data.x509 || !iter->data.x509->derCert) {
+                WOLFSSL_MSG("Missing cert");
+                return WOLFSSL_FAILURE;
+            }
+            if (wc_PKCS7_AddCertificate(pkcs7,
+                    iter->data.x509->derCert->buffer,
+                    iter->data.x509->derCert->length) != 0) {
+                WOLFSSL_MSG("wc_PKCS7_AddCertificate error");
+                return WOLFSSL_FAILURE;
+            }
+            iter = iter->next;
         }
-        if (wc_PKCS7_AddCertificate(pkcs7, certs->data.x509->derCert->buffer,
-                                      certs->data.x509->derCert->length) != 0) {
-            WOLFSSL_MSG("wc_PKCS7_AddCertificate error");
-            return WOLFSSL_FAILURE;
-        }
-        certs = certs->next;
     }
 
     if (wc_PKCS7_SetSignerIdentifierType(pkcs7, DEGENERATE_SID) != 0) {
@@ -932,6 +930,11 @@ int wolfSSL_PKCS7_encode_certs(PKCS7* pkcs7, WOLFSSL_STACK* certs,
     }
 
     ret = wolfSSL_i2d_PKCS7_bio(out, pkcs7);
+
+    /* Take ownership of certs only on success. On failure above we return
+     * early without taking ownership, so the caller retains responsibility. */
+    if (ret == WOLFSSL_SUCCESS)
+        p7->certs = certs;
 
     return ret;
 }

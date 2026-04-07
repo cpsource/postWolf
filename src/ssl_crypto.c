@@ -2651,6 +2651,13 @@ void wolfSSL_DES_cbc_encrypt(const unsigned char* input, unsigned char* output,
 
     WOLFSSL_ENTER("wolfSSL_DES_cbc_encrypt");
 
+    /* Validate parameters - void function, just return on bad input. */
+    if (input == NULL || output == NULL || schedule == NULL || ivec == NULL ||
+            length <= 0) {
+        WOLFSSL_MSG("Bad parameter");
+        return;
+    }
+
 #ifdef WOLFSSL_SMALL_STACK
     des = (Des*)XMALLOC(sizeof(Des3), NULL, DYNAMIC_TYPE_CIPHER);
     if (des == NULL) {
@@ -2701,7 +2708,6 @@ void wolfSSL_DES_cbc_encrypt(const unsigned char* input, unsigned char* output,
  *
  * TODO: OpenSSL expects a length that is a multiple of the block size but
  *       we are padding the last block. This is not a padding API.
- * TODO: Validate parameters?
  *
  * @param [in]      input     Data to encipher.
  * @param [out]     output    Enciphered data.
@@ -2719,6 +2725,13 @@ void wolfSSL_DES_ncbc_encrypt(const unsigned char* input, unsigned char* output,
     size_t offset = (size_t)length;
 
     WOLFSSL_ENTER("wolfSSL_DES_ncbc_encrypt");
+
+    /* Validate parameters - void function, just return on bad input. */
+    if (input == NULL || output == NULL || schedule == NULL || ivec == NULL ||
+            length <= 0) {
+        WOLFSSL_MSG("Bad parameter");
+        return;
+    }
 
     offset = (offset + DES_BLOCK_SIZE - 1) / DES_BLOCK_SIZE;
     offset *= DES_BLOCK_SIZE;
@@ -2745,7 +2758,6 @@ void wolfSSL_DES_ncbc_encrypt(const unsigned char* input, unsigned char* output,
  *
  * TODO: OpenSSL expects a length that is a multiple of the block size but
  *       we are padding the last block. This is not a padding API.
- * TODO: Validate parameters?
  *
  * @param [in]      input     Data to encipher.
  * @param [out]     output    Enciphered data.
@@ -2762,6 +2774,13 @@ void wolfSSL_DES_ede3_cbc_encrypt(const unsigned char* input,
     WC_DECLARE_VAR(des3, Des3, 1, 0);
 
     WOLFSSL_ENTER("wolfSSL_DES_ede3_cbc_encrypt");
+
+    /* Validate parameters - void function, just return on bad input. */
+    if (input == NULL || output == NULL || ks1 == NULL || ks2 == NULL ||
+            ks3 == NULL || ivec == NULL || sz <= 0) {
+        WOLFSSL_MSG("Bad parameter");
+        return;
+    }
 
 #ifdef WOLFSSL_SMALL_STACK
     des3 = (Des3*)XMALLOC(sizeof(Des3), NULL, DYNAMIC_TYPE_CIPHER);

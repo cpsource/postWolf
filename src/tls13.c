@@ -4669,6 +4669,13 @@ int SendTls13ClientHello(WOLFSSL* ssl)
         ssl->options.tls13MiddleBoxCompat = 0;
     }
 #endif
+#ifdef WOLFSSL_DTLS13
+    if (ssl->options.dtls) {
+        /* RFC 9147 Section 5: DTLS implementations do not use the
+         *                     TLS 1.3 "compatibility mode" */
+        ssl->options.tls13MiddleBoxCompat = 0;
+    }
+#endif
     GetTls13SessionId(ssl, NULL, &sessIdSz);
     args->length += (word16)sessIdSz;
 
@@ -5638,8 +5645,17 @@ int DoTls13ServerHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
     }
     else
 #endif /* WOLFSSL_TLS13_MIDDLEBOX_COMPAT */
+#if defined(WOLFSSL_QUIC) || defined(WOLFSSL_DTLS13)
+    if (0
 #ifdef WOLFSSL_QUIC
-    if (WOLFSSL_IS_QUIC(ssl)) {
+        || WOLFSSL_IS_QUIC(ssl)
+#endif
+#ifdef WOLFSSL_DTLS13
+        || ssl->options.dtls
+#endif
+    ) {
+        /* RFC 9147 Section 5.3 / RFC 9001 Section 8.4: DTLS 1.3 and QUIC
+         * ServerHello must have empty legacy_session_id_echo. */
         if (args->sessIdSz != 0) {
             WOLFSSL_MSG("args->sessIdSz != 0");
             WOLFSSL_ERROR_VERBOSE(INVALID_PARAMETER);
@@ -5647,7 +5663,7 @@ int DoTls13ServerHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
         }
     }
     else
-#endif /* WOLFSSL_QUIC */
+#endif /* WOLFSSL_QUIC || WOLFSSL_DTLS13 */
     if (args->sessIdSz != ssl->session->sessionIDSz || (args->sessIdSz > 0 &&
         XMEMCMP(ssl->session->sessionID, args->sessId, args->sessIdSz) != 0))
     {
@@ -6648,7 +6664,15 @@ static int RestartHandshakeHashWithCookie(WOLFSSL* ssl, Cookie* cookie)
         return ret;
 
     /* Reconstruct the HelloRetryMessage for handshake hash. */
-    length = HRR_BODY_SZ - ID_LEN + ssl->session->sessionIDSz +
+    {
+    byte sessIdSz;
+    sessIdSz = ssl->session->sessionIDSz;
+#ifdef WOLFSSL_DTLS13
+    /* RFC 9147 Section 5.3: DTLS 1.3 must use empty legacy_session_id. */
+    if (ssl->options.dtls)
+        sessIdSz = 0;
+#endif
+    length = HRR_BODY_SZ - ID_LEN + sessIdSz +
              HRR_COOKIE_HDR_SZ + cookie->len;
     length += HRR_VERSIONS_SZ;
     /* HashSz (1 byte) + Hash (HashSz bytes) + CipherSuite (2 bytes) */
@@ -6675,10 +6699,10 @@ static int RestartHandshakeHashWithCookie(WOLFSSL* ssl, Cookie* cookie)
     XMEMCPY(hrr + hrrIdx, helloRetryRequestRandom, RAN_LEN);
     hrrIdx += RAN_LEN;
 
-    hrr[hrrIdx++] = ssl->session->sessionIDSz;
-    if (ssl->session->sessionIDSz > 0) {
-        XMEMCPY(hrr + hrrIdx, ssl->session->sessionID, ssl->session->sessionIDSz);
-        hrrIdx += ssl->session->sessionIDSz;
+    hrr[hrrIdx++] = sessIdSz;
+    if (sessIdSz > 0) {
+        XMEMCPY(hrr + hrrIdx, ssl->session->sessionID, sessIdSz);
+        hrrIdx += sessIdSz;
     }
 
     /* Restore the cipher suite from the cookie. */
@@ -6691,7 +6715,7 @@ static int RestartHandshakeHashWithCookie(WOLFSSL* ssl, Cookie* cookie)
     hrr[hrrIdx++] = 0;
 
     /* Extensions' length */
-    length -= HRR_BODY_SZ - ID_LEN + ssl->session->sessionIDSz;
+    length -= HRR_BODY_SZ - ID_LEN + sessIdSz;
     c16toa(length, hrr + hrrIdx);
     hrrIdx += 2;
 
@@ -6747,6 +6771,7 @@ static int RestartHandshakeHashWithCookie(WOLFSSL* ssl, Cookie* cookie)
         return ret;
 
     return HashRaw(ssl, cookieData, cookie->len);
+    } /* sessIdSz scope */
 }
 #endif
 
@@ -7119,9 +7144,20 @@ int DoTls13ClientHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
     if (sessIdSz + args->idx > helloSz)
         ERROR_OUT(BUFFER_ERROR, exit_dch);
 
-    ssl->session->sessionIDSz = sessIdSz;
-    if (sessIdSz > 0)
-        XMEMCPY(ssl->session->sessionID, input + args->idx, sessIdSz);
+#ifdef WOLFSSL_DTLS13
+    /* RFC 9147 Section 5.3: DTLS 1.3 ServerHello must have empty
+     * legacy_session_id_echo. Don't store the client's value so it
+     * won't be echoed in SendTls13ServerHello. */
+    if (ssl->options.dtls) {
+        ssl->session->sessionIDSz = 0;
+    }
+    else
+#endif
+    {
+        ssl->session->sessionIDSz = sessIdSz;
+        if (sessIdSz > 0)
+            XMEMCPY(ssl->session->sessionID, input + args->idx, sessIdSz);
+    }
     args->idx += sessIdSz;
 
 #ifdef WOLFSSL_TLS13_MIDDLEBOX_COMPAT
@@ -7694,10 +7730,21 @@ int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
     WOLFSSL_BUFFER(ssl->arrays->serverRandom, RAN_LEN);
 #endif
 
-    output[idx++] = ssl->session->sessionIDSz;
-    if (ssl->session->sessionIDSz > 0) {
-        XMEMCPY(output + idx, ssl->session->sessionID, ssl->session->sessionIDSz);
-        idx += ssl->session->sessionIDSz;
+#ifdef WOLFSSL_DTLS13
+    if (ssl->options.dtls) {
+        /* RFC 9147 Section 5.3: DTLS 1.3 ServerHello must have empty
+         * legacy_session_id_echo. */
+        output[idx++] = 0;
+    }
+    else
+#endif
+    {
+        output[idx++] = ssl->session->sessionIDSz;
+        if (ssl->session->sessionIDSz > 0) {
+            XMEMCPY(output + idx, ssl->session->sessionID,
+                ssl->session->sessionIDSz);
+            idx += ssl->session->sessionIDSz;
+        }
     }
 
     /* Chosen cipher suite */
