@@ -5,11 +5,16 @@
 
 #include "slc.h"
 
+/* wolfssl/options.h MUST come before any other wolfSSL headers.
+ * It defines the feature macros (HAVE_ECH, HAVE_MTC, etc.) that
+ * control conditional compilation in the rest of the library. */
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
-#include <wolfssl/wolfcrypt/settings.h>
 #ifdef HAVE_ECH
 #include <wolfssl/wolfcrypt/hpke.h>
+#endif
+#ifdef HAVE_TRUST_ANCHOR_IDS
+#include <wolfssl/wolfcrypt/hash.h>
 #endif
 
 #include <sys/types.h>
@@ -225,6 +230,21 @@ int slc_ctx_set_mtc(slc_ctx_t *ctx, const char *mtc_server,
     memcpy(ctx->ca_pubkey, ca_pubkey, (size_t)ca_pubkey_sz);
     ctx->ca_pubkey_sz = ca_pubkey_sz;
     ctx->mtc_leaf_index = -1; /* will be discovered during connect/accept */
+
+#ifdef HAVE_TRUST_ANCHOR_IDS
+    /* Register the MTC CA public key as a trust anchor ID so the server
+     * knows this client supports MTC verification and can send an MTC
+     * certificate chain instead of a traditional X.509 chain.
+     * The trust anchor ID is the SHA-256 hash of the CA public key. */
+    {
+        byte anchor_id[WC_SHA256_DIGEST_SIZE];
+        if (wc_Sha256Hash((const byte *)ca_pubkey, (word32)ca_pubkey_sz,
+                          anchor_id) == 0) {
+            wolfSSL_CTX_UseTrustAnchorId(ctx->wctx, anchor_id,
+                                         sizeof(anchor_id));
+        }
+    }
+#endif
 
     return 0;
 }

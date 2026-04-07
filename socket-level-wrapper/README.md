@@ -74,7 +74,7 @@ Requires wolfssl-new to be configured and built in the parent directory.
 ```bash
 # Build wolfssl-new first (if not already done)
 cd ..
-./configure --enable-tls13
+./configure.sh    # or: ./configure --enable-quic --enable-ech --enable-tls13 --enable-mtc --enable-all --quiet
 make
 
 # Build SLC library and examples
@@ -135,11 +135,56 @@ slc_ctx_set_mtc(ctx, "factsorlie.com", ca_pubkey, 32);
 The MTC leaf index is auto-discovered from the loaded certificate —
 the caller never needs to look it up.
 
+## wolfSSL Include Order and Build Flags
+
+wolfSSL requires `wolfssl/options.h` to be included before any other wolfSSL
+headers. The SLC implementation handles this internally — callers that only
+include `slc.h` do not need to worry about it.
+
+If your application includes wolfSSL headers directly alongside `slc.h`,
+either include `wolfssl/options.h` first or compile with
+`-DWOLFSSL_USE_OPTIONS_H`.
+
+### How the Makefile picks up feature flags
+
+wolfSSL stores its compile-time feature macros (`WOLFSSL_TLS13`, `HAVE_ECH`,
+`HAVE_MTC`, `HAVE_TRUST_ANCHOR_IDS`, etc.) in `AM_CFLAGS` in the top-level
+Makefile — not in `wolfssl/options.h`. The SLC Makefile extracts these flags
+automatically so that SLC code compiles with the same feature set as the
+library:
+
+```makefile
+WOLFSSL_CFLAGS := $(filter-out $$(EXTRA_CFLAGS), \
+    $(shell sed -n 's/^AM_CFLAGS = //p' $(WOLFSSL_DIR)/Makefile))
+```
+
+This means SLC will automatically see `HAVE_ECH`, `HAVE_TRUST_ANCHOR_IDS`,
+`HAVE_MTC`, `WOLFSSL_TLS13`, and all other flags the library was built with.
+
+## Trust Anchor IDs
+
+When MTC is configured via `slc_ctx_set_mtc()`, the SLC library automatically
+registers the MTC CA public key as a **Trust Anchor ID** (draft-ietf-tls-trust-anchor-ids).
+
+Trust Anchor IDs let a TLS client tell the server which root CAs it trusts.
+This is critical for MTC: the server needs to know the client supports MTC
+verification so it can send an MTC certificate chain (with Merkle proof)
+instead of a traditional X.509 chain.
+
+The SLC library:
+1. Hashes the CA public key with SHA-256
+2. Registers the hash as a trust anchor ID via `wolfSSL_CTX_UseTrustAnchorId()`
+3. The trust anchor ID is included in the ClientHello `trust_anchors` extension
+
+The caller never touches trust anchor IDs directly — it's handled inside
+`slc_ctx_set_mtc()`.
+
 ## Dependencies
 
-- wolfSSL (built with `--enable-tls13`)
+- wolfSSL (built with `./configure.sh` — enables TLS 1.3, ECH, MTC, DTLS 1.3)
 - POSIX sockets (Linux, macOS, FreeBSD)
-- Optional: ECH support (`--enable-ech` in wolfSSL configure)
+- ECH: `--enable-ech` in wolfSSL configure (included in `configure.sh`)
+- MTC: `--enable-mtc` in wolfSSL configure (included in `configure.sh`)
 
 ## Files
 
@@ -147,7 +192,7 @@ the caller never needs to look it up.
 socket-level-wrapper/
     README.md          This file
     slc.h              Public API (10 functions, 2 types, 1 config struct)
-    slc.c              Implementation (~300 lines)
+    slc.c              Implementation (~500 lines)
     Makefile           Builds libslc.a + examples
     examples/
         echo_server.c  Demo TLS echo server

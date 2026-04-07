@@ -6,6 +6,12 @@
  * negotiation happen inside the API. The caller gets back a
  * fully authenticated connection or NULL.
  *
+ * NOTE: Applications that include wolfSSL headers directly must
+ * include <wolfssl/options.h> before any other wolfSSL headers.
+ * The SLC API handles this internally — callers only need slc.h.
+ * If you include wolfSSL headers alongside slc.h, either include
+ * <wolfssl/options.h> first or compile with -DWOLFSSL_USE_OPTIONS_H.
+ *
  * Copyright (C) 2026 Cal Page. All rights reserved.
  */
 
