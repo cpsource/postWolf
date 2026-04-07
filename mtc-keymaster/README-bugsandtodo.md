@@ -66,7 +66,48 @@ extensions so the server can match the domain and confirm it is not a CA.
 - `mtc-keymaster/server/c/mtc_store.c` — needs a lookup by subject function
 - `mtc-keymaster/server/python/server.py` — Python server equivalent
 
-### 3. AbuseIPDB cache expiry — refresh stale records after 5 days
+### 3. Enrollment authorization — anyone can enroll a leaf cert
+
+**Priority:** High — open enrollment is a security gap
+
+Currently, anyone can create a leaf cert (`create_leaf_cert.py`), send it to
+the server, and get it enrolled without any proof of domain ownership. The
+enrollment endpoint is an open door.
+
+In the MTC model the CA doesn't sign individual leaf certs (it signs the
+Merkle tree root). But the CA still needs to verify that the entity enrolling
+a leaf actually controls the claimed domain — otherwise an attacker can
+enroll a leaf for any domain.
+
+**Recommended approach: DNS TXT validation** (similar to ACME/Let's Encrypt):
+
+1. Client: `POST /enroll {subject: "example.com", pubkey: ...}`
+2. Server: responds with a challenge token
+3. Client: creates DNS TXT record `_mtc.example.com` containing the token
+4. Server: verifies the TXT record, adds leaf to the tree
+5. If TXT record is missing or wrong → reject enrollment
+
+`ca_dns_txt.py` already exists in the tools directory and handles DNS TXT
+lookups for CA enrollment. The same pattern should be extended to leaf
+enrollment.
+
+**Alternative approaches (lower priority):**
+
+- **CA-signed enrollment token** — CA issues a one-time token out-of-band;
+  `enroll` call must present the token
+- **Mutual TLS** — enrollment endpoint requires a client cert the CA trusts
+  (bootstrap problem, but works for device fleets)
+- **Manual approval** — enrollment goes into a pending queue, CA operator
+  reviews and approves before leaf is added to next tree batch
+
+**Files:**
+- `mtc-keymaster/server/c/mtc_http.c` — `handle_certificate_request()` needs
+  a validation gate
+- `mtc-keymaster/tools/python/ca_dns_txt.py` — reference for DNS TXT lookups
+- `mtc-keymaster/tools/python/create_leaf_cert.py` — leaf creation tool
+- `mtc-keymaster/tools/python/main.py` — `enroll` command
+
+### 4. AbuseIPDB cache expiry — refresh stale records after 5 days
 
 **Priority:** Medium — improves accuracy of IP reputation checks
 
@@ -110,7 +151,7 @@ so it can be tuned without code changes.
 - `mtc-keymaster/server/c/mtc_checkendpoint.h` — add TTL constant
 - `mtc-keymaster/server/c/mtc_db.c` — if the cache table schema is managed here
 
-### 4. Server-verified FIPS source checksums via MTC transparency log
+### 5. Server-verified FIPS source checksums via MTC transparency log
 
 **Priority:** High — addresses a fundamental weakness in FIPS source integrity
 
@@ -171,7 +212,7 @@ and cosignature — no server contact needed.
 - `debian/rules` — call submit script in FIPS build path
 - `Makefile.am` — add new targets
 
-### 5. Compiler integrity — what if gcc has been corrupted?
+### 6. Compiler integrity — what if gcc has been corrupted?
 
 **Priority:** Medium — defense-in-depth for the FIPS build pipeline
 
@@ -257,3 +298,52 @@ Reproducible builds (option 1) should be a longer-term goal.
 - `fips-manifest-submit.sh` — add toolchain checksum collection
 - `fips-manifest-verify.sh` — add optional toolchain hash comparison
 - `README-fips.md` — document the compiler trust boundary
+
+---
+
+## Appendix: Server Directory Layout
+
+Three directories are used on the server. The first two are active in the
+codebase; the third (`masterKey`) is not currently referenced.
+
+### `~/.TPM` — Client-side storage
+
+Per-domain leaf keys, certificates, and ECH cache.
+
+```
+~/.TPM/
+    {subject}/                  # one per enrolled domain
+        private_key.pem         # EC-P256 private key (mode 0600)
+        public_key.pem          # EC-P256 public key
+        certificate.json        # MTC cert with Merkle proof + cosignatures
+        index                   # certificate log index number
+    ech/
+        {host}.conf             # cached ECH config (base64)
+```
+
+**Created by:** `tools/python/main.py enroll`, `renew-tool/renew.py`
+**Read by:** renewal tool (`scan_tpm()`), SLC library (`slc_ech_cache_load()`)
+
+### `~/.mtc-ca-data` — Server-side CA/Log persistence
+
+Merkle tree state, CA key, issued certificates, and revocations. Passed to
+the C server via `--data-dir`.
+
+```
+~/.mtc-ca-data/
+    ca_key.der                  # Ed25519 CA private key (DER)
+    entries.json                # all Merkle tree log entries
+    certificates.json           # issued certs with inclusion proofs
+    landmarks.json              # cached Merkle landmark hashes (powers of 2)
+    revocations.json            # revoked cert indices and reasons
+    server-cert.pem             # TLS server certificate (if TLS enabled)
+    server-key.pem              # TLS server private key (if TLS enabled)
+```
+
+**Created by:** C server (`mtc_store_init()`) at startup
+**Configured in:** `mtc-ca.service` line 11 (`--data-dir`)
+
+### `masterKey` — Not currently used
+
+This directory is not referenced in the mtc-keymaster or socket-level-wrapper
+code. It may be from a different project or manual experimentation.
