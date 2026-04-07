@@ -63,7 +63,7 @@ static int read_file(const char *path, void *buf, int maxSz)
 
 static int init_ca_key(MtcStore *store)
 {
-    char path[512];
+    char path[1024];
     ed25519_key key;
     WC_RNG rng;
     int ret;
@@ -234,7 +234,7 @@ void mtc_store_free(MtcStore *store)
 
 int mtc_store_save(MtcStore *store)
 {
-    char path[512];
+    char path[1024];
     int i;
 
     /* Save entries as a JSON array */
@@ -298,7 +298,7 @@ int mtc_store_save(MtcStore *store)
 
 int mtc_store_load(MtcStore *store)
 {
-    char path[512], buf[1024 * 1024];
+    char path[1024], buf[1024 * 1024];
     int sz;
     struct json_object *arr, *entry;
     int i, count;
@@ -645,7 +645,7 @@ int mtc_store_revoke(MtcStore *store, int cert_index, const char *reason)
 
     /* Persist to file */
     {
-        char path[512];
+        char path[1024];
         struct json_object *arr = json_object_new_array();
         int i;
         const char *s;

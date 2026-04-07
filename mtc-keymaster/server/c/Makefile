@@ -1,5 +1,5 @@
 CC      ?= gcc
-CFLAGS  += -Wall -Wextra -O2
+CFLAGS  += -Wall -Wextra -Werror -O2
 CFLAGS  += $(shell pkg-config --cflags wolfssl) -DWOLFSSL_USE_OPTIONS_H
 CFLAGS  += $(shell pkg-config --cflags json-c)
 CFLAGS  += $(shell pkg-config --cflags libpq)
