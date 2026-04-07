@@ -21,3 +21,6 @@ clean-local:
 	-rm -rf doc/html/
 	-rm -f doc/refman.pdf
 	-rm -f doc/doxygen_warnings
+	@if test -f socket-level-wrapper/Makefile; then \
+	    $(MAKE) -C socket-level-wrapper clean; \
+	fi

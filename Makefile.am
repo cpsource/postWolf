@@ -324,6 +324,12 @@ wc_egs:
 	$(MAKE) wolfcrypt/test/testwolfcrypt; \
 	$(MAKE) wolfcrypt/benchmark/benchmark;
 
+all-local:
+	@if test -f socket-level-wrapper/Makefile; then \
+	    echo "  Building socket-level-wrapper..."; \
+	    $(MAKE) -C socket-level-wrapper; \
+	fi
+
 install-exec-local:	install-generic-config
 
 install-generic-config:
