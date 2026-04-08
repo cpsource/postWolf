@@ -30,7 +30,7 @@ exported from `~/.mtc-ca-data/ca_key.der`.
 **How:**
 ```bash
 # Extract public key from the DER private key
-openssl pkey -in ~/.mtc-ca-data/ca_key.der -inform DER -pubout -outform DER | \
+openssl35 pkey -in ~/.mtc-ca-data/ca_key.der -inform DER -pubout -outform DER | \
     tail -c 32 | xxd -i
 ```
 

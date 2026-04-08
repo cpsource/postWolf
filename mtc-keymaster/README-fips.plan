@@ -148,8 +148,8 @@ fips-framework/
 **`fips-manifest-verify.c`** — run by user to check a kit:
 
 All verification uses the MTC Merkle tree and Ed25519 cosignatures natively.
-The Merkle inclusion proof + cosignature replaces both `openssl verify` (cert
-chain) and `openssl dgst -verify` (signature):
+The Merkle inclusion proof + cosignature replaces both `openssl35 verify` (cert
+chain) and `openssl35 dgst -verify` (signature):
 
 - Manifest hash → Merkle leaf (via `mtc_tree_append`)
 - Inclusion proof → binds leaf to tree root

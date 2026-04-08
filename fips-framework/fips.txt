@@ -823,7 +823,7 @@ kit.tar
 ├── chain.pem            # intermediate(s)
 ├── proof_<file>.json    # Merkle proof per file (or bundled)
 🔐 Step 1 — Verify the certificate chain
-openssl verify -CAfile rootCA.pem -untrusted chain.pem publisher.crt
+openssl35 verify -CAfile rootCA.pem -untrusted chain.pem publisher.crt
 ✔ ensures:
 
 publisher is trusted
@@ -831,7 +831,7 @@ publisher is trusted
 cert chain is valid
 
 ✍️ Step 2 — Verify the signature on the manifest
-openssl dgst -sha256 -verify <(openssl x509 -in publisher.crt -pubkey -noout) \
+openssl35 dgst -sha256 -verify <(openssl35 x509 -in publisher.crt -pubkey -noout) \
   -signature manifest.sig \
   manifest.json
 ✔ ensures:
