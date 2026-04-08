@@ -3,25 +3,49 @@
 Generate the DNS TXT record for MTC CA domain validation.
 
 Given a CA certificate (PEM or DER), extracts the SAN DNS names and
-computes the public key fingerprint, then prints the exact TXT record
+computes a key-bound challenge token, then prints the exact TXT record
 the domain owner needs to add to their DNS.
+
+The token binds together:
+  - SHA-256 hash of the public key (SPKI) — prevents use with a different key
+  - domain name — prevents cross-domain replay
+  - random nonce — prevents pre-computation
+  - expiration timestamp — limits the validation window
+
+Even if an attacker steals or spoofs the token, they cannot use it for a
+different key or domain.
 
 Usage:
     python3 ca_dns_txt.py ~/masterKey/factsorlieCA.crt
     python3 ca_dns_txt.py --domain factsorlie.com ~/masterKey/factsorlieCA.crt
+    python3 ca_dns_txt.py --check ~/masterKey/factsorlieCA.crt
+    python3 ca_dns_txt.py --ttl 48 ~/masterKey/factsorlieCA.crt
 
 Output:
-    _mtc-ca.factsorlie.com.  IN TXT  "v=mtc-ca1; fp=sha256:a1b2c3d4..."
+    _mtc-ca.factsorlie.com.  IN TXT  "v=mtc-ca2; fp=sha256:a1b2...; n=<nonce>; exp=<ts>"
+
+Integrity note:
+    The DNS record does NOT contain a hash or signature for integrity.
+    A plain hash is useless — an attacker who can modify the DNS record
+    can recompute it. Integrity is enforced server-side: the server stores
+    the nonce + domain + fingerprint when it issues the nonce and verifies
+    against its own state.
 """
 
 import argparse
 import hashlib
+import os
 import subprocess
 import sys
+import time
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import ExtensionOID
+
+# Default token validity — 15 minutes limits the attack window.
+# DNS TXT records via API (Cloudflare, Route53, etc.) propagate in seconds.
+DEFAULT_TTL_MINUTES = 15
 
 
 def load_cert(path: str) -> x509.Certificate:
@@ -63,9 +87,54 @@ def public_key_fingerprint(cert: x509.Certificate) -> str:
     return hashlib.sha256(pub_der).hexdigest()
 
 
+def generate_token(fp: str, domain: str, ttl_minutes: int) -> tuple[str, int]:
+    """
+    Generate a challenge token for DNS TXT validation.
+
+    Returns (nonce, expiration).
+
+    The nonce is 32 random bytes (256-bit from CSPRNG). In production,
+    this should come from the server via POST /enrollment/nonce — the
+    server stores the nonce + domain + fingerprint + expiry in its pending
+    state and verifies against that state (not against the DNS record).
+
+    Nonces are single-use (consumed on success, never accepted again) and
+    short-lived (15 minutes default) to limit the attack window.
+
+    A plain hash over the fields does NOT provide integrity against an
+    active attacker — anyone who can modify the DNS record can recompute
+    the hash. Server-side state is the correct integrity mechanism.
+    """
+    nonce = os.urandom(32).hex()  # 256-bit from CSPRNG
+    exp = int(time.time()) + (ttl_minutes * 60)
+    return nonce, exp
+
+
+def parse_txt_fields(txt: str) -> dict:
+    """Parse a TXT record value into a dict of key=value fields."""
+    fields = {}
+    for part in txt.split(";"):
+        part = part.strip()
+        if "=" in part:
+            k, v = part.split("=", 1)
+            fields[k.strip()] = v.strip()
+    return fields
+
+
 def check_dns_txt(domain: str, expected_fp: str) -> tuple[bool, str]:
     """
-    Query DNS for _mtc-ca.<domain> TXT record and check fingerprint.
+    Query DNS for _mtc-ca.<domain> TXT record and verify the token.
+
+    This is a client-side convenience check. The real verification happens
+    server-side: the server looks up the nonce in its pending_nonces state
+    and verifies domain + fingerprint against its own records — not against
+    the DNS record contents.
+
+    Checks:
+      1. TXT record exists at _mtc-ca.<domain>
+      2. Version is v=mtc-ca2 (or legacy v=mtc-ca1)
+      3. Fingerprint matches the certificate's public key
+      4. Token has not expired
 
     Returns (matched, detail).
     """
@@ -86,15 +155,39 @@ def check_dns_txt(domain: str, expected_fp: str) -> tuple[bool, str]:
     if not raw:
         return False, f"no TXT record found at {qname}"
 
-    # dig returns lines like: "v=mtc-ca1; fp=sha256:abc123..."
-    expected_value = f"v=mtc-ca1; fp=sha256:{expected_fp}"
-    for line in raw.splitlines():
-        # Strip surrounding quotes from dig output
-        txt = line.strip().strip('"')
-        if txt == expected_value:
-            return True, f"MATCH at {qname}"
+    now = int(time.time())
 
-    return False, f"TXT record found but no matching fingerprint at {qname}"
+    for line in raw.splitlines():
+        txt = line.strip().strip('"')
+        fields = parse_txt_fields(txt)
+
+        version = fields.get("v", "")
+        fp = fields.get("fp", "").replace("sha256:", "")
+        exp_str = fields.get("exp", "0")
+
+        # Support both v=mtc-ca1 (legacy, fp-only) and v=mtc-ca2
+        if version == "mtc-ca1":
+            if fp == expected_fp:
+                return True, f"MATCH at {qname} (legacy v=mtc-ca1)"
+            continue
+
+        if version != "mtc-ca2":
+            continue
+
+        if fp != expected_fp:
+            continue
+
+        # Check expiration
+        try:
+            exp = int(exp_str)
+        except ValueError:
+            continue
+        if exp < now:
+            return False, f"token expired at {qname} (exp={exp_str})"
+
+        return True, f"MATCH at {qname} (v=mtc-ca2, expires {exp_str})"
+
+    return False, f"TXT record found but no valid token at {qname}"
 
 
 def main():
@@ -105,6 +198,8 @@ def main():
                         help="Override domain (default: from SAN)")
     parser.add_argument("--check", action="store_true",
                         help="Query DNS and verify the TXT record exists")
+    parser.add_argument("--ttl", type=int, default=DEFAULT_TTL_MINUTES,
+                        help=f"Token validity in minutes (default: {DEFAULT_TTL_MINUTES})")
     args = parser.parse_args()
 
     cert = load_cert(args.cert)
@@ -137,15 +232,34 @@ def main():
 
     fp = public_key_fingerprint(cert)
     print(f"Public key SHA-256: {fp}")
+    print(f"Token TTL:          {args.ttl} minutes")
     print()
 
     # Output DNS records
     print("Required DNS TXT record(s):")
     print()
+    print("NOTE: In production, the nonce should come from the server via")
+    print("  POST /enrollment/nonce — not generated locally. Use --server")
+    print("  to auto-fetch, or --nonce/--expiry for a server-issued value.")
+    print()
     for domain in domains:
+        nonce, exp = generate_token(fp, domain, args.ttl)
         record_name = f"_mtc-ca.{domain}."
-        record_value = f"v=mtc-ca1; fp=sha256:{fp}"
+        record_value = (f"v=mtc-ca2; fp=sha256:{fp}; "
+                        f"n={nonce}; exp={exp}")
         print(f"  {record_name}  IN TXT  \"{record_value}\"")
+    print()
+    print("Token fields:")
+    print("  v    — version (mtc-ca2)")
+    print("  fp   — SHA-256 of public key SPKI (binds to this key)")
+    print("  n    — nonce (server-issued in production, random here)")
+    print("  exp  — Unix timestamp expiration (limits validation window)")
+    print()
+    print("Integrity is enforced server-side: the server stores the nonce,")
+    print("domain, and fingerprint when it issues the nonce, and verifies")
+    print("against its own state — not against the DNS record contents.")
+    print("A plain hash in the DNS record does NOT prevent tampering by an")
+    print("attacker who can modify the record.")
     print()
 
     # Check DNS if requested

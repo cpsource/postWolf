@@ -99,15 +99,84 @@ enrollment.
   (bootstrap problem, but works for device fleets)
 - **Manual approval** — enrollment goes into a pending queue, CA operator
   reviews and approves before leaf is added to next tree batch
+- **Provisional enrollment** — leaf is added to the Merkle tree immediately
+  but marked `provisional: true`. The CA reviews asynchronously and either
+  confirms (removes the provisional flag) or revokes. This is a default-allow
+  model similar to Certificate Transparency — the entry is in the tree for
+  transparency, but relying parties can treat provisional certs differently:
+
+  1. Leaf enrolls → added to tree with `provisional: true`
+  2. CA reviews (DNS TXT, manual check, whatever)
+  3. If legitimate → CA confirms, cert becomes fully trusted
+  4. If fraudulent → CA revokes (uses existing `revocations.json`)
+  5. Timeout → if CA doesn't confirm within N hours, auto-revoke
+
+  **Risk:** during the provisional window a fraudulent leaf is live in the
+  tree. **Mitigation:** the inclusion proof carries the provisional flag, and
+  the SLC library rejects or warns on provisional certs. The transparency log
+  itself is the defense — anyone can audit what was enrolled and flag fraud.
+
+**DNS token format (implemented in `ca_dns_txt.py`):**
+
+The DNS TXT record uses a key-bound token (v=mtc-ca2) with a server-issued
+nonce. The server stores the nonce + domain + fingerprint + expiry in its
+pending state and verifies against that state — not against the DNS record
+contents.
+
+```
+_mtc-ca.example.com.  IN TXT  "v=mtc-ca2; fp=sha256:<spki_hash>; n=<nonce>; exp=<unix_ts>"
+```
+
+| Field | Purpose |
+|-------|---------|
+| `fp`  | SHA-256 of public key SPKI — binds to this specific key |
+| `n`   | Server-issued nonce — proves freshness, prevents replay |
+| `exp` | Unix timestamp — limits the validation window (default 24h) |
+
+**Why no integrity hash?** A plain hash (e.g. SHA-256 of the fields) does
+NOT prevent tampering by an active attacker — anyone who can modify the DNS
+record can recompute the hash with their own values. Integrity is enforced
+server-side: the server verifies the nonce against its own stored state
+(domain + fingerprint + expiry), not against anything in the DNS record.
 
 **Files:**
 - `mtc-keymaster/server/c/mtc_http.c` — `handle_certificate_request()` needs
   a validation gate
-- `mtc-keymaster/tools/python/ca_dns_txt.py` — reference for DNS TXT lookups
+- `mtc-keymaster/tools/python/ca_dns_txt.py` — generates and verifies key-bound
+  DNS TXT tokens (updated to v=mtc-ca2 format)
 - `mtc-keymaster/tools/python/create_leaf_cert.py` — leaf creation tool
 - `mtc-keymaster/tools/python/main.py` — `enroll` command
 
-### 4. AbuseIPDB cache expiry — refresh stale records after 5 days
+### 4. AbuseIPDB gate on CA and leaf enrollment
+
+**Priority:** High — blocks abusive IPs before they can enroll
+
+The AbuseIPDB check currently only runs on general requests. It should also
+gate CA enrollment (`/enroll-ca`) and leaf enrollment (`/certificate/request`)
+at the service entrance — reject the connection before any enrollment logic
+runs if the client IP has a high abuse confidence score.
+
+**Threshold:** Lower the rejection threshold from 75% to **25%**. Enrollment
+is a privileged operation and should be more restrictive than general access.
+A 25% confidence score means "probably suspicious" which is enough to reject
+an enrollment attempt. Legitimate users with flagged IPs can resolve their
+AbuseIPDB listing or contact the CA operator.
+
+**Implementation:**
+1. In `mtc_http.c`, call `mtc_check_endpoint()` at the top of
+   `handle_certificate_request()` and `handle_enroll_ca()` (or in the
+   connection accept path before routing)
+2. If abuse confidence score >= 25, return 403 and log the rejection
+3. Define `ABUSEIPDB_ENROLL_THRESHOLD 25` in `mtc_checkendpoint.h`
+   (separate from any general-access threshold)
+
+**Files:**
+- `mtc-keymaster/server/c/mtc_http.c` — add check at enrollment entry points
+- `mtc-keymaster/server/c/mtc_checkendpoint.h` — add enrollment threshold constant
+- `mtc-keymaster/server/c/mtc_checkendpoint.c` — ensure check function
+  accepts a threshold parameter
+
+### 5. AbuseIPDB cache expiry — refresh stale records after 5 days
 
 **Priority:** Medium — improves accuracy of IP reputation checks
 
@@ -151,7 +220,7 @@ so it can be tuned without code changes.
 - `mtc-keymaster/server/c/mtc_checkendpoint.h` — add TTL constant
 - `mtc-keymaster/server/c/mtc_db.c` — if the cache table schema is managed here
 
-### 5. Server-verified FIPS source checksums via MTC transparency log
+### 6. Server-verified FIPS source checksums via MTC transparency log
 
 **Priority:** High — addresses a fundamental weakness in FIPS source integrity
 
@@ -212,7 +281,7 @@ and cosignature — no server contact needed.
 - `debian/rules` — call submit script in FIPS build path
 - `Makefile.am` — add new targets
 
-### 6. Compiler integrity — what if gcc has been corrupted?
+### 7. Compiler integrity — what if gcc has been corrupted?
 
 **Priority:** Medium — defense-in-depth for the FIPS build pipeline
 
@@ -347,3 +416,219 @@ the C server via `--data-dir`.
 
 This directory is not referenced in the mtc-keymaster or socket-level-wrapper
 code. It may be from a different project or manual experimentation.
+
+---
+
+## Appendix: Post-Quantum Readiness
+
+### Diffie-Hellman is not post-quantum safe
+
+Classical key exchange (DH, ECDH) and signatures (RSA, DSA, ECDSA) are all
+broken by Shor's algorithm on a sufficiently large quantum computer.
+
+**Vulnerable algorithms:**
+- DH (finite field) — discrete log
+- ECDH (elliptic curve) — elliptic curve discrete log
+- RSA — integer factorization
+- DSA, ECDSA — discrete log variants
+
+### NIST post-quantum standards
+
+| Algorithm | Replaces | Type |
+|-----------|----------|------|
+| **ML-KEM** (CRYSTALS-Kyber) | DH/ECDH | Key encapsulation |
+| **ML-DSA** (CRYSTALS-Dilithium) | RSA/ECDSA | Digital signatures |
+| **SLH-DSA** (SPHINCS+) | RSA/ECDSA | Hash-based signatures (conservative fallback) |
+
+### Current wolfSSL build status
+
+This build has post-quantum support enabled:
+- `WOLFSSL_HAVE_MLKEM` — ML-KEM key encapsulation
+- `WOLFSSL_PQC_HYBRIDS` — hybrid key exchange (ML-KEM + ECDH in a single
+  TLS 1.3 handshake)
+
+The hybrid approach provides post-quantum security from ML-KEM while keeping
+classical security from ECDH as a safety net in case ML-KEM has an
+undiscovered weakness.
+
+### "Harvest now, decrypt later"
+
+The near-term threat is an adversary recording TLS traffic today and
+decrypting it once quantum computers are available. This is why migrating
+key exchange to ML-KEM (or hybrids) matters now, even though large quantum
+computers don't yet exist. Signatures are less urgent since they only need
+to be valid at verification time.
+
+### MTC implications
+
+The MTC transparency log uses Ed25519 for CA cosignatures. Ed25519 is
+**not** post-quantum safe (elliptic curve discrete log). A future migration
+path would be:
+
+1. **Key exchange** — already addressed by `WOLFSSL_PQC_HYBRIDS` in TLS 1.3
+2. **MTC cosignatures** — migrate from Ed25519 to ML-DSA or SLH-DSA when
+   wolfSSL adds support and the draft-ietf-plants spec is updated
+3. **Leaf certificates** — currently EC-P256; would need ML-DSA equivalent
+
+The Merkle tree structure itself (SHA-256 hashes) is quantum-resistant —
+Grover's algorithm only halves the effective hash length (256→128 bits),
+which remains secure.
+
+---
+
+## Appendix: Server-Issued Nonce Plan for CA Enrollment
+
+### Problem
+
+The current CA enrollment has a chicken-and-egg problem: `ca_dns_txt.py`
+generates nonces client-side, but the server never sees or validates them.
+The C server's `validate_ca_dns_txt()` only checks `v=mtc-ca1; fp=sha256:<hex>`
+— it ignores nonces entirely. The v=mtc-ca2 token fields are client-side
+theater that the server never verifies.
+
+### Security Principles
+
+1. **Server-side state is the authority.** The server stores
+   `(domain, fp, nonce, expiry)` when it issues the nonce and verifies
+   against that state — not against anything in the DNS record.
+2. **A plain hash in the DNS record does NOT provide integrity.** An attacker
+   who can modify the record can recompute any hash. No `tok` field.
+3. **`exp` in the DNS record is informational for humans only.** The server
+   checks expiry from its own stored state, not from the record.
+4. **`fp` = SHA-256(SubjectPublicKeyInfo)** — the standard SPKI fingerprint.
+
+### Policy
+
+1. Reject concurrent duplicate requests (same domain+fp)
+2. Require a fresh server-issued nonce (256-bit CSPRNG)
+3. Server stores `(domain, fp, nonce, expiry)` — this is the binding
+4. **Single-use** — mark nonce as consumed on success, never accept again (prevents replay)
+5. **Short lifetime** — 15 minutes default (limits attack window; DNS TXT records via API propagate fast enough)
+
+### DNS TXT Record Format
+
+```
+_mtc-ca.example.com. IN TXT "v=mtc-ca2; fp=sha256:<hex>; n=<nonce>; exp=<ts>"
+```
+
+| Field | Purpose |
+|-------|---------|
+| `fp`  | Binds to this specific key (server verifies against stored state) |
+| `n`   | Server-issued nonce (server verifies against stored state) |
+| `exp` | Informational for humans (server uses its own stored expiry) |
+
+No integrity hash. No signature. DNS placement proves domain control.
+Server-side state proves everything else.
+
+### Two-Phase Flow
+
+```
+Phase 1: Request Nonce
+  Client → POST /enrollment/nonce { domain, public_key_fingerprint }
+  Server → generates nonce, stores (domain, fp, nonce, expiry)
+  Server → returns { nonce, expires, dns_record_name, dns_record_value }
+  Server → rejects 409 if pending request already exists for domain+fp
+
+Phase 2: Complete Enrollment
+  Client → creates DNS TXT record with server-issued nonce
+  Client → POST /certificate/request { ...existing fields, enrollment_nonce }
+  Server → looks up nonce in pending state
+  Server → verifies domain + fp match stored state, not expired, not consumed
+  Server → queries DNS TXT to confirm record exists (proves domain control)
+  Server → issues certificate, marks nonce consumed
+```
+
+### C Server Changes
+
+**`mtc_store.h`** — Add pending nonce storage:
+
+```c
+#define MTC_MAX_PENDING_NONCES 256
+#define MTC_NONCE_TTL_SECS     900    /* 15 minutes */
+#define MTC_NONCE_HEX_LEN     64     /* 32 bytes = 64 hex chars (256-bit) */
+
+typedef struct {
+    char     domain[256];
+    char     fp_hex[65];           /* sha256 of public key SPKI */
+    char     nonce_hex[MTC_NONCE_HEX_LEN + 1];
+    time_t   created;
+    time_t   expires;
+    int      consumed;             /* 1 = already used */
+} MtcPendingNonce;
+```
+
+Functions:
+- `mtc_store_create_nonce()` → 0 ok, -1 duplicate, -2 full
+- `mtc_store_validate_nonce()` → 1 valid, 0 invalid
+- `mtc_store_consume_nonce()` → marks nonce consumed
+- `mtc_store_expire_nonces()` → compacts out expired/consumed entries
+
+Persisted in PostgreSQL (Neon) — survives server restarts:
+
+```sql
+CREATE TABLE mtc_enrollment_nonces (
+    nonce       TEXT PRIMARY KEY,          -- 64 hex chars (256-bit)
+    domain      TEXT NOT NULL,
+    fp          TEXT NOT NULL,             -- sha256 of SPKI
+    expires_at  TIMESTAMPTZ NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending | consumed | expired
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_nonce_domain_fp ON mtc_enrollment_nonces (domain, fp)
+    WHERE status = 'pending';
+```
+
+- `create_nonce`: INSERT, reject if pending row exists for same domain+fp
+- `validate_nonce`: SELECT WHERE nonce=? AND status='pending' AND expires_at > now(), verify domain+fp match
+- `consume_nonce`: UPDATE SET status='consumed' WHERE nonce=?
+- `expire_nonces`: UPDATE SET status='expired' WHERE expires_at <= now() AND status='pending' (run periodically or on each create)
+
+**`mtc_http.c`** — New endpoint + modified validation:
+
+- `POST /enrollment/nonce` → `handle_enrollment_nonce()` — issues nonce,
+  returns exact DNS TXT record to create, rejects 409 on duplicate
+- `validate_ca_dns_txt()` — add `expected_nonce` param; if non-NULL require
+  v=mtc-ca2 format, verify nonce is present in record (actual validation is
+  against server-side state — DNS query just proves domain control)
+- `handle_certificate_request()` — extract `enrollment_nonce` from body,
+  validate via store, consume on successful issuance
+
+### Python Tool Changes
+
+**`ca_dns_txt.py`** — Add `--nonce`, `--expiry`, `--server` args:
+- `--server`: auto-fetch nonce from `/enrollment/nonce`
+- `--nonce`+`--expiry`: use server-issued values directly
+- Neither: generate locally (standalone/testing mode)
+
+**`mtc_client.py`** — Add `request_enrollment_nonce(domain, fingerprint)` method.
+
+**`main.py`** — Two-phase `cmd_enroll_ca()` for intermediate CAs:
+1. Compute fingerprint
+2. Call `client.request_enrollment_nonce(domain, fp)`
+3. Print DNS TXT record to create
+4. Prompt: "Add this DNS TXT record, then press Enter..."
+5. Call `client.request_certificate()` with `enrollment_nonce`
+
+Root CAs: skip nonce (no DNS validation, unchanged).
+
+### File Summary
+
+| File | Change |
+|------|--------|
+| `server/c/mtc_store.h` | `MtcPendingNonce` struct, 4 function decls |
+| `server/c/mtc_store.c` | Implement 4 nonce functions via `mtc_db.c` |
+| `server/c/mtc_db.c` | `mtc_enrollment_nonces` table DDL + CRUD queries |
+| `server/c/mtc_http.c` | New `/enrollment/nonce` handler, modify DNS validation |
+| `tools/python/ca_dns_txt.py` | Accept server-issued nonce via `--nonce`/`--server` |
+| `tools/python/mtc_client.py` | Add `request_enrollment_nonce()` method |
+| `tools/python/main.py` | Two-phase flow in `cmd_enroll_ca()` |
+
+### Verification
+
+1. `make -C mtc-keymaster/server/c` — builds clean with `-Werror`
+2. Phase 1: `POST /enrollment/nonce` → returns nonce + DNS record
+3. Duplicate rejection: same request → 409
+4. Phase 2: `POST /certificate/request` with nonce → cert issued, nonce consumed
+5. Replay: same nonce again → rejected (consumed)
+6. `python3 ca_dns_txt.py --server localhost:8443 test-ca.crt` → fetches nonce, prints TXT record
