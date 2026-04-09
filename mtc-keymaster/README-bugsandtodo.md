@@ -305,7 +305,7 @@ AbuseIPDB listing or contact the CA operator.
 - `mtc-keymaster/server/c/mtc_checkendpoint.c` — ensure check function
   accepts a threshold parameter
 
-### 6. AbuseIPDB cache expiry — refresh stale records after 5 days
+### 6. AbuseIPDB cache expiry — refresh stale records after 5 days — DONE
 
 **Priority:** Medium — improves accuracy of IP reputation checks
 

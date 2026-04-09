@@ -21,6 +21,9 @@
 /* Module state                                                        */
 /* ------------------------------------------------------------------ */
 
+/* String version of TTL for SQL INTERVAL clause */
+#define ABUSEIPDB_CACHE_TTL_INTERVAL  "5 days"
+
 static char    s_api_key[256]    = {0};
 static PGconn *s_conn           = NULL;
 static int     s_verbose        = 0;
@@ -97,10 +100,14 @@ static int init_schema(PGconn *conn)
         "  ipaddr TEXT NOT NULL,"
         "  response JSONB,"
         "  abuse_confidence_score INTEGER NOT NULL,"
-        "  requested_at TIMESTAMPTZ DEFAULT now()"
+        "  requested_at TIMESTAMPTZ DEFAULT now(),"
+        "  updated_at TIMESTAMPTZ DEFAULT now()"
         ");"
-        "CREATE INDEX IF NOT EXISTS abuseipdb_ipaddr_idx "
-        "  ON abuseipdb (ipaddr);";
+        "CREATE UNIQUE INDEX IF NOT EXISTS abuseipdb_ipaddr_idx "
+        "  ON abuseipdb (ipaddr);"
+        /* Add updated_at to existing tables that lack it */
+        "ALTER TABLE abuseipdb ADD COLUMN IF NOT EXISTS "
+        "  updated_at TIMESTAMPTZ DEFAULT now();";
 
     res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
@@ -117,18 +124,22 @@ static int init_schema(PGconn *conn)
 /* DB cache                                                            */
 /* ------------------------------------------------------------------ */
 
-/* Returns score (0-100) if cached, or -1 if not found / error. */
+/* Returns score (0-100) if cached and fresh, or -1 if not found / stale / error. */
 static int db_cache_lookup(const char *ipaddr)
 {
     PGresult *res;
     const char *params[1];
     int score;
+    const char *is_fresh;
 
     if (!s_conn) return -1;
 
     params[0] = ipaddr;
     res = PQexecParams(s_conn,
-        "SELECT abuse_confidence_score FROM abuseipdb "
+        "SELECT abuse_confidence_score,"
+        "  (COALESCE(updated_at, requested_at) > now() - INTERVAL '"
+        ABUSEIPDB_CACHE_TTL_INTERVAL "') AS is_fresh "
+        "FROM abuseipdb "
         "WHERE ipaddr = $1 ORDER BY requested_at DESC LIMIT 1",
         1, NULL, params, NULL, NULL, 0);
 
@@ -138,7 +149,15 @@ static int db_cache_lookup(const char *ipaddr)
     }
 
     score = atoi(PQgetvalue(res, 0, 0));
+    is_fresh = PQgetvalue(res, 0, 1);
     PQclear(res);
+
+    if (is_fresh[0] != 't') {
+        if (s_verbose)
+            printf("[checkendpoint] cache stale for %s (older than %d days)\n",
+                   ipaddr, ABUSEIPDB_CACHE_TTL_DAYS);
+        return -1;  /* treat as cache miss — caller will re-query and update */
+    }
 
     if (s_verbose)
         printf("[checkendpoint] cache hit for %s -> score %d\n", ipaddr, score);
@@ -146,8 +165,10 @@ static int db_cache_lookup(const char *ipaddr)
     return score;
 }
 
-/* Insert a result into the cache. Returns 0 on success. */
-static int db_cache_insert(const char *ipaddr, const char *json_response,
+/* Insert or update a result in the cache (upsert).
+ * If the IP already exists, update the score, response, and updated_at.
+ * Returns 0 on success. */
+static int db_cache_upsert(const char *ipaddr, const char *json_response,
                            int score)
 {
     PGresult *res;
@@ -163,11 +184,15 @@ static int db_cache_insert(const char *ipaddr, const char *json_response,
 
     res = PQexecParams(s_conn,
         "INSERT INTO abuseipdb (ipaddr, response, abuse_confidence_score) "
-        "VALUES ($1, $2, $3)",
+        "VALUES ($1, $2, $3) "
+        "ON CONFLICT (ipaddr) DO UPDATE SET "
+        "  response = EXCLUDED.response, "
+        "  abuse_confidence_score = EXCLUDED.abuse_confidence_score, "
+        "  updated_at = now()",
         3, NULL, params, NULL, NULL, 0);
 
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "[checkendpoint] cache insert failed: %s\n",
+        fprintf(stderr, "[checkendpoint] cache upsert failed: %s\n",
                 PQerrorMessage(s_conn));
         PQclear(res);
         return -1;
@@ -338,9 +363,9 @@ int mtc_checkendpoint(char *ipaddr)
     if (s_verbose)
         printf("[checkendpoint] abuseConfidenceScore = %d\n", score);
 
-    /* Cache to DB */
+    /* Cache to DB (inserts new or updates stale) */
     if (s_conn)
-        db_cache_insert(ipaddr, buf.data, score);
+        db_cache_upsert(ipaddr, buf.data, score);
 
     json_object_put(root);
     free(buf.data);
