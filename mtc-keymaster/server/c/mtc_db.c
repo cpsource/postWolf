@@ -636,7 +636,7 @@ int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
     wc_FreeRng(&rng);
 
     for (i = 0; i < 32; i++)
-        sprintf(nonce_out + i * 2, "%02x", rand_bytes[i]);
+        snprintf(nonce_out + i * 2, 3, "%02x", rand_bytes[i]);
     nonce_out[64] = '\0';
 
     *expires_out = (long)time(NULL) + MTC_NONCE_TTL_SECS;
@@ -736,6 +736,48 @@ int mtc_db_validate_nonce(PGconn *conn, const char *nonce_hex,
     valid = (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0);
     PQclear(res);
     return valid;
+}
+
+int mtc_db_validate_and_consume_nonce(PGconn *conn, const char *nonce_hex,
+                                      const char *domain, const char *fp_hex)
+{
+    PGresult *res;
+    int consumed;
+
+    if (!conn) return 0;
+
+    /* Atomic: UPDATE only if pending+unexpired+matching, consume in one shot.
+     * If zero rows affected, the nonce was invalid, expired, or already used.
+     * This eliminates the TOCTOU race between validate and consume. */
+    if (domain && domain[0] && fp_hex && fp_hex[0]) {
+        const char *params[3] = { nonce_hex, domain, fp_hex };
+        res = PQexecParams(conn,
+            "UPDATE mtc_enrollment_nonces SET status = 'consumed' "
+            "WHERE nonce = $1 AND domain = $2 AND fp = $3 "
+            "AND status = 'pending' AND expires_at > now()",
+            3, NULL, params, NULL, NULL, 0);
+    }
+    else if (domain && domain[0]) {
+        const char *params[2] = { nonce_hex, domain };
+        res = PQexecParams(conn,
+            "UPDATE mtc_enrollment_nonces SET status = 'consumed' "
+            "WHERE nonce = $1 AND domain = $2 "
+            "AND status = 'pending' AND expires_at > now()",
+            2, NULL, params, NULL, NULL, 0);
+    }
+    else {
+        const char *params[1] = { nonce_hex };
+        res = PQexecParams(conn,
+            "UPDATE mtc_enrollment_nonces SET status = 'consumed' "
+            "WHERE nonce = $1 "
+            "AND status = 'pending' AND expires_at > now()",
+            1, NULL, params, NULL, NULL, 0);
+    }
+
+    consumed = (PQresultStatus(res) == PGRES_COMMAND_OK &&
+                atoi(PQcmdTuples(res)) > 0);
+    PQclear(res);
+    return consumed;
 }
 
 void mtc_db_consume_nonce(PGconn *conn, const char *nonce_hex)

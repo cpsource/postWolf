@@ -74,6 +74,12 @@ int  mtc_db_find_ca_for_domain(PGconn *conn, const char *domain);
 int  mtc_db_validate_nonce(PGconn *conn, const char *nonce_hex,
                            const char *domain, const char *fp_hex);
 
+/* Atomically validate and consume a nonce in a single query.
+ * Returns 1 if the nonce was valid and is now consumed, 0 otherwise.
+ * This prevents TOCTOU race conditions between validate and consume. */
+int  mtc_db_validate_and_consume_nonce(PGconn *conn, const char *nonce_hex,
+                                       const char *domain, const char *fp_hex);
+
 /* Mark a nonce as consumed. */
 void mtc_db_consume_nonce(PGconn *conn, const char *nonce_hex);
 

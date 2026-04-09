@@ -259,12 +259,12 @@ static int validate_ca_dns_txt(const char *domain, const char *fp_hex,
 
     ans_len = res_query(qname, ns_c_in, ns_t_txt, answer, sizeof(answer));
     if (ans_len < 0) {
-        printf("[ca-validate] DNS query failed for %s\n", qname);
+        LOG_WARN("DNS query failed for %s", qname);
         return 0;
     }
 
     if (ns_initparse(answer, ans_len, &msg) < 0) {
-        printf("[ca-validate] failed to parse DNS response for %s\n", qname);
+        LOG_WARN("failed to parse DNS response for %s", qname);
         return 0;
     }
 
@@ -281,30 +281,47 @@ static int validate_ca_dns_txt(const char *domain, const char *fp_hex,
                         txt_len = (int)sizeof(txt) - 1;
                     memcpy(txt, rdata + 1, txt_len);
                     txt[txt_len] = '\0';
-                    printf("[ca-validate] TXT record: \"%s\"\n", txt);
+                    LOG_TRACE("TXT record: \"%s\"", txt);
 
-                    if (expected_nonce) {
-                        /* v=mtc-ca2: verify nonce is present in record.
-                         * Actual binding check (domain+fp+expiry) is done
-                         * server-side against stored state, not against
-                         * the DNS record contents. */
-                        if (strstr(txt, "v=mtc-ca2") &&
-                            strstr(txt, fp_hex) &&
-                            strstr(txt, expected_nonce)) {
-                            printf("[ca-validate] v=mtc-ca2 MATCH for %s\n",
-                                   qname);
-                            return 1;
+                    /* Parse TXT record fields by splitting on ';'
+                     * and matching exact key=value pairs. No substring
+                     * matching — prevents crafted records. */
+                    {
+                        char tmp[512];
+                        char *field, *saveptr;
+                        const char *v_val = NULL, *fp_val = NULL;
+                        const char *n_val = NULL;
+
+                        snprintf(tmp, sizeof(tmp), "%s", txt);
+                        for (field = strtok_r(tmp, ";", &saveptr);
+                             field != NULL;
+                             field = strtok_r(NULL, ";", &saveptr)) {
+                            /* Skip leading whitespace */
+                            while (*field == ' ') field++;
+                            if (strncmp(field, "v=", 2) == 0)
+                                v_val = field + 2;
+                            else if (strncmp(field, "fp=sha256:", 10) == 0)
+                                fp_val = field + 10;
+                            else if (strncmp(field, "n=", 2) == 0)
+                                n_val = field + 2;
                         }
-                    }
-                    else {
-                        /* Legacy v=mtc-ca1: fingerprint-only */
-                        char expected[256];
-                        snprintf(expected, sizeof(expected),
-                                 "v=mtc-ca1; fp=sha256:%s", fp_hex);
-                        if (strcmp(txt, expected) == 0) {
-                            printf("[ca-validate] v=mtc-ca1 MATCH for %s\n",
-                                   qname);
-                            return 1;
+
+                        if (expected_nonce) {
+                            /* v=mtc-ca2: exact field matching */
+                            if (v_val && strcmp(v_val, "mtc-ca2") == 0 &&
+                                fp_val && strcmp(fp_val, fp_hex) == 0 &&
+                                n_val && strcmp(n_val, expected_nonce) == 0) {
+                                LOG_DEBUG("v=mtc-ca2 MATCH for %s", qname);
+                                return 1;
+                            }
+                        }
+                        else {
+                            /* Legacy v=mtc-ca1: fingerprint-only */
+                            if (v_val && strcmp(v_val, "mtc-ca1") == 0 &&
+                                fp_val && strcmp(fp_val, fp_hex) == 0) {
+                                LOG_DEBUG("v=mtc-ca1 MATCH for %s", qname);
+                                return 1;
+                            }
                         }
                     }
                 }
@@ -312,7 +329,7 @@ static int validate_ca_dns_txt(const char *domain, const char *fp_hex,
         }
     }
 
-    printf("[ca-validate] no matching TXT record for %s\n", qname);
+    LOG_WARN("no matching TXT record for %s", qname);
     return 0;
 }
 
@@ -347,15 +364,10 @@ static int validate_ca_cert_if_present(struct json_object *extensions,
     if (!ca_cert_pem || strlen(ca_cert_pem) == 0)
         return 1;
 
-    /* Root CAs (explicitly flagged) skip DNS validation */
-    {
-        struct json_object *root_val;
-        if (json_object_object_get_ex(extensions, "root_ca", &root_val) &&
-            json_object_get_boolean(root_val)) {
-            printf("[ca-validate] root CA — DNS validation skipped\n");
-            return 1;
-        }
-    }
+    /* Root CA detection is server-side only — never trust the client's
+     * "root_ca" flag. We determine root status from the parsed certificate's
+     * Basic Constraints: pathlen absent or > 0 = root, pathlen == 0 =
+     * intermediate. The check happens below after parsing the cert. */
 
     printf("[ca-validate] CA certificate PEM found in request, validating...\n");
 
@@ -391,7 +403,18 @@ static int validate_ca_cert_if_present(struct json_object *extensions,
         wc_FreeDecodedCert(&decoded);
         return 0;
     }
-    printf("[ca-validate] CA:TRUE, pathlen:%d\n", decoded.pathLength);
+    LOG_DEBUG("CA:TRUE, pathlen:%d", decoded.pathLength);
+
+    /* Server-side root CA detection: pathlen absent (pathLengthSet==0) or
+     * pathlen > 0 means root. pathlen == 0 means intermediate — requires
+     * DNS validation. */
+    if (!decoded.pathLengthSet || decoded.pathLength > 0) {
+        LOG_INFO("root CA detected (pathLengthSet=%d, pathlen=%u) — "
+                 "DNS validation skipped",
+                 decoded.pathLengthSet, decoded.pathLength);
+        wc_FreeDecodedCert(&decoded);
+        return 1;
+    }
 
     /* Extract SAN DNS name */
     {
@@ -651,19 +674,37 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
                 return;
             }
 
-            if (!store->db || !mtc_db_validate_nonce(store->db,
-                    enrollment_nonce, subject, "")) {
-                http_send_error(io, 403,
-                    "invalid, expired, or already-used enrollment nonce");
-                json_object_put(req);
-                return;
+            /* Compute leaf's SPKI fingerprint for nonce binding check.
+             * The nonce was bound to domain + fingerprint at creation.
+             * We must verify both match — not just the domain. */
+            {
+                wc_Sha256 sha;
+                uint8_t h[32];
+                char leaf_fp[65];
+                int fi;
+
+                wc_InitSha256(&sha);
+                wc_Sha256Update(&sha, (const uint8_t *)pub_key_pem,
+                                (word32)strlen(pub_key_pem));
+                wc_Sha256Final(&sha, h);
+                wc_Sha256Free(&sha);
+                for (fi = 0; fi < 32; fi++)
+                    snprintf(leaf_fp + fi * 2, 3, "%02x", h[fi]);
+
+                /* Atomic validate + consume — prevents TOCTOU race.
+                 * Checks nonce + domain + fingerprint in one UPDATE. */
+                if (!store->db ||
+                    !mtc_db_validate_and_consume_nonce(store->db,
+                        enrollment_nonce, subject, leaf_fp)) {
+                    http_send_error(io, 403,
+                        "invalid, expired, or already-used enrollment nonce");
+                    json_object_put(req);
+                    return;
+                }
+
+                LOG_INFO("leaf enrollment for '%s' authorized by nonce %.16s...",
+                         subject, enrollment_nonce);
             }
-
-            LOG_INFO("leaf enrollment for '%s' authorized by nonce %.16s...",
-                     subject, enrollment_nonce);
-
-            /* Consume the nonce — single-use */
-            mtc_db_consume_nonce(store->db, enrollment_nonce);
         }
     }
 

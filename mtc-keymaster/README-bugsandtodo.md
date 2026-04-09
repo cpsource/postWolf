@@ -774,7 +774,7 @@ client code. Findings are prioritized by severity.
 
 ### Critical — fix before any deployment
 
-**S1. TOCTOU race in nonce consume**
+**S1. TOCTOU race in nonce consume — FIXED**
 - **Location:** `mtc_http.c` (handle_certificate_request)
 - **Issue:** `mtc_db_validate_nonce()` and `mtc_db_consume_nonce()` are
   separate DB calls. A concurrent request can reuse the same nonce between
@@ -784,7 +784,7 @@ client code. Findings are prioritized by severity.
   in a single query. If zero rows updated, the nonce was invalid or already
   consumed.
 
-**S2. Nonce fingerprint binding bypassed**
+**S2. Nonce fingerprint binding bypassed — FIXED**
 - **Location:** `mtc_http.c:654` — passes `""` for `fp_hex`
 - **Issue:** Leaf enrollment validates nonce by domain only, not the key
   fingerprint it was bound to at creation. An attacker with a nonce for
@@ -793,7 +793,7 @@ client code. Findings are prioritized by severity.
   pass it to `mtc_db_validate_nonce()`. Require all three fields to match:
   nonce + domain + fingerprint.
 
-**S3. Root CA bypass is client-controlled**
+**S3. Root CA bypass is client-controlled — FIXED**
 - **Location:** `mtc_http.c:350-358`
 - **Issue:** Any request with `"root_ca": true` in extensions skips DNS
   validation. The flag is client-controlled JSON — an attacker can enroll
@@ -802,7 +802,7 @@ client code. Findings are prioritized by severity.
   status server-side from the certificate's Basic Constraints pathlen
   (pathlen > 0 or pathlen absent = root; pathlen == 0 = intermediate).
 
-**S4. DNS TXT parsing uses substring matching**
+**S4. DNS TXT parsing uses substring matching — FIXED**
 - **Location:** `mtc_http.c:291-297` — `strstr()` for v=mtc-ca2 check
 - **Issue:** Substring matching allows crafted TXT records to pass.
   An attacker can embed all three substrings in a single record in the
@@ -812,7 +812,7 @@ client code. Findings are prioritized by severity.
 
 ### High — fix before production
 
-**S5. `sprintf()` buffer overflow in nonce generation**
+**S5. `sprintf()` buffer overflow in nonce generation — FIXED**
 - **Location:** `mtc_db.c:639`
 - **Issue:** Unbounded `sprintf()` writes hex bytes. If `nonce_out` is
   smaller than 65 bytes, stack overflow occurs.
