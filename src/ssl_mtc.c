@@ -585,14 +585,19 @@ static int mtc_verify_cosig(const uint8_t *ca_pub_key, int ca_pub_key_sz,
     return (ret == 0 && verified);
 }
 
-/* Parse a hex string into bytes. Returns byte count. */
+/* Parse a hex string into bytes. Returns byte count, or -1 on error. */
 static int mtc_hex_to_bytes(const char *hex, uint8_t *out, int max_out)
 {
-    int i, len = (int)strlen(hex) / 2;
-    if (len > max_out) len = max_out;
+    int i, len;
+    if (hex == NULL) return -1;
+    len = (int)strlen(hex);
+    if (len % 2 != 0) return -1;  /* odd length */
+    len /= 2;
+    if (len > max_out) return -1;  /* too large */
     for (i = 0; i < len; i++) {
         unsigned int b;
-        sscanf(hex + i * 2, "%2x", &b);
+        if (sscanf(hex + i * 2, "%2x", &b) != 1)
+            return -1;  /* non-hex character */
         out[i] = (uint8_t)b;
     }
     return len;

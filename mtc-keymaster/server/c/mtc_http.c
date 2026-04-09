@@ -369,37 +369,37 @@ static int validate_ca_cert_if_present(struct json_object *extensions,
      * Basic Constraints: pathlen absent or > 0 = root, pathlen == 0 =
      * intermediate. The check happens below after parsing the cert. */
 
-    printf("[ca-validate] CA certificate PEM found in request, validating...\n");
+    LOG_DEBUG("CA certificate PEM found, validating...");
 
     /* Convert PEM to DER */
     pem_bytes = (const unsigned char *)ca_cert_pem;
     pem_len = (int)strlen(ca_cert_pem);
-    printf("[ca-validate] PEM length: %d bytes\n", pem_len);
+    LOG_TRACE("PEM length: %d bytes", pem_len);
     if (pem_len > 6000) {
-        printf("[ca-validate] PEM too large\n");
+        LOG_WARN("CA cert PEM too large");
         return 0;
     }
     der_sz = (int)sizeof(der_buf);
     ret = wc_CertPemToDer(pem_bytes, pem_len, der_buf, der_sz, CERT_TYPE);
     if (ret < 0) {
-        printf("[ca-validate] PEM to DER conversion failed: %d\n", ret);
+        LOG_WARN("PEM to DER conversion failed: %d", ret);
         return 0;
     }
     der_sz = ret;
-    printf("[ca-validate] DER size: %d bytes\n", der_sz);
+    LOG_TRACE("DER size: %d bytes", der_sz);
 
     /* Parse the certificate */
     wc_InitDecodedCert(&decoded, der_buf, (word32)der_sz, NULL);
     ret = wc_ParseCert(&decoded, CERT_TYPE, NO_VERIFY, NULL);
     if (ret != 0) {
-        printf("[ca-validate] certificate parse failed: %d\n", ret);
+        LOG_WARN("certificate parse failed: %d", ret);
         wc_FreeDecodedCert(&decoded);
         return 0;
     }
 
     /* Check Basic Constraints: CA:TRUE */
     if (!decoded.isCA) {
-        printf("[ca-validate] certificate is not a CA (isCA=0)\n");
+        LOG_WARN("certificate is not a CA (isCA=0)");
         wc_FreeDecodedCert(&decoded);
         return 0;
     }
@@ -430,12 +430,12 @@ static int validate_ca_cert_if_present(struct json_object *extensions,
         }
 
         if (domain[0] == '\0') {
-            printf("[ca-validate] no SAN DNS name found in CA cert\n");
+            LOG_WARN("no SAN DNS name found in CA cert");
             wc_FreeDecodedCert(&decoded);
             return 0;
         }
 
-        printf("[ca-validate] SAN DNS: %s\n", domain);
+        LOG_DEBUG("SAN DNS: %s", domain);
 
         /* Compute SHA-256 fingerprint of SubjectPublicKeyInfo DER */
         {
@@ -447,7 +447,7 @@ static int validate_ca_cert_if_present(struct json_object *extensions,
             ret = wc_GetSubjectPubKeyInfoDerFromCert(
                 der_buf, (word32)der_sz, spki_buf, &spki_sz);
             if (ret != 0) {
-                printf("[ca-validate] failed to extract SPKI: %d\n", ret);
+                LOG_WARN("failed to extract SPKI: %d", ret);
                 wc_FreeDecodedCert(&decoded);
                 return 0;
             }
@@ -459,7 +459,7 @@ static int validate_ca_cert_if_present(struct json_object *extensions,
             to_hex(h, 32, fp_hex);
         }
 
-        printf("[ca-validate] public key fingerprint: %s\n", fp_hex);
+        LOG_DEBUG("public key fingerprint: %.16s...", fp_hex);
 
         wc_FreeDecodedCert(&decoded);
 
@@ -512,9 +512,26 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
     }
     fp_raw = json_object_get_string(val);
 
-    /* Strip "sha256:" prefix if present */
+    /* Strip "sha256:" prefix and validate hex format */
     if (strncmp(fp_raw, "sha256:", 7) == 0)
         fp_raw += 7;
+    if (strlen(fp_raw) != 64) {
+        http_send_error(io, 400, "fingerprint must be exactly 64 hex chars");
+        json_object_put(req);
+        return;
+    }
+    {
+        int fi;
+        for (fi = 0; fi < 64; fi++) {
+            char c = fp_raw[fi];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                  (c >= 'A' && c <= 'F'))) {
+                http_send_error(io, 400, "fingerprint contains non-hex chars");
+                json_object_put(req);
+                return;
+            }
+        }
+    }
     snprintf(fp_hex, sizeof(fp_hex), "%s", fp_raw);
 
     /* Check nonce type */
@@ -624,12 +641,31 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
     pub_key_pem = json_object_get_string(val);
 
     key_algo = "EC-P256";
-    if (json_object_object_get_ex(req, "key_algorithm", &val))
-        key_algo = json_object_get_string(val);
+    if (json_object_object_get_ex(req, "key_algorithm", &val)) {
+        const char *requested = json_object_get_string(val);
+        if (strcmp(requested, "EC-P256") != 0 &&
+            strcmp(requested, "EC-P384") != 0 &&
+            strcmp(requested, "Ed25519") != 0 &&
+            strcmp(requested, "ML-DSA-44") != 0 &&
+            strcmp(requested, "ML-DSA-65") != 0 &&
+            strcmp(requested, "ML-DSA-87") != 0) {
+            http_send_error(io, 400, "unsupported key_algorithm");
+            json_object_put(req);
+            return;
+        }
+        key_algo = requested;
+    }
 
     validity_days = 90;
-    if (json_object_object_get_ex(req, "validity_days", &val))
+    if (json_object_object_get_ex(req, "validity_days", &val)) {
         validity_days = json_object_get_int(val);
+        if (validity_days < 1 || validity_days > 3650) {
+            http_send_error(io, 400,
+                "validity_days must be between 1 and 3650");
+            json_object_put(req);
+            return;
+        }
+    }
 
     json_object_object_get_ex(req, "extensions", &extensions);
 

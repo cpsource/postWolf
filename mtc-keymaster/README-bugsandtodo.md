@@ -818,35 +818,35 @@ client code. Findings are prioritized by severity.
   smaller than 65 bytes, stack overflow occurs.
 - **Fix:** Use `snprintf(nonce_out + i * 2, 3, "%02x", rand_bytes[i])`.
 
-**S6. No `validity_days` validation**
+**S6. No `validity_days` validation — FIXED**
 - **Location:** `mtc_http.c:607-609`
 - **Issue:** Attacker can request certificates valid for 999999 days,
   negative days, or zero days.
 - **Fix:** Clamp to 1–3650 (1 day to 10 years).
 
-**S7. No fingerprint format validation**
+**S7. No fingerprint format validation — FIXED**
 - **Location:** `mtc_http.c:492-495`
 - **Issue:** `"sha256:abc"`, `"sha256:"`, or non-hex characters accepted.
 - **Fix:** Require exactly 64 hex characters after the `sha256:` prefix.
 
-**S8. No `key_algorithm` whitelist**
+**S8. No `key_algorithm` whitelist — FIXED**
 - **Location:** `mtc_http.c:603-605`
 - **Issue:** Any string accepted as `key_algorithm`, embedded in cert.
 - **Fix:** Whitelist: EC-P256, Ed25519, ML-DSA-87, EC-P384.
 
-**S9. Debug `printf()` leaking sensitive data**
+**S9. Debug `printf()` leaking sensitive data — FIXED**
 - **Location:** Multiple locations in `mtc_http.c`
 - **Issue:** Fingerprints, DNS record contents, PEM lengths visible in
   stdout. Should use `LOG_DEBUG` with appropriate log levels.
 - **Fix:** Replace `printf("[ca-validate]...")` with `LOG_DEBUG(...)`.
 
-**S10. `sscanf()` hex parsing without error check**
+**S10. `sscanf()` hex parsing without error check — FIXED**
 - **Location:** `ssl_mtc.c:589-599` (`mtc_hex_to_bytes`)
 - **Issue:** `sscanf("%2x")` returns 0 on non-hex input, leaving the
   byte uninitialized. Invalid proofs or signatures silently accepted.
 - **Fix:** Check `sscanf()` return value == 1, return -1 on failure.
 
-**S11. Subject not matched to nonce domain**
+**S11. Subject not matched to nonce domain — FIXED**
 - **Location:** `mtc_http.c` (handle_certificate_request)
 - **Issue:** Leaf can claim any `subject` with a valid nonce. The nonce
   is bound to a domain at creation, but the enrollment doesn't verify
