@@ -83,7 +83,8 @@ static void http_send_json(client_io *io, int status, const char *json_str)
         "Connection: close\r\n\r\n",
         status, status == 200 ? "OK" : (status == 201 ? "Created" :
         (status == 403 ? "Forbidden" : (status == 404 ? "Not Found" :
-        (status == 409 ? "Conflict" : "Bad Request")))),
+        (status == 409 ? "Conflict" : (status == 413 ? "Payload Too Large" :
+        "Bad Request"))))),
         body_len);
 
     cio_write(io, hdr, hdr_len);
@@ -105,8 +106,22 @@ static void http_send_error(client_io *io, int status, const char *msg)
 }
 
 /* ------------------------------------------------------------------ */
-/* Hex helper                                                          */
+/* Helpers                                                             */
 /* ------------------------------------------------------------------ */
+
+/* Safe integer parse with bounds check. Returns val on success, -1 on error. */
+static int safe_atoi(const char *s, int max_val)
+{
+    long v;
+    char *end;
+    if (!s || !*s) return -1;
+    v = strtol(s, &end, 10);
+    if (*end != '\0' && *end != '?' && *end != '&' && *end != ' ')
+        return -1;
+    if (v < 0 || v > max_val)
+        return -1;
+    return (int)v;
+}
 
 static void to_hex(const uint8_t *data, int sz, char *out)
 {
@@ -994,9 +1009,9 @@ static void handle_consistency(client_io *io, MtcStore *store, const char *path)
         const char *p = qs + 1;
         while (*p) {
             if (strncmp(p, "old=", 4) == 0)
-                old_size = atoi(p + 4);
+                old_size = safe_atoi(p + 4, 10000000);
             else if (strncmp(p, "new=", 4) == 0)
-                new_size = atoi(p + 4);
+                new_size = safe_atoi(p + 4, 10000000);
             p = strchr(p, '&');
             if (!p) break;
             p++;
@@ -1299,10 +1314,12 @@ static void handle_request(client_io *io, MtcStore *store)
             char *cl = strcasestr(buf, "Content-Length:");
             body[-4] = saved;
             if (cl) {
-                int content_len = atoi(cl + 15);
+                int content_len = safe_atoi(cl + 15, 1024 * 1024);
                 int max_body = (int)(sizeof(buf) - 1) - (int)(body - buf);
-                if (content_len > max_body)
-                    content_len = max_body;
+                if (content_len < 0 || content_len > max_body) {
+                    http_send_error(io, 413, "request body too large");
+                    return;
+                }
                 if (content_len > 0) {
                     while (body_len < content_len) {
                         int r = cio_read(io, body + body_len,
@@ -1327,12 +1344,14 @@ static void handle_request(client_io *io, MtcStore *store)
             handle_log_state(io, store);
         }
         else if (strncmp(path, "/log/entry/", 11) == 0) {
-            int index = atoi(path + 11);
-            handle_log_entry(io, store, index);
+            int index = safe_atoi(path + 11, 10000000);
+            if (index < 0) { http_send_error(io, 400, "invalid index"); }
+            else handle_log_entry(io, store, index);
         }
         else if (strncmp(path, "/log/proof/", 11) == 0) {
-            int index = atoi(path + 11);
-            handle_log_proof(io, store, index);
+            int index = safe_atoi(path + 11, 10000000);
+            if (index < 0) { http_send_error(io, 400, "invalid index"); }
+            else handle_log_proof(io, store, index);
         }
         else if (strcmp(path, "/log/checkpoint") == 0) {
             handle_checkpoint(io, store);
@@ -1344,8 +1363,9 @@ static void handle_request(client_io *io, MtcStore *store)
             handle_search_certificates(io, store, path);
         }
         else if (strncmp(path, "/certificate/", 13) == 0) {
-            int index = atoi(path + 13);
-            handle_get_certificate(io, store, index);
+            int index = safe_atoi(path + 13, 10000000);
+            if (index < 0) { http_send_error(io, 400, "invalid index"); }
+            else handle_get_certificate(io, store, index);
         }
         else if (strcmp(path, "/trust-anchors") == 0) {
             handle_trust_anchors(io, store);
@@ -1354,8 +1374,9 @@ static void handle_request(client_io *io, MtcStore *store)
             handle_revoked_list(io, store);
         }
         else if (strncmp(path, "/revoked/", 9) == 0) {
-            int index = atoi(path + 9);
-            handle_revoked_check(io, store, index);
+            int index = safe_atoi(path + 9, 10000000);
+            if (index < 0) { http_send_error(io, 400, "invalid index"); }
+            else handle_revoked_check(io, store, index);
         }
         else if (strcmp(path, "/ca/public-key") == 0) {
             handle_ca_public_key(io, store);

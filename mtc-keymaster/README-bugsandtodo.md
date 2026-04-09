@@ -888,9 +888,9 @@ client code. Findings are prioritized by severity.
 
 ### Low
 
-**S17. `atoi()` without overflow check** on path parameters.
+**S17. `atoi()` without overflow check — FIXED** on path parameters.
 
-**S18. Content-Length truncation** — large bodies silently truncated.
+**S18. Content-Length truncation — FIXED** — large bodies silently truncated.
 
 **S19. Nonce TTL 15 min** — could be reduced to 5 min for tighter window.
 
