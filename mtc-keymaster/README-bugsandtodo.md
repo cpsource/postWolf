@@ -764,3 +764,135 @@ Root CAs: skip nonce (no DNS validation, unchanged).
 4. Phase 2: `POST /certificate/request` with nonce → cert issued, nonce consumed
 5. Replay: same nonce again → rejected (consumed)
 6. `python3 ca_dns_txt.py --server localhost:8443 test-ca.crt` → fetches nonce, prints TXT record
+
+---
+
+## Appendix: Security Audit Findings
+
+Results of a security review of the MTC keymaster protocol, server, and
+client code. Findings are prioritized by severity.
+
+### Critical — fix before any deployment
+
+**S1. TOCTOU race in nonce consume**
+- **Location:** `mtc_http.c` (handle_certificate_request)
+- **Issue:** `mtc_db_validate_nonce()` and `mtc_db_consume_nonce()` are
+  separate DB calls. A concurrent request can reuse the same nonce between
+  check and consume.
+- **Fix:** Atomic `UPDATE mtc_enrollment_nonces SET status='consumed'
+  WHERE nonce=$1 AND status='pending' AND expires_at > now() RETURNING nonce`
+  in a single query. If zero rows updated, the nonce was invalid or already
+  consumed.
+
+**S2. Nonce fingerprint binding bypassed**
+- **Location:** `mtc_http.c:654` — passes `""` for `fp_hex`
+- **Issue:** Leaf enrollment validates nonce by domain only, not the key
+  fingerprint it was bound to at creation. An attacker with a nonce for
+  key A can enroll key B for the same domain.
+- **Fix:** Compute the leaf's SPKI fingerprint from `public_key_pem` and
+  pass it to `mtc_db_validate_nonce()`. Require all three fields to match:
+  nonce + domain + fingerprint.
+
+**S3. Root CA bypass is client-controlled**
+- **Location:** `mtc_http.c:350-358`
+- **Issue:** Any request with `"root_ca": true` in extensions skips DNS
+  validation. The flag is client-controlled JSON — an attacker can enroll
+  a CA for any domain without proving ownership.
+- **Fix:** Remove the client-controlled `root_ca` flag. Determine root
+  status server-side from the certificate's Basic Constraints pathlen
+  (pathlen > 0 or pathlen absent = root; pathlen == 0 = intermediate).
+
+**S4. DNS TXT parsing uses substring matching**
+- **Location:** `mtc_http.c:291-297` — `strstr()` for v=mtc-ca2 check
+- **Issue:** Substring matching allows crafted TXT records to pass.
+  An attacker can embed all three substrings in a single record in the
+  wrong structure and still pass validation.
+- **Fix:** Parse the TXT record by splitting on `;`, extract exact
+  key=value pairs, and match fields individually.
+
+### High — fix before production
+
+**S5. `sprintf()` buffer overflow in nonce generation**
+- **Location:** `mtc_db.c:639`
+- **Issue:** Unbounded `sprintf()` writes hex bytes. If `nonce_out` is
+  smaller than 65 bytes, stack overflow occurs.
+- **Fix:** Use `snprintf(nonce_out + i * 2, 3, "%02x", rand_bytes[i])`.
+
+**S6. No `validity_days` validation**
+- **Location:** `mtc_http.c:607-609`
+- **Issue:** Attacker can request certificates valid for 999999 days,
+  negative days, or zero days.
+- **Fix:** Clamp to 1–3650 (1 day to 10 years).
+
+**S7. No fingerprint format validation**
+- **Location:** `mtc_http.c:492-495`
+- **Issue:** `"sha256:abc"`, `"sha256:"`, or non-hex characters accepted.
+- **Fix:** Require exactly 64 hex characters after the `sha256:` prefix.
+
+**S8. No `key_algorithm` whitelist**
+- **Location:** `mtc_http.c:603-605`
+- **Issue:** Any string accepted as `key_algorithm`, embedded in cert.
+- **Fix:** Whitelist: EC-P256, Ed25519, ML-DSA-87, EC-P384.
+
+**S9. Debug `printf()` leaking sensitive data**
+- **Location:** Multiple locations in `mtc_http.c`
+- **Issue:** Fingerprints, DNS record contents, PEM lengths visible in
+  stdout. Should use `LOG_DEBUG` with appropriate log levels.
+- **Fix:** Replace `printf("[ca-validate]...")` with `LOG_DEBUG(...)`.
+
+**S10. `sscanf()` hex parsing without error check**
+- **Location:** `ssl_mtc.c:589-599` (`mtc_hex_to_bytes`)
+- **Issue:** `sscanf("%2x")` returns 0 on non-hex input, leaving the
+  byte uninitialized. Invalid proofs or signatures silently accepted.
+- **Fix:** Check `sscanf()` return value == 1, return -1 on failure.
+
+**S11. Subject not matched to nonce domain**
+- **Location:** `mtc_http.c` (handle_certificate_request)
+- **Issue:** Leaf can claim any `subject` with a valid nonce. The nonce
+  is bound to a domain at creation, but the enrollment doesn't verify
+  that `subject` matches that domain.
+- **Fix:** Extract domain from subject, match against the nonce's stored
+  domain.
+
+### Medium
+
+**S12. Inclusion proof missing bounds check**
+- **Location:** `ssl_mtc.c:500-527` (`mtc_verify_inclusion`)
+- **Issue:** No check that `index >= start` and `index < end`.
+- **Fix:** Add bounds validation before proof computation.
+
+**S13. CA private key stored unencrypted in Neon**
+- **Location:** `mtc_store.c` — `ca_private_key_hex` in `mtc_ca_config`
+- **Issue:** The Ed25519 CA private key is stored as plaintext hex in
+  PostgreSQL. Database compromise exposes the key.
+- **Fix:** Consider key management service, or at minimum encrypt the
+  key at rest with a passphrase.
+
+**S14. Python urllib TLS — no cert pinning**
+- **Location:** `mtc_client.py:43-55`
+- **Issue:** Relies on system CA store. No pinning to the MTC server's
+  specific certificate.
+- **Fix:** Add explicit SSL context with cert pinning for the MTC server.
+
+**S15. No HTTP security headers**
+- **Location:** `mtc_http.c` (http_send_json)
+- **Issue:** Missing CORS, X-Content-Type-Options, X-Frame-Options.
+- **Fix:** Add security headers to all responses.
+
+**S16. AbuseIPDB IP spoofing behind proxy**
+- **Location:** `mtc_http.c:1380-1400`
+- **Issue:** `getpeername()` returns proxy IP, not client IP, when behind
+  a reverse proxy.
+- **Fix:** Document direct-connection requirement, or support trusted
+  proxy headers (`X-Real-IP`) from a configured trusted proxy.
+
+### Low
+
+**S17. `atoi()` without overflow check** on path parameters.
+
+**S18. Content-Length truncation** — large bodies silently truncated.
+
+**S19. Nonce TTL 15 min** — could be reduced to 5 min for tighter window.
+
+**S20. No rate limiting on API endpoints** — `/enrollment/nonce` and
+`/certificate/request` can be flooded. (Noted — deferred per design.)
