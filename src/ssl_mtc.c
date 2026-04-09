@@ -491,6 +491,10 @@ static int mtc_verify_inclusion(const uint8_t entry_hash[32], int index,
     int fn, sn, i, proof_len;
     uint8_t r[32], p[32];
 
+    /* Bounds validation */
+    if (start >= end || index < start || index >= end)
+        return 0;
+
     proof_len = (int)json_object_array_length(proof_arr);
     XMEMCPY(r, entry_hash, 32);
 
@@ -504,7 +508,7 @@ static int mtc_verify_inclusion(const uint8_t entry_hash[32], int index,
         if (!hex || (int)strlen(hex) < 64) return 0;
         for (j = 0; j < 32; j++) {
             unsigned int b;
-            sscanf(hex + j * 2, "%2x", &b);
+            if (sscanf(hex + j * 2, "%2x", &b) != 1) return 0;
             p[j] = (uint8_t)b;
         }
 

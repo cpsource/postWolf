@@ -14,6 +14,7 @@ Capabilities:
 """
 
 import json
+import ssl
 import time
 import urllib.request
 import urllib.error
@@ -26,6 +27,16 @@ from verify import hash_leaf, verify_inclusion_proof, verify_consistency_proof, 
 from trust_store import TrustStore
 
 
+def _make_ssl_context(ca_file: Optional[str] = None) -> ssl.SSLContext:
+    """Create an SSL context with certificate verification enabled."""
+    ctx = ssl.create_default_context()
+    if ca_file:
+        ctx.load_verify_locations(ca_file)
+    # Enforce TLS 1.2+ (TLS 1.3 preferred)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    return ctx
+
+
 class MTCClient:
     """
     MTC relying party client.
@@ -34,16 +45,18 @@ class MTCClient:
     maintains a trust store of cosigner keys and landmark caches.
     """
 
-    def __init__(self, server_url: str, store_path: str = "trust_store.json"):
+    def __init__(self, server_url: str, store_path: str = "trust_store.json",
+                 ca_file: Optional[str] = None):
         self.server_url = server_url.rstrip("/")
         self.store = TrustStore(store_path)
+        self._ssl_ctx = _make_ssl_context(ca_file)
 
     # --- HTTP helpers ---
 
     def _get(self, path: str) -> dict:
         url = f"{self.server_url}{path}"
         req = urllib.request.Request(url)
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, context=self._ssl_ctx) as resp:
             return json.loads(resp.read())
 
     def _post(self, path: str, data: dict) -> dict:
@@ -51,7 +64,7 @@ class MTCClient:
         body = json.dumps(data).encode("utf-8")
         req = urllib.request.Request(url, data=body, method="POST")
         req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, context=self._ssl_ctx) as resp:
             return json.loads(resp.read())
 
     # --- Bootstrap: fetch and trust the CA ---

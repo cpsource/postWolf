@@ -108,6 +108,11 @@ Requires `ABUSEIPDB_KEY` in environment or `~/.env`.
 
 Cache records expire after 5 days and are refreshed from the API.
 
+**Important:** The server must accept direct connections — not behind an
+untrusted reverse proxy. The client IP is obtained via `getpeername()`,
+which returns the proxy's IP if one is present. If you must use a proxy,
+ensure it is trusted and that additional rate limiting is in place.
+
 ## Shell Scripts
 
 Management scripts are in `mtc-keymaster/tools/`:

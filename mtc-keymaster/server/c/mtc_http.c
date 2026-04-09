@@ -77,6 +77,9 @@ static void http_send_json(client_io *io, int status, const char *json_str)
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: application/json\r\n"
         "Content-Length: %d\r\n"
+        "X-Content-Type-Options: nosniff\r\n"
+        "X-Frame-Options: DENY\r\n"
+        "Cache-Control: no-store\r\n"
         "Connection: close\r\n\r\n",
         status, status == 200 ? "OK" : (status == 201 ? "Created" :
         (status == 403 ? "Forbidden" : (status == 404 ? "Not Found" :

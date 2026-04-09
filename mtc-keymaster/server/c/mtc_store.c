@@ -4,6 +4,7 @@
  * back to file-based JSON storage in data_dir. */
 
 #include "mtc_store.h"
+#include "mtc_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -80,6 +81,9 @@ static int init_ca_key(MtcStore *store)
                     store->ca_priv_key[i] = (uint8_t)bv;
                 }
                 store->ca_priv_key_sz = len;
+                LOG_WARN("CA private key loaded from database — key is "
+                         "stored unencrypted in PostgreSQL. Consider using "
+                         "file-based storage (ca_key.der) for production.");
             }
             free(hex);
         }

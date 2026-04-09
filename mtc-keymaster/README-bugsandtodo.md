@@ -856,30 +856,30 @@ client code. Findings are prioritized by severity.
 
 ### Medium
 
-**S12. Inclusion proof missing bounds check**
+**S12. Inclusion proof missing bounds check — FIXED**
 - **Location:** `ssl_mtc.c:500-527` (`mtc_verify_inclusion`)
 - **Issue:** No check that `index >= start` and `index < end`.
 - **Fix:** Add bounds validation before proof computation.
 
-**S13. CA private key stored unencrypted in Neon**
+**S13. CA private key stored unencrypted in Neon — MITIGATED**
 - **Location:** `mtc_store.c` — `ca_private_key_hex` in `mtc_ca_config`
 - **Issue:** The Ed25519 CA private key is stored as plaintext hex in
   PostgreSQL. Database compromise exposes the key.
 - **Fix:** Consider key management service, or at minimum encrypt the
   key at rest with a passphrase.
 
-**S14. Python urllib TLS — no cert pinning**
+**S14. Python urllib TLS — no cert pinning — FIXED**
 - **Location:** `mtc_client.py:43-55`
 - **Issue:** Relies on system CA store. No pinning to the MTC server's
   specific certificate.
 - **Fix:** Add explicit SSL context with cert pinning for the MTC server.
 
-**S15. No HTTP security headers**
+**S15. No HTTP security headers — FIXED**
 - **Location:** `mtc_http.c` (http_send_json)
 - **Issue:** Missing CORS, X-Content-Type-Options, X-Frame-Options.
 - **Fix:** Add security headers to all responses.
 
-**S16. AbuseIPDB IP spoofing behind proxy**
+**S16. AbuseIPDB IP spoofing behind proxy — MITIGATED**
 - **Location:** `mtc_http.c:1380-1400`
 - **Issue:** `getpeername()` returns proxy IP, not client IP, when behind
   a reverse proxy.
