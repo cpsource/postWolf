@@ -55,6 +55,11 @@ struct mtc_conn {
     int   tree_size;
     CURL *curl;
     char *store_path;   /* Configurable store path */
+    /* Cached CA public key (fetched once from /ca/public-key).
+     * Sized for ML-DSA-87 (2592 bytes) in case the CA cosigning
+     * key migrates from Ed25519 to post-quantum in the future. */
+    uint8_t ca_pub_key[4096];
+    int     ca_pub_key_sz;  /* 0 = not yet fetched */
 };
 
 static char _mtc_last_error[512] = {0};
@@ -593,6 +598,33 @@ static int mtc_hex_to_bytes(const char *hex, uint8_t *out, int max_out)
     return len;
 }
 
+/* Fetch and cache the CA Ed25519 public key. Returns key size or 0 on failure. */
+static int mtc_ensure_ca_pubkey(mtc_conn_t *conn)
+{
+    struct json_object *ca_info, *pk_val;
+
+    if (conn->ca_pub_key_sz > 0)
+        return conn->ca_pub_key_sz; /* already cached */
+
+    ca_info = mtc_http_get(conn, "/ca/public-key");
+    if (!ca_info) return 0;
+
+    if (json_object_object_get_ex(ca_info, "public_key_raw_hex", &pk_val)) {
+        const char *hex = json_object_get_string(pk_val);
+        int key_bytes = (int)strlen(hex) / 2;
+        if (key_bytes > (int)sizeof(conn->ca_pub_key)) {
+            mtc_set_error("CA public key too large (%d bytes, max %d)",
+                          key_bytes, (int)sizeof(conn->ca_pub_key));
+            json_object_put(ca_info);
+            return 0;
+        }
+        conn->ca_pub_key_sz = mtc_hex_to_bytes(hex, conn->ca_pub_key,
+            (int)sizeof(conn->ca_pub_key));
+    }
+    json_object_put(ca_info);
+    return conn->ca_pub_key_sz;
+}
+
 mtc_verify_t *MTC_Verify(mtc_conn_t *conn, int index) {
     char path[256];
     struct json_object *cert_json, *val, *sc, *tbs;
@@ -688,62 +720,51 @@ mtc_verify_t *MTC_Verify(mtc_conn_t *conn, int index) {
             }
         }
 
-        /* 3. Verify cosignature(s) — fetch CA public key from server */
+        /* 3. Verify cosignature(s) using cached CA public key */
         {
-            struct json_object *cosigs, *ca_info;
+            struct json_object *cosigs;
             if (json_object_object_get_ex(sc, "cosignatures", &cosigs) &&
-                json_object_array_length(cosigs) > 0) {
+                json_object_array_length(cosigs) > 0 &&
+                mtc_ensure_ca_pubkey(conn) > 0) {
 
-                ca_info = mtc_http_get(conn, "/ca/public-key");
-                if (ca_info) {
-                    struct json_object *pk_val;
-                    if (json_object_object_get_ex(ca_info,
-                            "public_key_raw_hex", &pk_val)) {
-                        uint8_t ca_pub[32];
-                        int ca_pub_sz = mtc_hex_to_bytes(
-                            json_object_get_string(pk_val), ca_pub, 32);
+                int all_valid = 1;
+                int ci;
+                for (ci = 0; ci < (int)json_object_array_length(cosigs);
+                     ci++) {
+                    struct json_object *cosig =
+                        json_object_array_get_idx(cosigs, ci);
+                    struct json_object *cv;
+                    const char *cid = "", *lid = "";
+                    int cs = 0, ce = 0;
+                    uint8_t sub_hash[32], sig_bytes[64];
+                    int sig_len;
 
-                        /* Verify each cosignature */
-                        int all_valid = 1;
-                        int ci;
-                        for (ci = 0; ci < (int)json_object_array_length(cosigs);
-                             ci++) {
-                            struct json_object *cosig =
-                                json_object_array_get_idx(cosigs, ci);
-                            struct json_object *cv;
-                            const char *cid = "", *lid = "";
-                            int cs = 0, ce = 0;
-                            uint8_t sub_hash[32], sig_bytes[64];
-                            int sig_len;
+                    if (json_object_object_get_ex(cosig,
+                            "cosigner_id", &cv))
+                        cid = json_object_get_string(cv);
+                    if (json_object_object_get_ex(cosig, "log_id", &cv))
+                        lid = json_object_get_string(cv);
+                    if (json_object_object_get_ex(cosig, "start", &cv))
+                        cs = json_object_get_int(cv);
+                    if (json_object_object_get_ex(cosig, "end", &cv))
+                        ce = json_object_get_int(cv);
+                    if (json_object_object_get_ex(cosig,
+                            "subtree_hash", &cv))
+                        mtc_hex_to_bytes(json_object_get_string(cv),
+                                         sub_hash, 32);
+                    if (json_object_object_get_ex(cosig,
+                            "signature", &cv))
+                        sig_len = mtc_hex_to_bytes(
+                            json_object_get_string(cv), sig_bytes, 64);
+                    else
+                        sig_len = 0;
 
-                            if (json_object_object_get_ex(cosig,
-                                    "cosigner_id", &cv))
-                                cid = json_object_get_string(cv);
-                            if (json_object_object_get_ex(cosig, "log_id", &cv))
-                                lid = json_object_get_string(cv);
-                            if (json_object_object_get_ex(cosig, "start", &cv))
-                                cs = json_object_get_int(cv);
-                            if (json_object_object_get_ex(cosig, "end", &cv))
-                                ce = json_object_get_int(cv);
-                            if (json_object_object_get_ex(cosig,
-                                    "subtree_hash", &cv))
-                                mtc_hex_to_bytes(json_object_get_string(cv),
-                                             sub_hash, 32);
-                            if (json_object_object_get_ex(cosig,
-                                    "signature", &cv))
-                                sig_len = mtc_hex_to_bytes(
-                                    json_object_get_string(cv), sig_bytes, 64);
-                            else
-                                sig_len = 0;
-
-                            if (!mtc_verify_cosig(ca_pub, ca_pub_sz, cid, lid,
-                                    cs, ce, sub_hash, sig_bytes, sig_len))
-                                all_valid = 0;
-                        }
-                        result->cosignature_valid = all_valid;
-                    }
-                    json_object_put(ca_info);
+                    if (!mtc_verify_cosig(conn->ca_pub_key,
+                            conn->ca_pub_key_sz, cid, lid,
+                            cs, ce, sub_hash, sig_bytes, sig_len))
+                        all_valid = 0;
                 }
+                result->cosignature_valid = all_valid;
             }
         }
     }
