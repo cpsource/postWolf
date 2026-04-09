@@ -113,6 +113,77 @@ untrusted reverse proxy. The client IP is obtained via `getpeername()`,
 which returns the proxy's IP if one is present. If you must use a proxy,
 ensure it is trusted and that additional rate limiting is in place.
 
+## Rate Limiting (Redis)
+
+Per-IP rate limiting uses Redis as a sliding window counter store.
+The server connects to Redis on startup (non-fatal if unavailable —
+rate limiting is simply disabled).
+
+**Requires:** `redis-server` running on `127.0.0.1:6379` (default).
+
+```bash
+sudo apt install -y redis-server libhiredis-dev
+redis-cli ping   # should return PONG
+```
+
+### Limits
+
+| Category | Endpoint | Per-IP/Min | Per-IP/Hour |
+|----------|----------|-----------|------------|
+| Read | All `GET` endpoints | 60 | 600 |
+| Leaf nonce | `POST /enrollment/nonce` (type=leaf) | 10 | 100 |
+| CA nonce | `POST /enrollment/nonce` (type=ca) | 3 | 10 |
+| Enroll | `POST /certificate/request` | 3 | 10 |
+| Revoke | `POST /revoke` | 2 | 5 |
+| **Global** | **Any endpoint (catch-all)** | **120** | **1200** |
+
+Both the category-specific limit and the global limit are checked for
+every request. The first one exceeded triggers a `429 Too Many Requests`
+response.
+
+### How It Works
+
+- Redis keys: `rl:<ip>:<category>:m` (per-minute, TTL 60s) and
+  `rl:<ip>:<category>:h` (per-hour, TTL 3600s)
+- Uses `INCR` + `EXPIRE` — counters auto-expire when the window passes
+- If Redis is down, all requests are allowed (fail-open)
+- Rate limit hits are logged at INFO level
+
+### Monitoring
+
+```bash
+# See all rate limit keys
+redis-cli KEYS "rl:*"
+
+# Check a specific IP's minute counter for reads
+redis-cli GET "rl:203.0.113.42:0:m"
+
+# Flush all rate limit state
+redis-cli KEYS "rl:*" | xargs redis-cli DEL
+```
+
+## Input Validation
+
+The server validates all request parameters:
+
+| Parameter | Validation |
+|-----------|-----------|
+| `validity_days` | Must be 1–3650 (rejected otherwise) |
+| `key_algorithm` | Whitelist: EC-P256, EC-P384, Ed25519, ML-DSA-44/65/87 |
+| `public_key_fingerprint` | Must be exactly 64 hex chars after `sha256:` prefix |
+| Path indices (`/log/entry/<N>`) | Parsed with bounds check (0–10M), rejects non-numeric |
+| `Content-Length` | Rejects bodies larger than buffer (413 Payload Too Large) |
+
+## HTTP Security Headers
+
+All responses include:
+
+```
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Cache-Control: no-store
+```
+
 ## Shell Scripts
 
 Management scripts are in `mtc-keymaster/tools/`:
