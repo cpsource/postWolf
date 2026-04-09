@@ -7,6 +7,7 @@
 
 #include "mtc_http.h"
 #include "mtc_checkendpoint.h"
+#include "mtc_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -499,8 +500,8 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
         return;
     }
 
-    printf("[enrollment] nonce issued for %s (fp=%s, expires=%ld)\n",
-           domain, fp_hex, expires);
+    LOG_INFO("nonce issued for %s (fp=%.16s..., expires=%ld)",
+             domain, fp_hex, expires);
 
     /* Build response with the exact DNS record to create */
     snprintf(dns_name, sizeof(dns_name), "_mtc-ca.%s.", domain);
@@ -534,8 +535,8 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
     if (io->ip_str[0] != '\0') {
         int score = mtc_checkendpoint(io->ip_str);
         if (score >= ABUSEIPDB_ENROLL_THRESHOLD) {
-            printf("[http] enrollment rejected for %s (abuse score %d >= %d)\n",
-                   io->ip_str, score, ABUSEIPDB_ENROLL_THRESHOLD);
+            LOG_WARN("enrollment rejected for %s (abuse score %d >= %d)",
+                     io->ip_str, score, ABUSEIPDB_ENROLL_THRESHOLD);
             http_send_error(io, 403, "enrollment denied");
             return;
         }
@@ -1043,8 +1044,8 @@ static void handle_revoke(client_io *io, MtcStore *store,
     if (io->ip_str[0] != '\0') {
         int score = mtc_checkendpoint(io->ip_str);
         if (score >= ABUSEIPDB_ENROLL_THRESHOLD) {
-            printf("[http] revoke rejected for %s (abuse score %d >= %d)\n",
-                   io->ip_str, score, ABUSEIPDB_ENROLL_THRESHOLD);
+            LOG_WARN("revoke rejected for %s (abuse score %d >= %d)",
+                     io->ip_str, score, ABUSEIPDB_ENROLL_THRESHOLD);
             http_send_error(io, 403, "revocation denied");
             return;
         }
@@ -1201,6 +1202,8 @@ static void handle_request(client_io *io, MtcStore *store)
     }
 
     /* Dispatch */
+    LOG_DEBUG("%s %s from %s", method, path, io->ip_str);
+
     if (strcmp(method, "GET") == 0) {
         if (strcmp(path, "/") == 0 || strcmp(path, "") == 0) {
             handle_index(io, store);
@@ -1324,7 +1327,7 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
             /* TLS accept */
             cio.tls = slc_accept(ctx, listen_fd);
             if (cio.tls == NULL) {
-                fprintf(stderr, "[tls] accept/handshake failed\n");
+                LOG_WARN("TLS accept/handshake failed");
                 continue;
             }
             cio.fd = slc_get_fd(cio.tls);
@@ -1339,7 +1342,7 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
             }
         }
 
-        /* Get client IP and check against AbuseIPDB */
+        /* Get client IP, log connection, and check against AbuseIPDB */
         cio.ip_str[0] = '\0';
         {
             struct sockaddr_in peer;
@@ -1348,10 +1351,13 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
                 inet_ntop(AF_INET, &peer.sin_addr, cio.ip_str,
                           sizeof(cio.ip_str));
 
+                LOG_DEBUG("connection from %s", cio.ip_str);
+
                 int abuse_score = mtc_checkendpoint(cio.ip_str);
                 if (abuse_score >= mtc_get_abuse_threshold()) {
-                    printf("[http] rejected %s (abuse score %d)\n",
-                           cio.ip_str, abuse_score);
+                    LOG_INFO("rejected %s (abuse score %d >= %d)",
+                             cio.ip_str, abuse_score,
+                             mtc_get_abuse_threshold());
                     http_send_error(&cio, 403, "Forbidden");
                     cio_close(&cio);
                     continue;

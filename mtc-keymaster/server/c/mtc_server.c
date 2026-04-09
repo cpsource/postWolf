@@ -22,6 +22,7 @@
 #include "mtc_store.h"
 #include "mtc_http.h"
 #include "mtc_checkendpoint.h"
+#include "mtc_log.h"
 
 static void usage(const char *prog)
 {
@@ -38,6 +39,8 @@ static void usage(const char *prog)
     printf("  --tls-key FILE   PEM server private key\n");
     printf("  --tls-ca FILE    CA cert for client verification\n");
     printf("  --ech-name NAME  ECH public name (e.g., factsorlie.com)\n");
+    printf("  --log-level N    Log level: 0=error 1=warn 2=info 3=debug 4=trace (default: 2)\n");
+    printf("  --log-file PATH  Log file (default: /var/log/mtc/mtc_server.log)\n");
     printf("  -h               Show this help\n");
 }
 
@@ -55,6 +58,8 @@ int main(int argc, char *argv[])
     const char *tls_key = NULL;
     const char *tls_ca = NULL;
     const char *ech_name = NULL;
+    int log_level = MTC_LOG_INFO;
+    const char *log_file = NULL;
     MtcStore store;
     mtc_tls_cfg_t tls_cfg;
     int i;
@@ -83,10 +88,17 @@ int main(int argc, char *argv[])
             tls_ca = argv[++i];
         else if (strcmp(argv[i], "--ech-name") == 0 && i + 1 < argc)
             ech_name = argv[++i];
+        else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc)
+            log_level = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--log-file") == 0 && i + 1 < argc)
+            log_file = argv[++i];
         else if (strcmp(argv[i], "-h") == 0) {
             usage(argv[0]); return 0;
         }
     }
+
+    /* Initialize logging */
+    mtc_log_init(log_file, log_level);
 
     wolfSSL_Init();
 
@@ -126,5 +138,6 @@ int main(int argc, char *argv[])
 
     mtc_store_free(&store);
     wolfSSL_Cleanup();
+    mtc_log_close();
     return 0;
 }
