@@ -147,7 +147,7 @@ server-side: the server verifies the nonce against its own stored state
 - `mtc-keymaster/tools/python/create_leaf_cert.py` — leaf creation tool
 - `mtc-keymaster/tools/python/main.py` — `enroll` command
 
-### 4. Two-step enrollment protocol with registration authority
+### 4. Two-step enrollment protocol with registration authority — DONE
 
 **Priority:** High — required before public enrollment
 

@@ -54,4 +54,24 @@ int  mtc_db_is_revoked(PGconn *conn, int cert_index);
 int  mtc_db_save_config(PGconn *conn, const char *key, const char *value);
 char *mtc_db_load_config(PGconn *conn, const char *key);
 
+/* --- Enrollment nonces --- */
+#define MTC_NONCE_TTL_SECS  900   /* 15 minutes */
+#define MTC_NONCE_HEX_LEN  64    /* 32 bytes = 256-bit */
+
+/* Create a pending nonce. Returns 0 on success, -1 if duplicate pending
+ * request exists for domain+fp. nonce_out must be MTC_NONCE_HEX_LEN+1. */
+int  mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
+                         char *nonce_out, long *expires_out);
+
+/* Validate a nonce: exists, matches domain+fp, not expired, not consumed.
+ * Returns 1 if valid, 0 otherwise. */
+int  mtc_db_validate_nonce(PGconn *conn, const char *nonce_hex,
+                           const char *domain, const char *fp_hex);
+
+/* Mark a nonce as consumed. */
+void mtc_db_consume_nonce(PGconn *conn, const char *nonce_hex);
+
+/* Expire old nonces (status='pending' and past expires_at). */
+void mtc_db_expire_nonces(PGconn *conn);
+
 #endif

@@ -106,6 +106,17 @@ class MTCClient:
 
     # --- Certificate request ---
 
+    def request_enrollment_nonce(self, domain: str, fingerprint: str) -> dict:
+        """
+        Request a server-issued enrollment nonce for CA enrollment.
+        The server stores (domain, fp, nonce, expiry) and returns the
+        nonce + the exact DNS TXT record to create.
+        """
+        return self._post("/enrollment/nonce", {
+            "domain": domain,
+            "public_key_fingerprint": f"sha256:{fingerprint}",
+        })
+
     def request_certificate(
         self,
         subject: str,
@@ -113,18 +124,23 @@ class MTCClient:
         key_algorithm: str = "EC-P256",
         validity_days: int = 90,
         extensions: Optional[dict] = None,
+        enrollment_nonce: Optional[str] = None,
     ) -> dict:
         """
         Request a certificate from the CA/Log server.
         Returns the full issuance result (standalone + optional landmark).
+        For CA enrollment, enrollment_nonce is required (from request_enrollment_nonce).
         """
-        return self._post("/certificate/request", {
+        body = {
             "subject": subject,
             "public_key_pem": public_key_pem,
             "key_algorithm": key_algorithm,
             "validity_days": validity_days,
             "extensions": extensions or {},
-        })
+        }
+        if enrollment_nonce:
+            body["enrollment_nonce"] = enrollment_nonce
+        return self._post("/certificate/request", body)
 
     # --- Certificate verification ---
 

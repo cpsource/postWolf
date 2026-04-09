@@ -184,7 +184,7 @@ def cmd_enroll_ca(client: MTCClient, cert_path: str):
     if is_root:
         print(f"Root CA detected — skipping DNS validation")
     else:
-        print(f"Intermediate CA — DNS validation will be performed by server")
+        print(f"Intermediate CA — two-phase enrollment with server-issued nonce")
 
     # Build extensions with the CA cert PEM
     extensions = {
@@ -195,16 +195,35 @@ def cmd_enroll_ca(client: MTCClient, cert_path: str):
     if is_root:
         extensions["root_ca"] = True
 
-    print(f"\nRegistering CA '{ca_subject}' with server...")
+    # Phase 1: For intermediate CAs, request a server-issued nonce
+    enrollment_nonce = None
+    if not is_root:
+        domain = dns_names[0] if dns_names else (cns[0].value if cns else None)
+        if not domain:
+            print("ERROR: Cannot determine domain for nonce request")
+            sys.exit(1)
 
-    # Request certificate from server
-    # For root CAs, the server won't find ca_certificate_pem SAN to check DNS,
-    # so it passes through. For intermediates, DNS TXT is checked.
+        print(f"\nPhase 1: Requesting enrollment nonce for '{domain}'...")
+        nonce_resp = client.request_enrollment_nonce(domain, fp)
+        enrollment_nonce = nonce_resp["nonce"]
+
+        print(f"  Nonce:   {enrollment_nonce}")
+        print(f"  Expires: {nonce_resp['expires']}")
+        print(f"\n  Add this DNS TXT record:")
+        print(f"    {nonce_resp['dns_record_name']}  IN TXT  \"{nonce_resp['dns_record_value']}\"")
+        print()
+        input("  Press Enter after adding the DNS TXT record...")
+        print(f"\nPhase 2: Completing enrollment...")
+
+    print(f"Registering CA '{ca_subject}' with server...")
+
+    # Request certificate from server (with nonce for intermediates)
     result = client.request_certificate(
         subject=ca_subject,
         public_key_pem=pub_pem,
         validity_days=365,
         extensions=extensions,
+        enrollment_nonce=enrollment_nonce,
     )
 
     idx = result["index"]

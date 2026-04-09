@@ -148,7 +148,18 @@ int mtc_db_init_schema(PGconn *conn)
         "  reason TEXT,"
         "  revoked_at DOUBLE PRECISION NOT NULL,"
         "  created_at TIMESTAMPTZ DEFAULT now()"
-        ");";
+        ");"
+        "CREATE TABLE IF NOT EXISTS mtc_enrollment_nonces ("
+        "  nonce TEXT PRIMARY KEY,"
+        "  domain TEXT NOT NULL,"
+        "  fp TEXT NOT NULL,"
+        "  expires_at TIMESTAMPTZ NOT NULL,"
+        "  status TEXT NOT NULL DEFAULT 'pending',"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_nonce_domain_fp "
+        "  ON mtc_enrollment_nonces (domain, fp) "
+        "  WHERE status = 'pending';";
 
     res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
@@ -573,4 +584,126 @@ char *mtc_db_load_config(PGconn *conn, const char *key)
     val = strdup(PQgetvalue(res, 0, 0));
     PQclear(res);
     return val;
+}
+
+/* ------------------------------------------------------------------ */
+/* Enrollment nonces                                                   */
+/* ------------------------------------------------------------------ */
+
+#include <wolfssl/options.h>
+#include <wolfssl/wolfcrypt/random.h>
+
+int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
+                        char *nonce_out, long *expires_out)
+{
+    PGresult *res;
+    const char *params[2];
+    WC_RNG rng;
+    uint8_t rand_bytes[32]; /* 256-bit */
+    char ttl_str[32];
+    const char *ins_params[4];
+    int i;
+
+    if (!conn) return -1;
+
+    /* Expire stale nonces first */
+    mtc_db_expire_nonces(conn);
+
+    /* Reject if a pending nonce already exists for this domain+fp */
+    params[0] = domain;
+    params[1] = fp_hex;
+    res = PQexecParams(conn,
+        "SELECT nonce FROM mtc_enrollment_nonces "
+        "WHERE domain = $1 AND fp = $2 AND status = 'pending' "
+        "AND expires_at > now() LIMIT 1",
+        2, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
+        PQclear(res);
+        return -1; /* duplicate pending */
+    }
+    PQclear(res);
+
+    /* Generate 256-bit random nonce */
+    if (wc_InitRng(&rng) != 0) return -1;
+    if (wc_RNG_GenerateBlock(&rng, rand_bytes, sizeof(rand_bytes)) != 0) {
+        wc_FreeRng(&rng);
+        return -1;
+    }
+    wc_FreeRng(&rng);
+
+    for (i = 0; i < 32; i++)
+        sprintf(nonce_out + i * 2, "%02x", rand_bytes[i]);
+    nonce_out[64] = '\0';
+
+    *expires_out = (long)time(NULL) + MTC_NONCE_TTL_SECS;
+
+    /* Insert pending nonce */
+    snprintf(ttl_str, sizeof(ttl_str), "%d seconds", MTC_NONCE_TTL_SECS);
+    ins_params[0] = nonce_out;
+    ins_params[1] = domain;
+    ins_params[2] = fp_hex;
+    ins_params[3] = ttl_str;
+
+    res = PQexecParams(conn,
+        "INSERT INTO mtc_enrollment_nonces (nonce, domain, fp, expires_at) "
+        "VALUES ($1, $2, $3, now() + $4::interval)",
+        4, NULL, ins_params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "[db] nonce insert failed: %s\n", PQerrorMessage(conn));
+        PQclear(res);
+        return -1;
+    }
+    PQclear(res);
+    return 0;
+}
+
+int mtc_db_validate_nonce(PGconn *conn, const char *nonce_hex,
+                          const char *domain, const char *fp_hex)
+{
+    PGresult *res;
+    const char *params[3];
+    int valid;
+
+    if (!conn) return 0;
+
+    params[0] = nonce_hex;
+    params[1] = domain;
+    params[2] = fp_hex;
+    res = PQexecParams(conn,
+        "SELECT 1 FROM mtc_enrollment_nonces "
+        "WHERE nonce = $1 AND domain = $2 AND fp = $3 "
+        "AND status = 'pending' AND expires_at > now()",
+        3, NULL, params, NULL, NULL, 0);
+
+    valid = (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0);
+    PQclear(res);
+    return valid;
+}
+
+void mtc_db_consume_nonce(PGconn *conn, const char *nonce_hex)
+{
+    PGresult *res;
+    const char *params[1];
+
+    if (!conn) return;
+
+    params[0] = nonce_hex;
+    res = PQexecParams(conn,
+        "UPDATE mtc_enrollment_nonces SET status = 'consumed' "
+        "WHERE nonce = $1",
+        1, NULL, params, NULL, NULL, 0);
+    PQclear(res);
+}
+
+void mtc_db_expire_nonces(PGconn *conn)
+{
+    PGresult *res;
+    if (!conn) return;
+
+    res = PQexec(conn,
+        "UPDATE mtc_enrollment_nonces SET status = 'expired' "
+        "WHERE status = 'pending' AND expires_at <= now()");
+    PQclear(res);
 }
