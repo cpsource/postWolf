@@ -7,12 +7,12 @@ CFLAGS  += -I../../../socket-level-wrapper
 LDFLAGS += $(shell pkg-config --libs wolfssl)
 LDFLAGS += $(shell pkg-config --libs json-c)
 LDFLAGS += $(shell pkg-config --libs libpq)
-LDFLAGS += -lresolv
+LDFLAGS += -lresolv -lhiredis
 
 SLC_DIR = ../../../socket-level-wrapper
 SLC_LIB = $(SLC_DIR)/libslc.a
 
-SRCS = mtc_server.c mtc_merkle.c mtc_store.c mtc_http.c mtc_db.c mtc_checkendpoint.c mtc_log.c
+SRCS = mtc_server.c mtc_merkle.c mtc_store.c mtc_http.c mtc_db.c mtc_checkendpoint.c mtc_log.c mtc_ratelimit.c
 LDFLAGS += -lcurl
 
 all: mtc_server
@@ -20,7 +20,7 @@ all: mtc_server
 $(SLC_LIB):
 	$(MAKE) -C $(SLC_DIR)
 
-mtc_server: $(SRCS) mtc_merkle.h mtc_store.h mtc_http.h mtc_db.h mtc_checkendpoint.h mtc_log.h $(SLC_LIB)
+mtc_server: $(SRCS) mtc_merkle.h mtc_store.h mtc_http.h mtc_db.h mtc_checkendpoint.h mtc_log.h mtc_ratelimit.h $(SLC_LIB)
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(SLC_LIB) $(LDFLAGS)
 
 make-mtc-checkpoint: mtc_checkendpoint.c mtc_checkendpoint.h mtc_db.c mtc_db.h

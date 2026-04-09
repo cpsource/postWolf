@@ -894,5 +894,5 @@ client code. Findings are prioritized by severity.
 
 **S19. Nonce TTL 15 min** — could be reduced to 5 min for tighter window.
 
-**S20. No rate limiting on API endpoints** — `/enrollment/nonce` and
+**S20. No rate limiting on API endpoints — FIXED** — `/enrollment/nonce` and
 `/certificate/request` can be flooded. (Noted — deferred per design.)

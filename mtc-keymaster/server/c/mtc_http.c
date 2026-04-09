@@ -8,6 +8,7 @@
 #include "mtc_http.h"
 #include "mtc_checkendpoint.h"
 #include "mtc_log.h"
+#include "mtc_ratelimit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,7 +85,7 @@ static void http_send_json(client_io *io, int status, const char *json_str)
         status, status == 200 ? "OK" : (status == 201 ? "Created" :
         (status == 403 ? "Forbidden" : (status == 404 ? "Not Found" :
         (status == 409 ? "Conflict" : (status == 413 ? "Payload Too Large" :
-        "Bad Request"))))),
+        (status == 429 ? "Too Many Requests" : "Bad Request")))))),
         body_len);
 
     cio_write(io, hdr, hdr_len);
@@ -557,6 +558,13 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
     if (json_object_object_get_ex(req, "type", &val))
         nonce_type = json_object_get_string(val);
     is_leaf = (strcmp(nonce_type, "leaf") == 0);
+
+    /* Rate limit: leaf nonces (10/min, 100/hr) vs CA nonces (3/min, 10/hr) */
+    if (!mtc_ratelimit_check(io->ip_str, is_leaf ? RL_NONCE_LEAF : RL_NONCE_CA)) {
+        http_send_error(io, 429, "rate limit exceeded");
+        json_object_put(req);
+        return;
+    }
 
     /* For leaf nonces, verify a registered CA exists for this domain */
     if (is_leaf) {
@@ -1337,6 +1345,11 @@ static void handle_request(client_io *io, MtcStore *store)
     LOG_DEBUG("%s %s from %s", method, path, io->ip_str);
 
     if (strcmp(method, "GET") == 0) {
+        /* Rate limit all reads */
+        if (!mtc_ratelimit_check(io->ip_str, RL_READ)) {
+            http_send_error(io, 429, "rate limit exceeded");
+            return;
+        }
         if (strcmp(path, "/") == 0 || strcmp(path, "") == 0) {
             handle_index(io, store);
         }
@@ -1390,12 +1403,21 @@ static void handle_request(client_io *io, MtcStore *store)
     }
     else if (strcmp(method, "POST") == 0) {
         if (strcmp(path, "/enrollment/nonce") == 0) {
+            /* Rate limit checked inside handler (leaf vs CA have different limits) */
             handle_enrollment_nonce(io, store, body, body_len);
         }
         else if (strcmp(path, "/certificate/request") == 0) {
+            if (!mtc_ratelimit_check(io->ip_str, RL_ENROLL)) {
+                http_send_error(io, 429, "rate limit exceeded");
+                return;
+            }
             handle_certificate_request(io, store, body, body_len);
         }
         else if (strcmp(path, "/revoke") == 0) {
+            if (!mtc_ratelimit_check(io->ip_str, RL_REVOKE)) {
+                http_send_error(io, 429, "rate limit exceeded");
+                return;
+            }
             handle_revoke(io, store, body, body_len);
         }
         else {

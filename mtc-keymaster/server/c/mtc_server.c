@@ -23,6 +23,7 @@
 #include "mtc_http.h"
 #include "mtc_checkendpoint.h"
 #include "mtc_log.h"
+#include "mtc_ratelimit.h"
 
 static void usage(const char *prog)
 {
@@ -105,6 +106,9 @@ int main(int argc, char *argv[])
     /* Ignore SIGPIPE from closed connections */
     signal(SIGPIPE, SIG_IGN);
 
+    /* Initialize Redis-backed rate limiter (non-fatal if Redis unavailable) */
+    mtc_ratelimit_init("127.0.0.1", 6379);
+
     /* Set token path for MERKLE_NEON lookup */
     if (tokenpath)
         mtc_db_set_tokenpath(tokenpath);
@@ -137,6 +141,7 @@ int main(int argc, char *argv[])
     mtc_http_serve(host, port, &store, tls_cert ? &tls_cfg : NULL);
 
     mtc_store_free(&store);
+    mtc_ratelimit_close();
     wolfSSL_Cleanup();
     mtc_log_close();
     return 0;
