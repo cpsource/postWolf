@@ -68,8 +68,14 @@ def _subject_dir(subject: str) -> Path:
 
 
 def cmd_enroll(client: MTCClient, subject: str, algorithm: str = "EC-P256",
-               extensions: dict = None):
-    """Generate a key pair and request a certificate."""
+               extensions: dict = None, enrollment_nonce: str = None):
+    """Generate a key pair and request a certificate.
+
+    Leaf enrollment requires a nonce from the domain's CA operator.
+    The CA operator obtains the nonce via:
+        python3 issue_leaf_nonce.py --server <url> <domain> <leaf-fingerprint>
+    and sends it to the leaf user out-of-band.
+    """
     print(f"Generating {algorithm} key pair for '{subject}'...")
     priv_pem, pub_pem = client.generate_key_pair(algorithm)
 
@@ -91,13 +97,21 @@ def cmd_enroll(client: MTCClient, subject: str, algorithm: str = "EC-P256",
     if extensions:
         ext.update(extensions)
 
-    print(f"\nRequesting certificate from CA...")
+    if not enrollment_nonce:
+        print("\nERROR: enrollment_nonce required for leaf enrollment.")
+        print("The CA operator for this domain must issue a nonce via:")
+        print(f"  python3 issue_leaf_nonce.py --server <url> {subject} <fingerprint>")
+        print("Then pass it with --nonce <nonce>")
+        sys.exit(1)
+
+    print(f"\nRequesting certificate from CA (nonce: {enrollment_nonce[:16]}...)...")
     result = client.request_certificate(
         subject=subject,
         public_key_pem=pub_pem,
         key_algorithm=algorithm,
         validity_days=90,
         extensions=ext,
+        enrollment_nonce=enrollment_nonce,
     )
 
     idx = result["index"]
@@ -184,7 +198,7 @@ def cmd_enroll_ca(client: MTCClient, cert_path: str):
     if is_root:
         print(f"Root CA detected — skipping DNS validation")
     else:
-        print(f"Intermediate CA — two-phase enrollment with server-issued nonce")
+        print(f"Intermediate CA — DNS TXT validation will be performed by server")
 
     # Build extensions with the CA cert PEM
     extensions = {
@@ -195,35 +209,15 @@ def cmd_enroll_ca(client: MTCClient, cert_path: str):
     if is_root:
         extensions["root_ca"] = True
 
-    # Phase 1: For intermediate CAs, request a server-issued nonce
-    enrollment_nonce = None
-    if not is_root:
-        domain = dns_names[0] if dns_names else (cns[0].value if cns else None)
-        if not domain:
-            print("ERROR: Cannot determine domain for nonce request")
-            sys.exit(1)
+    print(f"\nRegistering CA '{ca_subject}' with server...")
 
-        print(f"\nPhase 1: Requesting enrollment nonce for '{domain}'...")
-        nonce_resp = client.request_enrollment_nonce(domain, fp)
-        enrollment_nonce = nonce_resp["nonce"]
-
-        print(f"  Nonce:   {enrollment_nonce}")
-        print(f"  Expires: {nonce_resp['expires']}")
-        print(f"\n  Add this DNS TXT record:")
-        print(f"    {nonce_resp['dns_record_name']}  IN TXT  \"{nonce_resp['dns_record_value']}\"")
-        print()
-        input("  Press Enter after adding the DNS TXT record...")
-        print(f"\nPhase 2: Completing enrollment...")
-
-    print(f"Registering CA '{ca_subject}' with server...")
-
-    # Request certificate from server (with nonce for intermediates)
+    # CA enrollment uses DNS TXT validation, no nonce needed.
+    # The DNS record at _mtc-ca.<domain> proves domain ownership.
     result = client.request_certificate(
         subject=ca_subject,
         public_key_pem=pub_pem,
         validity_days=365,
         extensions=extensions,
-        enrollment_nonce=enrollment_nonce,
     )
 
     idx = result["index"]
@@ -410,6 +404,8 @@ def main():
 
     p_enroll = sub.add_parser("enroll", help="Generate key + request certificate")
     p_enroll.add_argument("subject", help="Certificate subject (e.g. example.com)")
+    p_enroll.add_argument("--nonce", required=True,
+                          help="Enrollment nonce from CA operator (required)")
     p_enroll.add_argument("--algorithm", default="EC-P256", choices=["EC-P256", "Ed25519"])
     p_enroll.add_argument("--ext", action="append", metavar="KEY=VALUE",
                           help="Add extension (repeatable, e.g. --ext human_id='Cal Page')")
@@ -455,7 +451,8 @@ def main():
         for e in (args.ext or []):
             k, _, v = e.partition("=")
             ext[k] = v
-        cmd_enroll(client, args.subject, args.algorithm, ext or None)
+        cmd_enroll(client, args.subject, args.algorithm, ext or None,
+                   args.nonce)
 
     elif args.command == "find":
         cmd_find(client, args.query)

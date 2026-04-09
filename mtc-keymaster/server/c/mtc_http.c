@@ -445,19 +445,27 @@ static int validate_ca_cert_if_present(struct json_object *extensions,
     }
 }
 
-/* POST /enrollment/nonce — issue a server-side nonce for CA enrollment.
- * Body: {"domain": "...", "public_key_fingerprint": "sha256:..."} */
+/* POST /enrollment/nonce — issue a server-side nonce for enrollment.
+ *
+ * For CA enrollment (type=ca or no type):
+ *   Body: {"domain": "...", "public_key_fingerprint": "sha256:..."}
+ *   No CA needs to exist — the DNS TXT check validates domain ownership.
+ *
+ * For leaf enrollment (type=leaf):
+ *   Body: {"domain": "...", "public_key_fingerprint": "sha256:...", "type": "leaf"}
+ *   A registered CA must exist for this domain. The CA operator calls this
+ *   endpoint to authorize a specific leaf key. */
 static void handle_enrollment_nonce(client_io *io, MtcStore *store,
                                      const char *body, int body_len)
 {
     struct json_object *req, *val;
-    const char *domain, *fp_raw;
+    const char *domain, *fp_raw, *nonce_type;
     char fp_hex[65];
     char nonce[MTC_NONCE_HEX_LEN + 1];
     long expires;
     struct json_object *resp;
-    char dns_name[256], dns_value[512];
-    int ret;
+    int ret, ca_index = -1;
+    int is_leaf = 0;
 
     (void)body_len;
 
@@ -486,8 +494,29 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
         fp_raw += 7;
     snprintf(fp_hex, sizeof(fp_hex), "%s", fp_raw);
 
+    /* Check nonce type */
+    nonce_type = "ca";
+    if (json_object_object_get_ex(req, "type", &val))
+        nonce_type = json_object_get_string(val);
+    is_leaf = (strcmp(nonce_type, "leaf") == 0);
+
+    /* For leaf nonces, verify a registered CA exists for this domain */
+    if (is_leaf) {
+        ca_index = mtc_db_find_ca_for_domain(store->db, domain);
+        if (ca_index < 0) {
+            http_send_error(io, 403,
+                "no registered CA exists for this domain — "
+                "enroll a CA first via enroll-ca");
+            json_object_put(req);
+            return;
+        }
+        LOG_INFO("leaf nonce requested for %s (authorized by CA index %d)",
+                 domain, ca_index);
+    }
+
     /* Create nonce in DB */
-    ret = mtc_db_create_nonce(store->db, domain, fp_hex, nonce, &expires);
+    ret = mtc_db_create_nonce(store->db, domain, fp_hex, ca_index,
+                              nonce, &expires);
     if (ret == -1) {
         http_send_error(io, 409,
             "pending enrollment already exists for this domain and key");
@@ -500,22 +529,30 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
         return;
     }
 
-    LOG_INFO("nonce issued for %s (fp=%.16s..., expires=%ld)",
-             domain, fp_hex, expires);
-
-    /* Build response with the exact DNS record to create */
-    snprintf(dns_name, sizeof(dns_name), "_mtc-ca.%s.", domain);
-    snprintf(dns_value, sizeof(dns_value),
-             "v=mtc-ca2; fp=sha256:%s; n=%s; exp=%ld",
-             fp_hex, nonce, expires);
+    LOG_INFO("%s nonce issued for %s (fp=%.16s..., expires=%ld)",
+             is_leaf ? "leaf" : "CA", domain, fp_hex, expires);
 
     resp = json_object_new_object();
     json_object_object_add(resp, "nonce", json_object_new_string(nonce));
     json_object_object_add(resp, "expires", json_object_new_int64(expires));
-    json_object_object_add(resp, "dns_record_name",
-                           json_object_new_string(dns_name));
-    json_object_object_add(resp, "dns_record_value",
-                           json_object_new_string(dns_value));
+    json_object_object_add(resp, "type",
+                           json_object_new_string(is_leaf ? "leaf" : "ca"));
+    if (ca_index >= 0)
+        json_object_object_add(resp, "ca_index",
+                               json_object_new_int(ca_index));
+
+    if (!is_leaf) {
+        /* CA nonce: include DNS record to create */
+        char dns_name[256], dns_value[512];
+        snprintf(dns_name, sizeof(dns_name), "_mtc-ca.%s.", domain);
+        snprintf(dns_value, sizeof(dns_value),
+                 "v=mtc-ca2; fp=sha256:%s; n=%s; exp=%ld",
+                 fp_hex, nonce, expires);
+        json_object_object_add(resp, "dns_record_name",
+                               json_object_new_string(dns_name));
+        json_object_object_add(resp, "dns_record_value",
+                               json_object_new_string(dns_value));
+    }
 
     http_send_json_obj(io, 200, resp);
     json_object_put(resp);
@@ -573,63 +610,61 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
 
     json_object_object_get_ex(req, "extensions", &extensions);
 
-    /* Extract enrollment nonce (required for CA enrollment, optional for leaf) */
+    /* Enrollment authorization */
     {
         const char *enrollment_nonce = NULL;
+        int is_ca_enrollment = 0;
+
         if (json_object_object_get_ex(req, "enrollment_nonce", &val))
             enrollment_nonce = json_object_get_string(val);
 
-        /* If this is a CA enrollment, require and validate the nonce */
+        /* Check if this is a CA enrollment (has ca_certificate_pem) */
         if (extensions) {
             struct json_object *ca_val;
-            if (json_object_object_get_ex(extensions, "ca_certificate_pem", &ca_val)) {
-                /* CA enrollment — nonce required (unless root CA) */
-                struct json_object *root_val;
-                int is_root = json_object_object_get_ex(extensions, "root_ca", &root_val)
-                              && json_object_get_boolean(root_val);
+            if (json_object_object_get_ex(extensions, "ca_certificate_pem",
+                                          &ca_val))
+                is_ca_enrollment = 1;
+        }
 
-                if (!is_root && !enrollment_nonce) {
-                    http_send_error(io, 400,
-                        "enrollment_nonce required for CA enrollment — "
-                        "call POST /enrollment/nonce first");
-                    json_object_put(req);
-                    return;
-                }
-
-                if (!is_root && enrollment_nonce && store->db) {
-                    /* Extract domain from CA cert SAN for nonce validation.
-                     * The nonce was bound to domain+fp at creation time. */
-                    struct json_object *fp_val;
-                    const char *fp_str = NULL;
-                    if (json_object_object_get_ex(extensions, "ca_fingerprint", &fp_val))
-                        fp_str = json_object_get_string(fp_val);
-                    if (fp_str && strncmp(fp_str, "sha256:", 7) == 0)
-                        fp_str += 7;
-
-                    if (!fp_str || !mtc_db_validate_nonce(store->db,
-                            enrollment_nonce, "", fp_str)) {
-                        /* Try validation with empty domain — the DNS check
-                         * below will verify domain control. We validate
-                         * nonce+fp binding here. For full domain binding,
-                         * we'd need to parse the cert first. Instead, do
-                         * a nonce-only lookup. */
-                    }
-                }
+        if (is_ca_enrollment) {
+            /* CA enrollment: DNS TXT validation, no nonce required.
+             * The DNS record at _mtc-ca.<domain> proves domain ownership. */
+            if (!validate_ca_cert_if_present(extensions, NULL)) {
+                http_send_error(io, 403,
+                    "CA certificate rejected: DNS validation failed — "
+                    "no matching _mtc-ca.<domain> TXT record found");
+                json_object_put(req);
+                return;
             }
         }
+        else {
+            /* Leaf enrollment: nonce required.
+             * The CA operator issues the nonce (POST /enrollment/nonce
+             * with type=leaf), then sends it to the leaf out-of-band.
+             * The server verifies the nonce is valid, bound to this
+             * domain + key, and was authorized by a registered CA. */
+            if (!enrollment_nonce) {
+                http_send_error(io, 400,
+                    "enrollment_nonce required for leaf enrollment — "
+                    "obtain a nonce from your CA operator");
+                json_object_put(req);
+                return;
+            }
 
-        /* Validate CA certificate against DNS TXT if present */
-        if (!validate_ca_cert_if_present(extensions, enrollment_nonce)) {
-            http_send_error(io, 403,
-                "CA certificate rejected: DNS validation failed — "
-                "no matching _mtc-ca.<domain> TXT record found");
-            json_object_put(req);
-            return;
-        }
+            if (!store->db || !mtc_db_validate_nonce(store->db,
+                    enrollment_nonce, subject, "")) {
+                http_send_error(io, 403,
+                    "invalid, expired, or already-used enrollment nonce");
+                json_object_put(req);
+                return;
+            }
 
-        /* Consume the nonce on successful validation */
-        if (enrollment_nonce && store->db)
+            LOG_INFO("leaf enrollment for '%s' authorized by nonce %.16s...",
+                     subject, enrollment_nonce);
+
+            /* Consume the nonce — single-use */
             mtc_db_consume_nonce(store->db, enrollment_nonce);
+        }
     }
 
     /* Build TBS entry */

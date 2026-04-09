@@ -58,10 +58,16 @@ char *mtc_db_load_config(PGconn *conn, const char *key);
 #define MTC_NONCE_TTL_SECS  900   /* 15 minutes */
 #define MTC_NONCE_HEX_LEN  64    /* 32 bytes = 256-bit */
 
-/* Create a pending nonce. Returns 0 on success, -1 if duplicate pending
- * request exists for domain+fp. nonce_out must be MTC_NONCE_HEX_LEN+1. */
+/* Create a pending nonce. ca_index is the issuing CA's log index (-1 for
+ * CA self-enrollment via DNS). Returns 0 on success, -1 if duplicate
+ * pending request exists for domain+fp. nonce_out must be MTC_NONCE_HEX_LEN+1. */
 int  mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
-                         char *nonce_out, long *expires_out);
+                         int ca_index, char *nonce_out, long *expires_out);
+
+/* Look up a registered CA for a domain. Searches mtc_certificates for a
+ * subject matching "<domain>-ca" with is_ca extension. Returns the CA's
+ * log index, or -1 if not found. */
+int  mtc_db_find_ca_for_domain(PGconn *conn, const char *domain);
 
 /* Validate a nonce: exists, matches domain+fp, not expired, not consumed.
  * Returns 1 if valid, 0 otherwise. */

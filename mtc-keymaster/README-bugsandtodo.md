@@ -33,7 +33,7 @@ Ed25519 verify APIs available.
 - `mtc-keymaster/tools/python/mtc_client.py` — reference implementation
 - `examples/quic-mtc/quic_mtc_common.h` — `qmtc_verify()`
 
-### 2. Server-side leaf-to-CA authorization check
+### 2. Server-side leaf-to-CA authorization check — DONE
 
 **Priority:** High — required before opening to third parties
 

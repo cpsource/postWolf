@@ -153,10 +153,13 @@ int mtc_db_init_schema(PGconn *conn)
         "  nonce TEXT PRIMARY KEY,"
         "  domain TEXT NOT NULL,"
         "  fp TEXT NOT NULL,"
+        "  ca_index INTEGER NOT NULL DEFAULT -1,"
         "  expires_at TIMESTAMPTZ NOT NULL,"
         "  status TEXT NOT NULL DEFAULT 'pending',"
         "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()"
         ");"
+        "ALTER TABLE mtc_enrollment_nonces ADD COLUMN IF NOT EXISTS "
+        "  ca_index INTEGER NOT NULL DEFAULT -1;"
         "CREATE INDEX IF NOT EXISTS idx_nonce_domain_fp "
         "  ON mtc_enrollment_nonces (domain, fp) "
         "  WHERE status = 'pending';";
@@ -594,14 +597,14 @@ char *mtc_db_load_config(PGconn *conn, const char *key)
 #include <wolfssl/wolfcrypt/random.h>
 
 int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
-                        char *nonce_out, long *expires_out)
+                        int ca_index, char *nonce_out, long *expires_out)
 {
     PGresult *res;
     const char *params[2];
     WC_RNG rng;
     uint8_t rand_bytes[32]; /* 256-bit */
-    char ttl_str[32];
-    const char *ins_params[4];
+    char ttl_str[32], ca_idx_str[16];
+    const char *ins_params[5];
     int i;
 
     if (!conn) return -1;
@@ -640,15 +643,18 @@ int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
 
     /* Insert pending nonce */
     snprintf(ttl_str, sizeof(ttl_str), "%d seconds", MTC_NONCE_TTL_SECS);
+    snprintf(ca_idx_str, sizeof(ca_idx_str), "%d", ca_index);
     ins_params[0] = nonce_out;
     ins_params[1] = domain;
     ins_params[2] = fp_hex;
-    ins_params[3] = ttl_str;
+    ins_params[3] = ca_idx_str;
+    ins_params[4] = ttl_str;
 
     res = PQexecParams(conn,
-        "INSERT INTO mtc_enrollment_nonces (nonce, domain, fp, expires_at) "
-        "VALUES ($1, $2, $3, now() + $4::interval)",
-        4, NULL, ins_params, NULL, NULL, 0);
+        "INSERT INTO mtc_enrollment_nonces "
+        "(nonce, domain, fp, ca_index, expires_at) "
+        "VALUES ($1, $2, $3, $4, now() + $5::interval)",
+        5, NULL, ins_params, NULL, NULL, 0);
 
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
         fprintf(stderr, "[db] nonce insert failed: %s\n", PQerrorMessage(conn));
@@ -659,23 +665,73 @@ int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
     return 0;
 }
 
+int mtc_db_find_ca_for_domain(PGconn *conn, const char *domain)
+{
+    PGresult *res;
+    char subject[256];
+    const char *params[1];
+    int ca_index;
+
+    if (!conn) return -1;
+
+    /* CAs are enrolled with subject "<domain>-ca" */
+    snprintf(subject, sizeof(subject), "%s-ca", domain);
+    params[0] = subject;
+
+    res = PQexecParams(conn,
+        "SELECT index FROM mtc_certificates "
+        "WHERE certificate->'standalone_certificate'->'tbs_entry'->>'subject' = $1 "
+        "ORDER BY index DESC LIMIT 1",
+        1, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
+        PQclear(res);
+        return -1;
+    }
+
+    ca_index = atoi(PQgetvalue(res, 0, 0));
+    PQclear(res);
+    return ca_index;
+}
+
 int mtc_db_validate_nonce(PGconn *conn, const char *nonce_hex,
                           const char *domain, const char *fp_hex)
 {
     PGresult *res;
-    const char *params[3];
     int valid;
 
     if (!conn) return 0;
 
-    params[0] = nonce_hex;
-    params[1] = domain;
-    params[2] = fp_hex;
-    res = PQexecParams(conn,
-        "SELECT 1 FROM mtc_enrollment_nonces "
-        "WHERE nonce = $1 AND domain = $2 AND fp = $3 "
-        "AND status = 'pending' AND expires_at > now()",
-        3, NULL, params, NULL, NULL, 0);
+    /* Validate nonce: must exist, be pending, and not expired.
+     * If domain is non-empty, also match domain.
+     * If fp_hex is non-empty, also match fp.
+     * The nonce was bound to domain+fp at creation time, so matching
+     * the nonce alone is sufficient — but we check what the caller
+     * provides for defense-in-depth. */
+    if (domain && domain[0] && fp_hex && fp_hex[0]) {
+        const char *params[3] = { nonce_hex, domain, fp_hex };
+        res = PQexecParams(conn,
+            "SELECT 1 FROM mtc_enrollment_nonces "
+            "WHERE nonce = $1 AND domain = $2 AND fp = $3 "
+            "AND status = 'pending' AND expires_at > now()",
+            3, NULL, params, NULL, NULL, 0);
+    }
+    else if (domain && domain[0]) {
+        const char *params[2] = { nonce_hex, domain };
+        res = PQexecParams(conn,
+            "SELECT 1 FROM mtc_enrollment_nonces "
+            "WHERE nonce = $1 AND domain = $2 "
+            "AND status = 'pending' AND expires_at > now()",
+            2, NULL, params, NULL, NULL, 0);
+    }
+    else {
+        const char *params[1] = { nonce_hex };
+        res = PQexecParams(conn,
+            "SELECT 1 FROM mtc_enrollment_nonces "
+            "WHERE nonce = $1 "
+            "AND status = 'pending' AND expires_at > now()",
+            1, NULL, params, NULL, NULL, 0);
+    }
 
     valid = (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0);
     PQclear(res);
