@@ -81,24 +81,24 @@ The MTC server itself needs a TLS certificate to accept connections.
 We use ML-DSA-87 (CRYSTALS-Dilithium level 5) for post-quantum security.
 
 ```bash
-mkdir -p ~/.mtc-ca-data
+cd ~/wolfssl-new/mtc-keymaster/tools/python
 
-# Generate ML-DSA-87 private key
-openssl35 genpkey -algorithm ML-DSA-87 \
-    -out ~/.mtc-ca-data/server-key.pem
+python3 create_server_cert.py factsorlie.com
+```
 
-# Create self-signed certificate (365 days)
-openssl35 req -x509 -new \
-    -key ~/.mtc-ca-data/server-key.pem \
-    -out ~/.mtc-ca-data/server-cert.pem \
-    -days 365 \
-    -subj "/CN=factsorlie.com"
+This generates `~/.mtc-ca-data/server-key.pem` (mode 0600) and
+`~/.mtc-ca-data/server-cert.pem` using `openssl35` under the hood.
 
-# Verify
-openssl35 x509 -in ~/.mtc-ca-data/server-cert.pem -noout -text | head -15
+Options:
+```bash
+# Custom output directory
+python3 create_server_cert.py --out /etc/mtc factsorlie.com
 
-# Set permissions
-chmod 600 ~/.mtc-ca-data/server-key.pem
+# Longer validity
+python3 create_server_cert.py --days 730 factsorlie.com
+
+# Different algorithm (for testing)
+python3 create_server_cert.py --algorithm EC-P256 localhost
 ```
 
 For production, replace the self-signed cert with one from a trusted CA
@@ -335,7 +335,7 @@ tables. The server will generate a fresh CA key on next startup.
 
 | Command | Purpose |
 |---------|---------|
-| `openssl35 genpkey -algorithm ML-DSA-87` | Generate post-quantum key |
+| `python3 create_server_cert.py <domain>` | Generate ML-DSA-87 server TLS cert |
 | `./mtc_server --port 8444 ...` | Start CA server |
 | `python3 main.py bootstrap` | Trust the CA (one-time) |
 | `python3 main.py enroll-ca <cert.pem>` | Register CA cert (two-phase nonce) |
