@@ -447,95 +447,324 @@ mtc_cert_t *MTC_Enroll(mtc_conn_t *conn, const char *subject,
 }
 
 /* ----------------------------------------------------------------------- */
-/* MTC_Verify                                                              */
+/* MTC_Verify — independent client-side verification                       */
 /* ----------------------------------------------------------------------- */
+
+/* RFC 9162 Section 2.1: HASH(0x00 || data) */
+static void mtc_hash_leaf(const uint8_t *data, int dataSz, uint8_t out[32])
+{
+    wc_Sha256 sha;
+    uint8_t prefix = 0x00;
+    wc_InitSha256(&sha);
+    wc_Sha256Update(&sha, &prefix, 1);
+    wc_Sha256Update(&sha, data, (word32)dataSz);
+    wc_Sha256Final(&sha, out);
+    wc_Sha256Free(&sha);
+}
+
+/* RFC 9162 Section 2.1: HASH(0x01 || left || right) */
+static void mtc_hash_node(const uint8_t left[32], const uint8_t right[32],
+                          uint8_t out[32])
+{
+    wc_Sha256 sha;
+    uint8_t prefix = 0x01;
+    wc_InitSha256(&sha);
+    wc_Sha256Update(&sha, &prefix, 1);
+    wc_Sha256Update(&sha, left, 32);
+    wc_Sha256Update(&sha, right, 32);
+    wc_Sha256Final(&sha, out);
+    wc_Sha256Free(&sha);
+}
+
+/* Verify inclusion proof: hash chain from leaf to subtree root.
+ * Returns 1 if valid, 0 if not. */
+static int mtc_verify_inclusion(const uint8_t entry_hash[32], int index,
+                                int start, int end,
+                                struct json_object *proof_arr,
+                                const uint8_t expected_root[32])
+{
+    int fn, sn, i, proof_len;
+    uint8_t r[32], p[32];
+
+    proof_len = (int)json_object_array_length(proof_arr);
+    XMEMCPY(r, entry_hash, 32);
+
+    fn = index - start;
+    sn = end - start - 1;
+
+    for (i = 0; i < proof_len; i++) {
+        const char *hex = json_object_get_string(
+            json_object_array_get_idx(proof_arr, i));
+        int j;
+        if (!hex || (int)strlen(hex) < 64) return 0;
+        for (j = 0; j < 32; j++) {
+            unsigned int b;
+            sscanf(hex + j * 2, "%2x", &b);
+            p[j] = (uint8_t)b;
+        }
+
+        if (sn == 0) return 0;
+        if ((fn & 1) || fn == sn) {
+            mtc_hash_node(p, r, r);
+            while (fn > 0 && !(fn & 1)) {
+                fn >>= 1;
+                sn >>= 1;
+            }
+        }
+        else {
+            mtc_hash_node(r, p, r);
+        }
+        fn >>= 1;
+        sn >>= 1;
+    }
+
+    return (sn == 0 && XMEMCMP(r, expected_root, 32) == 0);
+}
+
+/* Verify Ed25519 cosignature over a subtree.
+ * Returns 1 if valid, 0 if not. */
+static int mtc_verify_cosig(const uint8_t *ca_pub_key, int ca_pub_key_sz,
+                            const char *cosigner_id, const char *log_id,
+                            int start, int end,
+                            const uint8_t subtree_hash[32],
+                            const uint8_t *sig, int sig_sz)
+{
+    ed25519_key key;
+    int ret, verified = 0;
+    /* Build MTCSubtreeSignatureInput */
+    uint8_t sig_input[512];
+    int si_len = 0;
+    uint8_t be8[8];
+
+    XMEMCPY(sig_input + si_len, "mtc-subtree/v1\n\x00", 16);
+    si_len += 16;
+    XMEMCPY(sig_input + si_len, cosigner_id, strlen(cosigner_id));
+    si_len += (int)strlen(cosigner_id);
+    XMEMCPY(sig_input + si_len, log_id, strlen(log_id));
+    si_len += (int)strlen(log_id);
+
+    /* start as 8-byte big-endian */
+    XMEMSET(be8, 0, 8);
+    be8[4] = (uint8_t)((start >> 24) & 0xFF);
+    be8[5] = (uint8_t)((start >> 16) & 0xFF);
+    be8[6] = (uint8_t)((start >> 8) & 0xFF);
+    be8[7] = (uint8_t)(start & 0xFF);
+    XMEMCPY(sig_input + si_len, be8, 8);
+    si_len += 8;
+
+    /* end as 8-byte big-endian */
+    XMEMSET(be8, 0, 8);
+    be8[4] = (uint8_t)((end >> 24) & 0xFF);
+    be8[5] = (uint8_t)((end >> 16) & 0xFF);
+    be8[6] = (uint8_t)((end >> 8) & 0xFF);
+    be8[7] = (uint8_t)(end & 0xFF);
+    XMEMCPY(sig_input + si_len, be8, 8);
+    si_len += 8;
+
+    XMEMCPY(sig_input + si_len, subtree_hash, 32);
+    si_len += 32;
+
+    ret = wc_ed25519_init(&key);
+    if (ret != 0) return 0;
+
+    ret = wc_ed25519_import_public(ca_pub_key, (word32)ca_pub_key_sz, &key);
+    if (ret != 0) {
+        wc_ed25519_free(&key);
+        return 0;
+    }
+
+    ret = wc_ed25519_verify_msg(sig, (word32)sig_sz, sig_input, (word32)si_len,
+                                &verified, &key);
+    wc_ed25519_free(&key);
+
+    return (ret == 0 && verified);
+}
+
+/* Parse a hex string into bytes. Returns byte count. */
+static int mtc_hex_to_bytes(const char *hex, uint8_t *out, int max_out)
+{
+    int i, len = (int)strlen(hex) / 2;
+    if (len > max_out) len = max_out;
+    for (i = 0; i < len; i++) {
+        unsigned int b;
+        sscanf(hex + i * 2, "%2x", &b);
+        out[i] = (uint8_t)b;
+    }
+    return len;
+}
 
 mtc_verify_t *MTC_Verify(mtc_conn_t *conn, int index) {
     char path[256];
-    struct json_object *proof, *cert_json, *val, *sc, *tbs;
+    struct json_object *cert_json, *val, *sc, *tbs;
     mtc_verify_t *result;
-
-    XSNPRINTF(path, sizeof(path), "/log/proof/%d", index);
-    proof = mtc_http_get(conn, path);
 
     result = (mtc_verify_t*)calloc(1, sizeof(*result));
     result->index = index;
     result->landmark_valid = -1;
 
-    if (!proof) {
-        result->error = strdup("failed to fetch proof");
+    /* Fetch the full certificate (includes proof + cosignatures) */
+    XSNPRINTF(path, sizeof(path), "/certificate/%d", index);
+    cert_json = mtc_http_get(conn, path);
+    if (!cert_json) {
+        result->error = strdup("failed to fetch certificate");
         return result;
     }
 
-    if (json_object_object_get_ex(proof, "valid", &val))
-        result->inclusion_proof = json_object_get_boolean(val);
-
-    printf("[MTC_Verify] proof response: %s\n",
-        json_object_to_json_string_ext(proof, JSON_C_TO_STRING_PRETTY));
-
-    /* Fetch certificate for subject and cosignature check */
-    XSNPRINTF(path, sizeof(path), "/certificate/%d", index);
-    cert_json = mtc_http_get(conn, path);
-    if (cert_json) {
-        printf("[MTC_Verify] cert response keys:");
-        json_object_object_foreach(cert_json, ckey, cval) {
-            printf(" %s", ckey);
-            (void)cval;
-        }
-        printf("\n");
-
-        if (json_object_object_get_ex(cert_json, "standalone_certificate", &sc)) {
-            printf("[MTC_Verify] has standalone_certificate\n");
-            if (json_object_object_get_ex(sc, "tbs_entry", &tbs)) {
-                if (json_object_object_get_ex(tbs, "subject", &val))
-                    result->subject = strdup(json_object_get_string(val));
-                /* Check expiry */
-                {
-                    double now, nb = 0, na = 0;
-                    struct timespec ts;
-                    clock_gettime(CLOCK_REALTIME, &ts);
-                    now = (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
-                    if (json_object_object_get_ex(tbs, "not_before", &val))
-                        nb = json_object_get_double(val);
-                    if (json_object_object_get_ex(tbs, "not_after", &val))
-                        na = json_object_get_double(val);
-                    printf("[MTC_Verify] not_before=%.3f not_after=%.3f now=%.3f\n",
-                           nb, na, now);
-                    result->not_expired =
-                        ((nb - 1.0) <= now && now <= (na + 1.0));
-                    printf("[MTC_Verify] not_expired=%d\n", result->not_expired);
-                }
-            }
-            else {
-                printf("[MTC_Verify] no tbs_entry in standalone_certificate\n");
-            }
-            /* Cosignature presence check */
-            {
-                struct json_object *cosigs;
-                if (json_object_object_get_ex(sc, "cosignatures", &cosigs)) {
-                    printf("[MTC_Verify] cosignatures count: %zu\n",
-                           json_object_array_length(cosigs));
-                    result->cosignature_valid =
-                        (json_object_array_length(cosigs) > 0);
-                }
-                else {
-                    printf("[MTC_Verify] no cosignatures field\n");
-                }
-            }
-        }
-        else {
-            printf("[MTC_Verify] no standalone_certificate in response\n");
-        }
+    if (!json_object_object_get_ex(cert_json, "standalone_certificate", &sc)) {
+        result->error = strdup("no standalone_certificate in response");
         json_object_put(cert_json);
+        return result;
     }
-    else {
-        printf("[MTC_Verify] failed to fetch certificate\n");
+
+    if (!json_object_object_get_ex(sc, "tbs_entry", &tbs)) {
+        result->error = strdup("no tbs_entry in standalone_certificate");
+        json_object_put(cert_json);
+        return result;
+    }
+
+    /* Extract subject */
+    if (json_object_object_get_ex(tbs, "subject", &val))
+        result->subject = strdup(json_object_get_string(val));
+
+    /* 1. Reconstruct entry hash from TBS data */
+    {
+        struct json_object *ext_obj = NULL;
+        const char *tbs_str;
+        struct json_object *tbs_rebuild = json_object_new_object();
+        uint8_t entry_hash[32];
+
+        json_object_object_add(tbs_rebuild, "extensions",
+            json_object_object_get_ex(tbs, "extensions", &ext_obj) ?
+                json_object_get(ext_obj) : json_object_new_object());
+        if (json_object_object_get_ex(tbs, "not_after", &val))
+            json_object_object_add(tbs_rebuild, "not_after",
+                json_object_get(val));
+        if (json_object_object_get_ex(tbs, "not_before", &val))
+            json_object_object_add(tbs_rebuild, "not_before",
+                json_object_get(val));
+        if (json_object_object_get_ex(tbs, "subject_public_key_algorithm", &val))
+            json_object_object_add(tbs_rebuild, "spk_algorithm",
+                json_object_get(val));
+        if (json_object_object_get_ex(tbs, "subject_public_key_hash", &val))
+            json_object_object_add(tbs_rebuild, "spk_hash",
+                json_object_get(val));
+        if (json_object_object_get_ex(tbs, "subject", &val))
+            json_object_object_add(tbs_rebuild, "subject",
+                json_object_get(val));
+
+        tbs_str = json_object_to_json_string_ext(tbs_rebuild,
+            JSON_C_TO_STRING_PLAIN);
+
+        /* entry_data = 0x01 || tbs_serialized */
+        {
+            int tbs_len = (int)strlen(tbs_str);
+            uint8_t *entry_data = (uint8_t*)malloc((size_t)(1 + tbs_len));
+            entry_data[0] = 0x01;
+            XMEMCPY(entry_data + 1, tbs_str, (size_t)tbs_len);
+            mtc_hash_leaf(entry_data, 1 + tbs_len, entry_hash);
+            free(entry_data);
+        }
+        json_object_put(tbs_rebuild);
+
+        /* 2. Verify inclusion proof */
+        {
+            struct json_object *proof_arr, *root_val;
+            int sub_start = 0, sub_end = 0;
+            uint8_t expected_root[32];
+
+            if (json_object_object_get_ex(sc, "inclusion_proof", &proof_arr) &&
+                json_object_object_get_ex(sc, "subtree_hash", &root_val) &&
+                json_object_object_get_ex(sc, "subtree_start", &val)) {
+                sub_start = json_object_get_int(val);
+                if (json_object_object_get_ex(sc, "subtree_end", &val))
+                    sub_end = json_object_get_int(val);
+
+                mtc_hex_to_bytes(json_object_get_string(root_val),
+                             expected_root, 32);
+
+                result->inclusion_proof = mtc_verify_inclusion(
+                    entry_hash, index, sub_start, sub_end,
+                    proof_arr, expected_root);
+            }
+        }
+
+        /* 3. Verify cosignature(s) — fetch CA public key from server */
+        {
+            struct json_object *cosigs, *ca_info;
+            if (json_object_object_get_ex(sc, "cosignatures", &cosigs) &&
+                json_object_array_length(cosigs) > 0) {
+
+                ca_info = mtc_http_get(conn, "/ca/public-key");
+                if (ca_info) {
+                    struct json_object *pk_val;
+                    if (json_object_object_get_ex(ca_info,
+                            "public_key_raw_hex", &pk_val)) {
+                        uint8_t ca_pub[32];
+                        int ca_pub_sz = mtc_hex_to_bytes(
+                            json_object_get_string(pk_val), ca_pub, 32);
+
+                        /* Verify each cosignature */
+                        int all_valid = 1;
+                        int ci;
+                        for (ci = 0; ci < (int)json_object_array_length(cosigs);
+                             ci++) {
+                            struct json_object *cosig =
+                                json_object_array_get_idx(cosigs, ci);
+                            struct json_object *cv;
+                            const char *cid = "", *lid = "";
+                            int cs = 0, ce = 0;
+                            uint8_t sub_hash[32], sig_bytes[64];
+                            int sig_len;
+
+                            if (json_object_object_get_ex(cosig,
+                                    "cosigner_id", &cv))
+                                cid = json_object_get_string(cv);
+                            if (json_object_object_get_ex(cosig, "log_id", &cv))
+                                lid = json_object_get_string(cv);
+                            if (json_object_object_get_ex(cosig, "start", &cv))
+                                cs = json_object_get_int(cv);
+                            if (json_object_object_get_ex(cosig, "end", &cv))
+                                ce = json_object_get_int(cv);
+                            if (json_object_object_get_ex(cosig,
+                                    "subtree_hash", &cv))
+                                mtc_hex_to_bytes(json_object_get_string(cv),
+                                             sub_hash, 32);
+                            if (json_object_object_get_ex(cosig,
+                                    "signature", &cv))
+                                sig_len = mtc_hex_to_bytes(
+                                    json_object_get_string(cv), sig_bytes, 64);
+                            else
+                                sig_len = 0;
+
+                            if (!mtc_verify_cosig(ca_pub, ca_pub_sz, cid, lid,
+                                    cs, ce, sub_hash, sig_bytes, sig_len))
+                                all_valid = 0;
+                        }
+                        result->cosignature_valid = all_valid;
+                    }
+                    json_object_put(ca_info);
+                }
+            }
+        }
+    }
+
+    /* 4. Check expiry */
+    {
+        double now, nb = 0, na = 0;
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        now = (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+        if (json_object_object_get_ex(tbs, "not_before", &val))
+            nb = json_object_get_double(val);
+        if (json_object_object_get_ex(tbs, "not_after", &val))
+            na = json_object_get_double(val);
+        result->not_expired = ((nb - 1.0) <= now && now <= (na + 1.0));
     }
 
     result->valid = result->inclusion_proof && result->cosignature_valid &&
                     result->not_expired;
 
-    json_object_put(proof);
+    json_object_put(cert_json);
     return result;
 }
 

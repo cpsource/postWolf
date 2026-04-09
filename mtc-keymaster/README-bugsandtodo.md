@@ -2,7 +2,7 @@
 
 ## TODO
 
-### 1. Client-side Merkle proof and cosignature verification
+### 1. Client-side Merkle proof and cosignature verification — DONE
 
 **Priority:** High — required before opening to third parties
 
