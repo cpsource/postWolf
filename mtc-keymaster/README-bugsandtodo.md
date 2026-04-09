@@ -276,7 +276,7 @@ POST /certificate/request   (by leaf user)
 - `tools/python/main.py` — two-phase enrollment flow
 - `tools/python/mtc_client.py` — `request_enrollment_nonce()` method
 
-### 5. AbuseIPDB gate on CA and leaf enrollment
+### 5. AbuseIPDB gate on CA and leaf enrollment — DONE
 
 **Priority:** High — blocks abusive IPs before they can enroll
 

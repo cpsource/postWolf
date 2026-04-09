@@ -34,6 +34,7 @@
 typedef struct {
     slc_conn_t *tls;   /* non-NULL when using TLS */
     int         fd;    /* raw fd (used when tls == NULL, i.e., plain mode) */
+    char        ip_str[64];  /* client IP for logging and abuse checks */
 } client_io;
 
 static int cio_read(client_io *io, void *buf, int sz)
@@ -427,6 +428,17 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
     (void)body_len;
     int validity_days;
     struct json_object *extensions = NULL;
+
+    /* Enrollment-level AbuseIPDB gate (stricter than general access) */
+    if (io->ip_str[0] != '\0') {
+        int score = mtc_checkendpoint(io->ip_str);
+        if (score >= ABUSEIPDB_ENROLL_THRESHOLD) {
+            printf("[http] enrollment rejected for %s (abuse score %d >= %d)\n",
+                   io->ip_str, score, ABUSEIPDB_ENROLL_THRESHOLD);
+            http_send_error(io, 403, "enrollment denied");
+            return;
+        }
+    }
 
     /* Parse request */
     req = json_tokener_parse(body);
@@ -876,6 +888,17 @@ static void handle_revoke(client_io *io, MtcStore *store,
     int cert_index;
     const char *reason = NULL;
 
+    /* Enrollment-level AbuseIPDB gate (revocation is privileged) */
+    if (io->ip_str[0] != '\0') {
+        int score = mtc_checkendpoint(io->ip_str);
+        if (score >= ABUSEIPDB_ENROLL_THRESHOLD) {
+            printf("[http] revoke rejected for %s (abuse score %d >= %d)\n",
+                   io->ip_str, score, ABUSEIPDB_ENROLL_THRESHOLD);
+            http_send_error(io, 403, "revocation denied");
+            return;
+        }
+    }
+
     (void)body_len;
     req = json_tokener_parse(body);
     if (!req) {
@@ -1162,19 +1185,19 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
             }
         }
 
-        /* Check client IP against AbuseIPDB */
+        /* Get client IP and check against AbuseIPDB */
+        cio.ip_str[0] = '\0';
         {
             struct sockaddr_in peer;
             socklen_t peer_len = sizeof(peer);
             if (getpeername(cio.fd, (struct sockaddr *)&peer, &peer_len) == 0) {
-                char ip_str[INET6_ADDRSTRLEN];
-                inet_ntop(AF_INET, &peer.sin_addr, ip_str, sizeof(ip_str));
+                inet_ntop(AF_INET, &peer.sin_addr, cio.ip_str,
+                          sizeof(cio.ip_str));
 
-                int abuse_score = mtc_checkendpoint(ip_str);
+                int abuse_score = mtc_checkendpoint(cio.ip_str);
                 if (abuse_score >= mtc_get_abuse_threshold()) {
                     printf("[http] rejected %s (abuse score %d)\n",
-                           ip_str, abuse_score);
-                    /* Send error on the raw cio before closing */
+                           cio.ip_str, abuse_score);
                     http_send_error(&cio, 403, "Forbidden");
                     cio_close(&cio);
                     continue;

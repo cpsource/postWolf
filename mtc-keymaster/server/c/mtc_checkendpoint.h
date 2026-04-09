@@ -6,6 +6,11 @@
 /* Cached AbuseIPDB records older than this are refreshed. */
 #define ABUSEIPDB_CACHE_TTL_DAYS  5
 
+/* Stricter threshold for enrollment endpoints (CA and leaf).
+ * General access uses mtc_get_abuse_threshold() (default 75).
+ * Enrollment is a privileged operation — reject at 25%. */
+#define ABUSEIPDB_ENROLL_THRESHOLD  25
+
 /* Initialize AbuseIPDB module. Reads API key and optionally connects to DB.
  * Returns 0 on success, -1 on failure, -2 if no API key found. */
 int mtc_init(void);
