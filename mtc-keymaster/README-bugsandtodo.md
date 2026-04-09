@@ -147,7 +147,136 @@ server-side: the server verifies the nonce against its own stored state
 - `mtc-keymaster/tools/python/create_leaf_cert.py` — leaf creation tool
 - `mtc-keymaster/tools/python/main.py` — `enroll` command
 
-### 4. AbuseIPDB gate on CA and leaf enrollment
+### 4. Two-step enrollment protocol with registration authority
+
+**Priority:** High — required before public enrollment
+
+The CA should not accept arbitrary leaf enrollment attempts directly.
+Instead, it should only accept enrollments that carry a CA-issued, fresh,
+unpredictable authorization nonce tied to a prior approval decision. This
+is similar in spirit to how ACME (RFC 8555) separates account actions,
+nonce-based anti-replay, and authorization before issuance.
+
+**Protocol:**
+
+1. An authorized domain admin or CA operator requests approval for a
+   prospective leaf
+2. CA generates a 256-bit CSPRNG nonce and stores a pending record
+3. Leaf user later submits CSR + nonce
+4. CA verifies nonce exists, is unused, unexpired, and matches the stored
+   domain and key binding
+5. CA converts request from pending to issued and burns the nonce
+
+This gives three protections at once: **anti-spam**, **anti-replay**, and
+**key binding**. Replay nonces are a standard pattern in certificate
+automation (ACME `badNonce`).
+
+**Server-side state per nonce:**
+
+| Field | Purpose |
+|-------|---------|
+| `nonce` | Random opaque 256-bit value (indexes server-side state) |
+| `domain` | Domain or subject/SAN scope |
+| `key_fingerprint` | Expected SPKI hash or CSR fingerprint |
+| `issuance_profile` | Policy/profile for this certificate |
+| `requester_id` | Account or operator identity |
+| `created_at` | When the nonce was issued |
+| `expires_at` | Short-lived: minutes or hours, not days |
+| `status` | pending / consumed / expired / revoked |
+
+**Who may obtain a nonce (core policy question):**
+
+- A logged-in domain administrator account
+- An authenticated API client
+- A prior domain-control check (DNS-based authorization)
+- Manual CA-side approval
+
+Without this gate, attackers can flood with nonce requests even if they
+cannot complete issuance.
+
+**Binding — the strongest simple rule:**
+
+> A nonce should authorize exactly one certificate request, for one
+> bounded subject/profile, for one key, within one short validity window.
+
+At minimum bind to: one domain (or domain set), one leaf public key
+fingerprint or CSR, one issuance profile, one expiration window. Otherwise
+a valid nonce could be reused for a different key or a broader certificate
+than intended.
+
+**Expiry:**
+
+Keep nonces short-lived (minutes, not days). The authoritative expiry is
+enforced by the CA's own clock and database, not by trusting client input
+or untrusted DNS data. Short validity sharply reduces replay and DoS
+windows.
+
+**Single-use:**
+
+Once a nonce succeeds, mark it consumed immediately. If a request fails
+halfway through, burn the nonce — burning on first serious use is safer.
+
+**Proof of possession:**
+
+The nonce authorizes the enrollment attempt, but does not replace proof of
+possession. The leaf user must still prove they hold the private key
+corresponding to the CSR public key. A CSR signature is the standard
+proof-of-possession mechanism (RFC 7030 EST, ACME).
+
+**Rate limiting:**
+
+The nonce gate helps, but also rate-limit:
+- Nonce issuance requests
+- Registration attempts
+- Failed validations
+- Per-domain and per-account activity
+
+This prevents shifting the flood from "leaf issuance" to "nonce request."
+
+**Audit trail:**
+
+Log: who requested the nonce, for which domain, from where, when it was
+consumed, what key fingerprint it authorized, and whether issuance
+succeeded. This matters for incident response.
+
+**Public vs private PKI:**
+
+- **Private PKI / own ecosystem** (our case): this nonce-gated registration
+  model is directly workable
+- **Public Web PKI CA**: would need to fit within CA/Browser Forum Baseline
+  Requirements for domain control validation (CABF BR)
+
+**Compact protocol sketch:**
+
+```
+POST /nonce-request   (by authorized admin)
+  → CA returns random nonce, stores pending authorization
+
+POST /certificate/request   (by leaf user)
+  → CSR + nonce
+  → CA checks: nonce validity, binding, expiry, proof-of-possession, policy
+  → CA issues cert, marks nonce consumed
+```
+
+**Two biggest mistakes to avoid:**
+1. Making the nonce predictable
+2. Letting the nonce authorize "any key for this domain" instead of one
+   exact key or CSR
+
+**References:**
+- RFC 8555 — ACME (nonce-based anti-replay, authorization before issuance)
+- RFC 7030 — EST (proof-of-possession via CSR signature)
+- CA/Browser Forum Baseline Requirements (public PKI validation rules)
+
+**Files:**
+- `server/c/mtc_http.c` — new `/nonce-request` endpoint, modified
+  `/certificate/request` to require nonce
+- `server/c/mtc_store.c` — nonce CRUD operations
+- `server/c/mtc_db.c` — `mtc_enrollment_nonces` table (Neon)
+- `tools/python/main.py` — two-phase enrollment flow
+- `tools/python/mtc_client.py` — `request_enrollment_nonce()` method
+
+### 5. AbuseIPDB gate on CA and leaf enrollment
 
 **Priority:** High — blocks abusive IPs before they can enroll
 
@@ -176,7 +305,7 @@ AbuseIPDB listing or contact the CA operator.
 - `mtc-keymaster/server/c/mtc_checkendpoint.c` — ensure check function
   accepts a threshold parameter
 
-### 5. AbuseIPDB cache expiry — refresh stale records after 5 days
+### 6. AbuseIPDB cache expiry — refresh stale records after 5 days
 
 **Priority:** Medium — improves accuracy of IP reputation checks
 
@@ -220,7 +349,7 @@ so it can be tuned without code changes.
 - `mtc-keymaster/server/c/mtc_checkendpoint.h` — add TTL constant
 - `mtc-keymaster/server/c/mtc_db.c` — if the cache table schema is managed here
 
-### 6. Server-verified FIPS source checksums via MTC transparency log
+### 7. Server-verified FIPS source checksums via MTC transparency log
 
 **Priority:** High — addresses a fundamental weakness in FIPS source integrity
 
@@ -281,7 +410,7 @@ and cosignature — no server contact needed.
 - `debian/rules` — call submit script in FIPS build path
 - `Makefile.am` — add new targets
 
-### 7. Compiler integrity — what if gcc has been corrupted?
+### 8. Compiler integrity — what if gcc has been corrupted?
 
 **Priority:** Medium — defense-in-depth for the FIPS build pipeline
 
