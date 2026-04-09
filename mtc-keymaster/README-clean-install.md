@@ -173,67 +173,77 @@ python3 main.py --server https://localhost:8444 bootstrap
 
 The CA public key is saved to `~/.trust_store.json`.
 
-## 10. Register a CA Certificate (two-phase nonce enrollment)
+## 10. Register a CA Certificate (DNS TXT validation)
 
-If you have an intermediate CA certificate that needs to be registered
-in the MTC log, the server requires a two-phase enrollment with a
-server-issued nonce. This proves domain ownership via DNS.
+CA enrollment proves domain ownership via a DNS TXT record. No nonce
+is needed — the DNS record is the authorization.
 
-**Phase 1 — Request a nonce and create the DNS TXT record:**
+**Step 1 — Generate the DNS TXT record:**
+
+```bash
+python3 ca_dns_txt.py ~/path/to/ca-cert.pem
+```
+
+This prints the exact TXT record to add to your DNS zone:
+```
+_mtc-ca.factsorlie.com.  IN TXT  "v=mtc-ca2; fp=sha256:a1b2c3d4...; n=...; exp=..."
+```
+
+**Step 2 — Add the record to DNS**, then enroll:
 
 ```bash
 python3 main.py --server https://localhost:8444 enroll-ca ~/path/to/ca-cert.pem
 ```
 
-The tool will:
-1. Parse the CA certificate and compute the SPKI fingerprint
-2. Request a 256-bit nonce from the server (`POST /enrollment/nonce`)
-3. Print the exact DNS TXT record to create:
+The server queries DNS for `_mtc-ca.<domain>` to verify domain ownership,
+then registers the CA in the Merkle tree.
 
-```
-Phase 1: Requesting enrollment nonce for 'factsorlie.com'...
-  Nonce:   a1b2c3d4...  (64 hex chars)
-  Expires: 1782760800    (15 minutes from now)
-
-  Add this DNS TXT record:
-    _mtc-ca.factsorlie.com.  IN TXT  "v=mtc-ca2; fp=sha256:...; n=a1b2c3d4...; exp=1782760800"
-
-  Press Enter after adding the DNS TXT record...
-```
-
-**Phase 2 — Add the DNS record, then press Enter:**
-
-Add the TXT record to your DNS zone (Cloudflare, Route53, etc.), wait
-a few seconds for propagation, then press Enter. The tool completes
-the enrollment — the server verifies the nonce against its stored state,
-queries DNS to confirm domain control, issues the certificate, and
-burns the nonce (single-use).
-
-**Security properties of the nonce:**
-- 256-bit CSPRNG (unpredictable)
-- Server-side state is the authority (not the DNS record)
-- Single-use — consumed on success, never accepted again
-- 15-minute TTL — limits the attack window
-- Bound to domain + public key fingerprint
-
-**Root CAs** skip DNS validation (no nonce needed):
-
-```bash
-# Root CAs are auto-detected (pathlen > 0) and bypass nonce requirement
-python3 main.py --server https://localhost:8444 enroll-ca ~/path/to/root-ca.pem
-```
+**Root CAs** skip DNS validation (auto-detected by pathlen > 0).
 
 ## 11. Create ML-DSA-87 Leaf Key and Enroll
 
-Leaf enrollment does not require a nonce — only CA enrollment does.
+Leaf enrollment requires a **nonce from the CA operator**. This is the
+CA's authorization — the CA decides which leaf keys are allowed to enroll
+for its domain.
+
+**Step 1 — Generate the leaf key pair:**
 
 ```bash
-# Generate ML-DSA-87 leaf key pair
 python3 create_leaf_cert.py --algorithm ML-DSA-87 factsorlie.com
-
-# Enroll with the CA server
-python3 main.py --server https://localhost:8444 enroll factsorlie.com
 ```
+
+**Step 2 — CA operator issues a nonce** for the leaf's public key:
+
+```bash
+# Run by the CA operator (not the leaf user)
+python3 issue_leaf_nonce.py --server https://localhost:8444 \
+    factsorlie.com --key-file ~/.TPM/factsorlie.com/public_key.pem
+```
+
+Output:
+```
+Leaf enrollment nonce issued:
+  Domain:    factsorlie.com
+  Nonce:     a1b2c3d4e5f6...  (64 hex chars)
+  Expires:   1782760800       (15 minutes)
+  CA index:  3
+
+Send this nonce to the leaf user. They enroll with:
+  python3 main.py --server https://localhost:8444 enroll factsorlie.com --nonce a1b2c3d4e5f6...
+```
+
+The server verifies a registered CA exists for this domain before
+issuing the nonce.
+
+**Step 3 — Leaf user enrolls with the nonce:**
+
+```bash
+python3 main.py --server https://localhost:8444 enroll factsorlie.com \
+    --nonce a1b2c3d4e5f6...
+```
+
+The server validates the nonce (single-use, 15-minute TTL, bound to
+domain + key fingerprint), then issues the certificate.
 
 Keys and certificate are stored in `~/.TPM/factsorlie.com/`:
 ```
@@ -243,6 +253,11 @@ Keys and certificate are stored in `~/.TPM/factsorlie.com/`:
     certificate.json      # MTC cert with Merkle proof + cosignature
     index                 # certificate log index number
 ```
+
+**Authorization chain:**
+1. CA proves domain ownership → DNS TXT record
+2. CA authorizes leaf → issues nonce (out-of-band)
+3. Leaf proves authorization → presents nonce at enrollment
 
 ## 12. Verify Enrollment
 
@@ -338,9 +353,10 @@ tables. The server will generate a fresh CA key on next startup.
 | `python3 create_server_cert.py <domain>` | Generate ML-DSA-87 server TLS cert |
 | `./mtc_server --port 8444 ...` | Start CA server |
 | `python3 main.py bootstrap` | Trust the CA (one-time) |
-| `python3 main.py enroll-ca <cert.pem>` | Register CA cert (two-phase nonce) |
+| `python3 main.py enroll-ca <cert.pem>` | Register CA cert (DNS TXT validation) |
 | `python3 create_leaf_cert.py --algorithm ML-DSA-87 <domain>` | Generate leaf key |
-| `python3 main.py enroll <domain>` | Enroll leaf with CA |
+| `python3 issue_leaf_nonce.py --server <url> <domain> --key-file <pub.pem>` | CA operator: issue leaf nonce |
+| `python3 main.py enroll <domain> --nonce <nonce>` | Enroll leaf with CA-issued nonce |
 | `python3 main.py verify <index>` | Verify a certificate |
 | `python3 renew.py --dry-run` | Preview renewals |
 | `bash clearout.sh` | Wipe all state |
