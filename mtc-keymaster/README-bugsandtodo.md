@@ -66,9 +66,12 @@ extensions so the server can match the domain and confirm it is not a CA.
 - `mtc-keymaster/server/c/mtc_store.c` — needs a lookup by subject function
 - `mtc-keymaster/server/python/server.py` — Python server equivalent
 
-### 3. Enrollment authorization — anyone can enroll a leaf cert
+### 3. Enrollment authorization — anyone can enroll a leaf cert — DONE
 
 **Priority:** High — open enrollment is a security gap
+
+**Resolution:** Implemented in item #4 — two-step enrollment protocol with
+server-issued nonces, DNS TXT validation, single-use 15-minute TTL.
 
 Currently, anyone can create a leaf cert (`create_leaf_cert.py`), send it to
 the server, and get it enrolled without any proof of domain ownership. The
