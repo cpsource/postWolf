@@ -324,7 +324,7 @@ wc_egs:
 	$(MAKE) wolfcrypt/test/testwolfcrypt; \
 	$(MAKE) wolfcrypt/benchmark/benchmark;
 
-all-local:
+all-local: $(lib_LTLIBRARIES)
 	@if test -f socket-level-wrapper/Makefile; then \
 	    echo "  Building socket-level-wrapper..."; \
 	    $(MAKE) -C socket-level-wrapper; \
