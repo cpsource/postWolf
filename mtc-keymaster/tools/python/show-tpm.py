@@ -254,6 +254,7 @@ def main():
         "  show-tpm.py -v           Verbose: show files, permissions, log info\n"
         "  show-tpm.py --verify     Verify entries against the MTC CA server\n"
         "  show-tpm.py --verify -s https://host:8444  Use a different server\n"
+        "  show-tpm.py --cnt 3      Show only the first 3 entries\n"
         "  show-tpm.py -d /tmp/TPM  Use alternate TPM directory\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -264,6 +265,10 @@ def main():
     parser.add_argument(
         "-d", "--dir", type=Path, default=DEFAULT_TPM_DIR,
         help=f"path to TPM directory (default: {DEFAULT_TPM_DIR})",
+    )
+    parser.add_argument(
+        "--cnt", type=int, default=0, metavar="N",
+        help="only show the first N entries",
     )
     parser.add_argument(
         "--json", action="store_true", dest="json_output",
@@ -292,6 +297,9 @@ def main():
     if not entries:
         print(f"No entries found in {tpm_dir}")
         sys.exit(0)
+
+    if args.cnt > 0:
+        entries = entries[:args.cnt]
 
     if args.json_output:
         result = []
