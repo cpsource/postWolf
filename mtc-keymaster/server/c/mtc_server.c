@@ -42,11 +42,33 @@
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
 
+#include <wolfssl/wolfcrypt/logging.h>
+
 #include "mtc_store.h"
 #include "mtc_http.h"
 #include "mtc_checkendpoint.h"
 #include "mtc_log.h"
 #include "mtc_ratelimit.h"
+
+/******************************************************************************
+ * Function:    wolfssl_log_bridge
+ *
+ * Description:
+ *   Callback for wolfSSL_SetLoggingCb().  Maps wolfSSL log levels to MTC
+ *   log levels and forwards messages into the MTC logging subsystem.
+ ******************************************************************************/
+static void wolfssl_log_bridge(const int logLevel, const char *const logMessage)
+{
+    int mtc_level;
+    switch (logLevel) {
+        case ERROR_LOG: mtc_level = MTC_LOG_ERROR; break;
+        case INFO_LOG:  mtc_level = MTC_LOG_DEBUG; break;
+        case ENTER_LOG: mtc_level = MTC_LOG_TRACE; break;
+        case LEAVE_LOG: mtc_level = MTC_LOG_TRACE; break;
+        default:        mtc_level = MTC_LOG_TRACE; break;
+    }
+    mtc_log(mtc_level, "[wolfSSL] %s", logMessage);
+}
 
 /******************************************************************************
  * Function:    usage
@@ -74,7 +96,7 @@ static void usage(const char *prog)
     printf("  --ech-name NAME  ECH public name (e.g., factsorlie.com)\n");
     printf("  --log-level N    Log level: 0=error 1=warn 2=info 3=debug 4=trace (default: 2)\n");
     printf("  --log-file PATH  Log file (default: /var/log/mtc/mtc_server.log)\n");
-    printf("  -h               Show this help\n");
+    printf("  -h, --help       Show this help\n");
 }
 
 /******************************************************************************
@@ -153,7 +175,8 @@ int main(int argc, char *argv[])
             log_level = atoi(argv[++i]);
         else if (strcmp(argv[i], "--log-file") == 0 && i + 1 < argc)
             log_file = argv[++i];
-        else if (strcmp(argv[i], "-h") == 0) {
+        else if (strcmp(argv[i], "-h") == 0 ||
+                 strcmp(argv[i], "--help") == 0) {
             usage(argv[0]); return 0;
         }
     }
@@ -163,6 +186,11 @@ int main(int argc, char *argv[])
 
     /* 2. Initialize wolfSSL library */
     wolfSSL_Init();
+
+    /* 2a. Bridge wolfSSL debug output into MTC logging */
+    wolfSSL_SetLoggingCb(wolfssl_log_bridge);
+    if (log_level >= MTC_LOG_DEBUG)
+        wolfSSL_Debugging_ON();
 
     /* 3. Ignore SIGPIPE — closed-connection writes return errors instead
      *    of killing the process */
