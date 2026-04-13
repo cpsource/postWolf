@@ -135,9 +135,18 @@ slc_ctx_t *slc_ctx_new(const slc_cfg_t *cfg)
         }
     }
 
-    /* Enable peer verification */
-    wolfSSL_CTX_set_verify(ctx->wctx,
-        WOLFSSL_VERIFY_PEER | WOLFSSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+    /* Enable peer verification — role-aware:
+     *   - With ca_file: mutual TLS (both sides present and verify certs)
+     *   - Server without ca_file: one-way TLS (server doesn't demand client cert)
+     *   - Client without ca_file: still verify the server's cert */
+    if (cfg->ca_file != NULL) {
+        wolfSSL_CTX_set_verify(ctx->wctx,
+            WOLFSSL_VERIFY_PEER | WOLFSSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+    } else if (cfg->role == SLC_SERVER) {
+        wolfSSL_CTX_set_verify(ctx->wctx, WOLFSSL_VERIFY_NONE, NULL);
+    } else {
+        wolfSSL_CTX_set_verify(ctx->wctx, WOLFSSL_VERIFY_PEER, NULL);
+    }
 
 #ifdef HAVE_ECH
     if (cfg->role == SLC_SERVER && cfg->ech_public_name != NULL) {
