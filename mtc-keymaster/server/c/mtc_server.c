@@ -1,15 +1,38 @@
-/* mtc_server.c — MTC CA/Log Server (C implementation).
+/******************************************************************************
+ * File:        mtc_server.c
+ * Purpose:     MTC CA/Log Server entry point (C implementation).
  *
- * Equivalent to server/python/server.py but using wolfcrypt for crypto,
- * json-c for JSON, and file-based storage instead of PostgreSQL.
+ * Description:
+ *   Main entry point for the MTC (Merkle Tree Certificates) CA/Log server.
+ *   Parses command-line arguments, initialises subsystems (logging, wolfSSL,
+ *   rate limiter, AbuseIPDB, certificate store), and starts the blocking
+ *   HTTP(-over-TLS) server.
  *
- * Build:
- *   make
+ *   Equivalent to server/python/server.py but using wolfCrypt for crypto,
+ *   json-c for JSON, and file-based storage with optional PostgreSQL (Neon)
+ *   persistence.
  *
- * Usage:
- *   ./mtc_server [--host HOST] [--port PORT] [--data-dir DIR]
- *                [--ca-name NAME] [--log-id ID]
- */
+ *   Build:  make
+ *   Usage:  ./mtc_server [options]   (run with -h for full option list)
+ *
+ * Dependencies:
+ *   stdio.h, stdlib.h, string.h, signal.h
+ *   wolfssl/options.h, wolfssl/ssl.h
+ *   mtc_store.h        (certificate store / Merkle tree)
+ *   mtc_http.h         (HTTP server)
+ *   mtc_checkendpoint.h (AbuseIPDB)
+ *   mtc_log.h          (logging)
+ *   mtc_ratelimit.h    (Redis rate limiter)
+ *
+ * Notes:
+ *   - Single-threaded.  The server blocks in mtc_http_serve().
+ *   - SIGPIPE is ignored so that closed-connection writes return errors
+ *     rather than terminating the process.
+ *   - Subsystem init failures (AbuseIPDB, Redis) are non-fatal; only
+ *     mtc_store_init failure is fatal.
+ *
+ * Created:     2026-04-13
+ ******************************************************************************/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +48,15 @@
 #include "mtc_log.h"
 #include "mtc_ratelimit.h"
 
+/******************************************************************************
+ * Function:    usage
+ *
+ * Description:
+ *   Prints the command-line usage/help text to stdout.
+ *
+ * Input Arguments:
+ *   prog  - Program name (argv[0]).
+ ******************************************************************************/
 static void usage(const char *prog)
 {
     printf("MTC CA/Log Server (C)\n\n");
@@ -45,6 +77,34 @@ static void usage(const char *prog)
     printf("  -h               Show this help\n");
 }
 
+/******************************************************************************
+ * Function:    main
+ *
+ * Description:
+ *   Server entry point.  Parses command-line arguments and initialises
+ *   subsystems in the following order:
+ *
+ *     1. Logging (mtc_log_init)
+ *     2. wolfSSL library (wolfSSL_Init)
+ *     3. SIGPIPE suppression
+ *     4. Redis rate limiter (non-fatal)
+ *     5. DB tokenpath (if --tokenpath)
+ *     6. AbuseIPDB module (non-fatal)
+ *     7. Certificate store (fatal on failure)
+ *     8. TLS configuration (optional)
+ *     9. HTTP server (blocks forever)
+ *
+ *   On shutdown (unreachable in normal operation), cleans up the store,
+ *   rate limiter, wolfSSL, and log file.
+ *
+ * Input Arguments:
+ *   argc  - Argument count.
+ *   argv  - Argument vector.
+ *
+ * Returns:
+ *   0  on clean exit.
+ *   1  if the MTC store failed to initialise.
+ ******************************************************************************/
 int main(int argc, char *argv[])
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -65,7 +125,7 @@ int main(int argc, char *argv[])
     mtc_tls_cfg_t tls_cfg;
     int i;
 
-    /* Parse args */
+    /* Parse command-line arguments */
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--host") == 0 && i + 1 < argc)
             host = argv[++i];
@@ -98,22 +158,24 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* Initialize logging */
+    /* 1. Initialize logging */
     mtc_log_init(log_file, log_level);
 
+    /* 2. Initialize wolfSSL library */
     wolfSSL_Init();
 
-    /* Ignore SIGPIPE from closed connections */
+    /* 3. Ignore SIGPIPE — closed-connection writes return errors instead
+     *    of killing the process */
     signal(SIGPIPE, SIG_IGN);
 
-    /* Initialize Redis-backed rate limiter (non-fatal if Redis unavailable) */
+    /* 4. Initialize Redis-backed rate limiter (non-fatal if unavailable) */
     mtc_ratelimit_init("127.0.0.1", 6379);
 
-    /* Set token path for MERKLE_NEON lookup */
+    /* 5. Set token path for MERKLE_NEON DB connection string lookup */
     if (tokenpath)
         mtc_db_set_tokenpath(tokenpath);
 
-    /* Initialize AbuseIPDB module (non-fatal if key missing) */
+    /* 6. Initialize AbuseIPDB module (non-fatal if key missing) */
     {
         int rc = mtc_init();
         if (rc == -2)
@@ -124,22 +186,23 @@ int main(int argc, char *argv[])
             printf("[server] AbuseIPDB module initialized\n");
     }
 
-    /* Initialize store */
+    /* 7. Initialize certificate store — fatal on failure */
     if (mtc_store_init(&store, data_dir, ca_name, log_id) != 0) {
         fprintf(stderr, "Failed to initialize MTC store\n");
         return 1;
     }
 
-    /* Set up TLS config (NULL if no --tls-cert given → plain mode) */
+    /* 8. Set up TLS config (NULL if no --tls-cert → plain HTTP mode) */
     memset(&tls_cfg, 0, sizeof(tls_cfg));
     tls_cfg.cert_file       = tls_cert;
     tls_cfg.key_file        = tls_key;
     tls_cfg.ca_file         = tls_ca;
     tls_cfg.ech_public_name = ech_name;
 
-    /* Run HTTP server (blocks) */
+    /* 9. Run HTTP server (blocks indefinitely) */
     mtc_http_serve(host, port, &store, tls_cert ? &tls_cfg : NULL);
 
+    /* Cleanup (unreachable in normal operation) */
     mtc_store_free(&store);
     mtc_ratelimit_close();
     wolfSSL_Cleanup();

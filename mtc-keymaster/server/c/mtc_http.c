@@ -1,9 +1,50 @@
 #define _GNU_SOURCE  /* for strcasestr */
 
-/* mtc_http.c — Minimal single-threaded HTTP server for MTC CA.
+/******************************************************************************
+ * File:        mtc_http.c
+ * Purpose:     Minimal single-threaded HTTP server for the MTC CA/Log.
  *
- * Handles the REST API endpoints matching the Python server.
- * Uses raw sockets — no external HTTP library needed. */
+ * Description:
+ *   Implements the REST API endpoints matching the Python server.  Uses
+ *   raw sockets with an I/O abstraction layer (client_io) that supports
+ *   both plain TCP and TLS via the slc library.  Request parsing is
+ *   hand-rolled (no external HTTP library).
+ *
+ *   API endpoints:
+ *     GET  /                        — server info
+ *     GET  /log                     — tree state (size, root, landmarks)
+ *     GET  /log/entry/<n>           — single log entry
+ *     GET  /log/proof/<n>           — inclusion proof
+ *     GET  /log/checkpoint          — latest checkpoint
+ *     GET  /log/consistency?old=&new= — consistency proof
+ *     GET  /certificate/<n>         — certificate by index
+ *     GET  /certificate/search?q=   — search by subject
+ *     GET  /trust-anchors           — trust anchor list
+ *     GET  /ca/public-key           — CA Ed25519 public key
+ *     GET  /ech/configs             — ECH config (base64)
+ *     GET  /revoked                 — revocation list
+ *     GET  /revoked/<n>             — revocation check
+ *     POST /enrollment/nonce        — issue enrollment nonce
+ *     POST /certificate/request     — enroll (CA or leaf)
+ *     POST /revoke                  — revoke a certificate
+ *
+ * Dependencies:
+ *   mtc_http.h, mtc_checkendpoint.h, mtc_log.h, mtc_ratelimit.h
+ *   stdio.h, stdlib.h, string.h, unistd.h
+ *   sys/socket.h, arpa/inet.h, netinet/in.h, time.h
+ *   resolv.h, arpa/nameser.h            (DNS TXT lookups)
+ *   wolfssl/wolfcrypt/sha256.h           (fingerprint hashing)
+ *   wolfssl/wolfcrypt/asn.h              (certificate parsing)
+ *   wolfssl/wolfcrypt/coding.h           (Base64 for ECH)
+ *
+ * Notes:
+ *   - Single-threaded, blocking accept loop.  NOT thread-safe.
+ *   - All requests are read into a single HTTP_BUF_SZ buffer.
+ *   - Per-IP AbuseIPDB checks run on every connection.
+ *   - Per-IP rate limiting is applied per endpoint category.
+ *
+ * Created:     2026-04-13
+ ******************************************************************************/
 
 #include "mtc_http.h"
 #include "mtc_checkendpoint.h"
@@ -26,19 +67,45 @@
 #include <wolfssl/wolfcrypt/asn.h>
 #include <wolfssl/wolfcrypt/coding.h>
 
-#define HTTP_BUF_SZ  65536
-#define MAX_PATH_SZ  512
+#define HTTP_BUF_SZ  65536   /**< Maximum HTTP request size (headers + body) */
+#define MAX_PATH_SZ  512     /**< Maximum URL path length                     */
 
 /* ------------------------------------------------------------------ */
 /* I/O abstraction — TLS (slc) or plain socket                         */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Struct:      client_io
+ *
+ * Description:
+ *   Per-connection I/O context.  Wraps either a TLS connection (slc) or a
+ *   plain TCP socket behind a uniform read/write/close interface.  Also
+ *   carries the client's IP string for logging and abuse checks.
+ *
+ *   Lifetime: stack-allocated in the accept loop, valid for the duration
+ *   of a single request.  cio_close() must be called before discard.
+ ******************************************************************************/
 typedef struct {
-    slc_conn_t *tls;   /* non-NULL when using TLS */
-    int         fd;    /* raw fd (used when tls == NULL, i.e., plain mode) */
-    char        ip_str[64];  /* client IP for logging and abuse checks */
+    slc_conn_t *tls;        /**< TLS connection (non-NULL = TLS mode)      */
+    int         fd;         /**< Raw socket fd (used in plain mode, or for
+                                 getpeername when TLS is active)            */
+    char        ip_str[64]; /**< Client IP string for logging/abuse checks */
 } client_io;
 
+/******************************************************************************
+ * Function:    cio_read
+ *
+ * Description:
+ *   Read from the client, dispatching to TLS or plain socket as appropriate.
+ *
+ * Input Arguments:
+ *   io   - Client I/O context.
+ *   buf  - Destination buffer.
+ *   sz   - Maximum bytes to read.
+ *
+ * Returns:
+ *   Number of bytes read (>0), 0 on EOF, or <0 on error.
+ ******************************************************************************/
 static int cio_read(client_io *io, void *buf, int sz)
 {
     if (io->tls)
@@ -46,6 +113,20 @@ static int cio_read(client_io *io, void *buf, int sz)
     return (int)recv(io->fd, buf, (size_t)sz, 0);
 }
 
+/******************************************************************************
+ * Function:    cio_write
+ *
+ * Description:
+ *   Write to the client, dispatching to TLS or plain socket as appropriate.
+ *
+ * Input Arguments:
+ *   io   - Client I/O context.
+ *   buf  - Data to send.
+ *   sz   - Number of bytes to send.
+ *
+ * Returns:
+ *   Number of bytes written (>0), or <0 on error.
+ ******************************************************************************/
 static int cio_write(client_io *io, const void *buf, int sz)
 {
     if (io->tls)
@@ -53,6 +134,17 @@ static int cio_write(client_io *io, const void *buf, int sz)
     return (int)send(io->fd, buf, (size_t)sz, 0);
 }
 
+/******************************************************************************
+ * Function:    cio_close
+ *
+ * Description:
+ *   Close the client connection.  Shuts down TLS if active, otherwise
+ *   closes the raw socket.  Safe to call multiple times.
+ *
+ * Input Arguments:
+ *   io  - Client I/O context.  After return, io->tls is NULL and
+ *         io->fd is -1.
+ ******************************************************************************/
 static void cio_close(client_io *io)
 {
     if (io->tls) {
@@ -68,6 +160,18 @@ static void cio_close(client_io *io)
 /* HTTP response helpers                                               */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    http_send_json
+ *
+ * Description:
+ *   Send an HTTP response with JSON (or raw string) body.  Includes
+ *   security headers (nosniff, DENY framing, no-store cache).
+ *
+ * Input Arguments:
+ *   io        - Client I/O context.
+ *   status    - HTTP status code (200, 201, 400, 403, 404, 409, 413, 429).
+ *   json_str  - Response body string.
+ ******************************************************************************/
 static void http_send_json(client_io *io, int status, const char *json_str)
 {
     char hdr[512];
@@ -92,12 +196,35 @@ static void http_send_json(client_io *io, int status, const char *json_str)
     cio_write(io, json_str, body_len);
 }
 
+/******************************************************************************
+ * Function:    http_send_json_obj
+ *
+ * Description:
+ *   Serialize a json_object to a pretty-printed string and send it as an
+ *   HTTP JSON response.
+ *
+ * Input Arguments:
+ *   io      - Client I/O context.
+ *   status  - HTTP status code.
+ *   obj     - json_object to serialize.  Caller retains ownership.
+ ******************************************************************************/
 static void http_send_json_obj(client_io *io, int status, struct json_object *obj)
 {
     const char *s = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PRETTY);
     http_send_json(io, status, s);
 }
 
+/******************************************************************************
+ * Function:    http_send_error
+ *
+ * Description:
+ *   Send an HTTP error response as {"error": "<msg>"}.
+ *
+ * Input Arguments:
+ *   io      - Client I/O context.
+ *   status  - HTTP status code (4xx/5xx).
+ *   msg     - Human-readable error message.
+ ******************************************************************************/
 static void http_send_error(client_io *io, int status, const char *msg)
 {
     struct json_object *obj = json_object_new_object();
@@ -110,7 +237,21 @@ static void http_send_error(client_io *io, int status, const char *msg)
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-/* Safe integer parse with bounds check. Returns val on success, -1 on error. */
+/******************************************************************************
+ * Function:    safe_atoi
+ *
+ * Description:
+ *   Safe integer parse with bounds check.  Accepts digits terminated by
+ *   NUL, '?', '&', or ' ' (to handle URL path/query string contexts).
+ *
+ * Input Arguments:
+ *   s        - String to parse.  NULL or empty returns -1.
+ *   max_val  - Upper bound (inclusive).
+ *
+ * Returns:
+ *   Parsed integer [0, max_val] on success.
+ *  -1  on NULL/empty input, non-numeric content, or out-of-range value.
+ ******************************************************************************/
 static int safe_atoi(const char *s, int max_val)
 {
     long v;
@@ -124,6 +265,18 @@ static int safe_atoi(const char *s, int max_val)
     return (int)v;
 }
 
+/******************************************************************************
+ * Function:    to_hex
+ *
+ * Description:
+ *   Convert binary data to a lowercase hex string.
+ *
+ * Input Arguments:
+ *   data  - Binary input.
+ *   sz    - Number of bytes in data.
+ *   out   - Caller-owned buffer, must be at least (sz * 2 + 1) bytes.
+ *           NUL-terminated on return.
+ ******************************************************************************/
 static void to_hex(const uint8_t *data, int sz, char *out)
 {
     int i;
@@ -135,6 +288,7 @@ static void to_hex(const uint8_t *data, int sz, char *out)
 /* API handlers                                                        */
 /* ------------------------------------------------------------------ */
 
+/* GET / — server info (version, CA name, log ID, tree size). */
 static void handle_index(client_io *io, MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();
@@ -153,6 +307,7 @@ static void handle_index(client_io *io, MtcStore *store)
     json_object_put(obj);
 }
 
+/* GET /log — full tree state (log_id, size, root hash, landmarks). */
 static void handle_log_state(client_io *io, MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();
@@ -183,6 +338,7 @@ static void handle_log_state(client_io *io, MtcStore *store)
     json_object_put(obj);
 }
 
+/* GET /log/proof/<index> — Merkle inclusion proof for a log entry. */
 static void handle_log_proof(client_io *io, MtcStore *store, int index)
 {
     struct json_object *obj;
@@ -243,6 +399,7 @@ static void handle_log_proof(client_io *io, MtcStore *store, int index)
     free(proof);
 }
 
+/* GET /certificate/<index> — retrieve a stored certificate by log index. */
 static void handle_get_certificate(client_io *io, MtcStore *store, int index)
 {
     if (index < 0 || index >= store->cert_count || !store->certificates[index]) {
@@ -256,15 +413,31 @@ static void handle_get_certificate(client_io *io, MtcStore *store, int index)
 /* DNS TXT validation for CA certificates                              */
 /* ------------------------------------------------------------------ */
 
-/**
- * Query DNS for _mtc-ca.<domain> TXT record and check for a matching
- * fingerprint string: "v=mtc-ca1; fp=sha256:<hex>"
+/******************************************************************************
+ * Function:    validate_ca_dns_txt
  *
- * Returns 1 if a matching record is found, 0 otherwise.
- */
-/* Validate DNS TXT record for CA enrollment.
- * If expected_nonce is non-NULL, require v=mtc-ca2 format with matching nonce.
- * If NULL, accept legacy v=mtc-ca1 (fingerprint-only). */
+ * Description:
+ *   Queries DNS for _mtc-ca.<domain> TXT records and validates against
+ *   the expected fingerprint (and optionally a nonce).
+ *
+ *   Two TXT record formats are supported:
+ *     v=mtc-ca1; fp=sha256:<hex>                   — legacy (fp-only)
+ *     v=mtc-ca2; fp=sha256:<hex>; n=<nonce>        — nonce-bound
+ *
+ *   Field matching is exact (split on ';', trim whitespace) to prevent
+ *   crafted records from bypassing validation.
+ *
+ * Input Arguments:
+ *   domain          - Domain name (e.g. "example.com").  The query is
+ *                     for _mtc-ca.<domain>.
+ *   fp_hex          - Expected SHA-256 fingerprint (64 hex chars).
+ *   expected_nonce  - If non-NULL, require v=mtc-ca2 with matching nonce.
+ *                     If NULL, accept legacy v=mtc-ca1 (fp-only).
+ *
+ * Returns:
+ *   1  if a matching TXT record is found.
+ *   0  if no match, DNS query failed, or parse error.
+ ******************************************************************************/
 static int validate_ca_dns_txt(const char *domain, const char *fp_hex,
                                const char *expected_nonce)
 {
@@ -352,14 +525,29 @@ static int validate_ca_dns_txt(const char *domain, const char *fp_hex,
     return 0;
 }
 
-/**
- * Check if the certificate request includes a CA certificate (PEM) in
- * the extensions. If so, parse it, verify CA:TRUE + pathlen:0, extract
- * the SAN DNS name, compute the public key fingerprint, and validate
- * against the DNS TXT record.
+/******************************************************************************
+ * Function:    validate_ca_cert_if_present
  *
- * Returns: 1 = OK (not a CA, or CA validated), 0 = rejected.
- */
+ * Description:
+ *   If the request extensions contain a ca_certificate_pem, parses the
+ *   X.509 certificate, verifies CA:TRUE in Basic Constraints, extracts
+ *   the SAN DNS name and SPKI SHA-256 fingerprint, and validates domain
+ *   ownership via DNS TXT record.
+ *
+ *   Root CAs (pathlen absent or > 0) skip DNS validation — only
+ *   intermediate CAs (pathlen == 0) require a _mtc-ca.<domain> record.
+ *
+ *   If no ca_certificate_pem is present, the request is not a CA
+ *   enrollment and validation is trivially passed.
+ *
+ * Input Arguments:
+ *   extensions       - Request extensions json_object (may be NULL).
+ *   enrollment_nonce - Nonce for v=mtc-ca2 validation (NULL = legacy).
+ *
+ * Returns:
+ *   1  if not a CA request, or CA validated successfully.
+ *   0  if CA validation failed (rejected).
+ ******************************************************************************/
 static int validate_ca_cert_if_present(struct json_object *extensions,
                                        const char *enrollment_nonce)
 {
@@ -487,16 +675,33 @@ static int validate_ca_cert_if_present(struct json_object *extensions,
     }
 }
 
-/* POST /enrollment/nonce — issue a server-side nonce for enrollment.
+/******************************************************************************
+ * Function:    handle_enrollment_nonce
  *
- * For CA enrollment (type=ca or no type):
- *   Body: {"domain": "...", "public_key_fingerprint": "sha256:..."}
- *   No CA needs to exist — the DNS TXT check validates domain ownership.
+ * Description:
+ *   POST /enrollment/nonce — issue a server-side enrollment nonce.
  *
- * For leaf enrollment (type=leaf):
- *   Body: {"domain": "...", "public_key_fingerprint": "sha256:...", "type": "leaf"}
- *   A registered CA must exist for this domain. The CA operator calls this
- *   endpoint to authorize a specific leaf key. */
+ *   CA enrollment (type=ca or omitted):
+ *     Body: {"domain": "...", "public_key_fingerprint": "sha256:..."}
+ *     No CA needs to exist — DNS TXT validates domain ownership.
+ *
+ *   Leaf enrollment (type=leaf):
+ *     Body: {"domain": "...", "public_key_fingerprint": "sha256:...",
+ *            "type": "leaf"}
+ *     A registered CA must exist for this domain.
+ *
+ *   Returns a JSON response with the nonce, expiration, and (for CA
+ *   nonces) the DNS record the caller must create.
+ *
+ * Input Arguments:
+ *   io        - Client I/O context.
+ *   store     - MTC store (DB connection used for nonce storage).
+ *   body      - HTTP request body (JSON).
+ *   body_len  - Length of body in bytes.
+ *
+ * Side Effects:
+ *   Creates a pending nonce row in mtc_enrollment_nonces.
+ ******************************************************************************/
 static void handle_enrollment_nonce(client_io *io, MtcStore *store,
                                      const char *body, int body_len)
 {
@@ -625,6 +830,31 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
     json_object_put(req);
 }
 
+/******************************************************************************
+ * Function:    handle_certificate_request
+ *
+ * Description:
+ *   POST /certificate/request — enroll a CA or leaf certificate.
+ *
+ *   For CA enrollment: validates via DNS TXT record at _mtc-ca.<domain>.
+ *   For leaf enrollment: requires and atomically consumes a valid nonce.
+ *   Both paths are gated by an enrollment-level AbuseIPDB check
+ *   (ABUSEIPDB_ENROLL_THRESHOLD, stricter than general access).
+ *
+ *   On success: adds a TBS entry to the Merkle tree, generates an
+ *   inclusion proof, cosigns, persists to disk and DB, and returns
+ *   a standalone certificate (HTTP 201).
+ *
+ * Input Arguments:
+ *   io        - Client I/O context.
+ *   store     - MTC store (tree, certs, DB).
+ *   body      - HTTP request body (JSON).
+ *   body_len  - Length of body in bytes.
+ *
+ * Side Effects:
+ *   Appends to the Merkle tree, creates a checkpoint, persists to
+ *   disk and DB, grows the certificate array if needed.
+ ******************************************************************************/
 static void handle_certificate_request(client_io *io, MtcStore *store,
                                         const char *body, int body_len)
 {
@@ -940,6 +1170,7 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
     json_object_put(req);
 }
 
+/* GET /log/entry/<index> — single log entry with type and leaf hash. */
 static void handle_log_entry(client_io *io, MtcStore *store, int index)
 {
     struct json_object *obj;
@@ -985,6 +1216,7 @@ static void handle_log_entry(client_io *io, MtcStore *store, int index)
     json_object_put(obj);
 }
 
+/* GET /log/checkpoint — latest checkpoint (or generates one on the fly). */
 static void handle_checkpoint(client_io *io, MtcStore *store)
 {
     struct json_object *cp;
@@ -1000,6 +1232,7 @@ static void handle_checkpoint(client_io *io, MtcStore *store)
     json_object_put(cp);
 }
 
+/* GET /log/consistency?old=N&new=M — Merkle consistency proof. */
 static void handle_consistency(client_io *io, MtcStore *store, const char *path)
 {
     /* Parse ?old=N&new=M from the query string */
@@ -1063,6 +1296,7 @@ static void handle_consistency(client_io *io, MtcStore *store, const char *path)
     free(proof);
 }
 
+/* GET /certificate/search?q=<subject> — case-insensitive subject search. */
 static void handle_search_certificates(client_io *io, MtcStore *store, const char *path)
 {
     const char *qs, *qval = NULL;
@@ -1111,6 +1345,7 @@ static void handle_search_certificates(client_io *io, MtcStore *store, const cha
     json_object_put(obj);
 }
 
+/* GET /ca/public-key — CA Ed25519 public key in PEM format. */
 static void handle_ca_public_key(client_io *io, MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();
@@ -1135,6 +1370,7 @@ static void handle_ca_public_key(client_io *io, MtcStore *store)
     json_object_put(obj);
 }
 
+/* GET /trust-anchors — list of trust anchors (standalone + landmarks). */
 static void handle_trust_anchors(client_io *io, MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();
@@ -1171,6 +1407,20 @@ static void handle_trust_anchors(client_io *io, MtcStore *store)
 /* Revocation handlers                                                 */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    handle_revoke
+ *
+ * Description:
+ *   POST /revoke — revoke a certificate by log index.
+ *   Gated by enrollment-level AbuseIPDB check (revocation is privileged).
+ *   Body: {"cert_index": N, "reason": "..."}
+ *
+ * Input Arguments:
+ *   io        - Client I/O context.
+ *   store     - MTC store.
+ *   body      - HTTP request body (JSON).
+ *   body_len  - Length of body in bytes.
+ ******************************************************************************/
 static void handle_revoke(client_io *io, MtcStore *store,
                           const char *body, int body_len)
 {
@@ -1225,6 +1475,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
     json_object_put(req);
 }
 
+/* GET /revoked — full revocation list. */
 static void handle_revoked_list(client_io *io, MtcStore *store)
 {
     struct json_object *list = mtc_store_get_revocation_list(store);
@@ -1232,6 +1483,7 @@ static void handle_revoked_list(client_io *io, MtcStore *store)
     json_object_put(list);
 }
 
+/* GET /revoked/<index> — check if a specific certificate is revoked. */
 static void handle_revoked_check(client_io *io, MtcStore *store, int index)
 {
     struct json_object *obj = json_object_new_object();
@@ -1247,9 +1499,9 @@ static void handle_revoked_check(client_io *io, MtcStore *store, int index)
 /* Request parsing and dispatch                                        */
 /* ------------------------------------------------------------------ */
 
-/* ECH config endpoint — serves the server's ECH config as base64 */
-static slc_ctx_t *g_slc_ctx = NULL;  /* set by mtc_http_serve */
+static slc_ctx_t *g_slc_ctx = NULL;  /**< Set by mtc_http_serve for ECH */
 
+/* GET /ech/configs — serve the server's ECH config as base64 JSON. */
 static void handle_ech_configs(client_io *io, MtcStore *store)
 {
     (void)store;
@@ -1281,6 +1533,23 @@ static void handle_ech_configs(client_io *io, MtcStore *store)
     http_send_error(io, 404, "ECH not configured");
 }
 
+/******************************************************************************
+ * Function:    handle_request
+ *
+ * Description:
+ *   Reads a single HTTP request from the client, parses method and path,
+ *   extracts the body (reading additional data if Content-Length indicates
+ *   more), applies rate limiting, and dispatches to the appropriate API
+ *   handler.
+ *
+ * Input Arguments:
+ *   io     - Client I/O context.
+ *   store  - MTC store.
+ *
+ * Notes:
+ *   The entire request (headers + body) must fit in HTTP_BUF_SZ.
+ *   Requests exceeding 1 MB Content-Length are rejected with 413.
+ ******************************************************************************/
 static void handle_request(client_io *io, MtcStore *store)
 {
     char buf[HTTP_BUF_SZ];
@@ -1433,6 +1702,30 @@ static void handle_request(client_io *io, MtcStore *store)
 /* Server main loop                                                    */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    mtc_http_serve
+ *
+ * Description:
+ *   Main server entry point.  Sets up TLS (if configured), binds the
+ *   listen socket, and enters a blocking accept loop.  Each accepted
+ *   connection is handled synchronously: extract client IP, check
+ *   AbuseIPDB score, dispatch request, then close.
+ *
+ * Input Arguments:
+ *   host     - Bind address (NULL = "0.0.0.0").
+ *   port     - TCP port.
+ *   store    - Initialised MTC store.  Must outlive the server.
+ *   tls_cfg  - TLS configuration (NULL = plain HTTP).
+ *
+ * Returns:
+ *    0  on clean exit (currently unreachable — loops forever).
+ *   -1  on fatal startup error (TLS init or listen failure).
+ *
+ * Side Effects:
+ *   - Calls slc_ctx_new() / slc_listen() to bind the socket.
+ *   - Sets g_slc_ctx for the /ech/configs endpoint.
+ *   - Per-connection: calls mtc_checkendpoint() for AbuseIPDB screening.
+ ******************************************************************************/
 int mtc_http_serve(const char *host, int port, MtcStore *store,
                    const mtc_tls_cfg_t *tls_cfg)
 {

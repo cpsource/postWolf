@@ -1,7 +1,36 @@
-/* mtc_store.c — Persistence and CA operations.
+/******************************************************************************
+ * File:        mtc_store.c
+ * Purpose:     Persistence and CA operations for the MTC CA server.
  *
- * Uses PostgreSQL (Neon) when MERKLE_NEON is set, otherwise falls
- * back to file-based JSON storage in data_dir. */
+ * Description:
+ *   Manages all server-side state: the Merkle tree, Ed25519 CA key,
+ *   certificates, checkpoints, landmarks, and revocations.  Supports two
+ *   storage backends:
+ *     - PostgreSQL (Neon) when MERKLE_NEON is available
+ *     - File-based JSON (entries.json, certificates.json, landmarks.json,
+ *       revocations.json) in data_dir as fallback
+ *
+ *   The CA Ed25519 key is loaded from DB, file (ca_key.der), or
+ *   generated fresh on first run.
+ *
+ * Dependencies:
+ *   mtc_store.h, mtc_log.h
+ *   stdio.h, stdlib.h, string.h, time.h
+ *   sys/stat.h              (mkdir, chmod)
+ *   wolfssl/options.h
+ *   wolfssl/wolfcrypt/ed25519.h     (CA key operations)
+ *   wolfssl/wolfcrypt/random.h      (key generation)
+ *   wolfssl/wolfcrypt/asn_public.h  (DER/PEM conversion)
+ *
+ * Notes:
+ *   - NOT thread-safe.  All operations must be serialised.
+ *   - The store owns all json_object refs in certificates/checkpoints.
+ *   - CA private key is stored as DER in ca_key.der (chmod 0600) and
+ *     optionally mirrored to DB as hex (unencrypted — see warning in
+ *     init_ca_key).
+ *
+ * Created:     2026-04-13
+ ******************************************************************************/
 
 #include "mtc_store.h"
 #include "mtc_log.h"
@@ -20,6 +49,16 @@
 /* File helpers                                                        */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    mkdirp
+ *
+ * Description:
+ *   Recursively creates directories for the given path, similar to
+ *   "mkdir -p".  Walks the path string, creating each component.
+ *
+ * Input Arguments:
+ *   path  - Directory path to create (may already exist).
+ ******************************************************************************/
 static void mkdirp(const char *path)
 {
     char tmp[512];
@@ -35,6 +74,21 @@ static void mkdirp(const char *path)
     mkdir(tmp, 0700);
 }
 
+/******************************************************************************
+ * Function:    write_file
+ *
+ * Description:
+ *   Writes raw bytes to a file, overwriting any existing content.
+ *
+ * Input Arguments:
+ *   path  - File path.
+ *   data  - Data to write.
+ *   sz    - Number of bytes to write.
+ *
+ * Returns:
+ *    0  on success.
+ *   -1  if the file could not be opened.
+ ******************************************************************************/
 static int write_file(const char *path, const void *data, int sz)
 {
     FILE *f = fopen(path, "wb");
@@ -44,6 +98,21 @@ static int write_file(const char *path, const void *data, int sz)
     return 0;
 }
 
+/******************************************************************************
+ * Function:    read_file
+ *
+ * Description:
+ *   Reads an entire file into a caller-owned buffer.
+ *
+ * Input Arguments:
+ *   path   - File path.
+ *   buf    - Caller-owned destination buffer.
+ *   maxSz  - Maximum bytes to read (rejects files larger than this).
+ *
+ * Returns:
+ *   Number of bytes read (>= 0) on success.
+ *  -1  if the file could not be opened or exceeds maxSz.
+ ******************************************************************************/
 static int read_file(const char *path, void *buf, int maxSz)
 {
     FILE *f = fopen(path, "rb");
@@ -62,6 +131,26 @@ static int read_file(const char *path, void *buf, int maxSz)
 /* Key management                                                      */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    init_ca_key
+ *
+ * Description:
+ *   Loads or generates the CA Ed25519 signing key.  Sources are tried in
+ *   order:
+ *     1. Database (ca_private_key_hex in mtc_ca_config)
+ *     2. File (data_dir/ca_key.der)
+ *     3. Generate new key, save to file (chmod 0600) and DB
+ *
+ * Input Arguments:
+ *   store  - Store with data_dir and DB connection already set.
+ *
+ * Returns:
+ *   0 on success, non-zero wolfCrypt error code on failure.
+ *
+ * Side Effects:
+ *   Populates store->ca_priv_key, ca_priv_key_sz, ca_pub_key, ca_pub_key_sz.
+ *   May write ca_key.der and/or DB config row.
+ ******************************************************************************/
 static int init_ca_key(MtcStore *store)
 {
     char path[1024];
@@ -159,6 +248,30 @@ static int init_ca_key(MtcStore *store)
 /* Store init/free                                                     */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    mtc_store_init
+ *
+ * Description:
+ *   Initialises the store: creates the data directory, connects to
+ *   PostgreSQL (if available), initialises the Merkle tree, allocates
+ *   certificate/checkpoint arrays, loads or generates the CA key, and
+ *   restores persisted state.  If the tree is empty after loading, a
+ *   null entry (0x00) is inserted at index 0.
+ *
+ * Input Arguments:
+ *   store     - Store to initialise.
+ *   data_dir  - Directory for file-based storage.
+ *   ca_name   - CA display name.
+ *   log_id    - Log identifier string.
+ *
+ * Returns:
+ *    0  on success.
+ *   -1  if the CA key could not be initialised.
+ *
+ * Side Effects:
+ *   Creates data_dir, connects to DB, allocates arrays, may generate
+ *   and persist a new CA key.
+ ******************************************************************************/
 int mtc_store_init(MtcStore *store, const char *data_dir,
                    const char *ca_name, const char *log_id)
 {
@@ -216,6 +329,17 @@ int mtc_store_init(MtcStore *store, const char *data_dir,
     return 0;
 }
 
+/******************************************************************************
+ * Function:    mtc_store_free
+ *
+ * Description:
+ *   Frees all memory owned by the store: the Merkle tree, all certificate
+ *   and checkpoint json_objects, and the top-level arrays.  Does NOT close
+ *   the DB connection.
+ *
+ * Input Arguments:
+ *   store  - Store to free.
+ ******************************************************************************/
 void mtc_store_free(MtcStore *store)
 {
     int i;
@@ -236,6 +360,21 @@ void mtc_store_free(MtcStore *store)
 /* Persistence (JSON files)                                            */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    mtc_store_save
+ *
+ * Description:
+ *   Persists the current store state to JSON files in data_dir:
+ *     entries.json      — hex-encoded tree entries
+ *     certificates.json — issued certificate objects
+ *     landmarks.json    — landmark tree sizes
+ *
+ * Input Arguments:
+ *   store  - Store to save.
+ *
+ * Returns:
+ *   0 always.
+ ******************************************************************************/
 int mtc_store_save(MtcStore *store)
 {
     char path[1024];
@@ -300,6 +439,25 @@ int mtc_store_save(MtcStore *store)
     return 0;
 }
 
+/******************************************************************************
+ * Function:    mtc_store_load
+ *
+ * Description:
+ *   Loads persisted state into the store.  If use_db is set, loads from
+ *   PostgreSQL (entries, landmarks, certificates, revocations).  Otherwise
+ *   loads from JSON files in data_dir (entries.json, certificates.json,
+ *   landmarks.json).
+ *
+ * Input Arguments:
+ *   store  - Store to populate (tree and arrays are appended to).
+ *
+ * Returns:
+ *   0 always (an empty result is not an error).
+ *
+ * Side Effects:
+ *   Appends entries to store->tree, populates certificates, landmarks,
+ *   and revocations arrays.
+ ******************************************************************************/
 int mtc_store_load(MtcStore *store)
 {
     char path[1024], buf[1024 * 1024];
@@ -470,6 +628,25 @@ int mtc_store_load(MtcStore *store)
 /* Operations                                                          */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    mtc_store_add_entry
+ *
+ * Description:
+ *   Appends a serialised entry to the Merkle tree and persists it to DB
+ *   (if connected).  Automatically records a landmark if the new tree
+ *   size is a multiple of MTC_LANDMARK_INTERVAL.
+ *
+ * Input Arguments:
+ *   store    - Target store.
+ *   entry    - Serialised entry bytes (0x01 prefix = TBS, 0x00 = null).
+ *   entrySz  - Size in bytes.
+ *
+ * Returns:
+ *   0-based log index of the new entry.
+ *
+ * Side Effects:
+ *   Appends to tree, may write to DB, may add a landmark.
+ ******************************************************************************/
 int mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz)
 {
     int idx = mtc_tree_append(&store->tree, entry, entrySz);
@@ -506,6 +683,25 @@ int mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz)
     return idx;
 }
 
+/******************************************************************************
+ * Function:    mtc_store_checkpoint
+ *
+ * Description:
+ *   Creates a checkpoint for the current tree state: computes the root
+ *   hash, builds a JSON object with log_id/tree_size/root_hash/timestamp,
+ *   stores it in the checkpoints array, and persists to DB.
+ *
+ * Input Arguments:
+ *   store  - Store.
+ *
+ * Returns:
+ *   New json_object checkpoint.  Caller owns the reference and must
+ *   call json_object_put() when done.  The store also keeps a ref
+ *   in its checkpoints array.
+ *
+ * Side Effects:
+ *   Appends to store->checkpoints (up to 256).  Writes to DB.
+ ******************************************************************************/
 struct json_object *mtc_store_checkpoint(MtcStore *store)
 {
     uint8_t root[MTC_HASH_SIZE];
@@ -540,6 +736,25 @@ struct json_object *mtc_store_checkpoint(MtcStore *store)
     return cp;
 }
 
+/******************************************************************************
+ * Function:    mtc_store_cosign
+ *
+ * Description:
+ *   Cosigns a subtree range [start, end) with the CA's Ed25519 key.
+ *   Builds the signature input per the MTC draft specification:
+ *     "mtc-subtree/v1\n\0" + cosigner_id + log_id + start(8BE) +
+ *     end(8BE) + subtree_hash
+ *
+ * Input Arguments:
+ *   store    - Store (provides CA key and tree).
+ *   start    - Subtree start (inclusive).
+ *   end      - Subtree end (exclusive).
+ *   sig_out  - Caller-owned buffer (>= 64 bytes).
+ *   sig_sz   - Receives the signature size.
+ *
+ * Returns:
+ *   0 on success, non-zero wolfCrypt error code on failure.
+ ******************************************************************************/
 int mtc_store_cosign(MtcStore *store, int start, int end,
                      uint8_t *sig_out, int *sig_sz)
 {
@@ -553,8 +768,9 @@ int mtc_store_cosign(MtcStore *store, int start, int end,
 
     mtc_tree_subtree_hash(&store->tree, start, end, subtree_hash);
 
-    /* Build signature input per MTC draft:
-     * "mtc-subtree/v1\n\0" + cosigner_id + log_id + start(8) + end(8) + hash */
+    /* Build signature input per MTC draft specification:
+     * 16-byte context prefix (includes NUL) + cosigner_id + log_id +
+     * start as 8-byte big-endian + end as 8-byte big-endian + subtree hash */
     memcpy(msg, "mtc-subtree/v1\n\x00", 16);
     msg_sz = 16;
     memcpy(msg + msg_sz, store->cosigner_id, strlen(store->cosigner_id));
@@ -586,6 +802,23 @@ int mtc_store_cosign(MtcStore *store, int start, int end,
     return ret;
 }
 
+/******************************************************************************
+ * Function:    mtc_store_get_public_key_pem
+ *
+ * Description:
+ *   Exports the CA Ed25519 public key as a PEM string by decoding the
+ *   stored private key DER, extracting the public key DER, and
+ *   converting to PEM.
+ *
+ * Input Arguments:
+ *   store  - Store (provides CA key).
+ *   out    - Caller-owned buffer for the PEM string.
+ *   maxSz  - Size of out in bytes.
+ *
+ * Returns:
+ *   Number of PEM bytes written (> 0) on success.
+ *   Negative wolfCrypt error code on failure.
+ ******************************************************************************/
 int mtc_store_get_public_key_pem(MtcStore *store, char *out, int maxSz)
 {
     uint8_t der[128];
@@ -615,6 +848,27 @@ int mtc_store_get_public_key_pem(MtcStore *store, char *out, int maxSz)
 /* Revocation                                                          */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    mtc_store_revoke
+ *
+ * Description:
+ *   Revokes a certificate by log index.  The index is inserted into the
+ *   sorted revoked_indices array (growing it if needed).  The revocation
+ *   is persisted to both DB and a local revocations.json file.
+ *   If already revoked, returns 0 immediately (idempotent).
+ *
+ * Input Arguments:
+ *   store       - Store.
+ *   cert_index  - Log index of the certificate to revoke.
+ *   reason      - Human-readable reason (may be NULL).
+ *
+ * Returns:
+ *    0  on success (including already-revoked).
+ *   -1  on memory allocation failure.
+ *
+ * Side Effects:
+ *   Inserts into revoked_indices (sorted), writes to DB and file.
+ ******************************************************************************/
 int mtc_store_revoke(MtcStore *store, int cert_index, const char *reason)
 {
     /* Check not already revoked */
@@ -632,7 +886,9 @@ int mtc_store_revoke(MtcStore *store, int cert_index, const char *reason)
         store->revocation_capacity = newcap;
     }
 
-    /* Insert sorted */
+    /* Insert into sorted position via insertion sort — maintains the
+     * invariant that revoked_indices is always sorted ascending for
+     * binary search in mtc_store_is_revoked(). */
     {
         int i = store->revocation_count;
         while (i > 0 && store->revoked_indices[i - 1] > cert_index) {
@@ -670,9 +926,23 @@ int mtc_store_revoke(MtcStore *store, int cert_index, const char *reason)
     return 0;
 }
 
+/******************************************************************************
+ * Function:    mtc_store_is_revoked
+ *
+ * Description:
+ *   Checks whether a certificate is revoked via binary search on the
+ *   sorted revoked_indices array.
+ *
+ * Input Arguments:
+ *   store       - Store.
+ *   cert_index  - Log index to check.
+ *
+ * Returns:
+ *   1  if revoked.
+ *   0  if not revoked.
+ ******************************************************************************/
 int mtc_store_is_revoked(MtcStore *store, int cert_index)
 {
-    /* Binary search on sorted array */
     int lo = 0, hi = store->revocation_count - 1;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
@@ -686,6 +956,20 @@ int mtc_store_is_revoked(MtcStore *store, int cert_index)
     return 0;
 }
 
+/******************************************************************************
+ * Function:    mtc_store_get_revocation_list
+ *
+ * Description:
+ *   Builds a signed revocation list as a JSON object containing:
+ *   log_id, revoked (array of cert indices), count, updated_at
+ *   timestamp, and an Ed25519 signature over the revoked array JSON.
+ *
+ * Input Arguments:
+ *   store  - Store.
+ *
+ * Returns:
+ *   New json_object.  Caller owns and must free with json_object_put().
+ ******************************************************************************/
 struct json_object *mtc_store_get_revocation_list(MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();

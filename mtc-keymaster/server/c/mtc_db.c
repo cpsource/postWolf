@@ -1,7 +1,32 @@
-/* mtc_db.c — PostgreSQL (Neon) persistence for MTC CA server.
+/******************************************************************************
+ * File:        mtc_db.c
+ * Purpose:     PostgreSQL (Neon) persistence for MTC CA server.
  *
- * Same schema as the Python server's db.py. Reads MERKLE_NEON from
- * environment, --tokenpath file, or ~/.env for the connection string. */
+ * Description:
+ *   Implements CRUD operations for all MTC CA server state stored in
+ *   PostgreSQL (hosted on Neon).  The schema is compatible with the Python
+ *   server's db.py so both implementations can share the same database.
+ *
+ *   Connection strings are resolved from MERKLE_NEON via environment
+ *   variable, --tokenpath file, or ~/.env fallback.
+ *
+ * Dependencies:
+ *   mtc_db.h
+ *   stdio.h, stdlib.h, string.h, time.h
+ *   libpq-fe.h          (PostgreSQL client)
+ *   json-c/json.h       (JSON serialization)
+ *   wolfssl/options.h    (wolfCrypt build options)
+ *   wolfssl/wolfcrypt/random.h  (CSPRNG for nonce generation)
+ *
+ * Notes:
+ *   - NOT thread-safe.  s_tokenpath and the connstr cache are
+ *     file-scoped static storage.  All calls sharing a PGconn must be
+ *     serialised externally.
+ *   - All PGresult pointers are cleared before returning.
+ *   - Nonce generation uses wolfCrypt WC_RNG (256-bit CSPRNG).
+ *
+ * Created:     2026-04-13
+ ******************************************************************************/
 
 #include "mtc_db.h"
 #include <stdio.h>
@@ -13,16 +38,45 @@
 /* Connection string                                                   */
 /* ------------------------------------------------------------------ */
 
-static char s_tokenpath[512] = {0};
+static char s_tokenpath[512] = {0};  /**< Optional --tokenpath override */
 
+/******************************************************************************
+ * Function:    mtc_db_set_tokenpath
+ *
+ * Description:
+ *   Stores an explicit file path to search for the MERKLE_NEON connection
+ *   string.  Typically set from the --tokenpath command-line argument.
+ *
+ * Input Arguments:
+ *   path  - Null-terminated file path.  If NULL, the tokenpath is cleared.
+ *           The string is copied into internal storage.
+ ******************************************************************************/
 void mtc_db_set_tokenpath(const char *path)
 {
     if (path)
         snprintf(s_tokenpath, sizeof(s_tokenpath), "%s", path);
 }
 
-/* Scan a file for a MERKLE_NEON= line, write value into dst.
- * Returns 1 on success, 0 if not found or file unreadable. */
+/******************************************************************************
+ * Function:    scan_env_file
+ *
+ * Description:
+ *   Scans a KEY=value style file for a MERKLE_NEON= line and copies the
+ *   value into dst.  Strips surrounding quotes and trailing whitespace.
+ *
+ * Input Arguments:
+ *   filepath  - Path to the file to scan.
+ *   dst       - Caller-owned buffer that receives the value.
+ *   dstSz     - Size of dst in bytes.
+ *
+ * Returns:
+ *   1  if MERKLE_NEON was found and copied.
+ *   0  if the file could not be opened or the key was not found.
+ *
+ * Notes:
+ *   Lines longer than 1024 bytes are silently truncated.
+ *   File is always closed before returning.
+ ******************************************************************************/
 static int scan_env_file(const char *filepath, char *dst, int dstSz)
 {
     FILE *f;
@@ -33,7 +87,7 @@ static int scan_env_file(const char *filepath, char *dst, int dstSz)
     while (fgets(line, sizeof(line), f)) {
         if (strncmp(line, "MERKLE_NEON=", 12) == 0) {
             char *val = line + 12;
-            /* Strip quotes and newline */
+            /* Strip surrounding quotes and trailing whitespace */
             while (*val == '"' || *val == '\'') val++;
             {
                 int len = (int)strlen(val);
@@ -50,6 +104,22 @@ static int scan_env_file(const char *filepath, char *dst, int dstSz)
     return 0;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_get_connstr
+ *
+ * Description:
+ *   Resolves the PostgreSQL connection string from one of three sources
+ *   (in priority order): $MERKLE_NEON env var, --tokenpath file, or
+ *   ~/.env fallback.  The result is cached in a static buffer so
+ *   subsequent calls return immediately.
+ *
+ * Returns:
+ *   Pointer to an internal static buffer with the connection string.
+ *   NULL if MERKLE_NEON was not found in any source.
+ *
+ * Notes:
+ *   Returned pointer must NOT be freed by the caller.
+ ******************************************************************************/
 const char *mtc_db_get_connstr(void)
 {
     static char connstr[1024] = {0};
@@ -82,6 +152,22 @@ const char *mtc_db_get_connstr(void)
     return NULL;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_connect
+ *
+ * Description:
+ *   Connects to PostgreSQL using the connection string resolved by
+ *   mtc_db_get_connstr().
+ *
+ * Returns:
+ *   Active PGconn pointer on success.  Caller owns the connection and
+ *   must call PQfinish() when done.
+ *   NULL on failure (error logged to stderr; the half-open connection
+ *   is cleaned up internally).
+ *
+ * Side Effects:
+ *   Prints a success message to stdout with fflush.
+ ******************************************************************************/
 PGconn *mtc_db_connect(void)
 {
     const char *cs = mtc_db_get_connstr();
@@ -108,6 +194,26 @@ PGconn *mtc_db_connect(void)
 /* Schema                                                              */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    mtc_db_init_schema
+ *
+ * Description:
+ *   Creates all required tables, indexes, and applies column migrations
+ *   for the MTC CA database.  All statements use IF NOT EXISTS / ADD
+ *   COLUMN IF NOT EXISTS, so this is safe to call on every startup.
+ *
+ * Input Arguments:
+ *   conn  - Active PostgreSQL connection.  Must not be NULL.
+ *
+ * Returns:
+ *    0  on success.
+ *   -1  if any DDL statement failed (error logged to stderr).
+ *
+ * Side Effects:
+ *   Creates/alters tables: mtc_log_entries, mtc_checkpoints,
+ *   mtc_landmarks, mtc_certificates, mtc_ca_config, mtc_revocations,
+ *   mtc_enrollment_nonces.
+ ******************************************************************************/
 int mtc_db_init_schema(PGconn *conn)
 {
     PGresult *res;
@@ -158,8 +264,10 @@ int mtc_db_init_schema(PGconn *conn)
         "  status TEXT NOT NULL DEFAULT 'pending',"
         "  created_at TIMESTAMPTZ NOT NULL DEFAULT now()"
         ");"
+        /* Migration: add ca_index to older nonce tables that lack it */
         "ALTER TABLE mtc_enrollment_nonces ADD COLUMN IF NOT EXISTS "
         "  ca_index INTEGER NOT NULL DEFAULT -1;"
+        /* Partial index for efficient pending-nonce lookups by domain+fp */
         "CREATE INDEX IF NOT EXISTS idx_nonce_domain_fp "
         "  ON mtc_enrollment_nonces (domain, fp) "
         "  WHERE status = 'pending';";
@@ -178,6 +286,26 @@ int mtc_db_init_schema(PGconn *conn)
 /* Log entries                                                         */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    mtc_db_save_entry
+ *
+ * Description:
+ *   Persists a Merkle tree log entry.  Uses ON CONFLICT DO NOTHING so
+ *   duplicate inserts for the same index are silently ignored.
+ *
+ * Input Arguments:
+ *   conn           - Active PostgreSQL connection.
+ *   index          - Log entry index (primary key).
+ *   entry_type     - Entry type code.
+ *   tbs_json       - JSON string of the TBS data (may be NULL).
+ *   serialized     - Binary serialized entry (sent as BYTEA, binary format).
+ *   serialized_sz  - Length of serialized in bytes.
+ *   leaf_hash      - 32-byte leaf hash (sent as BYTEA, binary format).
+ *
+ * Returns:
+ *    0  on success.
+ *   -1  on query failure.
+ ******************************************************************************/
 int mtc_db_save_entry(PGconn *conn, int index, int entry_type,
                       const char *tbs_json, const uint8_t *serialized,
                       int serialized_sz, const uint8_t *leaf_hash)
@@ -194,6 +322,7 @@ int mtc_db_save_entry(PGconn *conn, int index, int entry_type,
     params[0] = idx_str;           paramLengths[0] = 0; paramFormats[0] = 0;
     params[1] = type_str;          paramLengths[1] = 0; paramFormats[1] = 0;
     params[2] = tbs_json;          paramLengths[2] = 0; paramFormats[2] = 0;
+    /* Binary format for BYTEA columns */
     params[3] = (const char*)serialized; paramLengths[3] = serialized_sz; paramFormats[3] = 1;
     params[4] = (const char*)leaf_hash;  paramLengths[4] = 32;           paramFormats[4] = 1;
 
@@ -211,6 +340,26 @@ int mtc_db_save_entry(PGconn *conn, int index, int entry_type,
     return 0;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_load_entries
+ *
+ * Description:
+ *   Loads all log entries from mtc_log_entries, ordered by index.
+ *   Builds a json_object array where each element contains: index,
+ *   entry_type, tbs_data, serialized_hex, and serialized_len.
+ *
+ * Input Arguments:
+ *   conn     - Active PostgreSQL connection.
+ *   out_arr  - Pointer that receives a new json_object array.
+ *
+ * Returns:
+ *   Number of rows loaded (>= 0), or -1 on query failure.
+ *
+ * Notes:
+ *   Caller owns *out_arr and must free with json_object_put().
+ *   BYTEA columns are returned in text mode and unescaped via
+ *   PQunescapeBytea, then re-encoded as hex strings in JSON.
+ ******************************************************************************/
 int mtc_db_load_entries(PGconn *conn, struct json_object **out_arr)
 {
     PGresult *res;
@@ -237,20 +386,19 @@ int mtc_db_load_entries(PGconn *conn, struct json_object **out_arr)
         json_object_object_add(entry, "entry_type",
             json_object_new_int(atoi(PQgetvalue(res, i, 1))));
 
-        /* tbs_data (JSONB, text format) */
+        /* tbs_data: JSONB stored as text — parse back into a json_object */
         if (!PQgetisnull(res, i, 2)) {
             struct json_object *tbs = json_tokener_parse(PQgetvalue(res, i, 2));
             json_object_object_add(entry, "tbs_data",
                 tbs ? tbs : json_object_new_null());
         }
 
-        /* serialized (BYTEA, comes as hex escape in text mode) */
+        /* serialized: BYTEA in text mode → unescape → re-encode as hex */
         {
             size_t bin_len = 0;
             unsigned char *bin = PQunescapeBytea(
                 (const unsigned char*)PQgetvalue(res, i, 3), &bin_len);
             if (bin) {
-                /* Store as hex string */
                 char *hex = (char*)malloc(bin_len * 2 + 1);
                 int j;
                 for (j = 0; j < (int)bin_len; j++)
@@ -275,6 +423,23 @@ int mtc_db_load_entries(PGconn *conn, struct json_object **out_arr)
 /* Checkpoints                                                         */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    mtc_db_save_checkpoint
+ *
+ * Description:
+ *   Inserts a Merkle tree checkpoint record.
+ *
+ * Input Arguments:
+ *   conn       - Active PostgreSQL connection.
+ *   log_id     - Log identifier string.
+ *   tree_size  - Number of leaves at checkpoint time.
+ *   root_hash  - Hex-encoded root hash string.
+ *   ts         - UNIX timestamp (double precision).
+ *
+ * Returns:
+ *    0  on success.
+ *   -1  on query failure.
+ ******************************************************************************/
 int mtc_db_save_checkpoint(PGconn *conn, const char *log_id,
                            int tree_size, const char *root_hash, double ts)
 {
@@ -303,6 +468,24 @@ int mtc_db_save_checkpoint(PGconn *conn, const char *log_id,
     return 0;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_load_checkpoints
+ *
+ * Description:
+ *   Loads all checkpoints for a given log ID, ordered by insertion order.
+ *   Returns a json_object array of checkpoint objects.
+ *
+ * Input Arguments:
+ *   conn     - Active PostgreSQL connection.
+ *   log_id   - Log identifier to filter by.
+ *   out_arr  - Pointer that receives a new json_object array.
+ *
+ * Returns:
+ *   Number of rows loaded (>= 0), or -1 on query failure.
+ *
+ * Notes:
+ *   Caller owns *out_arr and must free with json_object_put().
+ ******************************************************************************/
 int mtc_db_load_checkpoints(PGconn *conn, const char *log_id,
                             struct json_object **out_arr)
 {
@@ -344,6 +527,21 @@ int mtc_db_load_checkpoints(PGconn *conn, const char *log_id,
 /* Landmarks                                                           */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    mtc_db_save_landmark
+ *
+ * Description:
+ *   Records a landmark tree size.  Uses ON CONFLICT DO NOTHING so
+ *   duplicate tree sizes are silently ignored.
+ *
+ * Input Arguments:
+ *   conn       - Active PostgreSQL connection.
+ *   tree_size  - Tree size to record.
+ *
+ * Returns:
+ *    0  on success.
+ *   -1  on query failure.
+ ******************************************************************************/
 int mtc_db_save_landmark(PGconn *conn, int tree_size)
 {
     PGresult *res;
@@ -366,6 +564,21 @@ int mtc_db_save_landmark(PGconn *conn, int tree_size)
     return 0;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_load_landmarks
+ *
+ * Description:
+ *   Loads landmark tree sizes into a caller-owned integer array, sorted
+ *   in ascending order.
+ *
+ * Input Arguments:
+ *   conn       - Active PostgreSQL connection.
+ *   out        - Caller-owned array to fill with tree sizes.
+ *   max_count  - Capacity of out.  Rows beyond this limit are dropped.
+ *
+ * Returns:
+ *   Number of landmarks written to out.  0 on query failure.
+ ******************************************************************************/
 int mtc_db_load_landmarks(PGconn *conn, int *out, int max_count)
 {
     PGresult *res;
@@ -391,6 +604,22 @@ int mtc_db_load_landmarks(PGconn *conn, int *out, int max_count)
 /* Certificates                                                        */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    mtc_db_save_certificate
+ *
+ * Description:
+ *   Saves or updates a certificate JSON blob.  Uses ON CONFLICT to upsert
+ *   if the index already exists.
+ *
+ * Input Arguments:
+ *   conn       - Active PostgreSQL connection.
+ *   index      - Certificate log index (primary key).
+ *   cert_json  - JSON string of the certificate.
+ *
+ * Returns:
+ *    0  on success.
+ *   -1  on query failure.
+ ******************************************************************************/
 int mtc_db_save_certificate(PGconn *conn, int index, const char *cert_json)
 {
     PGresult *res;
@@ -415,6 +644,21 @@ int mtc_db_save_certificate(PGconn *conn, int index, const char *cert_json)
     return 0;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_load_certificate
+ *
+ * Description:
+ *   Loads a single certificate by log index and parses it from JSON.
+ *
+ * Input Arguments:
+ *   conn   - Active PostgreSQL connection.
+ *   index  - Certificate log index to look up.
+ *
+ * Returns:
+ *   Parsed json_object on success.  Caller owns and must free with
+ *   json_object_put().
+ *   NULL if not found or on error.
+ ******************************************************************************/
 struct json_object *mtc_db_load_certificate(PGconn *conn, int index)
 {
     PGresult *res;
@@ -440,6 +684,26 @@ struct json_object *mtc_db_load_certificate(PGconn *conn, int index)
     }
 }
 
+/******************************************************************************
+ * Function:    mtc_db_load_all_certificates
+ *
+ * Description:
+ *   Loads all certificates into an index-addressed array.  Allocates a
+ *   calloc'd array of (max_index + 1) json_object pointers; slots without
+ *   a certificate are NULL.
+ *
+ * Input Arguments:
+ *   conn   - Active PostgreSQL connection.
+ *   out    - Receives a calloc'd array of json_object pointers.
+ *   count  - Receives the array length (max_index + 1).
+ *
+ * Returns:
+ *   Number of certificate rows loaded (>= 0), or -1 on failure.
+ *
+ * Notes:
+ *   Caller must free each non-NULL element with json_object_put(), then
+ *   free(*out) itself.
+ ******************************************************************************/
 int mtc_db_load_all_certificates(PGconn *conn,
                                   struct json_object ***out, int *count)
 {
@@ -457,7 +721,7 @@ int mtc_db_load_all_certificates(PGconn *conn,
 
     rows = PQntuples(res);
 
-    /* Find max index to size the array */
+    /* Find max index to size the array — indices may be sparse */
     for (i = 0; i < rows; i++) {
         int idx = atoi(PQgetvalue(res, i, 0));
         if (idx > max_idx) max_idx = idx;
@@ -479,6 +743,25 @@ int mtc_db_load_all_certificates(PGconn *conn,
 /* Revocations                                                         */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    mtc_db_save_revocation
+ *
+ * Description:
+ *   Records a certificate revocation with a timestamp and optional reason.
+ *
+ * Input Arguments:
+ *   conn        - Active PostgreSQL connection.
+ *   cert_index  - Log index of the certificate to revoke.
+ *   reason      - Human-readable reason.  NULL defaults to "unspecified".
+ *
+ * Returns:
+ *    0  on success.
+ *   -1  on query failure.
+ *
+ * Notes:
+ *   Multiple revocation records for the same cert_index are allowed
+ *   (the table has no unique constraint on cert_index).
+ ******************************************************************************/
 int mtc_db_save_revocation(PGconn *conn, int cert_index, const char *reason)
 {
     PGresult *res;
@@ -506,6 +789,21 @@ int mtc_db_save_revocation(PGconn *conn, int cert_index, const char *reason)
     return 0;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_load_revocations
+ *
+ * Description:
+ *   Loads revoked certificate indices into a caller-owned array, sorted
+ *   in ascending order.
+ *
+ * Input Arguments:
+ *   conn       - Active PostgreSQL connection.
+ *   indices    - Caller-owned array to fill with cert indices.
+ *   max_count  - Capacity of indices.  Rows beyond this are dropped.
+ *
+ * Returns:
+ *   Number of revocations written to indices.  0 on query failure.
+ ******************************************************************************/
 int mtc_db_load_revocations(PGconn *conn, int *indices, int max_count)
 {
     PGresult *res;
@@ -528,6 +826,21 @@ int mtc_db_load_revocations(PGconn *conn, int *indices, int max_count)
     return rows;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_is_revoked
+ *
+ * Description:
+ *   Checks whether a certificate has been revoked by looking for any
+ *   matching row in mtc_revocations.
+ *
+ * Input Arguments:
+ *   conn        - Active PostgreSQL connection.
+ *   cert_index  - Log index of the certificate to check.
+ *
+ * Returns:
+ *   1  if at least one revocation record exists.
+ *   0  if not revoked, or on query error.
+ ******************************************************************************/
 int mtc_db_is_revoked(PGconn *conn, int cert_index)
 {
     PGresult *res;
@@ -551,6 +864,22 @@ int mtc_db_is_revoked(PGconn *conn, int cert_index)
 /* CA config                                                           */
 /* ------------------------------------------------------------------ */
 
+/******************************************************************************
+ * Function:    mtc_db_save_config
+ *
+ * Description:
+ *   Saves a CA configuration key/value pair.  Uses ON CONFLICT to upsert
+ *   if the key already exists.
+ *
+ * Input Arguments:
+ *   conn   - Active PostgreSQL connection.
+ *   key    - Configuration key (primary key).
+ *   value  - Configuration value string.
+ *
+ * Returns:
+ *    0  on success.
+ *   -1  on query failure.
+ ******************************************************************************/
 int mtc_db_save_config(PGconn *conn, const char *key, const char *value)
 {
     PGresult *res;
@@ -569,6 +898,20 @@ int mtc_db_save_config(PGconn *conn, const char *key, const char *value)
     return 0;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_load_config
+ *
+ * Description:
+ *   Loads a CA configuration value by key.
+ *
+ * Input Arguments:
+ *   conn  - Active PostgreSQL connection.
+ *   key   - Configuration key to look up.
+ *
+ * Returns:
+ *   strdup'd value string on success.  Caller must free().
+ *   NULL if the key was not found or on query error.
+ ******************************************************************************/
 char *mtc_db_load_config(PGconn *conn, const char *key)
 {
     PGresult *res;
@@ -596,13 +939,42 @@ char *mtc_db_load_config(PGconn *conn, const char *key)
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/random.h>
 
+/******************************************************************************
+ * Function:    mtc_db_create_nonce
+ *
+ * Description:
+ *   Generates a 256-bit cryptographically random enrollment nonce using
+ *   wolfCrypt WC_RNG and inserts it into the mtc_enrollment_nonces table
+ *   with status 'pending'.  Stale nonces are expired first.  Rejects the
+ *   request if a pending nonce already exists for the given domain+fp
+ *   pair (prevents duplicate enrollment requests).
+ *
+ * Input Arguments:
+ *   conn         - Active PostgreSQL connection.  Must not be NULL.
+ *   domain       - Domain name bound to this nonce.
+ *   fp_hex       - Public key fingerprint (hex) bound to this nonce.
+ *   ca_index     - Log index of the issuing CA (-1 for CA self-enrollment
+ *                  via DNS).
+ *   nonce_out    - Buffer for the hex nonce.  Must be at least
+ *                  MTC_NONCE_HEX_LEN + 1 (65) bytes.
+ *   expires_out  - Receives the UNIX expiration timestamp.
+ *
+ * Returns:
+ *    0  on success.
+ *   -1  on failure (NULL conn, duplicate pending nonce, RNG error, or
+ *       DB insert error).
+ *
+ * Side Effects:
+ *   - Expires stale nonces via mtc_db_expire_nonces().
+ *   - Inserts a row into mtc_enrollment_nonces.
+ ******************************************************************************/
 int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
                         int ca_index, char *nonce_out, long *expires_out)
 {
     PGresult *res;
     const char *params[2];
     WC_RNG rng;
-    uint8_t rand_bytes[32]; /* 256-bit */
+    uint8_t rand_bytes[32]; /* 256-bit nonce */
     char ttl_str[32], ca_idx_str[16];
     const char *ins_params[5];
     int i;
@@ -627,7 +999,7 @@ int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
     }
     PQclear(res);
 
-    /* Generate 256-bit random nonce */
+    /* Generate 256-bit random nonce via wolfCrypt CSPRNG */
     if (wc_InitRng(&rng) != 0) return -1;
     if (wc_RNG_GenerateBlock(&rng, rand_bytes, sizeof(rand_bytes)) != 0) {
         wc_FreeRng(&rng);
@@ -641,7 +1013,7 @@ int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
 
     *expires_out = (long)time(NULL) + MTC_NONCE_TTL_SECS;
 
-    /* Insert pending nonce */
+    /* Insert pending nonce with TTL-based expiration */
     snprintf(ttl_str, sizeof(ttl_str), "%d seconds", MTC_NONCE_TTL_SECS);
     snprintf(ca_idx_str, sizeof(ca_idx_str), "%d", ca_index);
     ins_params[0] = nonce_out;
@@ -665,6 +1037,22 @@ int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
     return 0;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_find_ca_for_domain
+ *
+ * Description:
+ *   Searches mtc_certificates for a registered CA matching the given
+ *   domain.  CAs are enrolled with subject "<domain>-ca", so this
+ *   function builds that pattern and queries for the most recent match.
+ *
+ * Input Arguments:
+ *   conn    - Active PostgreSQL connection.  Must not be NULL.
+ *   domain  - Domain name to search for.
+ *
+ * Returns:
+ *   CA log index (>= 0) on success.
+ *  -1  if not found, no connection, or on query error.
+ ******************************************************************************/
 int mtc_db_find_ca_for_domain(PGconn *conn, const char *domain)
 {
     PGresult *res;
@@ -694,6 +1082,30 @@ int mtc_db_find_ca_for_domain(PGconn *conn, const char *domain)
     return ca_index;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_validate_nonce
+ *
+ * Description:
+ *   Validates a nonce without consuming it.  Checks that the nonce exists,
+ *   has status 'pending', and is not expired.  Optionally matches domain
+ *   and/or fingerprint for defense-in-depth (the nonce is bound to
+ *   domain+fp at creation time, so matching the nonce alone is sufficient,
+ *   but callers may provide additional fields).
+ *
+ * Input Arguments:
+ *   conn       - Active PostgreSQL connection.
+ *   nonce_hex  - Hex-encoded nonce to validate.
+ *   domain     - Domain to match (NULL or "" to skip domain check).
+ *   fp_hex     - Fingerprint to match (NULL or "" to skip fp check).
+ *
+ * Returns:
+ *   1  if the nonce is valid (pending, unexpired, matching).
+ *   0  if invalid, expired, consumed, not found, or no connection.
+ *
+ * Notes:
+ *   For enrollment flows, prefer mtc_db_validate_and_consume_nonce()
+ *   to avoid TOCTOU races between validation and consumption.
+ ******************************************************************************/
 int mtc_db_validate_nonce(PGconn *conn, const char *nonce_hex,
                           const char *domain, const char *fp_hex)
 {
@@ -702,12 +1114,7 @@ int mtc_db_validate_nonce(PGconn *conn, const char *nonce_hex,
 
     if (!conn) return 0;
 
-    /* Validate nonce: must exist, be pending, and not expired.
-     * If domain is non-empty, also match domain.
-     * If fp_hex is non-empty, also match fp.
-     * The nonce was bound to domain+fp at creation time, so matching
-     * the nonce alone is sufficient — but we check what the caller
-     * provides for defense-in-depth. */
+    /* Match specificity depends on what the caller provides — defense-in-depth */
     if (domain && domain[0] && fp_hex && fp_hex[0]) {
         const char *params[3] = { nonce_hex, domain, fp_hex };
         res = PQexecParams(conn,
@@ -738,6 +1145,26 @@ int mtc_db_validate_nonce(PGconn *conn, const char *nonce_hex,
     return valid;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_validate_and_consume_nonce
+ *
+ * Description:
+ *   Atomically validates and consumes a nonce in a single UPDATE query.
+ *   The WHERE clause enforces pending status, unexpired, and optional
+ *   domain/fp matching.  If zero rows are affected, the nonce was invalid,
+ *   expired, or already consumed.  This eliminates the TOCTOU race
+ *   between separate validate and consume steps.
+ *
+ * Input Arguments:
+ *   conn       - Active PostgreSQL connection.
+ *   nonce_hex  - Hex-encoded nonce to validate and consume.
+ *   domain     - Domain to match (NULL or "" to skip domain check).
+ *   fp_hex     - Fingerprint to match (NULL or "" to skip fp check).
+ *
+ * Returns:
+ *   1  if the nonce was valid and is now consumed.
+ *   0  if invalid, expired, already consumed, or no connection.
+ ******************************************************************************/
 int mtc_db_validate_and_consume_nonce(PGconn *conn, const char *nonce_hex,
                                       const char *domain, const char *fp_hex)
 {
@@ -746,9 +1173,7 @@ int mtc_db_validate_and_consume_nonce(PGconn *conn, const char *nonce_hex,
 
     if (!conn) return 0;
 
-    /* Atomic: UPDATE only if pending+unexpired+matching, consume in one shot.
-     * If zero rows affected, the nonce was invalid, expired, or already used.
-     * This eliminates the TOCTOU race between validate and consume. */
+    /* Atomic: UPDATE only if pending+unexpired+matching, consume in one shot */
     if (domain && domain[0] && fp_hex && fp_hex[0]) {
         const char *params[3] = { nonce_hex, domain, fp_hex };
         res = PQexecParams(conn,
@@ -780,6 +1205,17 @@ int mtc_db_validate_and_consume_nonce(PGconn *conn, const char *nonce_hex,
     return consumed;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_consume_nonce
+ *
+ * Description:
+ *   Unconditionally marks a nonce as consumed regardless of its current
+ *   status or expiration.
+ *
+ * Input Arguments:
+ *   conn       - Active PostgreSQL connection.
+ *   nonce_hex  - Hex-encoded nonce to consume.
+ ******************************************************************************/
 void mtc_db_consume_nonce(PGconn *conn, const char *nonce_hex)
 {
     PGresult *res;
@@ -795,6 +1231,19 @@ void mtc_db_consume_nonce(PGconn *conn, const char *nonce_hex)
     PQclear(res);
 }
 
+/******************************************************************************
+ * Function:    mtc_db_expire_nonces
+ *
+ * Description:
+ *   Bulk-expires all pending nonces that have passed their TTL by setting
+ *   status = 'expired' where status = 'pending' and expires_at <= now().
+ *
+ * Input Arguments:
+ *   conn  - Active PostgreSQL connection.
+ *
+ * Side Effects:
+ *   Updates rows in mtc_enrollment_nonces.
+ ******************************************************************************/
 void mtc_db_expire_nonces(PGconn *conn)
 {
     PGresult *res;
