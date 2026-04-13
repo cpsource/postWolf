@@ -1,3 +1,6 @@
 # Build artifacts
 mtc_server
 mtc_checkendpoint
+
+# Doxygen output
+html/

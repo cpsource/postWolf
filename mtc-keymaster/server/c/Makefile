@@ -31,7 +31,13 @@ make-mtc-checkpoint: mtc_checkendpoint.c mtc_checkendpoint.h mtc_db.c mtc_db.h
 		$(shell pkg-config --libs json-c) \
 		$(shell pkg-config --libs libpq) -lcurl
 
+doxygen:
+	doxygen Doxyfile
+
 clean:
 	rm -f mtc_server mtc_checkendpoint
 
-.PHONY: all clean make-mtc-checkpoint
+clean-doxygen:
+	rm -rf html
+
+.PHONY: all clean clean-doxygen doxygen make-mtc-checkpoint
