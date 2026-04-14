@@ -66,6 +66,8 @@
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/sha256.h>
 #include <wolfssl/wolfcrypt/asn.h>
+#include <wolfssl/wolfcrypt/asn_public.h>
+#include <wolfssl/wolfcrypt/ecc.h>
 #include <wolfssl/wolfcrypt/coding.h>
 
 #define HTTP_BUF_SZ  65536   /**< Maximum HTTP request size (headers + body) */
@@ -621,87 +623,94 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
     json_object_put(req);
 }
 
+/* handle_certificate_request removed — enrollment now goes through the
+ * DH bootstrap port (mtc_bootstrap.c).  See README-unsure.md. */
+
 /******************************************************************************
- * Function:    handle_certificate_request
+ * Function:    handle_certificate_renew
  *
  * Description:
- *   POST /certificate/request — enroll a CA or leaf certificate.
+ *   POST /certificate/renew — renew a certificate by proving ownership
+ *   of the current private key.  No nonce or CA operator involvement.
  *
- *   For CA enrollment: validates via DNS TXT record at _mtc-ca.<domain>.
- *   For leaf enrollment: requires and atomically consumes a valid nonce.
- *   Both paths are gated by an enrollment-level AbuseIPDB check
- *   (ABUSEIPDB_ENROLL_THRESHOLD, stricter than general access).
+ *   The client sends:
+ *     - cert_index:          current certificate's log index
+ *     - old_public_key_pem:  current public key (server verifies hash
+ *                            matches the logged entry)
+ *     - new_public_key_pem:  new public key for the renewed cert
+ *     - signature:           hex-encoded signature over the string
+ *                            "renew:<cert_index>:<new_public_key_pem>"
+ *                            made with the old private key
  *
- *   On success: adds a TBS entry to the Merkle tree, generates an
- *   inclusion proof, cosigns, persists to disk and DB, and returns
- *   a standalone certificate (HTTP 201).
+ *   The server:
+ *     1. Looks up cert_index in the tree
+ *     2. Hashes old_public_key_pem, verifies it matches the logged hash
+ *     3. Verifies the signature using the old public key
+ *     4. Checks the old cert is not revoked
+ *     5. Issues a new certificate with the new public key
  *
  * Input Arguments:
  *   io        - Client I/O context.
  *   store     - MTC store (tree, certs, DB).
  *   body      - HTTP request body (JSON).
  *   body_len  - Length of body in bytes.
- *
- * Side Effects:
- *   Appends to the Merkle tree, creates a checkpoint, persists to
- *   disk and DB, grows the certificate array if needed.
  ******************************************************************************/
-static void handle_certificate_request(client_io *io, MtcStore *store,
-                                        const char *body, int body_len)
+static void handle_certificate_renew(client_io *io, MtcStore *store,
+                                     const char *body, int body_len)
 {
-    struct json_object *req, *val;
-    const char *subject, *pub_key_pem, *key_algo;
+    struct json_object *req, *val, *old_cert, *old_sc, *old_tbs;
+    const char *old_pub_pem, *new_pub_pem, *sig_hex;
+    const char *old_subject, *old_algo;
+    int cert_index, validity_days;
+    char computed_hash[65];
+    const char *logged_hash;
     (void)body_len;
-    int validity_days;
-    struct json_object *extensions = NULL;
 
-    /* Enrollment-level AbuseIPDB gate (stricter than general access) */
+    /* Enrollment-level AbuseIPDB gate */
     if (io->ip_str[0] != '\0') {
         int score = mtc_checkendpoint(io->ip_str);
         if (score >= ABUSEIPDB_ENROLL_THRESHOLD) {
-            LOG_WARN("enrollment rejected for %s (abuse score %d >= %d)",
+            LOG_WARN("renew rejected for %s (abuse score %d >= %d)",
                      io->ip_str, score, ABUSEIPDB_ENROLL_THRESHOLD);
-            http_send_error(io, 403, "enrollment denied");
+            http_send_error(io, 403, "renewal denied");
             return;
         }
     }
 
-    /* Parse request */
     req = json_tokener_parse(body);
     if (!req) {
         http_send_error(io, 400, "invalid JSON");
         return;
     }
 
-    if (!json_object_object_get_ex(req, "subject", &val)) {
-        http_send_error(io, 400, "missing 'subject'");
+    /* Parse required fields */
+    if (!json_object_object_get_ex(req, "cert_index", &val)) {
+        http_send_error(io, 400, "missing 'cert_index'");
         json_object_put(req);
         return;
     }
-    subject = json_object_get_string(val);
+    cert_index = json_object_get_int(val);
 
-    if (!json_object_object_get_ex(req, "public_key_pem", &val)) {
-        http_send_error(io, 400, "missing 'public_key_pem'");
+    if (!json_object_object_get_ex(req, "old_public_key_pem", &val)) {
+        http_send_error(io, 400, "missing 'old_public_key_pem'");
         json_object_put(req);
         return;
     }
-    pub_key_pem = json_object_get_string(val);
+    old_pub_pem = json_object_get_string(val);
 
-    key_algo = "EC-P256";
-    if (json_object_object_get_ex(req, "key_algorithm", &val)) {
-        const char *requested = json_object_get_string(val);
-        if (strcmp(requested, "EC-P256") != 0 &&
-            strcmp(requested, "EC-P384") != 0 &&
-            strcmp(requested, "Ed25519") != 0 &&
-            strcmp(requested, "ML-DSA-44") != 0 &&
-            strcmp(requested, "ML-DSA-65") != 0 &&
-            strcmp(requested, "ML-DSA-87") != 0) {
-            http_send_error(io, 400, "unsupported key_algorithm");
-            json_object_put(req);
-            return;
-        }
-        key_algo = requested;
+    if (!json_object_object_get_ex(req, "new_public_key_pem", &val)) {
+        http_send_error(io, 400, "missing 'new_public_key_pem'");
+        json_object_put(req);
+        return;
     }
+    new_pub_pem = json_object_get_string(val);
+
+    if (!json_object_object_get_ex(req, "signature", &val)) {
+        http_send_error(io, 400, "missing 'signature'");
+        json_object_put(req);
+        return;
+    }
+    sig_hex = json_object_get_string(val);
 
     validity_days = 90;
     if (json_object_object_get_ex(req, "validity_days", &val)) {
@@ -714,90 +723,170 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
         }
     }
 
-    json_object_object_get_ex(req, "extensions", &extensions);
+    /* --- Step 1: Look up existing certificate --- */
+    if (cert_index < 0 || cert_index >= store->cert_count ||
+        store->certificates[cert_index] == NULL) {
+        http_send_error(io, 404, "certificate not found");
+        json_object_put(req);
+        return;
+    }
 
-    /* Enrollment authorization */
+    old_cert = store->certificates[cert_index];
+    if (!json_object_object_get_ex(old_cert, "standalone_certificate", &old_sc) ||
+        !json_object_object_get_ex(old_sc, "tbs_entry", &old_tbs)) {
+        http_send_error(io, 500, "internal error: malformed stored cert");
+        json_object_put(req);
+        return;
+    }
+
+    if (!json_object_object_get_ex(old_tbs, "subject_public_key_hash", &val)) {
+        http_send_error(io, 500, "internal error: no key hash in stored cert");
+        json_object_put(req);
+        return;
+    }
+    logged_hash = json_object_get_string(val);
+
+    /* Get subject and algorithm from old cert for the renewal */
+    if (!json_object_object_get_ex(old_tbs, "subject", &val)) {
+        http_send_error(io, 500, "internal error: no subject in stored cert");
+        json_object_put(req);
+        return;
+    }
+    old_subject = json_object_get_string(val);
+
+    old_algo = "EC-P256";
+    if (json_object_object_get_ex(old_tbs, "subject_public_key_algorithm", &val))
+        old_algo = json_object_get_string(val);
+
+    /* --- Step 2: Verify old public key hash matches the log --- */
     {
-        const char *enrollment_nonce = NULL;
-        int is_ca_enrollment = 0;
+        wc_Sha256 sha;
+        uint8_t h[32];
+        int fi;
 
-        if (json_object_object_get_ex(req, "enrollment_nonce", &val))
-            enrollment_nonce = json_object_get_string(val);
+        wc_InitSha256(&sha);
+        wc_Sha256Update(&sha, (const uint8_t *)old_pub_pem,
+                        (word32)strlen(old_pub_pem));
+        wc_Sha256Final(&sha, h);
+        wc_Sha256Free(&sha);
+        for (fi = 0; fi < 32; fi++)
+            snprintf(computed_hash + fi * 2, 3, "%02x", h[fi]);
+    }
 
-        /* Check if this is a CA enrollment (has ca_certificate_pem) */
-        if (extensions) {
-            struct json_object *ca_val;
-            if (json_object_object_get_ex(extensions, "ca_certificate_pem",
-                                          &ca_val))
-                is_ca_enrollment = 1;
+    if (strcmp(computed_hash, logged_hash) != 0) {
+        LOG_WARN("renew: key hash mismatch for index %d from %s",
+                 cert_index, io->ip_str);
+        http_send_error(io, 403, "public key does not match logged certificate");
+        json_object_put(req);
+        return;
+    }
+
+    /* --- Step 3: Verify signature --- */
+    {
+        ecc_key key;
+        uint8_t sig_bytes[256];
+        int sig_len;
+        char sign_msg[MAX_PATH_SZ];
+        uint8_t msg_hash[32];
+        int verified = 0;
+        int ret;
+
+        /* Build the message that was signed */
+        snprintf(sign_msg, sizeof(sign_msg), "renew:%d:%s",
+                 cert_index, new_pub_pem);
+
+        /* Hash the message */
+        {
+            wc_Sha256 sha;
+            wc_InitSha256(&sha);
+            wc_Sha256Update(&sha, (const uint8_t *)sign_msg,
+                            (word32)strlen(sign_msg));
+            wc_Sha256Final(&sha, msg_hash);
+            wc_Sha256Free(&sha);
         }
 
-        if (is_ca_enrollment) {
-            /* CA enrollment: DNS TXT validation, no nonce required.
-             * The DNS record at _mtc-ca.<domain> proves domain ownership. */
-            if (!mtc_validate_ca_cert(extensions, NULL)) {
-                http_send_error(io, 403,
-                    "CA certificate rejected: DNS validation failed — "
-                    "no matching _mtc-ca.<domain> TXT record found");
-                json_object_put(req);
-                return;
-            }
+        /* Decode hex signature */
+        sig_len = (int)strlen(sig_hex) / 2;
+        if (sig_len <= 0 || sig_len > (int)sizeof(sig_bytes)) {
+            http_send_error(io, 400, "invalid signature length");
+            json_object_put(req);
+            return;
         }
-        else {
-            /* Leaf enrollment: nonce required.
-             * The CA operator issues the nonce (POST /enrollment/nonce
-             * with type=leaf), then sends it to the leaf out-of-band.
-             * The server verifies the nonce is valid, bound to this
-             * domain + key, and was authorized by a registered CA. */
-            if (!enrollment_nonce) {
-                http_send_error(io, 400,
-                    "enrollment_nonce required for leaf enrollment — "
-                    "obtain a nonce from your CA operator");
-                json_object_put(req);
-                return;
-            }
-
-            /* Compute leaf's SPKI fingerprint for nonce binding check.
-             * The nonce was bound to domain + fingerprint at creation.
-             * We must verify both match — not just the domain. */
-            {
-                wc_Sha256 sha;
-                uint8_t h[32];
-                char leaf_fp[65];
-                int fi;
-
-                wc_InitSha256(&sha);
-                wc_Sha256Update(&sha, (const uint8_t *)pub_key_pem,
-                                (word32)strlen(pub_key_pem));
-                wc_Sha256Final(&sha, h);
-                wc_Sha256Free(&sha);
-                for (fi = 0; fi < 32; fi++)
-                    snprintf(leaf_fp + fi * 2, 3, "%02x", h[fi]);
-
-                /* Atomic validate + consume — prevents TOCTOU race.
-                 * Checks nonce + domain + fingerprint in one UPDATE. */
-                if (!store->db ||
-                    !mtc_db_validate_and_consume_nonce(store->db,
-                        enrollment_nonce, subject, leaf_fp)) {
-                    http_send_error(io, 403,
-                        "invalid, expired, or already-used enrollment nonce");
+        {
+            int si;
+            for (si = 0; si < sig_len; si++) {
+                unsigned int b;
+                if (sscanf(sig_hex + si * 2, "%02x", &b) != 1) {
+                    http_send_error(io, 400, "invalid signature hex");
                     json_object_put(req);
                     return;
                 }
-
-                LOG_INFO("leaf enrollment for '%s' authorized by nonce %.16s...",
-                         subject, enrollment_nonce);
+                sig_bytes[si] = (uint8_t)b;
             }
+        }
+
+        /* Import the old public key and verify */
+        wc_ecc_init(&key);
+
+        /* Decode PEM public key — convert PEM to DER first */
+        {
+            uint8_t der_buf[1024];
+            int der_sz = (int)sizeof(der_buf);
+            word32 idx = 0;
+
+            ret = wc_PubKeyPemToDer((const unsigned char *)old_pub_pem,
+                                    (int)strlen(old_pub_pem),
+                                    der_buf, der_sz);
+            if (ret < 0) {
+                LOG_WARN("renew: PEM to DER failed: %d", ret);
+                wc_ecc_free(&key);
+                http_send_error(io, 400, "invalid old public key PEM");
+                json_object_put(req);
+                return;
+            }
+            der_sz = ret;
+
+            ret = wc_EccPublicKeyDecode(der_buf, &idx, &key, (word32)der_sz);
+            if (ret != 0) {
+                LOG_WARN("renew: ECC key decode failed: %d", ret);
+                wc_ecc_free(&key);
+                http_send_error(io, 400, "invalid ECC public key");
+                json_object_put(req);
+                return;
+            }
+        }
+
+        ret = wc_ecc_verify_hash(sig_bytes, (word32)sig_len,
+                                  msg_hash, 32, &verified, &key);
+        wc_ecc_free(&key);
+
+        if (ret != 0 || !verified) {
+            LOG_WARN("renew: signature verification failed for index %d",
+                     cert_index);
+            http_send_error(io, 403, "signature verification failed");
+            json_object_put(req);
+            return;
         }
     }
 
-    /* Build TBS entry */
+    LOG_INFO("renew: signature verified for '%s' (index %d)", old_subject,
+             cert_index);
+
+    /* --- Step 4: Check not revoked --- */
+    if (mtc_store_is_revoked(store, cert_index)) {
+        LOG_WARN("renew: cert %d is revoked", cert_index);
+        http_send_error(io, 403, "certificate is revoked");
+        json_object_put(req);
+        return;
+    }
+
+    /* --- Step 5: Issue new certificate --- */
     {
         struct json_object *tbs, *sc, *result, *checkpoint;
         struct json_object *proof_arr, *cosig_arr, *cosig;
         uint8_t *entry_buf = NULL;
         int entry_sz;
-        int index;
+        int new_index;
         double now = (double)time(NULL);
         char spk_hash[65];
         uint8_t *proof = NULL;
@@ -808,24 +897,24 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
         int sig_sz = 0;
         int i, start, end;
 
-        /* Hash the public key */
+        /* Hash the new public key */
         {
             wc_Sha256 sha;
             uint8_t h[32];
             wc_InitSha256(&sha);
-            wc_Sha256Update(&sha, (const byte*)pub_key_pem,
-                (word32)strlen(pub_key_pem));
+            wc_Sha256Update(&sha, (const byte *)new_pub_pem,
+                (word32)strlen(new_pub_pem));
             wc_Sha256Final(&sha, h);
             wc_Sha256Free(&sha);
             to_hex(h, 32, spk_hash);
         }
 
-        /* Build TBS JSON for serialization */
+        /* Build TBS JSON */
         tbs = json_object_new_object();
         json_object_object_add(tbs, "subject",
-            json_object_new_string(subject));
+            json_object_new_string(old_subject));
         json_object_object_add(tbs, "subject_public_key_algorithm",
-            json_object_new_string(key_algo));
+            json_object_new_string(old_algo));
         json_object_object_add(tbs, "subject_public_key_hash",
             json_object_new_string(spk_hash));
         json_object_object_add(tbs, "not_before",
@@ -833,36 +922,36 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
         json_object_object_add(tbs, "not_after",
             json_object_new_double(now + validity_days * 86400.0));
         json_object_object_add(tbs, "extensions",
-            extensions ? json_object_get(extensions) : json_object_new_object());
+            json_object_new_object());
 
-        /* Serialize for Merkle tree: 0x01 + deterministic JSON */
+        /* Serialize for Merkle tree */
         {
             struct json_object *ser = json_object_new_object();
             const char *ser_str;
             json_object_object_add(ser, "extensions",
-                json_object_get(json_object_object_get(tbs, "extensions")));
+                json_object_new_object());
             json_object_object_add(ser, "not_after",
                 json_object_new_double(now + validity_days * 86400.0));
             json_object_object_add(ser, "not_before",
                 json_object_new_double(now));
             json_object_object_add(ser, "spk_algorithm",
-                json_object_new_string(key_algo));
+                json_object_new_string(old_algo));
             json_object_object_add(ser, "spk_hash",
                 json_object_new_string(spk_hash));
             json_object_object_add(ser, "subject",
-                json_object_new_string(subject));
+                json_object_new_string(old_subject));
 
             ser_str = json_object_to_json_string_ext(ser,
                 JSON_C_TO_STRING_PLAIN);
             entry_sz = 1 + (int)strlen(ser_str);
-            entry_buf = (uint8_t *)malloc(entry_sz);
+            entry_buf = (uint8_t *)malloc((size_t)entry_sz);
             entry_buf[0] = 0x01;
             memcpy(entry_buf + 1, ser_str, strlen(ser_str));
             json_object_put(ser);
         }
 
         /* Add to log */
-        index = mtc_store_add_entry(store, entry_buf, entry_sz);
+        new_index = mtc_store_add_entry(store, entry_buf, entry_sz);
 
         /* Checkpoint */
         checkpoint = mtc_store_checkpoint(store);
@@ -870,7 +959,7 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
         /* Proof */
         start = 0;
         end = store->tree.size;
-        mtc_tree_inclusion_proof(&store->tree, index, start, end,
+        mtc_tree_inclusion_proof(&store->tree, new_index, start, end,
             &proof, &proof_count);
         mtc_tree_subtree_hash(&store->tree, start, end, subtree_hash);
 
@@ -879,7 +968,8 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
 
         /* Build standalone certificate */
         sc = json_object_new_object();
-        json_object_object_add(sc, "index", json_object_new_int(index));
+        json_object_object_add(sc, "index",
+            json_object_new_int(new_index));
         json_object_object_add(sc, "tbs_entry", json_object_get(tbs));
 
         proof_arr = json_object_new_array();
@@ -906,15 +996,17 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
             json_object_new_string(store->cosigner_id));
         json_object_object_add(cosig, "log_id",
             json_object_new_string(store->log_id));
-        json_object_object_add(cosig, "start", json_object_new_int(start));
-        json_object_object_add(cosig, "end", json_object_new_int(end));
+        json_object_object_add(cosig, "start",
+            json_object_new_int(start));
+        json_object_object_add(cosig, "end",
+            json_object_new_int(end));
         json_object_object_add(cosig, "subtree_hash",
             json_object_new_string(hash_hex));
         {
-            char sig_hex[64 * 2 + 1];
-            to_hex(sig, sig_sz, sig_hex);
+            char sig_hex_out[64 * 2 + 1];
+            to_hex(sig, sig_sz, sig_hex_out);
             json_object_object_add(cosig, "signature",
-                json_object_new_string(sig_hex));
+                json_object_new_string(sig_hex_out));
         }
         json_object_object_add(cosig, "algorithm",
             json_object_new_string("Ed25519"));
@@ -925,29 +1017,32 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
 
         /* Build result */
         result = json_object_new_object();
-        json_object_object_add(result, "index", json_object_new_int(index));
+        json_object_object_add(result, "index",
+            json_object_new_int(new_index));
         json_object_object_add(result, "standalone_certificate", sc);
         json_object_object_add(result, "checkpoint",
             json_object_get(checkpoint));
 
         /* Store certificate */
-        if (index >= store->cert_capacity) {
+        if (new_index >= store->cert_capacity) {
             store->cert_capacity *= 2;
-            store->certificates = (struct json_object**)realloc(
+            store->certificates = (struct json_object **)realloc(
                 store->certificates,
-                (size_t)store->cert_capacity * sizeof(struct json_object*));
+                (size_t)store->cert_capacity * sizeof(struct json_object *));
         }
-        while (store->cert_count <= index) {
+        while (store->cert_count <= new_index)
             store->certificates[store->cert_count++] = NULL;
-        }
-        store->certificates[index] = json_object_get(result);
+        store->certificates[new_index] = json_object_get(result);
 
         /* Persist */
         mtc_store_save(store);
         if (store->use_db && store->db) {
             const char *cert_str = json_object_to_json_string(result);
-            mtc_db_save_certificate(store->db, index, cert_str);
+            mtc_db_save_certificate(store->db, new_index, cert_str);
         }
+
+        LOG_INFO("renew: issued new cert for '%s' at index %d (was %d)",
+                 old_subject, new_index, cert_index);
 
         http_send_json_obj(io, 201, result);
 
@@ -1467,11 +1562,15 @@ static void handle_request(client_io *io, MtcStore *store)
             handle_enrollment_nonce(io, store, body, body_len);
         }
         else if (strcmp(path, "/certificate/request") == 0) {
+            http_send_error(io, 410,
+                "endpoint removed — use DH bootstrap port for enrollment");
+        }
+        else if (strcmp(path, "/certificate/renew") == 0) {
             if (!mtc_ratelimit_check(io->ip_str, RL_ENROLL)) {
                 http_send_error(io, 429, "rate limit exceeded");
                 return;
             }
-            handle_certificate_request(io, store, body, body_len);
+            handle_certificate_renew(io, store, body, body_len);
         }
         else if (strcmp(path, "/revoke") == 0) {
             if (!mtc_ratelimit_check(io->ip_str, RL_REVOKE)) {
