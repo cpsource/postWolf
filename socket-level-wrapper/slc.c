@@ -16,6 +16,9 @@
 #ifdef HAVE_TRUST_ANCHOR_IDS
 #include <wolfssl/wolfcrypt/hash.h>
 #endif
+#ifdef HAVE_MTC
+#include <wolfssl/wolfcrypt/mtc.h>
+#endif
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -102,25 +105,39 @@ slc_ctx_t *slc_ctx_new(const slc_cfg_t *cfg)
         return NULL;
     }
 
-    /* Load certificate */
-    if (cfg->cert_file != NULL) {
-        if (wolfSSL_CTX_use_certificate_file(ctx->wctx, cfg->cert_file,
-                WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS) {
+    /* Load identity — MTC or traditional X.509 */
+#ifdef HAVE_MTC
+    if (cfg->mtc_store != NULL) {
+        /* MTC mode: load certificate.json + private_key.pem from TPM dir */
+        if (wolfSSL_CTX_use_MTC_certificate(ctx->wctx, cfg->mtc_store)
+                != WOLFSSL_SUCCESS) {
             wolfSSL_CTX_free(ctx->wctx);
             free(ctx);
             slc_maybe_cleanup();
             return NULL;
         }
-    }
+    } else
+#endif
+    {
+        /* Traditional X.509 mode */
+        if (cfg->cert_file != NULL) {
+            if (wolfSSL_CTX_use_certificate_file(ctx->wctx, cfg->cert_file,
+                    WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS) {
+                wolfSSL_CTX_free(ctx->wctx);
+                free(ctx);
+                slc_maybe_cleanup();
+                return NULL;
+            }
+        }
 
-    /* Load private key */
-    if (cfg->key_file != NULL) {
-        if (wolfSSL_CTX_use_PrivateKey_file(ctx->wctx, cfg->key_file,
-                WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS) {
-            wolfSSL_CTX_free(ctx->wctx);
-            free(ctx);
-            slc_maybe_cleanup();
-            return NULL;
+        if (cfg->key_file != NULL) {
+            if (wolfSSL_CTX_use_PrivateKey_file(ctx->wctx, cfg->key_file,
+                    WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS) {
+                wolfSSL_CTX_free(ctx->wctx);
+                free(ctx);
+                slc_maybe_cleanup();
+                return NULL;
+            }
         }
     }
 
@@ -255,7 +272,41 @@ int slc_ctx_set_mtc(slc_ctx_t *ctx, const char *mtc_server,
     }
 #endif
 
+#ifdef HAVE_MTC
+    /* Register the CA public key as a cosigner so wolfSSL can verify
+     * peer MTC cosignatures during the TLS handshake. */
+    {
+        /* Cosigner ID is "<log_id>.ca" — we use the SHA-256 hash of the
+         * CA pubkey as a compact identifier for the AddCosigner call. */
+        byte cosigner_id[WC_SHA256_DIGEST_SIZE];
+        if (wc_Sha256Hash((const byte *)ca_pubkey, (word32)ca_pubkey_sz,
+                          cosigner_id) == 0) {
+            wolfSSL_MTC_AddCosigner(ctx->wctx,
+                cosigner_id, sizeof(cosigner_id),
+                (const unsigned char *)ca_pubkey, (unsigned int)ca_pubkey_sz,
+                CTC_ED25519);
+        }
+    }
+#endif
+
     return 0;
+}
+
+int slc_ctx_load_mtc(slc_ctx_t *ctx, const char *tpm_path)
+{
+#ifdef HAVE_MTC
+    if (ctx == NULL || tpm_path == NULL)
+        return -1;
+
+    if (wolfSSL_CTX_use_MTC_certificate(ctx->wctx, tpm_path)
+            != WOLFSSL_SUCCESS)
+        return -1;
+
+    return 0;
+#else
+    (void)ctx; (void)tpm_path;
+    return -1;
+#endif
 }
 
 void slc_ctx_free(slc_ctx_t *ctx)

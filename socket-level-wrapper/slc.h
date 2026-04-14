@@ -35,9 +35,12 @@ typedef enum {
 /* Context configuration */
 typedef struct {
     slc_role_t  role;            /* SLC_CLIENT or SLC_SERVER */
-    const char *cert_file;       /* PEM certificate (server required) */
-    const char *key_file;        /* PEM private key (server required) */
-    const char *ca_file;         /* CA cert for peer verification */
+    const char *cert_file;       /* PEM certificate (traditional X.509) */
+    const char *key_file;        /* PEM private key (traditional) */
+    const char *ca_file;         /* CA cert for peer verification (traditional) */
+    const char *mtc_store;       /* MTC identity: ~/.TPM/<domain> path.
+                                  * If set, uses MTC cert instead of cert_file/key_file.
+                                  * Contains certificate.json + private_key.pem */
     const char *ech_configs_b64; /* base64 ECH configs (client: set to server's
                                   * ECH config; server: NULL, auto-generated) */
     const char *ech_public_name; /* server only: public-facing SNI for ECH
@@ -51,10 +54,18 @@ typedef struct {
 slc_ctx_t *slc_ctx_new(const slc_cfg_t *cfg);
 
 /* Configure MTC (Merkle Tree Certificate) verification.
- * Leaf index is auto-discovered from the loaded certificate.
+ * Registers the CA cosigner key for peer proof verification and
+ * the MTC server URL for on-demand checkpoint fetching.
  * Returns 0 on success, -1 on failure. */
 int slc_ctx_set_mtc(slc_ctx_t *ctx, const char *mtc_server,
                     const unsigned char *ca_pubkey, int ca_pubkey_sz);
+
+/* Load MTC identity from a ~/.TPM/<domain> directory.
+ * Reads certificate.json + private_key.pem and loads them as an MTC
+ * certificate into the TLS context.  Can be called after slc_ctx_new()
+ * as an alternative to setting mtc_store in slc_cfg_t.
+ * Returns 0 on success, -1 on failure. */
+int slc_ctx_load_mtc(slc_ctx_t *ctx, const char *tpm_path);
 
 /* Free a context. */
 void slc_ctx_free(slc_ctx_t *ctx);
