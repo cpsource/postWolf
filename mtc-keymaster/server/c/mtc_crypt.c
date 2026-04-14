@@ -45,6 +45,22 @@
 #include <wolfssl/wolfcrypt/types.h>
 
 /******************************************************************************
+ * Function:    mtc_secure_zero  (static)
+ *
+ * Description:
+ *   Zero a buffer in a way that the compiler cannot optimise away.
+ *   Uses a volatile pointer so every byte write is treated as an
+ *   observable side effect.
+ ******************************************************************************/
+static void mtc_secure_zero(void *buf, unsigned int len)
+{
+    volatile unsigned char *p = (volatile unsigned char *)buf;
+    unsigned int i;
+    for (i = 0; i < len; i++)
+        p[i] = 0;
+}
+
+/******************************************************************************
  * Context structure (opaque outside this file).
  *
  * Allocated by mtc_crypt_init(), freed by mtc_crypt_fin().
@@ -145,6 +161,7 @@ static int mtc_crypt_rotate(MtcCryptCtx *ctx, unsigned char *buf,
     memcpy(tmp, buf + rot, buflen - rot);
     memcpy(tmp + (buflen - rot), buf, rot);
     memcpy(buf, tmp, buflen);
+    mtc_secure_zero(tmp, buflen);
 
     return 0;
 }
@@ -185,6 +202,7 @@ static int mtc_crypt_unrotate(MtcCryptCtx *ctx, unsigned char *buf,
     memcpy(tmp, buf + (buflen - rot), rot);
     memcpy(tmp + rot, buf, buflen - rot);
     memcpy(buf, tmp, buflen);
+    mtc_secure_zero(tmp, buflen);
 
     return 0;
 }
@@ -245,6 +263,7 @@ static int mtc_crypt_add_pad(MtcCryptCtx *ctx, unsigned char *inbuf,
      * flip bit 7 on that output byte. */
     mask = alloca(inbuflen);
     if (wc_RNG_GenerateBlock(&rng, mask, inbuflen) != 0) {
+        mtc_secure_zero(mask, inbuflen);
         wc_FreeRng(&rng);
         return -1;
     }
@@ -252,6 +271,7 @@ static int mtc_crypt_add_pad(MtcCryptCtx *ctx, unsigned char *inbuf,
         if (mask[i] & 0x01)
             outbuf[i] |= 0x80;
     }
+    mtc_secure_zero(mask, inbuflen);
 
     /* Fill tail padding with random bytes.
      * Ensure no pad byte looks like '}' (0x7D) after bit-7 stripping,
@@ -376,10 +396,13 @@ int mtc_crypt_encode(MtcCryptCtx *ctx, unsigned char *inbuf,
 
     tmp = alloca(padded_len);
     ret = wc_AesCbcEncrypt(&ctx->aes, tmp, outbuf, padded_len);
-    if (ret != 0)
+    if (ret != 0) {
+        mtc_secure_zero(tmp, padded_len);
         return -1;
+    }
 
     memcpy(outbuf, tmp, padded_len);
+    mtc_secure_zero(tmp, padded_len);
     *outbuflen = padded_len;
 
     /* Rotate as last step */
@@ -443,10 +466,13 @@ int mtc_crypt_decode(MtcCryptCtx *ctx, unsigned char *inbuf,
 
     tmp = alloca(inbuflen);
     ret = wc_AesCbcDecrypt(&ctx->aes, tmp, outbuf, inbuflen);
-    if (ret != 0)
+    if (ret != 0) {
+        mtc_secure_zero(tmp, inbuflen);
         return -1;
+    }
 
     memcpy(outbuf, tmp, inbuflen);
+    mtc_secure_zero(tmp, inbuflen);
 
     /* Remove padding by finding last '}' */
     ret = mtc_crypt_remove_pad(ctx, outbuf, inbuflen, &json_len);
@@ -481,7 +507,7 @@ int mtc_crypt_fin(MtcCryptCtx *ctx)
         return 0;
 
     wc_AesFree(&ctx->aes);
-    memset(ctx, 0, sizeof(*ctx));
+    mtc_secure_zero(ctx, sizeof(*ctx));
     free(ctx);
 
     return 0;
