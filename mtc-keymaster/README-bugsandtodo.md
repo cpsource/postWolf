@@ -962,3 +962,119 @@ transparency log. The current implementation only sends the full key
 because we're shoehorning MTC into TLS's X.509 Certificate message
 format, which expects an embedded public key. Removing that constraint
 is the fix.
+
+### TODO: Pure MTC Protocol — Replace TLS with ML-KEM + Merkle (Phase 2)
+
+**Priority:** High — this is the target architecture
+
+Replace the wolfSSL TLS 1.3 handshake in MTC mode with a pure
+post-quantum protocol. No TLS. No X.509. No public keys on the wire.
+
+**Connection overview:**
+
+```
+Step  Direction         Content                        Encryption
+----  ---------         -------                        ----------
+1.    Client → Server   ML-KEM encaps key +            plaintext
+                        X25519 public key
+2.    Server → Client   ML-KEM ciphertext +            plaintext
+                        X25519 public key + salt
+      [Both derive shared secret:
+       ML-KEM decapsulation + X25519 agreement
+       combined via HKDF(mlkem_ss || x25519_ss, salt, "mtc-slc-connect")]
+3.    Client → Server   {"cert_index": 72}          encrypted
+4.    Server → Client   {"cert_index": 73}          encrypted
+      [Both verify peer: cache or fetch from MTC server,
+       verify Merkle proof + cosignature, check revocation]
+5.    Client → Server   {"status": "verified"}      encrypted
+6.    Server → Client   {"status": "verified"}      encrypted
+      [Authenticated encrypted channel established]
+7.    Application data  slc_read / slc_write        encrypted
+```
+
+**What goes over the wire:**
+- ML-KEM + X25519 keys: ~2KB (key exchange)
+- Cert indices: ~100 bytes (two integers, encrypted)
+- Status: ~60 bytes (encrypted)
+- **No public keys. No certificates. No X.509. No TLS.**
+- Compare to current: ~6KB (ML-DSA-87 key + X.509 + TLS handshake)
+
+**Key exchange:** Hybrid ML-KEM + X25519 (post-quantum resistant).
+ML-KEM provides quantum resistance; X25519 is belt-and-suspenders.
+
+**Authentication:** Each side looks up the peer's cert\_index in the
+Merkle transparency log, verifies the inclusion proof + Ed25519
+cosignature, checks revocation and validity. Public key fetched from
+the MTC server on first contact, cached in `~/.TPM/peers/<index>/`
+for subsequent connections.
+
+**Encryption:** All post-handshake traffic encrypted with the ML-KEM
+derived shared secret using AES-256-GCM.
+
+**SLC API unchanged:** `slc_connect` / `slc_accept` / `slc_read` /
+`slc_write` / `slc_close` — callers don't know the underlying protocol.
+`mtc_store` in `slc_cfg_t` selects MTC mode vs traditional TLS.
+
+**Building blocks already exist:**
+- ML-KEM: `WOLFSSL_HAVE_MLKEM` + `WOLFSSL_PQC_HYBRIDS` compiled in
+- X25519: `wolfssl/wolfcrypt/curve25519.h`
+- HKDF: `wolfssl/wolfcrypt/hmac.h`
+- AES-GCM: `wolfssl/wolfcrypt/aes.h`
+- Merkle verification: `wc_MtcVerifyInclusionProof()`, `wc_MtcVerifyCosignature()`
+- Length-prefixed I/O: from bootstrap code
+- MTC server fetch: `GET /certificate/<n>`, `GET /log/checkpoint`, `GET /revoked/<n>`
+
+#### Implementation Plan
+
+**Files to modify:**
+
+1. **`socket-level-wrapper/slc.c`** — Major rewrite for MTC mode:
+   - New: `slc_mtc_handshake_client(ctx, fd)` — ML-KEM+X25519 exchange,
+     send cert\_index, receive peer index, verify peer, key confirmation
+   - New: `slc_mtc_handshake_server(ctx, fd)` — same, reversed
+   - New: `slc_mtc_verify_peer(ctx, cert_index)` — fetch/cache peer cert,
+     verify Merkle proof + cosignature + revocation + validity
+   - New: `slc_mtc_fetch_cert(ctx, cert_index)` — HTTP GET from MTC server,
+     cache in `~/.TPM/peers/<index>/`
+   - New: `slc_mtc_fetch_checkpoint(ctx)` — HTTP GET checkpoint, cache with TTL
+   - Modified: `slc_connect()` — if MTC: TCP connect + `slc_mtc_handshake_client()`
+   - Modified: `slc_accept()` — if MTC: TCP accept + `slc_mtc_handshake_server()`
+   - Modified: `slc_read()` — if MTC: `recv` + AES-GCM decrypt
+   - Modified: `slc_write()` — if MTC: AES-GCM encrypt + `send`
+   - Modified: `slc_close()` — if MTC: close socket + free crypto (no wolfSSL)
+   - Remove: `wolfSSL_CTX_use_MTC_certificate()` call, `wolfSSL_MTC_AddCosigner()`,
+     all X.509 MTC shim code
+
+2. **`socket-level-wrapper/slc.h`** — No public API changes.
+   Same `slc_connect/accept/read/write/close`. `mtc_store` in `slc_cfg_t`
+   selects MTC mode vs traditional TLS.
+
+3. **`socket-level-wrapper/Makefile`** — Add `mtc_crypt.c` dependency,
+   keep wolfSSL for ML-KEM, X25519, HKDF, AES-GCM, Merkle verification.
+
+4. **`socket-level-wrapper/examples/echo_server.c`** and **`echo_client.c`** —
+   Update to use pure MTC mode. Should work with just `--mtc ~/.TPM/<domain>`.
+
+**struct slc_conn changes:**
+```c
+struct slc_conn {
+    WOLFSSL *ssl;           /* NULL in MTC mode */
+    int      fd;
+    int      mtc_mode;      /* 1 = pure MTC protocol */
+    MtcCryptCtx *crypt_ctx; /* AES encrypt/decrypt context */
+    int      peer_index;    /* peer's cert_index after handshake */
+};
+```
+
+**Peer cache layout:**
+```
+~/.TPM/peers/<cert_index>/
+    certificate.json     # full standalone cert from MTC server
+    checkpoint.json      # tree state at time of verification
+```
+
+**Verification steps:**
+1. `wc_MtcVerifyInclusionProof()` — leaf is in the tree
+2. `wc_MtcVerifyCosignature()` — Ed25519 cosignature valid
+3. `GET /revoked/<index>` — not revoked
+4. `not_before <= now <= not_after` — not expired
