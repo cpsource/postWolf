@@ -118,3 +118,29 @@ considering for high-security environments.
 
 **Question:** Is nonce-only (Option A) acceptable for our threat model, or
 do we need the stronger DH binding (Option B)?
+
+### Option C: DH on a Separate Port (Pre-TLS Trust Bootstrap)
+
+A separate port dedicated to the DH exchange could establish a shared secret
+**before** TLS is involved. Both the CA server and the client end up with
+the same secret key derived from the DH exchange.
+
+**Flow:**
+
+1. CA operator issues a nonce for a domain, gives it to the leaf
+2. Leaf connects to the CA server's DH port (plain TCP or minimal TLS)
+3. Both sides perform a DH key exchange, authenticated by the nonce
+4. Both sides now share a secret key
+5. This shared secret could then be used to:
+   - Authenticate the subsequent TLS connection (as a PSK)
+   - Sign the certificate enrollment request
+   - Establish mutual trust without relying on the TLS PKI at all
+
+**Why a separate port?** The DH exchange happens outside the normal TLS
+channel, so trust is established independently of the server's self-signed
+certificate. This solves the cold-start problem: the client doesn't need
+to trust the server's TLS cert to bootstrap enrollment, because the
+nonce-authenticated DH exchange provides its own trust path.
+
+**Question:** Is this worth the added complexity, or is DH-within-TLS
+(Option B) sufficient?
