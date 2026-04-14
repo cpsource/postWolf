@@ -212,3 +212,48 @@ From this point on, the client is enrolled. All subsequent communication
 uses the **main port (8444) over TLS 1.3** with the MTC certificate.
 Renewals use the existing private key — no nonce, no DH, no CA operator
 involvement. The DH port is never used again for this node.
+
+## Post-Quantum Considerations for the DH Bootstrap
+
+Classic DH and ECDH are vulnerable to quantum computers (Shor's algorithm).
+For the bootstrap port, we can use post-quantum alternatives:
+
+- **ML-KEM** (formerly CRYSTALS-Kyber) — lattice-based key encapsulation.
+  Replaces DH for key exchange. Both sides end up with a shared secret,
+  same flow as above, but quantum-resistant.
+- **Hybrid mode** (ML-KEM + X25519) — combines post-quantum and classical
+  key exchange. If either algorithm holds, the shared secret is safe.
+
+Both modes produce the same result from the application's perspective:
+a shared secret. The difference is in the safety margin:
+
+- **ML-KEM only**: client sends an ML-KEM public key, server encapsulates
+  a secret with it and sends ciphertext back, client decapsulates. Shared
+  secret established. Quantum-safe, but if ML-KEM's lattice math is ever
+  broken, everything is exposed.
+
+- **Hybrid (ML-KEM + X25519)**: both algorithms run in parallel. The final
+  shared secret is derived by combining both results. If ML-KEM is broken,
+  X25519 still protects you. If X25519 is broken by a quantum computer,
+  ML-KEM still protects you. Belt and suspenders. Costs a bit more
+  bandwidth and computation for the extra safety margin.
+
+The flow to the bootstrap application is identical either way — you get
+a shared secret, encrypt the enrollment with it, done.
+
+### Why an ML-KEM public key instead of a regular public key?
+
+They are fundamentally different math. A regular public key (EC P-256,
+X25519) is based on elliptic curves or discrete logarithms — solvable
+by a quantum computer using Shor's algorithm. An ML-KEM public key is
+based on lattice problems (Learning With Errors) — no known quantum
+algorithm efficiently solves these. The two are incompatible: you cannot
+use an EC public key for ML-KEM encapsulation.
+
+In hybrid mode, the client sends **both** an ML-KEM public key and an
+X25519 public key. The server performs both operations and the two
+resulting secrets are combined into one.
+
+wolfSSL already has both compiled in (`WOLFSSL_HAVE_MLKEM` and
+`WOLFSSL_PQC_HYBRIDS` are defined in the current build). The bootstrap
+port could use hybrid ML-KEM + X25519 with no additional dependencies.
