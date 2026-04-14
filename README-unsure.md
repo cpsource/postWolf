@@ -171,3 +171,20 @@ Additional protections:
 - AbuseIPDB screening (reject known-bad IPs)
 - The DH port can be disabled when not onboarding new nodes
 - Nonces are time-limited and single-use
+
+### DH State Management
+
+The server maintains a pool of pending DH results, stored as JSON:
+
+```json
+{
+  "shared_secret": "a3f8...",
+  "client_public_key": "04b7...",
+  "created": 1775150057,
+  "timeout": 300
+}
+```
+
+If no valid nonce arrives to claim a DH entry within the timeout period,
+the entry is discarded. This prevents the server from accumulating stale
+DH state from attackers or failed enrollment attempts.
