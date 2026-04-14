@@ -257,3 +257,16 @@ resulting secrets are combined into one.
 wolfSSL already has both compiled in (`WOLFSSL_HAVE_MLKEM` and
 `WOLFSSL_PQC_HYBRIDS` are defined in the current build). The bootstrap
 port could use hybrid ML-KEM + X25519 with no additional dependencies.
+
+### Can the nonce be sent during the ML-KEM exchange?
+
+No. The nonce is the **authorization** — the CA operator decides who gets
+to enroll for a specific domain by giving them the nonce. If the server
+sent the nonce back during the ML-KEM exchange, anyone who connects to
+the DH port would receive one. The ML-KEM exchange is anonymous — the
+server has no way to know it's talking to the right client, because the
+client has no identity yet (that's what enrollment establishes).
+
+The 3rd-party nonce transfer is the one step that cannot be automated
+away. It represents a human decision: "yes, this entity is authorized
+for this domain."
