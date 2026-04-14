@@ -144,3 +144,16 @@ nonce-authenticated DH exchange provides its own trust path.
 
 **Question:** Is this worth the added complexity, or is DH-within-TLS
 (Option B) sufficient?
+
+### Lifecycle Note: DH Is One-Time Only
+
+The DH exchange is a **one-time bootstrap ceremony** per node. Once a node
+has its first certificate:
+
+- **Renewals** use the existing private key to prove identity
+  (see `POST /certificate/renew` proposal above)
+- **All subsequent connections** use normal TLS with the MTC certificate
+
+The DH bootstrap port could be disabled entirely after all nodes are
+enrolled, reducing the attack surface. It only needs to be active when
+onboarding new nodes.
