@@ -954,3 +954,11 @@ connection is zero extra round trips and zero extra bytes on the wire.
 
 This is the core MTC advantage for post-quantum — 2.6KB ML-DSA-87 keys
 don't bloat every TLS handshake.
+
+**Key insight:** If both peers are enrolled in the same MTC log, no public
+key ever needs to go over the wire. Each side sends only a cert\_index
+(an integer). The receiver looks up the peer's public key from the
+transparency log. The current implementation only sends the full key
+because we're shoehorning MTC into TLS's X.509 Certificate message
+format, which expects an embedded public key. Removing that constraint
+is the fix.
