@@ -26,6 +26,13 @@ from pathlib import Path
 DEFAULT_OUT = Path.home() / ".mtc-ca-data"
 
 
+def normalize_server_url(server):
+    """Ensure server URL has https:// prefix."""
+    if not server.startswith("http://") and not server.startswith("https://"):
+        server = "https://" + server
+    return server
+
+
 def fingerprint_from_pem(pem_path: str) -> str:
     """Compute SHA-256 fingerprint of a public key PEM file (raw PEM text hash)."""
     with open(pem_path, "r") as f:
@@ -81,8 +88,8 @@ def main():
                         help="Leaf public key fingerprint (sha256:hex)")
     parser.add_argument("--key-file", default=None,
                         help="Path to leaf public key PEM (alternative to --fingerprint)")
-    parser.add_argument("--server", default="https://factsorlie.com:8444",
-                        help="MTC server URL (default: https://factsorlie.com:8444)")
+    parser.add_argument("--server", default="factsorlie.com:8444",
+                        help="MTC server (default: factsorlie.com:8444)")
     parser.add_argument("--out", default=str(DEFAULT_OUT),
                         help=f"Base output directory (default: {DEFAULT_OUT})")
     parser.add_argument("--dry-run", action="store_true",
@@ -109,6 +116,8 @@ def main():
             print("Provide --key-file or --fingerprint, or place the key at "
                   f"{auto_path}", file=sys.stderr)
             sys.exit(1)
+
+    args.server = normalize_server_url(args.server)
 
     if args.dry_run:
         print(f"\n*** DRY RUN — would send to {args.server}:")

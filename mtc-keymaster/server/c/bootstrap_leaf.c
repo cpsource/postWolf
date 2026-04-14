@@ -409,10 +409,8 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (!subject || !nonce) {
-        fprintf(stderr, "Error: --domain and --nonce are required.\n"
-                "Note: --domain must match the --domain used with "
-                "issue_leaf_nonce.py\n\n");
+    if (!subject) {
+        fprintf(stderr, "Error: --domain is required\n\n");
         usage(argv[0]);
         return 1;
     }
@@ -423,7 +421,8 @@ int main(int argc, char *argv[])
 
     /* Default paths from ~/.mtc-ca-data/<domain>/ if not specified */
     {
-        static char def_pub[512], def_priv[512];
+        static char def_pub[512], def_priv[512], def_nonce_path[512];
+        static char nonce_buf[128];
         const char *home = getenv("HOME");
         if (!home) home = ".";
 
@@ -436,6 +435,28 @@ int main(int argc, char *argv[])
             snprintf(def_priv, sizeof(def_priv),
                      "%s/.mtc-ca-data/%s/private_key.pem", home, subject);
             priv_key_path = def_priv;
+        }
+        if (!nonce) {
+            FILE *nf;
+            snprintf(def_nonce_path, sizeof(def_nonce_path),
+                     "%s/.mtc-ca-data/%s/nonce.txt", home, subject);
+            nf = fopen(def_nonce_path, "r");
+            if (nf) {
+                if (fgets(nonce_buf, sizeof(nonce_buf), nf)) {
+                    /* Strip trailing newline */
+                    char *nl = strchr(nonce_buf, '\n');
+                    if (nl) *nl = '\0';
+                    nonce = nonce_buf;
+                }
+                fclose(nf);
+            }
+            if (!nonce) {
+                fprintf(stderr, "Error: no --nonce given and no nonce.txt "
+                        "found at %s\n"
+                        "Run issue_leaf_nonce.py --domain %s first\n",
+                        def_nonce_path, subject);
+                return 1;
+            }
         }
     }
 

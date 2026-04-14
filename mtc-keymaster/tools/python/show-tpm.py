@@ -13,7 +13,14 @@ import urllib.error
 from pathlib import Path
 
 DEFAULT_TPM_DIR = Path.home() / ".TPM"
-DEFAULT_SERVER = "https://localhost:8444"
+DEFAULT_SERVER = "localhost:8444"
+
+
+def normalize_server_url(server):
+    """Ensure server URL has https:// prefix."""
+    if not server.startswith("http://") and not server.startswith("https://"):
+        server = "https://" + server
+    return server
 
 
 def fmt_ts(ts):
@@ -280,7 +287,7 @@ def main():
     )
     parser.add_argument(
         "-s", "--server", type=str, default=DEFAULT_SERVER,
-        help=f"MTC CA server URL (default: {DEFAULT_SERVER})",
+        help=f"MTC CA server (default: {DEFAULT_SERVER})",
     )
     args = parser.parse_args()
 
@@ -326,6 +333,7 @@ def main():
     ssl_ctx = None
     verify_ok = True
     if args.verify:
+        args.server = normalize_server_url(args.server)
         ssl_ctx = make_ssl_ctx()
         # Quick connectivity check
         info = server_get(args.server, "/", ssl_ctx)
