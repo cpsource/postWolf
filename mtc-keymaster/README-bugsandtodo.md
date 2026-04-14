@@ -896,3 +896,16 @@ client code. Findings are prioritized by severity.
 
 **S20. No rate limiting on API endpoints — FIXED** — `/enrollment/nonce` and
 `/certificate/request` can be flooded. (Noted — deferred per design.)
+
+### TODO: ECH support in MTC mode
+
+**Priority:** Medium
+
+ECH (Encrypted Client Hello) is currently disabled when using MTC certificates
+(`slc.c` skips ECH auto-fetch in MTC mode). The ECH auto-fetch connects to the
+peer's port to `GET /ech/configs`, which steals the server's `accept()` call.
+
+**Fix:** Fetch ECH configs from the MTC server's HTTP port (8444) which serves
+`/ech/configs`, or use a cached config from `~/.TPM/ech/<host>.conf`, instead
+of connecting to the peer's TLS port. This avoids the stale connection issue
+while still providing SNI encryption.
