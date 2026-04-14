@@ -185,13 +185,23 @@ subjectAltName = DNS:{domain}
     print(f"  SAN:          {san_dns}")
     print(f"  Valid:        {days} days")
     print(f"  pathlen:      0 (intermediate CA — requires DNS validation)")
-    # Compute SPKI SHA-256 fingerprint for DNS TXT record
+    # Compute SPKI SHA-256 fingerprint for DNS TXT record.
+    # Must match the server's computation: SHA-256 of the DER-encoded
+    # SubjectPublicKeyInfo (SPKI) extracted from the certificate.
+    import hashlib
+    import base64
     spki_fp = ""
     cmd = [OPENSSL, "x509", "-in", str(cert_path), "-pubkey", "-noout"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
-        import hashlib
-        spki_fp = hashlib.sha256(result.stdout.encode()).hexdigest()
+        # Convert PEM public key to DER (strip headers, decode base64)
+        pem_lines = result.stdout.strip().splitlines()
+        b64_data = "".join(
+            line for line in pem_lines
+            if not line.startswith("-----")
+        )
+        spki_der = base64.b64decode(b64_data)
+        spki_fp = hashlib.sha256(spki_der).hexdigest()
 
     print(f"\nDNS TXT record required for enrollment:")
     print(f"  Record name:  _mtc-ca.{domain}")

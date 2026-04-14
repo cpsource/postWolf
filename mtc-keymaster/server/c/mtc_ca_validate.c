@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#include <netdb.h>
 #include <resolv.h>
 #include <arpa/nameser.h>
 
@@ -84,9 +85,25 @@ int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex,
 
     snprintf(qname, sizeof(qname), "_mtc-ca.%s", domain);
 
+    LOG_INFO("DNS lookup: %s", qname);
+    if (expected_nonce)
+        LOG_INFO("  expecting: v=mtc-ca2; fp=sha256:%s; n=%s",
+                 fp_hex, expected_nonce);
+    else
+        LOG_INFO("  expecting: v=mtc-ca1; fp=sha256:%s", fp_hex);
+
     ans_len = res_query(qname, ns_c_in, ns_t_txt, answer, sizeof(answer));
     if (ans_len < 0) {
-        LOG_WARN("DNS query failed for %s", qname);
+        int err = h_errno;
+        const char *reason;
+        switch (err) {
+            case HOST_NOT_FOUND: reason = "domain not found (NXDOMAIN)"; break;
+            case NO_DATA:        reason = "no TXT records exist"; break;
+            case TRY_AGAIN:      reason = "DNS timeout or temporary failure"; break;
+            case NO_RECOVERY:    reason = "DNS server error (non-recoverable)"; break;
+            default:             reason = "unknown error"; break;
+        }
+        LOG_WARN("DNS query failed for %s: %s (h_errno=%d)", qname, reason, err);
         return 0;
     }
 
@@ -95,64 +112,90 @@ int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex,
         return 0;
     }
 
-    for (i = 0; i < ns_msg_count(msg, ns_s_an); i++) {
-        if (ns_parserr(&msg, ns_s_an, i, &rr) == 0 &&
-            ns_rr_type(rr) == ns_t_txt) {
-            const unsigned char *rdata = ns_rr_rdata(rr);
-            int rdlen = ns_rr_rdlen(rr);
-            if (rdlen > 1) {
-                int txt_len = rdata[0];
-                if (txt_len <= rdlen - 1) {
-                    char txt[512];
-                    if (txt_len >= (int)sizeof(txt))
-                        txt_len = (int)sizeof(txt) - 1;
-                    memcpy(txt, rdata + 1, txt_len);
-                    txt[txt_len] = '\0';
-                    LOG_TRACE("TXT record: \"%s\"", txt);
+    {
+        int txt_count = 0;
+        int total = ns_msg_count(msg, ns_s_an);
+        LOG_DEBUG("DNS response: %d answer records for %s", total, qname);
 
-                    /* Parse TXT record fields by splitting on ';'
-                     * and matching exact key=value pairs. */
-                    {
-                        char tmp[512];
-                        char *field, *saveptr;
-                        const char *v_val = NULL, *fp_val = NULL;
-                        const char *n_val = NULL;
+        for (i = 0; i < total; i++) {
+            if (ns_parserr(&msg, ns_s_an, i, &rr) == 0 &&
+                ns_rr_type(rr) == ns_t_txt) {
+                const unsigned char *rdata = ns_rr_rdata(rr);
+                int rdlen = ns_rr_rdlen(rr);
+                if (rdlen > 1) {
+                    int txt_len = rdata[0];
+                    if (txt_len <= rdlen - 1) {
+                        char txt[512];
+                        if (txt_len >= (int)sizeof(txt))
+                            txt_len = (int)sizeof(txt) - 1;
+                        memcpy(txt, rdata + 1, txt_len);
+                        txt[txt_len] = '\0';
+                        txt_count++;
+                        LOG_INFO("  found TXT[%d]: \"%s\"", txt_count, txt);
 
-                        snprintf(tmp, sizeof(tmp), "%s", txt);
-                        for (field = strtok_r(tmp, ";", &saveptr);
-                             field != NULL;
-                             field = strtok_r(NULL, ";", &saveptr)) {
-                            while (*field == ' ') field++;
-                            if (strncmp(field, "v=", 2) == 0)
-                                v_val = field + 2;
-                            else if (strncmp(field, "fp=sha256:", 10) == 0)
-                                fp_val = field + 10;
-                            else if (strncmp(field, "n=", 2) == 0)
-                                n_val = field + 2;
-                        }
+                        /* Parse TXT record fields by splitting on ';'
+                         * and matching exact key=value pairs. */
+                        {
+                            char tmp[512];
+                            char *field, *saveptr;
+                            const char *v_val = NULL, *fp_val = NULL;
+                            const char *n_val = NULL;
 
-                        if (expected_nonce) {
-                            if (v_val && strcmp(v_val, "mtc-ca2") == 0 &&
-                                fp_val && strcmp(fp_val, fp_hex) == 0 &&
-                                n_val && strcmp(n_val, expected_nonce) == 0) {
-                                LOG_DEBUG("v=mtc-ca2 MATCH for %s", qname);
-                                return 1;
+                            snprintf(tmp, sizeof(tmp), "%s", txt);
+                            for (field = strtok_r(tmp, ";", &saveptr);
+                                 field != NULL;
+                                 field = strtok_r(NULL, ";", &saveptr)) {
+                                while (*field == ' ') field++;
+                                if (strncmp(field, "v=", 2) == 0)
+                                    v_val = field + 2;
+                                else if (strncmp(field, "fp=sha256:", 10) == 0)
+                                    fp_val = field + 10;
+                                else if (strncmp(field, "n=", 2) == 0)
+                                    n_val = field + 2;
                             }
-                        }
-                        else {
-                            if (v_val && strcmp(v_val, "mtc-ca1") == 0 &&
-                                fp_val && strcmp(fp_val, fp_hex) == 0) {
-                                LOG_DEBUG("v=mtc-ca1 MATCH for %s", qname);
-                                return 1;
+
+                            /* Log what we parsed vs what we need */
+                            if (v_val)
+                                LOG_DEBUG("    parsed: v=%s fp=%s n=%s",
+                                          v_val, fp_val ? fp_val : "(none)",
+                                          n_val ? n_val : "(none)");
+
+                            if (expected_nonce) {
+                                if (v_val && strcmp(v_val, "mtc-ca2") == 0 &&
+                                    fp_val && strcmp(fp_val, fp_hex) == 0 &&
+                                    n_val && strcmp(n_val, expected_nonce) == 0) {
+                                    LOG_INFO("  MATCH: v=mtc-ca2 for %s", qname);
+                                    return 1;
+                                }
+                            }
+                            else {
+                                if (v_val && strcmp(v_val, "mtc-ca1") == 0 &&
+                                    fp_val && strcmp(fp_val, fp_hex) == 0) {
+                                    LOG_INFO("  MATCH: v=mtc-ca1 for %s", qname);
+                                    return 1;
+                                }
+                            }
+
+                            /* Log mismatch details */
+                            if (v_val && fp_val) {
+                                if (strcmp(fp_val, fp_hex) != 0)
+                                    LOG_WARN("  mismatch: fingerprint differs");
+                                if (expected_nonce && (!n_val || strcmp(n_val, expected_nonce) != 0))
+                                    LOG_WARN("  mismatch: nonce differs");
                             }
                         }
                     }
                 }
             }
         }
+
+        if (txt_count == 0)
+            LOG_WARN("no TXT records found in DNS response for %s", qname);
+        else
+            LOG_WARN("no matching TXT record for %s (%d record(s) checked)",
+                     qname, txt_count);
     }
 
-    LOG_WARN("no matching TXT record for %s", qname);
     return 0;
 }
 
@@ -184,7 +227,7 @@ int mtc_validate_ca_cert(struct json_object *extensions,
     DecodedCert decoded;
     int ret;
     const unsigned char *pem_bytes;
-    unsigned char der_buf[8192];
+    unsigned char der_buf[16384];  /* ML-DSA-87 certs are ~10KB */
     int der_sz;
     int pem_len;
     char fp_hex[65];
@@ -205,8 +248,8 @@ int mtc_validate_ca_cert(struct json_object *extensions,
     pem_bytes = (const unsigned char *)ca_cert_pem;
     pem_len = (int)strlen(ca_cert_pem);
     LOG_TRACE("PEM length: %d bytes", pem_len);
-    if (pem_len > 6000) {
-        LOG_WARN("CA cert PEM too large");
+    if (pem_len > 16000) {
+        LOG_WARN("CA cert PEM too large (%d bytes)", pem_len);
         return 0;
     }
     der_sz = (int)sizeof(der_buf);
@@ -262,7 +305,7 @@ int mtc_validate_ca_cert(struct json_object *extensions,
         {
             wc_Sha256 sha;
             uint8_t h[32];
-            uint8_t spki_buf[1024];
+            uint8_t spki_buf[4096];  /* ML-DSA-87 SPKI is ~2.6KB */
             word32 spki_sz = sizeof(spki_buf);
 
             ret = wc_GetSubjectPubKeyInfoDerFromCert(
