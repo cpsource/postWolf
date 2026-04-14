@@ -46,6 +46,7 @@
 
 #include "mtc_store.h"
 #include "mtc_http.h"
+#include "mtc_bootstrap.h"
 #include "mtc_checkendpoint.h"
 #include "mtc_log.h"
 #include "mtc_ratelimit.h"
@@ -94,6 +95,7 @@ static void usage(const char *prog)
     printf("  --tls-key FILE   PEM server private key\n");
     printf("  --tls-ca FILE    CA cert for client verification\n");
     printf("  --ech-name NAME  ECH public name (e.g., factsorlie.com)\n");
+    printf("  --dh-port PORT   Bootstrap DH port for pre-TLS enrollment (default: disabled)\n");
     printf("  --log-level N    Log level: 0=error 1=warn 2=info 3=debug 4=trace (default: 2)\n");
     printf("  --log-file PATH  Log file (default: /var/log/mtc/mtc_server.log)\n");
     printf("  -h, --help       Show this help\n");
@@ -141,6 +143,7 @@ int main(int argc, char *argv[])
     const char *tls_key = NULL;
     const char *tls_ca = NULL;
     const char *ech_name = NULL;
+    int dh_port = 0;
     int log_level = MTC_LOG_INFO;
     const char *log_file = NULL;
     MtcStore store;
@@ -171,6 +174,8 @@ int main(int argc, char *argv[])
             tls_ca = argv[++i];
         else if (strcmp(argv[i], "--ech-name") == 0 && i + 1 < argc)
             ech_name = argv[++i];
+        else if (strcmp(argv[i], "--dh-port") == 0 && i + 1 < argc)
+            dh_port = atoi(argv[++i]);
         else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc)
             log_level = atoi(argv[++i]);
         else if (strcmp(argv[i], "--log-file") == 0 && i + 1 < argc)
@@ -226,6 +231,12 @@ int main(int argc, char *argv[])
     tls_cfg.key_file        = tls_key;
     tls_cfg.ca_file         = tls_ca;
     tls_cfg.ech_public_name = ech_name;
+
+    /* 8a. Start DH bootstrap listener if --dh-port was given */
+    if (dh_port > 0) {
+        if (mtc_bootstrap_start(host, dh_port, &store) != 0)
+            LOG_WARN("bootstrap listener failed to start on port %d", dh_port);
+    }
 
     /* 9. Run HTTP server (blocks indefinitely) */
     mtc_http_serve(host, port, &store, tls_cert ? &tls_cfg : NULL);
