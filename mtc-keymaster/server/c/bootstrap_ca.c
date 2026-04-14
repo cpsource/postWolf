@@ -686,8 +686,13 @@ int main(int argc, char *argv[])
         struct json_object *enroll = json_object_new_object();
         const char *enroll_str;
 
-        json_object_object_add(enroll, "subject",
-            json_object_new_string(subject));
+        /* CA subject convention: <domain>-ca */
+        {
+            char ca_subject[512];
+            snprintf(ca_subject, sizeof(ca_subject), "%s-ca", subject);
+            json_object_object_add(enroll, "subject",
+                json_object_new_string(ca_subject));
+        }
         json_object_object_add(enroll, "public_key_pem",
             json_object_new_string(pub_key_pem));
         json_object_object_add(enroll, "key_algorithm",
@@ -781,7 +786,9 @@ int main(int argc, char *argv[])
                     json_object_to_json_string_ext(resp,
                         JSON_C_TO_STRING_PRETTY));
             } else {
-                if (save_to_tpm(tpm_dir, subject,
+                char ca_subj_save[512];
+                snprintf(ca_subj_save, sizeof(ca_subj_save), "%s-ca", subject);
+                if (save_to_tpm(tpm_dir, ca_subj_save,
                         json_object_to_json_string_ext(resp,
                             JSON_C_TO_STRING_PRETTY),
                         cert_index, pub_key_path, priv_key_path,

@@ -85,6 +85,8 @@ def main():
                         help="MTC server URL (default: https://factsorlie.com:8444)")
     parser.add_argument("--out", default=str(DEFAULT_OUT),
                         help=f"Base output directory (default: {DEFAULT_OUT})")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Show what would be sent without contacting the server")
     args = parser.parse_args()
 
     # Get fingerprint — try --key-file, --fingerprint, or auto-detect from domain
@@ -108,6 +110,16 @@ def main():
                   f"{auto_path}", file=sys.stderr)
             sys.exit(1)
 
+    if args.dry_run:
+        print(f"\n*** DRY RUN — would send to {args.server}:")
+        print(f"  POST /enrollment/nonce")
+        print(f"  {{")
+        print(f'    "domain": "{args.domain}",')
+        print(f'    "public_key_fingerprint": "sha256:{fp}",')
+        print(f'    "type": "leaf"')
+        print(f"  }}")
+        return
+
     print(f"Requesting leaf nonce for '{args.domain}' from {args.server}...")
     result = request_nonce(args.server, args.domain, fp)
 
@@ -130,11 +142,7 @@ def main():
     print(f"\n  Saved to:  {nonce_path}")
 
     print(f"\nSend this nonce to the leaf user. They enroll with:")
-    print(f"  bootstrap_leaf --server {args.server.replace('https://', '').replace('http://', '')}:8445 \\")
-    print(f"    --domain \"{args.domain}\" \\")
-    print(f"    --public-key <leaf-public-key.pem> \\")
-    print(f"    --private-key <leaf-private-key.pem> \\")
-    print(f"    --nonce {nonce}")
+    print(f"  bootstrap_leaf --domain \"{args.domain}\" --nonce {nonce}")
 
 
 if __name__ == "__main__":

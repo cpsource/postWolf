@@ -1,159 +1,137 @@
 #!/usr/bin/env python3
 """
-Generate an EC-P256 leaf key pair and self-contained certificate files
-for use with MTC/TLS 1.3, without contacting the CA server.
+Generate a leaf key pair for MTC enrollment via the DH bootstrap port.
 
-The certificate can be enrolled later via:
-    python3 main.py enroll <subject>
+Supports EC-P256, Ed25519, and ML-DSA-87 (post-quantum via openssl35).
+
+Creates the key files needed by bootstrap_leaf:
+    ~/.mtc-ca-data/<domain>/private_key.pem
+    ~/.mtc-ca-data/<domain>/public_key.pem
+    ~/.mtc-ca-data/<domain>/public_key.txt
 
 Usage:
-    python3 create_leaf_cert.py factsorlie.com
-    python3 create_leaf_cert.py --algorithm Ed25519 mydevice.local
-    python3 create_leaf_cert.py --out /tmp/keys factsorlie.com
+    python3 create_leaf_cert.py --domain my-device.example.com
+    python3 create_leaf_cert.py --domain my-device.example.com --algorithm EC-P256
+    python3 create_leaf_cert.py --domain my-device.example.com --algorithm Ed25519
 """
 
 import argparse
 import hashlib
-import json
 import os
+import stat
+import subprocess
 import sys
-import time
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519
-from cryptography.hazmat.primitives import serialization
-from cryptography import x509
-from cryptography.x509.oid import NameOID
-from cryptography.hazmat.primitives.hashes import SHA256
-import datetime
+DEFAULT_OUT = Path.home() / ".mtc-ca-data"
+DEFAULT_ALGORITHM = "ML-DSA-87"
 
-TPM_DIR = Path.home() / ".TPM"
+OPENSSL = "openssl35"
 
 
-def generate_key_pair(algorithm: str = "EC-P256"):
-    """Generate a key pair. Returns (private_key, priv_pem, pub_pem)."""
-    if algorithm == "EC-P256":
-        private_key = ec.generate_private_key(ec.SECP256R1())
-    elif algorithm == "Ed25519":
-        private_key = ed25519.Ed25519PrivateKey.generate()
-    else:
-        print(f"ERROR: unsupported algorithm: {algorithm}", file=sys.stderr)
+def check_openssl35():
+    """Verify openssl35 is available."""
+    try:
+        result = subprocess.run(
+            [OPENSSL, "version"],
+            capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            print(f"ERROR: {OPENSSL} not found", file=sys.stderr)
+            sys.exit(1)
+        print(f"Using: {result.stdout.strip()}")
+    except FileNotFoundError:
+        print(f"ERROR: {OPENSSL} not found in PATH", file=sys.stderr)
         sys.exit(1)
 
-    priv_pem = private_key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    ).decode()
 
-    pub_pem = private_key.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode()
+def generate_leaf(domain, out_base, algorithm):
+    """Generate leaf keypair using openssl35."""
+    out_dir = Path(out_base) / domain
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    return private_key, priv_pem, pub_pem
+    key_path = out_dir / "private_key.pem"
+    pub_path = out_dir / "public_key.pem"
+    pub_txt_path = out_dir / "public_key.txt"
 
+    algo_map = {
+        "ML-DSA-87": "ML-DSA-87",
+        "ML-DSA-65": "ML-DSA-65",
+        "ML-DSA-44": "ML-DSA-44",
+        "EC-P256": "EC",
+        "Ed25519": "ED25519",
+    }
 
-def create_self_signed_cert(private_key, subject: str, validity_days: int):
-    """Create a minimal self-signed X.509 leaf certificate."""
-    name = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, subject),
-    ])
+    ossl_algo = algo_map.get(algorithm, algorithm)
 
-    now = datetime.datetime.now(datetime.timezone.utc)
-    builder = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(private_key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now)
-        .not_valid_after(now + datetime.timedelta(days=validity_days))
-        .add_extension(
-            x509.SubjectAlternativeName([x509.DNSName(subject)]),
-            critical=False,
-        )
-        .add_extension(
-            x509.BasicConstraints(ca=False, path_length=None),
-            critical=True,
-        )
-        .add_extension(
-            x509.KeyUsage(
-                digital_signature=True, key_encipherment=False,
-                content_commitment=False, data_encipherment=False,
-                key_agreement=False, key_cert_sign=False,
-                crl_sign=False, encipher_only=False,
-                decipher_only=False,
-            ),
-            critical=True,
-        )
-    )
-
-    if isinstance(private_key, ed25519.Ed25519PrivateKey):
-        cert = builder.sign(private_key, algorithm=None)
+    # --- Generate private key ---
+    print(f"Generating {algorithm} private key...")
+    if algorithm.startswith("EC"):
+        cmd = [OPENSSL, "genpkey", "-algorithm", ossl_algo,
+               "-pkeyopt", "ec_paramgen_curve:P-256",
+               "-out", str(key_path)]
     else:
-        cert = builder.sign(private_key, algorithm=SHA256())
+        cmd = [OPENSSL, "genpkey", "-algorithm", ossl_algo,
+               "-out", str(key_path)]
 
-    return cert
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"ERROR: key generation failed: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+    os.chmod(key_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+
+    # --- Extract public key ---
+    print("Extracting public key...")
+    cmd = [OPENSSL, "pkey", "-in", str(key_path),
+           "-pubout", "-out", str(pub_path)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"ERROR: public key extraction failed: {result.stderr}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # --- Dump human-readable public key ---
+    print("Writing human-readable public key info...")
+    cmd = [OPENSSL, "pkey", "-pubin", "-in", str(pub_path),
+           "-text", "-noout"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        with open(pub_txt_path, "w") as f:
+            f.write(result.stdout)
+
+    # --- Compute fingerprint (SHA-256 of raw PEM text, matching server) ---
+    with open(pub_path, "r") as f:
+        pub_pem_text = f.read()
+    fp = hashlib.sha256(pub_pem_text.encode()).hexdigest()
+
+    print(f"\nLeaf key pair created:")
+    print(f"  Private key:  {key_path} (mode 0600)")
+    print(f"  Public key:   {pub_path}")
+    print(f"  Public (txt): {pub_txt_path}")
+    print(f"  Algorithm:    {algorithm}")
+    print(f"  Fingerprint:  sha256:{fp}")
+
+    print(f"\nNext steps:")
+    print(f"  1. CA operator issues a nonce:")
+    print(f"     python3 issue_leaf_nonce.py --domain \"{domain}\" --key-file {pub_path}")
+    print(f"")
+    print(f"  2. Enroll via bootstrap (after receiving nonce):")
+    print(f"     bootstrap_leaf --domain \"{domain}\" --nonce <NONCE>")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate a leaf key pair and certificate for MTC/TLS 1.3")
-    parser.add_argument("subject", help="Certificate subject / DNS name")
-    parser.add_argument("--algorithm", default="EC-P256",
-                        choices=["EC-P256", "Ed25519"],
-                        help="Key algorithm (default: EC-P256)")
-    parser.add_argument("--days", type=int, default=90,
-                        help="Validity period in days (default: 90)")
-    parser.add_argument("--out", default=None,
-                        help="Output directory (default: ~/.TPM/<subject>)")
+        description="Generate a leaf key pair for MTC bootstrap enrollment")
+    parser.add_argument("--domain", required=True,
+                        help="Leaf domain/subject (e.g., my-device.example.com)")
+    parser.add_argument("--out", default=str(DEFAULT_OUT),
+                        help=f"Base output directory (default: {DEFAULT_OUT})")
+    parser.add_argument("--algorithm", default=DEFAULT_ALGORITHM,
+                        help=f"Key algorithm (default: {DEFAULT_ALGORITHM})")
     args = parser.parse_args()
 
-    # Generate key pair
-    private_key, priv_pem, pub_pem = generate_key_pair(args.algorithm)
-
-    # Compute fingerprint
-    pub_der = private_key.public_key().public_bytes(
-        serialization.Encoding.DER,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-    fp = hashlib.sha256(pub_der).hexdigest()
-
-    # Create self-signed certificate
-    cert = create_self_signed_cert(private_key, args.subject, args.days)
-    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
-
-    # Output directory
-    if args.out:
-        out_dir = Path(args.out)
-    else:
-        safe = args.subject.replace("/", "_").replace(":", "_")
-        out_dir = TPM_DIR / safe
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write files
-    key_path = out_dir / "private_key.pem"
-    key_path.write_text(priv_pem)
-    os.chmod(key_path, 0o600)
-
-    pub_path = out_dir / "public_key.pem"
-    pub_path.write_text(pub_pem)
-
-    cert_path = out_dir / "leaf_cert.pem"
-    cert_path.write_text(cert_pem)
-
-    print(f"Subject:     {args.subject}")
-    print(f"Algorithm:   {args.algorithm}")
-    print(f"Validity:    {args.days} days")
-    print(f"Fingerprint: sha256:{fp}")
-    print()
-    print(f"  Private key:   {key_path}")
-    print(f"  Public key:    {pub_path}")
-    print(f"  Certificate:   {cert_path}")
-    print()
-    print(f"To enroll with MTC CA server:")
-    print(f"  python3 main.py enroll {args.subject}")
+    check_openssl35()
+    generate_leaf(args.domain, args.out, args.algorithm)
 
 
 if __name__ == "__main__":
