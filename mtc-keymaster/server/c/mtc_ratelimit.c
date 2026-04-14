@@ -55,6 +55,7 @@ static const struct {
     [RL_NONCE_CA]   = {   3,   10, "nonce-ca"    },
     [RL_ENROLL]     = {   3,   10, "enroll"      },
     [RL_REVOKE]     = {   2,    5, "revoke"      },
+    [RL_BOOTSTRAP]  = {   3,   30, "bootstrap"   },
     [RL_GLOBAL]     = { 120, 1200, "global"      },
 };
 

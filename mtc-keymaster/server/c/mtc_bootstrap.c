@@ -42,6 +42,7 @@
 #include "mtc_db.h"
 #include "mtc_log.h"
 #include "mtc_checkendpoint.h"
+#include "mtc_ratelimit.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -753,6 +754,13 @@ static void *bootstrap_thread(void *arg)
         }
 
         LOG_INFO("bootstrap: connection from %s", ip_str);
+
+        /* Rate limit first (cheap Redis check) */
+        if (ip_str[0] != '\0' && !mtc_ratelimit_check(ip_str, RL_BOOTSTRAP)) {
+            LOG_WARN("bootstrap: rate limited %s", ip_str);
+            close(client_fd);
+            continue;
+        }
 
         /* AbuseIPDB check at enrollment threshold (25%) */
         if (ip_str[0] != '\0') {

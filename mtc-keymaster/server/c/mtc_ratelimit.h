@@ -34,8 +34,9 @@
                                    (3/min, 10/hr)                          */
 #define RL_ENROLL         3   /**< POST /certificate/request (3/min, 10/hr)*/
 #define RL_REVOKE         4   /**< POST /revoke (2/min, 5/hr)              */
-#define RL_GLOBAL         5   /**< Catch-all per-IP (120/min, 1200/hr)     */
-#define RL_NUM_CATEGORIES 6   /**< Total number of categories              */
+#define RL_BOOTSTRAP      5   /**< DH bootstrap port (3/min, 30/hr)        */
+#define RL_GLOBAL         6   /**< Catch-all per-IP (120/min, 1200/hr)     */
+#define RL_NUM_CATEGORIES 7   /**< Total number of categories              */
 /** @} */
 
 /**
