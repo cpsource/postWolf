@@ -346,7 +346,7 @@ static void usage(const char *prog)
     printf("  --private-key FILE   Path to CA private key PEM\n");
     printf("  --ca-cert FILE       Path to X.509 CA certificate PEM\n");
     printf("  --nonce NONCE        Optional nonce for v=mtc-ca2 DNS validation\n");
-    printf("  --key-algorithm ALG  Key algorithm (default: EC-P256)\n");
+    printf("  --key-algorithm ALG  Key algorithm (default: ML-DSA-87)\n");
     printf("  --validity-days N    Certificate validity (default: 365)\n");
     printf("  --tpm-dir DIR        TPM storage directory (default: ~/.TPM)\n");
     printf("  --dry-run            Do everything but don't save to TPM\n");
@@ -369,7 +369,7 @@ int main(int argc, char *argv[])
     const char *priv_key_path = NULL;
     const char *ca_cert_path = NULL;
     const char *nonce = NULL;
-    const char *key_algo = "EC-P256";
+    const char *key_algo = "ML-DSA-87";
     int validity_days = 365;
     const char *tpm_dir_arg = NULL;
 
@@ -437,12 +437,37 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (!server_arg || !subject || !pub_key_path || !priv_key_path ||
-        !ca_cert_path) {
-        fprintf(stderr, "Error: --server, --domain, --public-key, "
-                "--private-key, and --ca-cert are required\n\n");
+    if (!subject) {
+        fprintf(stderr, "Error: --domain is required\n\n");
         usage(argv[0]);
         return 1;
+    }
+
+    /* Default --server to factsorlie.com:8445 */
+    if (!server_arg)
+        server_arg = "factsorlie.com:8445";
+
+    /* Default paths from ~/.mtc-ca-data/<domain>/ if not specified */
+    {
+        static char def_pub[512], def_priv[512], def_cert[512];
+        const char *home = getenv("HOME");
+        if (!home) home = ".";
+
+        if (!pub_key_path) {
+            snprintf(def_pub, sizeof(def_pub),
+                     "%s/.mtc-ca-data/%s/public_key.pem", home, subject);
+            pub_key_path = def_pub;
+        }
+        if (!priv_key_path) {
+            snprintf(def_priv, sizeof(def_priv),
+                     "%s/.mtc-ca-data/%s/private_key.pem", home, subject);
+            priv_key_path = def_priv;
+        }
+        if (!ca_cert_path) {
+            snprintf(def_cert, sizeof(def_cert),
+                     "%s/.mtc-ca-data/%s/ca_cert.pem", home, subject);
+            ca_cert_path = def_cert;
+        }
     }
 
     /* Parse host:port */
