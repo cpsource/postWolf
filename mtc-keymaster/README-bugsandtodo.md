@@ -937,3 +937,20 @@ the ability to avoid sending large post-quantum public keys on every handshake.
 This requires changes to `ssl_mtc.c` (build a smaller cert DER with just the
 proof) and `internal.c` (fetch public key during ProcessPeerCerts if not
 present in the cert).
+
+**How Merkle solves this:**
+1. Peer sends only cert\_index + Merkle proof in the Certificate message
+2. Receiver verifies the proof against the log's root hash — now trusts
+   that cert\_index is legitimate and the `subject_public_key_hash` is authentic
+3. Receiver fetches the full public key from the MTC server:
+   `GET /certificate/<index>` (one HTTP call)
+4. Receiver hashes the fetched key, confirms it matches the hash in the
+   verified proof
+5. Receiver uses the key to verify CertificateVerify
+
+For repeat connections, cache the peer's public key in `~/.TPM/peers/<index>/`
+and skip step 3. First connection costs one HTTP fetch; every subsequent
+connection is zero extra round trips and zero extra bytes on the wire.
+
+This is the core MTC advantage for post-quantum — 2.6KB ML-DSA-87 keys
+don't bloat every TLS handshake.
