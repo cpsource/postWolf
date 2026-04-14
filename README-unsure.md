@@ -1,36 +1,23 @@
-# Unsure / Open Questions
+# wolfGuard Design Decisions & Architecture
 
-## Leaf Enrollment: Public Key Fingerprint Binding
+## Enrollment Architecture (Decided)
 
-The leaf enrollment flow assumes the following:
+### Initial Enrollment: DH Bootstrap Port Only
 
-1. The leaf generates a keypair locally
-2. The leaf gives its public key fingerprint to the CA operator (out of band)
-3. The CA operator calls `POST /enrollment/nonce` with the leaf's domain + the leaf's public key fingerprint
-4. The CA operator gives the nonce back to the leaf (out of band)
-5. The leaf calls `POST /certificate/request` with its public key PEM + the nonce
-6. The server hashes the submitted public key, confirms it matches the fingerprint the nonce was bound to
+`POST /certificate/request` on the TLS port is **deprecated**. All initial
+enrollment (both CA and leaf) goes through the **DH bootstrap port** (8445).
+This solves the chicken-and-egg TLS problem — no certificate needed to enroll.
 
-This ensures only the holder of that specific keypair can use the nonce. If someone steals the nonce, they can't use it with a different key.
+- **Leaf enrollment**: requires a nonce (out-of-band from CA operator)
+- **CA enrollment**: requires DNS TXT validation at `_mtc-ca.<domain>`
+- **No root CA concept**: all CAs require DNS validation, no bypass
 
-**Question:** Is this the correct understanding of how the public key fingerprint binding works in the enrollment flow?
+Tools: `bootstrap_leaf` and `bootstrap_ca`
 
-## Design Proposal: Client-Side Certificate Renewal Without Nonces
+### Certificate Renewal: `POST /certificate/renew` (TLS Port)
 
-### Problem
-
-The current renewal tool (`renew.py`) is designed to run on the server machine.
-Remote clients cannot renew autonomously because enrollment requires a nonce
-issued by the CA operator. This creates two bad options:
-
-1. The CA operator manually issues nonces every time a client cert approaches expiry.
-2. The CA operator holds the client's private keys and renews on their behalf —
-   which breaks the trust model (private key should never leave the client).
-
-### Proposed Solution: `POST /certificate/renew`
-
-If a client already has a valid certificate with a private key, it can prove
-its identity by signing with that key. No nonce or CA operator involvement needed.
+Once enrolled, clients renew over the **main TLS port** (8444) by proving
+they hold the current private key. No nonce, no CA operator involvement.
 
 **Flow:**
 
@@ -56,6 +43,12 @@ provides the server with the public key to verify against.
 - Rate limiting to prevent abuse.
 - Should the server require the old cert to be within N days of expiry
   before allowing renewal?
+
+### Deprecated Endpoints
+
+- `POST /certificate/request` — replaced by DH bootstrap port enrollment
+- `POST /enrollment/nonce` — nonces are still created server-side but the
+  enrollment itself goes through the bootstrap port, not the TLS endpoint
 
 ## Simplifying Initial Enrollment: Nonce-Only (No Fingerprint Out-of-Band)
 

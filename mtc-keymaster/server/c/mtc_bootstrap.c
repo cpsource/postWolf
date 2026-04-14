@@ -43,6 +43,7 @@
 #include "mtc_log.h"
 #include "mtc_checkendpoint.h"
 #include "mtc_ratelimit.h"
+#include "mtc_ca_validate.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -446,50 +447,98 @@ static int handle_bootstrap_client(int fd, MtcStore *store)
         }
     }
 
-    if (!json_object_object_get_ex(req, "enrollment_nonce", &val)) {
-        LOG_WARN("bootstrap: missing 'enrollment_nonce'");
-        goto cleanup;
-    }
-    enrollment_nonce = json_object_get_string(val);
+    /* Nonce is required for leaf, optional for CA */
+    if (json_object_object_get_ex(req, "enrollment_nonce", &val))
+        enrollment_nonce = json_object_get_string(val);
+    else
+        enrollment_nonce = NULL;
 
     json_object_object_get_ex(req, "extensions", &extensions);
 
-    /* --- Validate nonce --- */
+    /* --- Determine enrollment type and validate --- */
     {
-        wc_Sha256 sha;
-        uint8_t h[32];
-        char leaf_fp[65];
-        int fi;
+        int is_ca_enrollment = 0;
 
-        wc_InitSha256(&sha);
-        wc_Sha256Update(&sha, (const uint8_t *)pub_key_pem,
-                        (word32)strlen(pub_key_pem));
-        wc_Sha256Final(&sha, h);
-        wc_Sha256Free(&sha);
-        for (fi = 0; fi < 32; fi++)
-            snprintf(leaf_fp + fi * 2, 3, "%02x", h[fi]);
-
-        if (!store->db ||
-            !mtc_db_validate_and_consume_nonce(store->db,
-                enrollment_nonce, subject, leaf_fp)) {
-            LOG_WARN("bootstrap: invalid, expired, or used nonce for '%s'",
-                     subject);
-            /* Send encrypted error response */
-            {
-                const char *err_json = "{\"status\":\"error\","
-                    "\"message\":\"invalid, expired, or already-used nonce\"}";
-                unsigned int err_enc_len = sizeof(enc_buf);
-                if (mtc_crypt_encode(crypt_ctx, (unsigned char *)err_json,
-                        (unsigned int)strlen(err_json),
-                        enc_buf, &err_enc_len) == 0) {
-                    send_length_prefixed(fd, enc_buf, err_enc_len);
-                }
-            }
-            goto cleanup;
+        /* Detect CA enrollment: extensions contains ca_certificate_pem */
+        if (extensions) {
+            struct json_object *ca_val;
+            if (json_object_object_get_ex(extensions, "ca_certificate_pem",
+                                          &ca_val))
+                is_ca_enrollment = 1;
         }
 
-        LOG_INFO("bootstrap: leaf enrollment for '%s' authorized by nonce %.16s...",
-                 subject, enrollment_nonce);
+        if (is_ca_enrollment) {
+            /* CA enrollment: validate X.509 cert + DNS TXT record */
+            LOG_INFO("bootstrap: CA enrollment request for '%s'", subject);
+            if (!mtc_validate_ca_cert(extensions, enrollment_nonce)) {
+                LOG_WARN("bootstrap: CA validation failed for '%s'", subject);
+                {
+                    const char *err_json = "{\"status\":\"error\","
+                        "\"message\":\"CA certificate rejected: "
+                        "DNS validation failed\"}";
+                    unsigned int err_enc_len = sizeof(enc_buf);
+                    if (mtc_crypt_encode(crypt_ctx, (unsigned char *)err_json,
+                            (unsigned int)strlen(err_json),
+                            enc_buf, &err_enc_len) == 0) {
+                        send_length_prefixed(fd, enc_buf, err_enc_len);
+                    }
+                }
+                goto cleanup;
+            }
+            LOG_INFO("bootstrap: CA enrollment for '%s' authorized",
+                     subject);
+        } else {
+            /* Leaf enrollment: nonce required */
+            wc_Sha256 sha;
+
+            if (!enrollment_nonce) {
+                LOG_WARN("bootstrap: missing enrollment_nonce for leaf '%s'",
+                         subject);
+                {
+                    const char *err_json = "{\"status\":\"error\","
+                        "\"message\":\"enrollment_nonce required for leaf\"}";
+                    unsigned int err_enc_len = sizeof(enc_buf);
+                    if (mtc_crypt_encode(crypt_ctx, (unsigned char *)err_json,
+                            (unsigned int)strlen(err_json),
+                            enc_buf, &err_enc_len) == 0) {
+                        send_length_prefixed(fd, enc_buf, err_enc_len);
+                    }
+                }
+                goto cleanup;
+            }
+            uint8_t h[32];
+            char leaf_fp[65];
+            int fi;
+
+            wc_InitSha256(&sha);
+            wc_Sha256Update(&sha, (const uint8_t *)pub_key_pem,
+                            (word32)strlen(pub_key_pem));
+            wc_Sha256Final(&sha, h);
+            wc_Sha256Free(&sha);
+            for (fi = 0; fi < 32; fi++)
+                snprintf(leaf_fp + fi * 2, 3, "%02x", h[fi]);
+
+            if (!store->db ||
+                !mtc_db_validate_and_consume_nonce(store->db,
+                    enrollment_nonce, subject, leaf_fp)) {
+                LOG_WARN("bootstrap: invalid, expired, or used nonce for '%s'",
+                         subject);
+                {
+                    const char *err_json = "{\"status\":\"error\","
+                        "\"message\":\"invalid, expired, or already-used nonce\"}";
+                    unsigned int err_enc_len = sizeof(enc_buf);
+                    if (mtc_crypt_encode(crypt_ctx, (unsigned char *)err_json,
+                            (unsigned int)strlen(err_json),
+                            enc_buf, &err_enc_len) == 0) {
+                        send_length_prefixed(fd, enc_buf, err_enc_len);
+                    }
+                }
+                goto cleanup;
+            }
+
+            LOG_INFO("bootstrap: leaf enrollment for '%s' authorized by nonce %.16s...",
+                     subject, enrollment_nonce);
+        }
     }
 
     /* --- Issue certificate (mirrors handle_certificate_request logic) --- */

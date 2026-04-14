@@ -49,6 +49,7 @@
 #include "mtc_http.h"
 #include "mtc_checkendpoint.h"
 #include "mtc_log.h"
+#include "mtc_ca_validate.h"
 #include "mtc_ratelimit.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -438,92 +439,7 @@ static void handle_get_certificate(client_io *io, MtcStore *store, int index)
  *   1  if a matching TXT record is found.
  *   0  if no match, DNS query failed, or parse error.
  ******************************************************************************/
-static int validate_ca_dns_txt(const char *domain, const char *fp_hex,
-                               const char *expected_nonce)
-{
-    char qname[256];
-    unsigned char answer[4096];
-    int ans_len, i;
-    ns_msg msg;
-    ns_rr rr;
-
-    snprintf(qname, sizeof(qname), "_mtc-ca.%s", domain);
-
-    ans_len = res_query(qname, ns_c_in, ns_t_txt, answer, sizeof(answer));
-    if (ans_len < 0) {
-        LOG_WARN("DNS query failed for %s", qname);
-        return 0;
-    }
-
-    if (ns_initparse(answer, ans_len, &msg) < 0) {
-        LOG_WARN("failed to parse DNS response for %s", qname);
-        return 0;
-    }
-
-    for (i = 0; i < ns_msg_count(msg, ns_s_an); i++) {
-        if (ns_parserr(&msg, ns_s_an, i, &rr) == 0 &&
-            ns_rr_type(rr) == ns_t_txt) {
-            const unsigned char *rdata = ns_rr_rdata(rr);
-            int rdlen = ns_rr_rdlen(rr);
-            if (rdlen > 1) {
-                int txt_len = rdata[0];
-                if (txt_len <= rdlen - 1) {
-                    char txt[512];
-                    if (txt_len >= (int)sizeof(txt))
-                        txt_len = (int)sizeof(txt) - 1;
-                    memcpy(txt, rdata + 1, txt_len);
-                    txt[txt_len] = '\0';
-                    LOG_TRACE("TXT record: \"%s\"", txt);
-
-                    /* Parse TXT record fields by splitting on ';'
-                     * and matching exact key=value pairs. No substring
-                     * matching — prevents crafted records. */
-                    {
-                        char tmp[512];
-                        char *field, *saveptr;
-                        const char *v_val = NULL, *fp_val = NULL;
-                        const char *n_val = NULL;
-
-                        snprintf(tmp, sizeof(tmp), "%s", txt);
-                        for (field = strtok_r(tmp, ";", &saveptr);
-                             field != NULL;
-                             field = strtok_r(NULL, ";", &saveptr)) {
-                            /* Skip leading whitespace */
-                            while (*field == ' ') field++;
-                            if (strncmp(field, "v=", 2) == 0)
-                                v_val = field + 2;
-                            else if (strncmp(field, "fp=sha256:", 10) == 0)
-                                fp_val = field + 10;
-                            else if (strncmp(field, "n=", 2) == 0)
-                                n_val = field + 2;
-                        }
-
-                        if (expected_nonce) {
-                            /* v=mtc-ca2: exact field matching */
-                            if (v_val && strcmp(v_val, "mtc-ca2") == 0 &&
-                                fp_val && strcmp(fp_val, fp_hex) == 0 &&
-                                n_val && strcmp(n_val, expected_nonce) == 0) {
-                                LOG_DEBUG("v=mtc-ca2 MATCH for %s", qname);
-                                return 1;
-                            }
-                        }
-                        else {
-                            /* Legacy v=mtc-ca1: fingerprint-only */
-                            if (v_val && strcmp(v_val, "mtc-ca1") == 0 &&
-                                fp_val && strcmp(fp_val, fp_hex) == 0) {
-                                LOG_DEBUG("v=mtc-ca1 MATCH for %s", qname);
-                                return 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    LOG_WARN("no matching TXT record for %s", qname);
-    return 0;
-}
+/* validate_ca_dns_txt — now in mtc_ca_validate.c (mtc_validate_ca_dns_txt) */
 
 /******************************************************************************
  * Function:    validate_ca_cert_if_present
@@ -548,132 +464,7 @@ static int validate_ca_dns_txt(const char *domain, const char *fp_hex,
  *   1  if not a CA request, or CA validated successfully.
  *   0  if CA validation failed (rejected).
  ******************************************************************************/
-static int validate_ca_cert_if_present(struct json_object *extensions,
-                                       const char *enrollment_nonce)
-{
-    struct json_object *ca_cert_val;
-    const char *ca_cert_pem;
-    DecodedCert decoded;
-    int ret;
-    const unsigned char *pem_bytes;
-    unsigned char der_buf[8192];
-    int der_sz;
-    int pem_len;
-    char fp_hex[65];
-
-    if (!extensions)
-        return 1; /* No extensions, not a CA request */
-
-    if (!json_object_object_get_ex(extensions, "ca_certificate_pem", &ca_cert_val))
-        return 1; /* No CA cert in request, OK */
-
-    ca_cert_pem = json_object_get_string(ca_cert_val);
-    if (!ca_cert_pem || strlen(ca_cert_pem) == 0)
-        return 1;
-
-    /* Root CA detection is server-side only — never trust the client's
-     * "root_ca" flag. We determine root status from the parsed certificate's
-     * Basic Constraints: pathlen absent or > 0 = root, pathlen == 0 =
-     * intermediate. The check happens below after parsing the cert. */
-
-    LOG_DEBUG("CA certificate PEM found, validating...");
-
-    /* Convert PEM to DER */
-    pem_bytes = (const unsigned char *)ca_cert_pem;
-    pem_len = (int)strlen(ca_cert_pem);
-    LOG_TRACE("PEM length: %d bytes", pem_len);
-    if (pem_len > 6000) {
-        LOG_WARN("CA cert PEM too large");
-        return 0;
-    }
-    der_sz = (int)sizeof(der_buf);
-    ret = wc_CertPemToDer(pem_bytes, pem_len, der_buf, der_sz, CERT_TYPE);
-    if (ret < 0) {
-        LOG_WARN("PEM to DER conversion failed: %d", ret);
-        return 0;
-    }
-    der_sz = ret;
-    LOG_TRACE("DER size: %d bytes", der_sz);
-
-    /* Parse the certificate */
-    wc_InitDecodedCert(&decoded, der_buf, (word32)der_sz, NULL);
-    ret = wc_ParseCert(&decoded, CERT_TYPE, NO_VERIFY, NULL);
-    if (ret != 0) {
-        LOG_WARN("certificate parse failed: %d", ret);
-        wc_FreeDecodedCert(&decoded);
-        return 0;
-    }
-
-    /* Check Basic Constraints: CA:TRUE */
-    if (!decoded.isCA) {
-        LOG_WARN("certificate is not a CA (isCA=0)");
-        wc_FreeDecodedCert(&decoded);
-        return 0;
-    }
-    LOG_DEBUG("CA:TRUE, pathlen:%d", decoded.pathLength);
-
-    /* Server-side root CA detection: pathlen absent (pathLengthSet==0) or
-     * pathlen > 0 means root. pathlen == 0 means intermediate — requires
-     * DNS validation. */
-    if (!decoded.pathLengthSet || decoded.pathLength > 0) {
-        LOG_INFO("root CA detected (pathLengthSet=%d, pathlen=%u) — "
-                 "DNS validation skipped",
-                 decoded.pathLengthSet, decoded.pathLength);
-        wc_FreeDecodedCert(&decoded);
-        return 1;
-    }
-
-    /* Extract SAN DNS name */
-    {
-        DNS_entry *san = decoded.altNames;
-        char domain[256] = {0};
-
-        while (san) {
-            if (san->type == ASN_DNS_TYPE && san->name) {
-                snprintf(domain, sizeof(domain), "%s", san->name);
-                break;
-            }
-            san = san->next;
-        }
-
-        if (domain[0] == '\0') {
-            LOG_WARN("no SAN DNS name found in CA cert");
-            wc_FreeDecodedCert(&decoded);
-            return 0;
-        }
-
-        LOG_DEBUG("SAN DNS: %s", domain);
-
-        /* Compute SHA-256 fingerprint of SubjectPublicKeyInfo DER */
-        {
-            wc_Sha256 sha;
-            uint8_t h[32];
-            uint8_t spki_buf[1024];
-            word32 spki_sz = sizeof(spki_buf);
-
-            ret = wc_GetSubjectPubKeyInfoDerFromCert(
-                der_buf, (word32)der_sz, spki_buf, &spki_sz);
-            if (ret != 0) {
-                LOG_WARN("failed to extract SPKI: %d", ret);
-                wc_FreeDecodedCert(&decoded);
-                return 0;
-            }
-
-            wc_InitSha256(&sha);
-            wc_Sha256Update(&sha, spki_buf, spki_sz);
-            wc_Sha256Final(&sha, h);
-            wc_Sha256Free(&sha);
-            to_hex(h, 32, fp_hex);
-        }
-
-        LOG_DEBUG("public key fingerprint: %.16s...", fp_hex);
-
-        wc_FreeDecodedCert(&decoded);
-
-        /* Check DNS — pass nonce for v=mtc-ca2, or NULL for legacy */
-        return validate_ca_dns_txt(domain, fp_hex, enrollment_nonce);
-    }
-}
+/* validate_ca_cert_if_present — now in mtc_ca_validate.c (mtc_validate_ca_cert) */
 
 /******************************************************************************
  * Function:    handle_enrollment_nonce
@@ -944,7 +735,7 @@ static void handle_certificate_request(client_io *io, MtcStore *store,
         if (is_ca_enrollment) {
             /* CA enrollment: DNS TXT validation, no nonce required.
              * The DNS record at _mtc-ca.<domain> proves domain ownership. */
-            if (!validate_ca_cert_if_present(extensions, NULL)) {
+            if (!mtc_validate_ca_cert(extensions, NULL)) {
                 http_send_error(io, 403,
                     "CA certificate rejected: DNS validation failed — "
                     "no matching _mtc-ca.<domain> TXT record found");
