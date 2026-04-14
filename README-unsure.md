@@ -157,3 +157,17 @@ has its first certificate:
 The DH bootstrap port could be disabled entirely after all nodes are
 enrolled, reducing the attack surface. It only needs to be active when
 onboarding new nodes.
+
+### Security of the DH Port
+
+An attacker connecting to the DH port without a valid nonce gains nothing.
+The DH exchange produces a shared secret, but the server will never
+associate it with a domain or issue a certificate without the matching
+nonce. The attacker gets a key to nothing.
+
+Additional protections:
+
+- Rate limiting (same as the main port)
+- AbuseIPDB screening (reject known-bad IPs)
+- The DH port can be disabled when not onboarding new nodes
+- Nonces are time-limited and single-use
