@@ -909,3 +909,31 @@ peer's port to `GET /ech/configs`, which steals the server's `accept()` call.
 `/ech/configs`, or use a cached config from `~/.TPM/ech/<host>.conf`, instead
 of connecting to the peer's TLS port. This avoids the stale connection issue
 while still providing SNI encryption.
+
+### TODO: Reduce Certificate message size — send proof, not full key
+
+**Priority:** High — key benefit of MTC for post-quantum
+
+Currently `ssl_mtc.c` builds a synthetic X.509 cert containing the full
+public key SPKI (~2.6KB for ML-DSA-87) plus the MTC proof. The entire thing
+is sent in the TLS Certificate message. This defeats a key advantage of MTC:
+the ability to avoid sending large post-quantum public keys on every handshake.
+
+**Ideal flow:**
+1. Sender includes only cert\_index + Merkle proof in the Certificate message
+2. Receiver looks up the public key hash from the transparency log by index
+3. Receiver verifies the Merkle inclusion proof against the log's root hash
+4. Receiver fetches the actual public key from the MTC server (or local cache)
+   to verify the CertificateVerify signature
+
+**Approaches:**
+- **On-demand fetch:** Peer fetches public key from MTC server during handshake.
+  Adds latency but dramatically reduces wire size.
+- **Pre-cached keys:** Peers cache public keys of known peers in `~/.TPM/peers/`.
+  Zero latency for repeat connections.
+- **Trust anchor pre-distribution:** MTC draft Section 7 — relying parties
+  pre-cache landmark subtree hashes and frequently-used public keys.
+
+This requires changes to `ssl_mtc.c` (build a smaller cert DER with just the
+proof) and `internal.c` (fetch public key during ProcessPeerCerts if not
+present in the cert).
