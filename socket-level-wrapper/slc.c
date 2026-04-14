@@ -36,6 +36,7 @@
 struct slc_ctx {
     WOLFSSL_CTX    *wctx;
     slc_role_t      role;
+    int             use_mtc;     /* 1 if MTC mode active */
     /* MTC config (optional) */
     char           *mtc_server;
     unsigned char  *ca_pubkey;
@@ -109,6 +110,7 @@ slc_ctx_t *slc_ctx_new(const slc_cfg_t *cfg)
 #ifdef HAVE_MTC
     if (cfg->mtc_store != NULL) {
         /* MTC mode: load certificate.json + private_key.pem from TPM dir */
+        ctx->use_mtc = 1;
         if (wolfSSL_CTX_use_MTC_certificate(ctx->wctx, cfg->mtc_store)
                 != WOLFSSL_SUCCESS) {
             wolfSSL_CTX_free(ctx->wctx);
@@ -649,8 +651,10 @@ slc_conn_t *slc_connect(slc_ctx_t *ctx, const char *host, int port)
 #ifdef HAVE_ECH
     /* Auto-ECH: if no ECH config was set on the context, try to load
      * from ~/.TPM/ech/<host>.conf or fetch from server. ECH failure
-     * is non-fatal — we fall through to connect without ECH. */
-    if (cfg_has_no_ech(ctx)) {
+     * is non-fatal — we fall through to connect without ECH.
+     * Skip in MTC mode — the peer may not serve /ech/configs and the
+     * fetch would steal the server's accept() call. */
+    if (cfg_has_no_ech(ctx) && !ctx->use_mtc) {
         slc_ech_auto(ctx, conn->ssl, host, port);
     }
 #endif

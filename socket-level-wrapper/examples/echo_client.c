@@ -7,6 +7,8 @@
  * Connects to the echo server, sends a message, prints the response.
  */
 
+#include <wolfssl/options.h>
+#include <wolfssl/ssl.h>
 #include "slc.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +33,8 @@ int main(int argc, char *argv[])
     const char *msg = "Hello SLC!";
     char buf[BUF_SZ];
     int n, i, pos;
+
+    printf("echo_client starting\n"); fflush(stdout);
 
     /* Parse arguments */
     pos = 0;  /* positional argument counter */
@@ -58,6 +62,8 @@ int main(int argc, char *argv[])
     if (mtc_store) {
         cfg.mtc_store = mtc_store;
         printf("MTC mode: %s\n", mtc_store);
+        fflush(stdout);
+        wolfSSL_Debugging_ON();
     } else {
         cfg.cert_file = DEFAULT_CERT;
         cfg.key_file  = DEFAULT_KEY;
