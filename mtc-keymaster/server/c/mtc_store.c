@@ -158,32 +158,11 @@ static int init_ca_key(MtcStore *store)
     WC_RNG rng;
     int ret;
 
-    /* Try to load from DB first */
-    if (store->use_db && store->db) {
-        char *hex = mtc_db_load_config(store->db, "ca_private_key_hex");
-        if (hex) {
-            int i, len = (int)strlen(hex) / 2;
-            if (len <= (int)sizeof(store->ca_priv_key)) {
-                for (i = 0; i < len; i++) {
-                    unsigned int bv;
-                    sscanf(hex + i * 2, "%02x", &bv);
-                    store->ca_priv_key[i] = (uint8_t)bv;
-                }
-                store->ca_priv_key_sz = len;
-                LOG_WARN("CA private key loaded from database — key is "
-                         "stored unencrypted in PostgreSQL. Consider using "
-                         "file-based storage (ca_key.der) for production.");
-            }
-            free(hex);
-        }
-    }
-
     snprintf(path, sizeof(path), "%s/ca_key.der", store->data_dir);
 
-    /* Try to load from file if not from DB */
-    if (store->ca_priv_key_sz <= 0)
-        store->ca_priv_key_sz = read_file(path, store->ca_priv_key,
-            (int)sizeof(store->ca_priv_key));
+    /* Load from file only — private keys are never stored in the DB */
+    store->ca_priv_key_sz = read_file(path, store->ca_priv_key,
+        (int)sizeof(store->ca_priv_key));
 
     if (store->ca_priv_key_sz > 0) {
         /* Extract public key from private */
@@ -220,15 +199,6 @@ static int init_ca_key(MtcStore *store)
             store->ca_priv_key_sz = ret;
             write_file(path, store->ca_priv_key, store->ca_priv_key_sz);
             chmod(path, 0600);
-
-            /* Also save to DB */
-            if (store->use_db && store->db) {
-                char hex[256];
-                int j;
-                for (j = 0; j < store->ca_priv_key_sz; j++)
-                    snprintf(hex + j * 2, 3, "%02x", store->ca_priv_key[j]);
-                mtc_db_save_config(store->db, "ca_private_key_hex", hex);
-            }
             ret = 0;
         }
     }
