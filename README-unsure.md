@@ -188,3 +188,27 @@ The server maintains a pool of pending DH results, stored as JSON:
 If no valid nonce arrives to claim a DH entry within the timeout period,
 the entry is discarded. This prevents the server from accumulating stale
 DH state from attackers or failed enrollment attempts.
+
+## Summary: Bootstrap Flow
+
+All bootstrap steps use the **DH port** (e.g., 8445). The main TLS port
+(8444) is not used until after enrollment is complete.
+
+1. **Client generates a keypair** (public + private key) locally — no network
+2. **Client receives a nonce** from the CA operator via a 3rd-party channel
+   (the only out-of-band item) — no network (e.g., email, phone, in person)
+3. **Client connects to the DH port** (8445) and performs a DH exchange —
+   both sides obtain a shared secret
+4. **On the same DH connection**, client sends its public key + nonce,
+   **encrypted with the DH shared secret** — an eavesdropper sees nothing
+   useful
+5. **CA server decrypts using the same shared secret**, validates the nonce,
+   enrolls the client, and returns the MTC certificate (with Merkle proof
+   and cosignature) — also encrypted with the DH shared secret, on the
+   same DH connection
+6. **Client stores the certificate** in `~/.TPM/<subject>/` — local only
+
+From this point on, the client is enrolled. All subsequent communication
+uses the **main port (8444) over TLS 1.3** with the MTC certificate.
+Renewals use the existing private key — no nonce, no DH, no CA operator
+involvement. The DH port is never used again for this node.
