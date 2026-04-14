@@ -68,6 +68,8 @@
 #include <wolfssl/wolfcrypt/asn.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
 #include <wolfssl/wolfcrypt/ecc.h>
+#include <wolfssl/wolfcrypt/ed25519.h>
+#include <wolfssl/wolfcrypt/dilithium.h>
 #include <wolfssl/wolfcrypt/coding.h>
 
 #define HTTP_BUF_SZ  65536   /**< Maximum HTTP request size (headers + body) */
@@ -784,19 +786,20 @@ static void handle_certificate_renew(client_io *io, MtcStore *store,
 
     /* --- Step 3: Verify signature --- */
     {
-        ecc_key key;
-        uint8_t sig_bytes[256];
+        uint8_t sig_bytes[8192];  /* ML-DSA-87 sigs can be ~4627 bytes */
         int sig_len;
         char sign_msg[MAX_PATH_SZ];
         uint8_t msg_hash[32];
         int verified = 0;
         int ret;
+        uint8_t der_buf[4096];
+        int der_sz;
 
         /* Build the message that was signed */
         snprintf(sign_msg, sizeof(sign_msg), "renew:%d:%s",
                  cert_index, new_pub_pem);
 
-        /* Hash the message */
+        /* Hash the message (used by ECC; Ed25519/ML-DSA sign raw msg) */
         {
             wc_Sha256 sha;
             wc_InitSha256(&sha);
@@ -826,44 +829,102 @@ static void handle_certificate_renew(client_io *io, MtcStore *store,
             }
         }
 
-        /* Import the old public key and verify */
-        wc_ecc_init(&key);
+        /* Decode PEM public key to DER */
+        der_sz = (int)sizeof(der_buf);
+        ret = wc_PubKeyPemToDer((const unsigned char *)old_pub_pem,
+                                (int)strlen(old_pub_pem),
+                                der_buf, der_sz);
+        if (ret < 0) {
+            LOG_WARN("renew: PEM to DER failed: %d", ret);
+            http_send_error(io, 400, "invalid old public key PEM");
+            json_object_put(req);
+            return;
+        }
+        der_sz = ret;
 
-        /* Decode PEM public key — convert PEM to DER first */
-        {
-            uint8_t der_buf[1024];
-            int der_sz = (int)sizeof(der_buf);
+        /* Dispatch verification based on key algorithm */
+        if (strcmp(old_algo, "EC-P256") == 0 ||
+            strcmp(old_algo, "EC-P384") == 0) {
+            /* ECDSA: verify hash */
+            ecc_key ecc;
             word32 idx = 0;
 
-            ret = wc_PubKeyPemToDer((const unsigned char *)old_pub_pem,
-                                    (int)strlen(old_pub_pem),
-                                    der_buf, der_sz);
-            if (ret < 0) {
-                LOG_WARN("renew: PEM to DER failed: %d", ret);
-                wc_ecc_free(&key);
-                http_send_error(io, 400, "invalid old public key PEM");
-                json_object_put(req);
-                return;
-            }
-            der_sz = ret;
-
-            ret = wc_EccPublicKeyDecode(der_buf, &idx, &key, (word32)der_sz);
+            wc_ecc_init(&ecc);
+            ret = wc_EccPublicKeyDecode(der_buf, &idx, &ecc, (word32)der_sz);
             if (ret != 0) {
                 LOG_WARN("renew: ECC key decode failed: %d", ret);
-                wc_ecc_free(&key);
+                wc_ecc_free(&ecc);
                 http_send_error(io, 400, "invalid ECC public key");
                 json_object_put(req);
                 return;
             }
+            ret = wc_ecc_verify_hash(sig_bytes, (word32)sig_len,
+                                      msg_hash, 32, &verified, &ecc);
+            wc_ecc_free(&ecc);
+        }
+        else if (strcmp(old_algo, "Ed25519") == 0) {
+            /* Ed25519: verify raw message */
+            ed25519_key ed;
+            word32 idx = 0;
+
+            wc_ed25519_init(&ed);
+            ret = wc_Ed25519PublicKeyDecode(der_buf, &idx, &ed, (word32)der_sz);
+            if (ret != 0) {
+                LOG_WARN("renew: Ed25519 key decode failed: %d", ret);
+                wc_ed25519_free(&ed);
+                http_send_error(io, 400, "invalid Ed25519 public key");
+                json_object_put(req);
+                return;
+            }
+            ret = wc_ed25519_verify_msg(sig_bytes, (word32)sig_len,
+                                         (const uint8_t *)sign_msg,
+                                         (word32)strlen(sign_msg),
+                                         &verified, &ed);
+            wc_ed25519_free(&ed);
+        }
+        else if (strncmp(old_algo, "ML-DSA-", 7) == 0) {
+            /* ML-DSA (Dilithium): verify raw message */
+            dilithium_key dil;
+            byte level;
+
+            if (strcmp(old_algo, "ML-DSA-44") == 0)
+                level = WC_ML_DSA_44;
+            else if (strcmp(old_algo, "ML-DSA-65") == 0)
+                level = WC_ML_DSA_65;
+            else if (strcmp(old_algo, "ML-DSA-87") == 0)
+                level = WC_ML_DSA_87;
+            else {
+                http_send_error(io, 400, "unsupported ML-DSA variant");
+                json_object_put(req);
+                return;
+            }
+
+            wc_dilithium_init(&dil);
+            wc_dilithium_set_level(&dil, level);
+            ret = wc_dilithium_import_public(der_buf, (word32)der_sz, &dil);
+            if (ret != 0) {
+                LOG_WARN("renew: ML-DSA key import failed: %d", ret);
+                wc_dilithium_free(&dil);
+                http_send_error(io, 400, "invalid ML-DSA public key");
+                json_object_put(req);
+                return;
+            }
+            ret = wc_dilithium_verify_ctx_msg(sig_bytes, (word32)sig_len,
+                                               NULL, 0,
+                                               (const uint8_t *)sign_msg,
+                                               (word32)strlen(sign_msg),
+                                               &verified, &dil);
+            wc_dilithium_free(&dil);
+        }
+        else {
+            http_send_error(io, 400, "unsupported key algorithm for renewal");
+            json_object_put(req);
+            return;
         }
 
-        ret = wc_ecc_verify_hash(sig_bytes, (word32)sig_len,
-                                  msg_hash, 32, &verified, &key);
-        wc_ecc_free(&key);
-
         if (ret != 0 || !verified) {
-            LOG_WARN("renew: signature verification failed for index %d",
-                     cert_index);
+            LOG_WARN("renew: signature verification failed for index %d (%s)",
+                     cert_index, old_algo);
             http_send_error(io, 403, "signature verification failed");
             json_object_put(req);
             return;
