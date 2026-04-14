@@ -153,9 +153,19 @@ slc_ctx_t *slc_ctx_new(const slc_cfg_t *cfg)
     }
 
     /* Enable peer verification — role-aware:
+     *   - MTC mode: disable X.509 chain verification — trust comes from
+     *     Merkle proof + cosignature, not CA chains
      *   - With ca_file: mutual TLS (both sides present and verify certs)
      *   - Server without ca_file: one-way TLS (server doesn't demand client cert)
      *   - Client without ca_file: still verify the server's cert */
+#ifdef HAVE_MTC
+    if (cfg->mtc_store != NULL) {
+        /* MTC: wolfSSL handles MTC proof verification internally when
+         * the peer presents a CTC_MTC_PROOF certificate. Disable
+         * traditional X.509 chain validation. */
+        wolfSSL_CTX_set_verify(ctx->wctx, WOLFSSL_VERIFY_NONE, NULL);
+    } else
+#endif
     if (cfg->ca_file != NULL) {
         wolfSSL_CTX_set_verify(ctx->wctx,
             WOLFSSL_VERIFY_PEER | WOLFSSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);

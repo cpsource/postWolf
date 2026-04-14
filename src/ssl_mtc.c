@@ -1153,17 +1153,18 @@ static int mtc_serialize_proof(struct json_object *sc, byte *out, int maxSz)
  *
  * Returns malloc'd DER buffer, caller frees. Sets *outSz. */
 static byte *mtc_build_cert_der(struct json_object *cert_json,
-    const byte *pubKeyDer, int pubKeyDerSz,
+    const byte *spkiDerIn, int spkiDerInSz,
     int *outSz)
 {
     struct json_object *sc, *tbs, *val;
     const char *subject;
-    byte proof[2048];
+    byte proof[4096];      /* ML-DSA proofs can be large */
     int proofSz;
-    byte subjectDer[256], spkiDer[256], validityDer[64];
-    int subjectDerSz, spkiDerSz, validityDerSz;
-    byte tbsDer[4096], certDer[4096];
+    byte subjectDer[256], validityDer[64];
+    int subjectDerSz, validityDerSz;
+    byte *tbsDer = NULL, *certDer = NULL;
     int tbsSz, certSz;
+    int allocSz;
     int idx;
     byte lenBuf[4];
     int lenSz;
@@ -1223,36 +1224,8 @@ static byte *mtc_build_cert_der(struct json_object *cert_json,
         subjectDerSz = idx;
     }
 
-    /* Build SubjectPublicKeyInfo */
-    {
-        /* SEQUENCE { algId, BIT STRING { 0x00, pubkey } } */
-        int bitStrInner = 1 + pubKeyDerSz;  /* 0x00 + key bytes */
-
-        idx = 0;
-        spkiDer[idx++] = 0x30;
-        lenSz = mtc_der_length((int)sizeof(ecPubKeyAlgDer) + 1 + 1 + bitStrInner +
-            (bitStrInner >= 0x80 ? 2 : 0), lenBuf);
-        /* Recalculate properly */
-        {
-            int algSz = (int)sizeof(ecPubKeyAlgDer);
-            byte bsLenBuf[4];
-            int bsLenSz = mtc_der_length(bitStrInner, bsLenBuf);
-            int totalInner = algSz + 1 + bsLenSz + bitStrInner;
-
-            idx = 0;
-            spkiDer[idx++] = 0x30;
-            lenSz = mtc_der_length(totalInner, lenBuf);
-            memcpy(spkiDer + idx, lenBuf, lenSz); idx += lenSz;
-
-            memcpy(spkiDer + idx, ecPubKeyAlgDer, algSz); idx += algSz;
-
-            spkiDer[idx++] = 0x03; /* BIT STRING */
-            memcpy(spkiDer + idx, bsLenBuf, bsLenSz); idx += bsLenSz;
-            spkiDer[idx++] = 0x00; /* 0 unused bits */
-            memcpy(spkiDer + idx, pubKeyDer, pubKeyDerSz); idx += pubKeyDerSz;
-        }
-        spkiDerSz = idx;
-    }
+    /* SubjectPublicKeyInfo is passed in directly — already contains
+     * the algorithm OID and key bits for any key type. */
 
     /* Build Validity: SEQUENCE { UTCTime, UTCTime } */
     {
@@ -1317,7 +1290,12 @@ static byte *mtc_build_cert_der(struct json_object *cert_json,
         {
             int innerSz = (int)sizeof(version) + (int)sizeof(serial) +
                 (int)sizeof(sigAlgSeq) + subjectDerSz /* issuer */ +
-                validityDerSz + subjectDerSz /* subject */ + spkiDerSz;
+                validityDerSz + subjectDerSz /* subject */ + spkiDerInSz;
+
+            /* Allocate TBS buffer dynamically for large keys */
+            allocSz = innerSz + 16; /* overhead for SEQUENCE tag+len */
+            tbsDer = (byte *)malloc((size_t)allocSz);
+            if (tbsDer == NULL) return NULL;
 
             idx = 0;
             tbsDer[idx++] = 0x30;
@@ -1339,9 +1317,9 @@ static byte *mtc_build_cert_der(struct json_object *cert_json,
             /* Subject */
             memcpy(tbsDer + idx, subjectDer, subjectDerSz);
             idx += subjectDerSz;
-            /* SPKI */
-            memcpy(tbsDer + idx, spkiDer, spkiDerSz);
-            idx += spkiDerSz;
+            /* SPKI — full DER from public_key.pem */
+            memcpy(tbsDer + idx, spkiDerIn, spkiDerInSz);
+            idx += spkiDerInSz;
 
             tbsSz = idx;
         }
@@ -1365,6 +1343,11 @@ static byte *mtc_build_cert_der(struct json_object *cert_json,
         outerInner = tbsSz + (int)sizeof(sigAlgOuter) +
             sigValHdrSz + sigValInner;
 
+        /* Allocate cert buffer dynamically */
+        allocSz = outerInner + 16;
+        certDer = (byte *)malloc((size_t)allocSz);
+        if (certDer == NULL) { free(tbsDer); return NULL; }
+
         idx = 0;
         certDer[idx++] = 0x30;
         lenSz = mtc_der_length(outerInner, lenBuf);
@@ -1386,13 +1369,11 @@ static byte *mtc_build_cert_der(struct json_object *cert_json,
         certSz = idx;
     }
 
-    {
-        byte *result = (byte *)malloc(certSz);
-        if (!result) return NULL;
-        memcpy(result, certDer, certSz);
-        *outSz = certSz;
-        return result;
-    }
+    free(tbsDer);
+
+    /* certDer is already malloc'd — just set the size and return it */
+    *outSz = certSz;
+    return certDer;
 }
 
 int wolfSSL_CTX_use_MTC_certificate(WOLFSSL_CTX* ctx, const char* storePath)
@@ -1402,9 +1383,8 @@ int wolfSSL_CTX_use_MTC_certificate(WOLFSSL_CTX* ctx, const char* storePath)
     long jsonSz = 0;
     int certDerSz = 0;
     struct json_object *cert_json = NULL;
-    ecc_key eccKey;
-    byte pubDer[256];
-    int pubDerSz;
+    byte *spkiDer = NULL;
+    int spkiDerSz = 0;
     int ret;
 
     if (ctx == NULL || storePath == NULL)
@@ -1412,92 +1392,72 @@ int wolfSSL_CTX_use_MTC_certificate(WOLFSSL_CTX* ctx, const char* storePath)
 
     WOLFSSL_ENTER("wolfSSL_CTX_use_MTC_certificate");
 
-    /* Load private key */
+    /* Load private key — works for any algorithm (EC, Ed25519, ML-DSA) */
     XSNPRINTF(path, sizeof(path), "%s/private_key.pem", storePath);
-    printf("[MTC] loading key: %s\n", path);
+    WOLFSSL_MSG_EX("[MTC] loading key: %s", path);
     ret = wolfSSL_CTX_use_PrivateKey_file(ctx, path, WOLFSSL_FILETYPE_PEM);
     if (ret != WOLFSSL_SUCCESS) {
-        printf("[MTC] failed to load private key: %d\n", ret);
+        WOLFSSL_MSG_EX("[MTC] failed to load private key: %d", ret);
         return ret;
     }
 
     /* Read certificate.json */
     XSNPRINTF(path, sizeof(path), "%s/certificate.json", storePath);
-    printf("[MTC] loading cert: %s\n", path);
+    WOLFSSL_MSG_EX("[MTC] loading cert: %s", path);
     jsonBuf = mtc_read_file(path, &jsonSz);
     if (jsonBuf == NULL) {
-        printf("[MTC] failed to read certificate.json\n");
+        WOLFSSL_MSG("[MTC] failed to read certificate.json");
         return WOLFSSL_FAILURE;
     }
 
     cert_json = json_tokener_parse((char*)jsonBuf);
     free(jsonBuf);
     if (cert_json == NULL) {
-        printf("[MTC] failed to parse certificate.json\n");
+        WOLFSSL_MSG("[MTC] failed to parse certificate.json");
         return WOLFSSL_FAILURE;
     }
 
-    /* Get the EC public key from the loaded private key context.
-     * We need to export it for the X.509 cert's SPKI field. */
-    {
-        WC_RNG rng;
-        wc_InitRng(&rng);
-        wc_ecc_init(&eccKey);
-        /* Generate a fresh key matching what's in the PEM — actually we
-         * need the public key from the context. Since we already loaded
-         * the private key, extract public from it. */
-        wc_ecc_free(&eccKey);
-        wc_FreeRng(&rng);
-    }
-
-    /* For the SPKI, just use an uncompressed EC point.
-     * Read the public_key.pem to get the actual public key. */
+    /* Read public_key.pem and convert to DER SPKI.
+     * Algorithm-agnostic: the DER SPKI contains the algorithm OID
+     * and key bits for any key type (EC-P256, Ed25519, ML-DSA-87). */
     XSNPRINTF(path, sizeof(path), "%s/public_key.pem", storePath);
     {
         byte *pubPem;
         long pubPemSz = 0;
-        word32 inOutIdx = 0;
+        byte spkiBuf[4096];  /* ML-DSA-87 SPKI is ~2.6KB */
 
         pubPem = mtc_read_file(path, &pubPemSz);
         if (pubPem == NULL) {
             json_object_put(cert_json);
-            printf("[MTC] failed to read public_key.pem\n");
+            WOLFSSL_MSG("[MTC] failed to read public_key.pem");
             return WOLFSSL_FAILURE;
         }
 
-        /* Convert PEM to DER */
-        pubDerSz = wc_PubKeyPemToDer(pubPem, (int)pubPemSz, pubDer,
-            (int)sizeof(pubDer));
+        /* Convert PEM to DER — returns the full SubjectPublicKeyInfo */
+        spkiDerSz = wc_PubKeyPemToDer(pubPem, (int)pubPemSz, spkiBuf,
+            (int)sizeof(spkiBuf));
         free(pubPem);
 
-        if (pubDerSz < 0) {
+        if (spkiDerSz < 0) {
             json_object_put(cert_json);
-            printf("[MTC] PEM to DER failed: %d\n", pubDerSz);
+            WOLFSSL_MSG_EX("[MTC] PEM to DER failed: %d", spkiDerSz);
             return WOLFSSL_FAILURE;
         }
 
-        /* Parse SubjectPublicKeyInfo to extract just the EC point */
-        wc_ecc_init(&eccKey);
-        ret = wc_EccPublicKeyDecode(pubDer, &inOutIdx, &eccKey,
-            (word32)pubDerSz);
-        if (ret == 0) {
-            /* Export uncompressed point */
-            word32 pointSz = sizeof(pubDer);
-            ret = wc_ecc_export_x963(&eccKey, pubDer, &pointSz);
-            pubDerSz = (int)pointSz;
-        }
-        wc_ecc_free(&eccKey);
-
-        if (ret != 0) {
+        /* Keep a copy of the full SPKI DER */
+        spkiDer = (byte *)malloc((size_t)spkiDerSz);
+        if (spkiDer == NULL) {
             json_object_put(cert_json);
-            printf("[MTC] EC key decode failed: %d\n", ret);
-            return WOLFSSL_FAILURE;
+            return MEMORY_E;
         }
+        memcpy(spkiDer, spkiBuf, (size_t)spkiDerSz);
     }
 
-    /* Build the X.509 DER with MTC proof */
-    certDer = mtc_build_cert_der(cert_json, pubDer, pubDerSz, &certDerSz);
+    /* Build the X.509 DER with MTC proof.
+     * Pass the full SPKI DER — mtc_build_cert_der uses it directly. */
+    certDer = mtc_build_cert_der(cert_json, spkiDer, spkiDerSz, &certDerSz);
     json_object_put(cert_json);
+    free(spkiDer);
 
     if (certDer == NULL || certDerSz <= 0) {
         printf("[MTC] failed to build cert DER\n");
