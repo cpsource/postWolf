@@ -185,6 +185,28 @@ subjectAltName = DNS:{domain}
     print(f"  SAN:          {san_dns}")
     print(f"  Valid:        {days} days")
     print(f"  pathlen:      0 (intermediate CA — requires DNS validation)")
+    # Compute SPKI SHA-256 fingerprint for DNS TXT record
+    spki_fp = ""
+    cmd = [OPENSSL, "x509", "-in", str(cert_path), "-pubkey", "-noout"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        import hashlib
+        spki_fp = hashlib.sha256(result.stdout.encode()).hexdigest()
+
+    print(f"\nDNS TXT record required for enrollment:")
+    print(f"  Record name:  _mtc-ca.{domain}")
+    print(f"  Record value: v=mtc-ca1; fp=sha256:{spki_fp}")
+    print(f"\n  (For nonce-bound enrollment, use v=mtc-ca2 with the nonce)")
+
+    # Save DNS record info
+    dns_path = out_dir / "dns_record.txt"
+    with open(dns_path, "w") as f:
+        f.write(f"# DNS TXT record for MTC CA enrollment\n")
+        f.write(f"# Add this as a TXT record at your DNS provider\n")
+        f.write(f"Name:  _mtc-ca.{domain}\n")
+        f.write(f"Value: v=mtc-ca1; fp=sha256:{spki_fp}\n")
+    print(f"  Saved to:     {dns_path}")
+
     print(f"\nTo enroll via bootstrap:")
     print(f"  bootstrap_ca --server HOST:8445 \\")
     print(f"    --domain \"{domain}\" \\")
