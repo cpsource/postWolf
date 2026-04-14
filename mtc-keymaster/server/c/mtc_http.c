@@ -261,7 +261,8 @@ static int safe_atoi(const char *s, int max_val)
     char *end;
     if (!s || !*s) return -1;
     v = strtol(s, &end, 10);
-    if (*end != '\0' && *end != '?' && *end != '&' && *end != ' ')
+    if (*end != '\0' && *end != '?' && *end != '&' && *end != ' ' &&
+        *end != '\r' && *end != '\n')
         return -1;
     if (v < 0 || v > max_val)
         return -1;
@@ -1444,9 +1445,20 @@ static void handle_request(client_io *io, MtcStore *store)
     char *body = NULL;
     int body_len = 0;
 
-    n = cio_read(io, buf, (int)sizeof(buf) - 1);
-    if (n <= 0) return;
-    buf[n] = 0;
+    /* Read until we have the full headers (\r\n\r\n).
+     * TLS may fragment the request across multiple reads. */
+    n = 0;
+    while (n < (int)sizeof(buf) - 1) {
+        int r = cio_read(io, buf + n, (int)sizeof(buf) - 1 - n);
+        if (r <= 0) {
+            if (n == 0) return;  /* no data at all */
+            break;
+        }
+        n += r;
+        buf[n] = 0;
+        if (strstr(buf, "\r\n\r\n"))
+            break;  /* have complete headers */
+    }
 
     /* Parse method and path */
     if (sscanf(buf, "%15s %511s", method, path) != 2) {
@@ -1477,7 +1489,11 @@ static void handle_request(client_io *io, MtcStore *store)
             char *cl = strcasestr(buf, "Content-Length:");
             body[-4] = saved;
             if (cl) {
-                int content_len = safe_atoi(cl + 15, 1024 * 1024);
+                /* Skip "Content-Length:" and any whitespace */
+                const char *val_start = cl + 15;
+                while (*val_start == ' ' || *val_start == '\t')
+                    val_start++;
+                int content_len = safe_atoi(val_start, 1024 * 1024);
                 int max_body = (int)(sizeof(buf) - 1) - (int)(body - buf);
                 if (content_len < 0 || content_len > max_body) {
                     http_send_error(io, 413, "request body too large");
