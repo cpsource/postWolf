@@ -24,26 +24,34 @@ typedef struct MtcCryptCtx MtcCryptCtx;
 MtcCryptCtx *mtc_crypt_init(unsigned char *key, unsigned int keylen);
 
 /**
- * @brief  Encrypt buf in place (AES-CBC then rotate).
+ * @brief  Encrypt a JSON buffer (pad, AES-CBC, then rotate).
  *
- * @param[in]     ctx     Context from mtc_crypt_init().
- * @param[in,out] buf     Buffer to encrypt (modified in place).
- * @param[in]     buflen  Buffer length (must be multiple of 16, >= 32).
+ * @param[in]     ctx        Context from mtc_crypt_init().
+ * @param[in]     inbuf      JSON input (must end with '}').
+ * @param[in]     inbuflen   Length of inbuf in bytes.
+ * @param[out]    outbuf     Output buffer for encrypted data.
+ * @param[in,out] outbuflen  On entry: capacity of outbuf.
+ *                           On exit: actual encrypted length (padded).
  * @return  0 on success, -1 on error.
  */
-int mtc_crypt_encode(MtcCryptCtx *ctx, unsigned char *buf,
-                     unsigned int buflen);
+int mtc_crypt_encode(MtcCryptCtx *ctx, unsigned char *inbuf,
+                     unsigned int inbuflen, unsigned char *outbuf,
+                     unsigned int *outbuflen);
 
 /**
- * @brief  Decrypt buf in place (unrotate then AES-CBC).
+ * @brief  Decrypt a buffer and remove padding (unrotate, AES-CBC, unpad).
  *
- * @param[in]     ctx     Context from mtc_crypt_init().
- * @param[in,out] buf     Buffer to decrypt (modified in place).
- * @param[in]     buflen  Buffer length (must be multiple of 16, >= 32).
+ * @param[in]     ctx        Context from mtc_crypt_init().
+ * @param[in]     inbuf      Encrypted input buffer.
+ * @param[in]     inbuflen   Length of inbuf (must be multiple of 16, >= 32).
+ * @param[out]    outbuf     Output buffer for decrypted JSON.
+ * @param[in,out] outbuflen  On entry: capacity of outbuf.
+ *                           On exit: actual JSON length (up to last '}').
  * @return  0 on success, -1 on error.
  */
-int mtc_crypt_decode(MtcCryptCtx *ctx, unsigned char *buf,
-                     unsigned int buflen);
+int mtc_crypt_decode(MtcCryptCtx *ctx, unsigned char *inbuf,
+                     unsigned int inbuflen, unsigned char *outbuf,
+                     unsigned int *outbuflen);
 
 /**
  * @brief  Free the encryption context and zero key material.
