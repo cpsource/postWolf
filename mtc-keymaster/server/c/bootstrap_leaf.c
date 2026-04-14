@@ -8,7 +8,7 @@
  *   certificate, and stores it in ~/.TPM/<subject>/.
  *
  *   Usage:
- *     bootstrap_leaf --server HOST:PORT --subject SUBJECT \
+ *     bootstrap_leaf --server HOST:PORT --domain DOMAIN \
  *                    --public-key FILE --private-key FILE \
  *                    --nonce NONCE [--tpm-dir DIR] [--dry-run]
  *
@@ -321,7 +321,7 @@ static void usage(const char *prog)
     printf("DH Bootstrap Leaf Enrollment Tool\n\n");
     printf("Usage: %s [options]\n\n", prog);
     printf("  --server HOST:PORT   CA server DH bootstrap endpoint\n");
-    printf("  --subject SUBJECT    Certificate subject (e.g., urn:example:device:1)\n");
+    printf("  --domain DOMAIN      Domain/subject (must match issue_leaf_nonce --domain)\n");
     printf("  --public-key FILE    Path to leaf public key PEM\n");
     printf("  --private-key FILE   Path to leaf private key PEM\n");
     printf("  --nonce NONCE        Enrollment nonce (64-char hex)\n");
@@ -385,7 +385,7 @@ int main(int argc, char *argv[])
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--server") == 0 && i + 1 < argc)
             server_arg = argv[++i];
-        else if (strcmp(argv[i], "--subject") == 0 && i + 1 < argc)
+        else if (strcmp(argv[i], "--domain") == 0 && i + 1 < argc)
             subject = argv[++i];
         else if (strcmp(argv[i], "--public-key") == 0 && i + 1 < argc)
             pub_key_path = argv[++i];
@@ -410,8 +410,10 @@ int main(int argc, char *argv[])
     }
 
     if (!server_arg || !subject || !pub_key_path || !priv_key_path || !nonce) {
-        fprintf(stderr, "Error: --server, --subject, --public-key, "
-                "--private-key, and --nonce are required\n\n");
+        fprintf(stderr, "Error: --server, --domain, --public-key, "
+                "--private-key, and --nonce are required.\n"
+                "Note: --domain must match the --domain used with "
+                "issue_leaf_nonce.py\n\n");
         usage(argv[0]);
         return 1;
     }

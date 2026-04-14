@@ -131,7 +131,7 @@ def main():
 
     print(f"\nSend this nonce to the leaf user. They enroll with:")
     print(f"  bootstrap_leaf --server {args.server.replace('https://', '').replace('http://', '')}:8445 \\")
-    print(f"    --subject \"{args.domain}\" \\")
+    print(f"    --domain \"{args.domain}\" \\")
     print(f"    --public-key <leaf-public-key.pem> \\")
     print(f"    --private-key <leaf-private-key.pem> \\")
     print(f"    --nonce {nonce}")

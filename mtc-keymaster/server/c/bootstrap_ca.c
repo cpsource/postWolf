@@ -12,7 +12,7 @@
  *   intermediate CAs.  Root CAs skip DNS validation.
  *
  *   Usage:
- *     bootstrap_ca --server HOST:PORT --subject SUBJECT \
+ *     bootstrap_ca --server HOST:PORT --domain DOMAIN \
  *                  --public-key FILE --private-key FILE \
  *                  --ca-cert FILE --nonce NONCE [--tpm-dir DIR] [--dry-run]
  *
@@ -341,7 +341,7 @@ static void usage(const char *prog)
     printf("DH Bootstrap CA Enrollment Tool\n\n");
     printf("Usage: %s [options]\n\n", prog);
     printf("  --server HOST:PORT   CA server DH bootstrap endpoint\n");
-    printf("  --subject SUBJECT    Certificate subject (e.g., factsorlie.com-ca)\n");
+    printf("  --domain DOMAIN      CA domain (e.g., factsorlie.com)\n");
     printf("  --public-key FILE    Path to CA public key PEM\n");
     printf("  --private-key FILE   Path to CA private key PEM\n");
     printf("  --ca-cert FILE       Path to X.509 CA certificate PEM\n");
@@ -411,7 +411,7 @@ int main(int argc, char *argv[])
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--server") == 0 && i + 1 < argc)
             server_arg = argv[++i];
-        else if (strcmp(argv[i], "--subject") == 0 && i + 1 < argc)
+        else if (strcmp(argv[i], "--domain") == 0 && i + 1 < argc)
             subject = argv[++i];
         else if (strcmp(argv[i], "--public-key") == 0 && i + 1 < argc)
             pub_key_path = argv[++i];
@@ -439,7 +439,7 @@ int main(int argc, char *argv[])
 
     if (!server_arg || !subject || !pub_key_path || !priv_key_path ||
         !ca_cert_path) {
-        fprintf(stderr, "Error: --server, --subject, --public-key, "
+        fprintf(stderr, "Error: --server, --domain, --public-key, "
                 "--private-key, and --ca-cert are required\n\n");
         usage(argv[0]);
         return 1;

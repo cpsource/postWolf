@@ -187,7 +187,7 @@ subjectAltName = DNS:{domain}
     print(f"  pathlen:      0 (intermediate CA — requires DNS validation)")
     print(f"\nTo enroll via bootstrap:")
     print(f"  bootstrap_ca --server HOST:8445 \\")
-    print(f"    --subject \"{domain}-ca\" \\")
+    print(f"    --domain \"{domain}\" \\")
     print(f"    --public-key {pub_path} \\")
     print(f"    --private-key {key_path} \\")
     print(f"    --ca-cert {cert_path}")
