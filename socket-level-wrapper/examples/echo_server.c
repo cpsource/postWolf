@@ -1,6 +1,8 @@
 /* echo_server.c — Simple echo server using the SLC API
  *
- * Usage: ./echo_server [port]
+ * Usage:
+ *   ./echo_server [port]                           — traditional X.509
+ *   ./echo_server --mtc ~/.TPM/factsorlie.com [port] — MTC certificate
  *
  * Listens on the given port (default 4433), accepts one TLS 1.3
  * connection at a time, echoes back whatever the client sends.
@@ -21,22 +23,40 @@
 int main(int argc, char *argv[])
 {
     int port = DEFAULT_PORT;
+    const char *mtc_store = NULL;
     int listen_fd;
     slc_ctx_t  *ctx;
     slc_conn_t *conn;
     slc_cfg_t cfg;
     char buf[BUF_SZ];
-    int n;
+    int n, i;
 
-    if (argc > 1)
-        port = atoi(argv[1]);
+    /* Parse arguments */
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--mtc") == 0 && i + 1 < argc)
+            mtc_store = argv[++i];
+        else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            printf("Usage: %s [--mtc TPM_PATH] [port]\n", argv[0]);
+            printf("  --mtc PATH   Use MTC certificate from ~/.TPM/<domain>\n");
+            printf("  port         Listen port (default: %d)\n", DEFAULT_PORT);
+            return 0;
+        }
+        else
+            port = atoi(argv[i]);
+    }
 
     /* Configure server context */
     memset(&cfg, 0, sizeof(cfg));
-    cfg.role      = SLC_SERVER;
-    cfg.cert_file = DEFAULT_CERT;
-    cfg.key_file  = DEFAULT_KEY;
-    cfg.ca_file   = DEFAULT_CA;
+    cfg.role = SLC_SERVER;
+
+    if (mtc_store) {
+        cfg.mtc_store = mtc_store;
+        printf("MTC mode: %s\n", mtc_store);
+    } else {
+        cfg.cert_file = DEFAULT_CERT;
+        cfg.key_file  = DEFAULT_KEY;
+        cfg.ca_file   = DEFAULT_CA;
+    }
 
     ctx = slc_ctx_new(&cfg);
     if (ctx == NULL) {
@@ -52,7 +72,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    printf("Echo server listening on port %d\n", port);
+    printf("Echo server listening on port %d%s\n", port,
+           mtc_store ? " (MTC)" : " (X.509)");
 
     /* Accept loop — one client at a time */
     for (;;) {

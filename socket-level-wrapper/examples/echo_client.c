@@ -1,6 +1,8 @@
 /* echo_client.c — Simple echo client using the SLC API
  *
- * Usage: ./echo_client [host] [port]
+ * Usage:
+ *   ./echo_client [host] [port]                              — traditional X.509
+ *   ./echo_client --mtc ~/.TPM/factsorlie.com [host] [port]  — MTC certificate
  *
  * Connects to the echo server, sends a message, prints the response.
  */
@@ -22,24 +24,45 @@ int main(int argc, char *argv[])
 {
     const char *host = DEFAULT_HOST;
     int port = DEFAULT_PORT;
+    const char *mtc_store = NULL;
     slc_ctx_t  *ctx;
     slc_conn_t *conn;
     slc_cfg_t cfg;
     const char *msg = "Hello SLC!";
     char buf[BUF_SZ];
-    int n;
+    int n, i, pos;
 
-    if (argc > 1)
-        host = argv[1];
-    if (argc > 2)
-        port = atoi(argv[2]);
+    /* Parse arguments */
+    pos = 0;  /* positional argument counter */
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--mtc") == 0 && i + 1 < argc)
+            mtc_store = argv[++i];
+        else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            printf("Usage: %s [--mtc TPM_PATH] [host] [port]\n", argv[0]);
+            printf("  --mtc PATH   Use MTC certificate from ~/.TPM/<domain>\n");
+            printf("  host         Server hostname (default: %s)\n", DEFAULT_HOST);
+            printf("  port         Server port (default: %d)\n", DEFAULT_PORT);
+            return 0;
+        }
+        else {
+            if (pos == 0) host = argv[i];
+            else if (pos == 1) port = atoi(argv[i]);
+            pos++;
+        }
+    }
 
     /* Configure client context */
     memset(&cfg, 0, sizeof(cfg));
-    cfg.role      = SLC_CLIENT;
-    cfg.cert_file = DEFAULT_CERT;
-    cfg.key_file  = DEFAULT_KEY;
-    cfg.ca_file   = DEFAULT_CA;
+    cfg.role = SLC_CLIENT;
+
+    if (mtc_store) {
+        cfg.mtc_store = mtc_store;
+        printf("MTC mode: %s\n", mtc_store);
+    } else {
+        cfg.cert_file = DEFAULT_CERT;
+        cfg.key_file  = DEFAULT_KEY;
+        cfg.ca_file   = DEFAULT_CA;
+    }
 
     ctx = slc_ctx_new(&cfg);
     if (ctx == NULL) {
@@ -48,7 +71,8 @@ int main(int argc, char *argv[])
     }
 
     /* Connect to server */
-    printf("Connecting to %s:%d...\n", host, port);
+    printf("Connecting to %s:%d%s...\n", host, port,
+           mtc_store ? " (MTC)" : " (X.509)");
     conn = slc_connect(ctx, host, port);
     if (conn == NULL) {
         fprintf(stderr, "slc_connect failed\n");
