@@ -44,6 +44,9 @@ typedef struct {
                                       * (32 bytes) for Merkle proof
                                       * verification. */
     int ca_pubkey_sz;            /* Size of ca_pubkey (typically 32). */
+    int encrypt_identity;        /* 1 = encrypt cert_index during handshake
+                                  * (hides who is connecting from eavesdroppers).
+                                  * Adds half a round trip. Default: 0 (off). */
 } mqc_cfg_t;
 
 /* --- Context management --- */

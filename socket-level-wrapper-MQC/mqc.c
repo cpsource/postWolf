@@ -63,6 +63,7 @@ struct mqc_ctx {
     int          ca_pubkey_sz;
     uint8_t     *privkey_der;      /* ML-DSA-87 private key DER */
     int          privkey_der_sz;
+    int          encrypt_identity; /* 1 = encrypt cert_index in handshake */
 };
 
 struct mqc_conn {
@@ -208,6 +209,7 @@ mqc_ctx_t *mqc_ctx_new(const mqc_cfg_t *cfg)
     }
     memcpy(ctx->ca_pubkey, cfg->ca_pubkey, (size_t)cfg->ca_pubkey_sz);
     ctx->ca_pubkey_sz = cfg->ca_pubkey_sz;
+    ctx->encrypt_identity = cfg->encrypt_identity;
 
     /* Load our cert_index from certificate.json */
     snprintf(path, sizeof(path), "%s/certificate.json", cfg->tpm_path);
