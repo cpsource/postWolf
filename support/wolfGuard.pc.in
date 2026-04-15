@@ -3,9 +3,9 @@ exec_prefix=@exec_prefix@
 libdir=@libdir@
 includedir=@includedir@
 
-Name: wolfssl
-Description: wolfssl C library.
+Name: wolfGuard
+Description: wolfGuard C library.
 Version: @VERSION@
-Libs: -L${libdir} -lwolfssl
+Libs: -L${libdir} -lwolfGuard
 Libs.private: @LIBM@ @PC_LIBS_PRIVATE@
 Cflags: -I${includedir}

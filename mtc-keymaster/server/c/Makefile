@@ -1,10 +1,10 @@
 CC      ?= gcc
 CFLAGS  += -Wall -Wextra -Werror -O2
-CFLAGS  += $(shell pkg-config --cflags wolfssl) -DWOLFSSL_USE_OPTIONS_H
+CFLAGS  += $(shell pkg-config --cflags wolfGuard) -DWOLFSSL_USE_OPTIONS_H
 CFLAGS  += $(shell pkg-config --cflags json-c)
 CFLAGS  += $(shell pkg-config --cflags libpq)
 CFLAGS  += -I../../../socket-level-wrapper
-LDFLAGS += $(shell pkg-config --libs wolfssl)
+LDFLAGS += $(shell pkg-config --libs wolfGuard)
 LDFLAGS += $(shell pkg-config --libs json-c)
 LDFLAGS += $(shell pkg-config --libs libpq)
 LDFLAGS += -lresolv -lhiredis -lpthread
@@ -36,29 +36,29 @@ doxygen:
 
 bootstrap_ca: bootstrap_ca.c mtc_crypt.c mtc_crypt.h mtc_pubkey_db.c mtc_pubkey_db.h
 	$(CC) -Wall -Wextra -O2 \
-		$(shell pkg-config --cflags wolfssl) -DWOLFSSL_USE_OPTIONS_H \
+		$(shell pkg-config --cflags wolfGuard) -DWOLFSSL_USE_OPTIONS_H \
 		$(shell pkg-config --cflags json-c) \
 		$(shell pkg-config --cflags libpq) \
 		-o bootstrap_ca bootstrap_ca.c mtc_crypt.c mtc_pubkey_db.c \
-		$(shell pkg-config --libs wolfssl) \
+		$(shell pkg-config --libs wolfGuard) \
 		$(shell pkg-config --libs json-c) \
 		$(shell pkg-config --libs libpq)
 
 bootstrap_leaf: bootstrap_leaf.c mtc_crypt.c mtc_crypt.h mtc_pubkey_db.c mtc_pubkey_db.h
 	$(CC) -Wall -Wextra -O2 \
-		$(shell pkg-config --cflags wolfssl) -DWOLFSSL_USE_OPTIONS_H \
+		$(shell pkg-config --cflags wolfGuard) -DWOLFSSL_USE_OPTIONS_H \
 		$(shell pkg-config --cflags json-c) \
 		$(shell pkg-config --cflags libpq) \
 		-o bootstrap_leaf bootstrap_leaf.c mtc_crypt.c mtc_pubkey_db.c \
-		$(shell pkg-config --libs wolfssl) \
+		$(shell pkg-config --libs wolfGuard) \
 		$(shell pkg-config --libs json-c) \
 		$(shell pkg-config --libs libpq)
 
 test-mtc-crypt: mtc_crypt.c mtc_crypt.h
 	$(CC) -Wall -Wextra -O2 -DTEST_MAIN \
-		$(shell pkg-config --cflags wolfssl) -DWOLFSSL_USE_OPTIONS_H \
+		$(shell pkg-config --cflags wolfGuard) -DWOLFSSL_USE_OPTIONS_H \
 		-o mtc_crypt_test mtc_crypt.c \
-		$(shell pkg-config --libs wolfssl)
+		$(shell pkg-config --libs wolfGuard)
 
 clean:
 	rm -f mtc_server mtc_checkendpoint mtc_crypt_test bootstrap_leaf bootstrap_ca

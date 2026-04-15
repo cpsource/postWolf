@@ -18,7 +18,7 @@ WOLFSSL_CFLAGS := $(filter-out $$(EXTRA_CFLAGS),$(shell sed -n 's/^AM_CFLAGS = /
 CC      ?= gcc
 CFLAGS  ?= -Wall -Wextra -O2
 CFLAGS  += -I$(WOLFSSL_INC) $(WOLFSSL_CFLAGS)
-LDFLAGS += -L$(WOLFSSL_LIB) -Wl,-rpath,$(abspath $(WOLFSSL_LIB)) -lwolfssl -lm -lpthread
+LDFLAGS += -L$(WOLFSSL_LIB) -Wl,-rpath,$(abspath $(WOLFSSL_LIB)) -lwolfGuard -lm -lpthread
 
 AR      ?= ar
 

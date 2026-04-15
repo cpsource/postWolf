@@ -58,7 +58,7 @@ CONFIGURE_OPTIONS="$ac_configure_args"
 AC_SUBST([CONFIGURE_OPTIONS])
 
 # shared library versioning
-# The three numbers in the libwolfssl.so.*.*.* file name. Unfortunately
+# The three numbers in the libwolfGuard.so.*.*.* file name. Unfortunately
 
 # increment if interfaces have been removed or changed
 WOLFSSL_LIBRARY_VERSION_FIRST=44
@@ -10364,7 +10364,7 @@ AC_SUBST([ENABLED_LINUXKM_LKCAPI_REGISTER])
 # Library Suffix
 LIBSUFFIX=""
 AC_ARG_WITH([libsuffix],
-    [AS_HELP_STRING([--with-libsuffix=SUFFIX],[Library artifact SUFFIX, ie libwolfsslSUFFIX.so])],
+    [AS_HELP_STRING([--with-libsuffix=SUFFIX],[Library artifact SUFFIX, ie libwolfGuardSUFFIX.so])],
     [
         if test "x$withval" != "xno" ; then
             LIBSUFFIX=$withval
@@ -11743,7 +11743,7 @@ AC_CONFIG_FILES([stamp-h], [echo timestamp > stamp-h])
 AC_CONFIG_FILES([Makefile
         wolfssl/version.h
         wolfssl/options.h
-        support/wolfssl.pc
+        support/wolfGuard.pc
         debian/control
         debian/changelog
         rpm/spec

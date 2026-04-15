@@ -5,8 +5,8 @@ if BUILD_OCSP_RESPONDER
 noinst_PROGRAMS += examples/ocsp_responder/ocsp_responder
 noinst_HEADERS += examples/ocsp_responder/ocsp_responder.h
 examples_ocsp_responder_ocsp_responder_SOURCES      = examples/ocsp_responder/ocsp_responder.c
-examples_ocsp_responder_ocsp_responder_LDADD        = src/libwolfssl@LIBSUFFIX@.la $(LIB_STATIC_ADD)
-examples_ocsp_responder_ocsp_responder_DEPENDENCIES = src/libwolfssl@LIBSUFFIX@.la
+examples_ocsp_responder_ocsp_responder_LDADD        = src/libwolfGuard@LIBSUFFIX@.la $(LIB_STATIC_ADD)
+examples_ocsp_responder_ocsp_responder_DEPENDENCIES = src/libwolfGuard@LIBSUFFIX@.la
 examples_ocsp_responder_ocsp_responder_CFLAGS       = $(AM_CFLAGS)
 endif
 
