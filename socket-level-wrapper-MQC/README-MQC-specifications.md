@@ -42,7 +42,16 @@ When you receive a `cert_index` you haven't seen before:
 Subsequent connections to the same peer hit the cache — zero network
 overhead.
 
-## Protocol Diagram
+## Protocol Modes
+
+MQC supports two handshake modes. The server auto-detects which mode
+the client is using (`mqc_accept_auto`).
+
+### Clear Mode (1 round trip) — `mqc_connect` / `mqc_accept`
+
+Both cert_index and ML-KEM keys are sent in a single plaintext JSON
+message each direction. Fastest handshake, but an eavesdropper can see
+who is connecting to whom.
 
 ```
 NodeA (Client)                          NodeB (Server)
@@ -64,8 +73,8 @@ NodeA (Client)                          NodeB (Server)
                                         4. Verify Merkle proof + cosignature
                                         5. Verify NodeA's signature over
                                            the encaps key
-                                        6. ML-KEM encapsulate with NodeA's
-                                           encaps key -> ciphertext + shared secret
+                                        6. ML-KEM encapsulate -> ciphertext
+                                           + shared secret
                                         7. Sign ciphertext with own
                                            ML-DSA-87 private key
 
@@ -76,22 +85,68 @@ NodeA (Client)                          NodeB (Server)
               "signature": "<4627 bytes hex>"
             }
 
-8. Look up NodeB's public key
-   (cache or MTC server fetch)
-9. Verify Merkle proof + cosignature
-10. Verify NodeB's signature over
-    the ciphertext
-11. ML-KEM decapsulate -> shared secret
-12. Derive AES-256-GCM key via HKDF
-
-                                        12. Derive AES-256-GCM key via HKDF
-                                            (same shared secret)
+8. Verify NodeB's signature
+9. ML-KEM decapsulate -> shared secret
+10. Derive AES-256-GCM key via HKDF
 
             ===== Encrypted Channel =====
-            All further traffic encrypted
-            with AES-256-GCM using the
-            ML-KEM-derived session key.
 ```
+
+### Encrypted Identity Mode (1.5 round trips) — `mqc_connect_encrypted` / `mqc_accept_encrypted`
+
+The ML-KEM key exchange happens first in plaintext. Once both sides
+have the shared secret, the cert_index + signatures are sent encrypted.
+An eavesdropper sees ML-KEM key material but NOT who is connecting.
+
+```
+NodeA (Client)                          NodeB (Server)
+--------------                          --------------
+
+Phase 1: ML-KEM key exchange (plaintext)
+
+1. Generate ephemeral ML-KEM keypair
+
+            -------- Step 1 -------->
+            {"mlkem_encaps_key": "<hex>"}
+
+                                        2. ML-KEM encapsulate
+                                           -> ciphertext + shared secret
+
+            <------- Step 2 ---------
+            {"mlkem_ciphertext": "<hex>"}
+
+3. ML-KEM decapsulate -> shared secret
+4. Both derive AES-256-GCM key via HKDF
+
+Phase 2: Identity exchange (encrypted)
+
+5. Sign encaps key with ML-DSA-87
+
+            -------- Step 3 -------->
+            [encrypted] {"cert_index": 72, "signature": "<hex>"}
+
+                                        6. Decrypt, verify peer via Merkle
+                                        7. Verify signature
+                                        8. Sign challenge with ML-DSA-87
+
+            <------- Step 4 ---------
+            [encrypted] {"cert_index": 73, "signature": "<hex>"}
+
+9. Decrypt, verify peer via Merkle
+10. Verify signature
+
+            ===== Encrypted Channel =====
+```
+
+### Server Auto-Detection — `mqc_accept_auto`
+
+The server reads the first JSON message and checks for the `"cert_index"`
+field:
+- **Present** → clear mode (single round trip)
+- **Absent** → encrypted identity mode (two-phase)
+
+No flag needed on the server. The client chooses the mode; the server
+adapts automatically.
 
 ## Wire Format
 
@@ -144,7 +199,7 @@ The GCM nonce is derived from a per-connection sequence number
 | **Compromised MTC server** | PARTIALLY SAFE | Can't forge cosignatures without CA key; if both MTC server + CA key compromised, fake certs possible |
 | **DoS** | VULNERABLE | PQ operations are expensive; rate limit connections |
 | **Downgrade** | N/A | Single protocol version, no negotiation |
-| **Metadata leakage** | PARTIAL | cert_index sent in plaintext during handshake; reveals who is connecting to whom |
+| **Metadata leakage** | CONFIGURABLE | Clear mode: cert_index in plaintext (reveals who). Encrypted mode: cert_index encrypted (hidden). Use `mqc_connect_encrypted` for privacy. |
 
 ## API Reference
 
@@ -179,9 +234,12 @@ typedef struct {
 
 | Function | Description |
 |----------|-------------|
-| `mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)` | TCP connect + MQC handshake (client side). Returns authenticated encrypted connection or NULL. |
+| `mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)` | Clear mode: TCP connect + MQC handshake (1 round trip). cert_index visible to eavesdroppers. |
+| `mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)` | Encrypted identity mode: TCP connect + two-phase handshake (1.5 round trips). cert_index hidden. |
 | `int mqc_listen(const char *host, int port)` | Create TCP listening socket. Pure POSIX, no crypto. Returns fd or -1. |
-| `mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)` | TCP accept + MQC handshake (server side). Returns authenticated encrypted connection or NULL. |
+| `mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)` | Clear mode: TCP accept + MQC handshake. |
+| `mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)` | Encrypted identity mode: TCP accept + two-phase handshake. |
+| `mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)` | Auto-detecting: reads first JSON, routes to clear or encrypted based on cert_index presence. Recommended for servers. |
 
 ### I/O
 
@@ -211,6 +269,7 @@ typedef struct {
 | `mtc_server` | Yes | MTC CA server for peer key resolution (e.g., `"localhost:8444"`) |
 | `ca_pubkey` | Yes | CA's Ed25519 public key (32 bytes) for cosignature verification |
 | `ca_pubkey_sz` | Yes | Size of ca_pubkey |
+| `encrypt_identity` | No | 1 = encrypted identity mode (default: 0). Also selectable by calling `mqc_connect_encrypted` directly. |
 
 ### TPM Directory Layout
 
@@ -296,7 +355,7 @@ int main(void)
 
 | Feature | TLS 1.3 | MQC |
 |---------|---------|-----|
-| Round trips | 1-2 | 1 |
+| Round trips | 1-2 | 1 (clear) or 1.5 (encrypted identity) |
 | Certificate on wire | Full X.509 cert (~2.8KB for ML-DSA-87) | cert_index integer (~10 bytes) |
 | Key exchange | ECDHE or ML-KEM hybrid | ML-KEM-768 |
 | Authentication | X.509 certificate chain | Merkle proof + cosignature |
