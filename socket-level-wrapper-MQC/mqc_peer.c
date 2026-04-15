@@ -406,16 +406,146 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
                         int der3_sz = wc_PubKeyPemToDer(
                             (const unsigned char *)pem3,
                             (int)strlen(pem3), der3, (int)sizeof(der3));
-                        free(pem3);
                         if (der3_sz > 0) {
                             *out = malloc((size_t)der3_sz);
                             if (*out) {
                                 memcpy(*out, der3, (size_t)der3_sz);
                                 *out_sz = der3_sz;
+                                /* Cache to peer dir */
+                                {
+                                    char pd[512], pp[560];
+                                    snprintf(pd, sizeof(pd), "%s/.TPM/%s/%d",
+                                             h, PEER_CACHE_DIR, cert_index);
+                                    ensure_dir(pd);
+                                    snprintf(pp, sizeof(pp),
+                                             "%s/public_key.pem", pd);
+                                    write_file_str(pp, pem3);
+                                }
+                                free(pem3);
                                 return 0;
                             }
                         }
+                        free(pem3);
                     }
+                }
+
+                /* Try fetching from MTC server's Neon public key table.
+                 * The server exposes public keys at a search endpoint
+                 * or we can try the certificate search by subject. */
+                {
+                    char pub_url[512], svr[512];
+                    char *pub_body;
+                    long pub_code = 0;
+
+                    normalize_server(mtc_server, svr, sizeof(svr));
+
+                    /* Try fetching the public key by subject name.
+                     * Convention: keys are stored with key_name = subject
+                     * in the mtc_public_keys table. We search certificates
+                     * to find the subject, then look for a matching
+                     * public_key.pem in the local TPM store.
+                     *
+                     * Direct approach: GET /ca/public-key returns the CA
+                     * key. For leaf keys, we don't have a direct endpoint
+                     * yet. Try the certificate's subject to find the key
+                     * in the TPM tree. */
+
+                    /* Last resort: try to get the key from the certificate
+                     * search. The MTC server's certificate JSON doesn't
+                     * include the raw public key, but we can try fetching
+                     * the Neon mtc_public_keys table via a custom endpoint
+                     * if available.
+                     *
+                     * For now, if we have the subject, try constructing
+                     * a path from subject variants. */
+                    {
+                        /* Try subject without -ca suffix */
+                        char base_subj[256];
+                        int slen = (int)strlen(subject);
+                        snprintf(base_subj, sizeof(base_subj), "%s", subject);
+                        if (slen > 3 && strcmp(base_subj + slen - 3, "-ca") == 0)
+                            base_subj[slen - 3] = '\0';
+
+                        snprintf(tpm_key_path, sizeof(tpm_key_path),
+                                 "%s/.mtc-ca-data/%s/public_key.pem",
+                                 h, base_subj);
+                        {
+                            char *pem4 = read_file_str(tpm_key_path);
+                            if (pem4) {
+                                unsigned char der4[4096];
+                                int der4_sz = wc_PubKeyPemToDer(
+                                    (const unsigned char *)pem4,
+                                    (int)strlen(pem4), der4, (int)sizeof(der4));
+                                if (der4_sz > 0) {
+                                    *out = malloc((size_t)der4_sz);
+                                    if (*out) {
+                                        memcpy(*out, der4, (size_t)der4_sz);
+                                        *out_sz = der4_sz;
+                                        /* Cache to peer dir */
+                                        {
+                                            char pd2[512], pp2[560];
+                                            snprintf(pd2, sizeof(pd2),
+                                                     "%s/.TPM/%s/%d",
+                                                     h, PEER_CACHE_DIR, cert_index);
+                                            ensure_dir(pd2);
+                                            snprintf(pp2, sizeof(pp2),
+                                                     "%s/public_key.pem", pd2);
+                                            write_file_str(pp2, pem4);
+                                            fprintf(stderr,
+                                                "[mqc-peer] cached public key for cert %d\n",
+                                                cert_index);
+                                        }
+                                        free(pem4);
+                                        return 0;
+                                    }
+                                }
+                                free(pem4);
+                            }
+                        }
+                    }
+
+                    /* Fetch from MTC server: GET /public-key/<subject> */
+                    normalize_server(mtc_server, svr, sizeof(svr));
+                    snprintf(pub_url, sizeof(pub_url), "%s/public-key/%s",
+                             svr, subject);
+                    pub_body = http_get(pub_url, &pub_code);
+                    if (pub_body && pub_code == 200) {
+                        struct json_object *pk_obj = json_tokener_parse(pub_body);
+                        struct json_object *pk_val;
+                        if (pk_obj &&
+                            json_object_object_get_ex(pk_obj, "key_value", &pk_val)) {
+                            const char *fetched_pem = json_object_get_string(pk_val);
+                            unsigned char der5[4096];
+                            int der5_sz = wc_PubKeyPemToDer(
+                                (const unsigned char *)fetched_pem,
+                                (int)strlen(fetched_pem),
+                                der5, (int)sizeof(der5));
+                            if (der5_sz > 0) {
+                                *out = malloc((size_t)der5_sz);
+                                if (*out) {
+                                    memcpy(*out, der5, (size_t)der5_sz);
+                                    *out_sz = der5_sz;
+                                    /* Cache to peer dir */
+                                    char pd3[512], pp3[560];
+                                    snprintf(pd3, sizeof(pd3),
+                                             "%s/.TPM/%s/%d",
+                                             h, PEER_CACHE_DIR, cert_index);
+                                    ensure_dir(pd3);
+                                    snprintf(pp3, sizeof(pp3),
+                                             "%s/public_key.pem", pd3);
+                                    write_file_str(pp3, fetched_pem);
+                                    fprintf(stderr,
+                                        "[mqc-peer] fetched + cached public key "
+                                        "for cert %d from server\n", cert_index);
+                                    json_object_put(pk_obj);
+                                    free(pub_body);
+                                    return 0;
+                                }
+                            }
+                        }
+                        if (pk_obj) json_object_put(pk_obj);
+                    }
+                    free(pub_body);
                 }
             }
         }

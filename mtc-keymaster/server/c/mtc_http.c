@@ -1318,6 +1318,36 @@ static void handle_ca_public_key(client_io *io, MtcStore *store)
     json_object_put(obj);
 }
 
+/* GET /public-key/<name> — look up a public key from mtc_public_keys table. */
+static void handle_public_key_lookup(client_io *io, MtcStore *store,
+                                     const char *key_name)
+{
+    char *pem;
+
+    if (!store->db) {
+        http_send_error(io, 503, "database not available");
+        return;
+    }
+
+    pem = mtc_db_get_public_key(store->db, key_name);
+    if (!pem) {
+        http_send_error(io, 404, "public key not found");
+        return;
+    }
+
+    {
+        struct json_object *obj = json_object_new_object();
+        json_object_object_add(obj, "key_name",
+            json_object_new_string(key_name));
+        json_object_object_add(obj, "key_value",
+            json_object_new_string(pem));
+        http_send_json_obj(io, 200, obj);
+        json_object_put(obj);
+    }
+
+    free(pem);
+}
+
 /* GET /trust-anchors — list of trust anchors (standalone + landmarks). */
 static void handle_trust_anchors(client_io *io, MtcStore *store)
 {
@@ -1625,6 +1655,9 @@ static void handle_request(client_io *io, MtcStore *store)
         }
         else if (strcmp(path, "/ca/public-key") == 0) {
             handle_ca_public_key(io, store);
+        }
+        else if (strncmp(path, "/public-key/", 12) == 0) {
+            handle_public_key_lookup(io, store, path + 12);
         }
         else if (strcmp(path, "/ech/configs") == 0) {
             handle_ech_configs(io, store);

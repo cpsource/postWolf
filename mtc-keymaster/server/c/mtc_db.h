@@ -406,4 +406,14 @@ void mtc_db_consume_nonce(PGconn *conn, const char *nonce_hex);
  */
 void mtc_db_expire_nonces(PGconn *conn);
 
+/**
+ * @brief    Look up a public key by name from mtc_public_keys.
+ *
+ * @param[in]  conn      Active PostgreSQL connection.
+ * @param[in]  key_name  Key name to look up (e.g., domain or subject).
+ *
+ * @return  strdup'd PEM string on success (caller frees).  NULL if not found.
+ */
+char *mtc_db_get_public_key(PGconn *conn, const char *key_name);
+
 #endif

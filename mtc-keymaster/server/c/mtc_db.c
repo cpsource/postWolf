@@ -1254,3 +1254,40 @@ void mtc_db_expire_nonces(PGconn *conn)
         "WHERE status = 'pending' AND expires_at <= now()");
     PQclear(res);
 }
+
+/******************************************************************************
+ * Function:    mtc_db_get_public_key
+ *
+ * Description:
+ *   Look up a public key PEM by key_name from the mtc_public_keys table.
+ *
+ * Input Arguments:
+ *   conn      - Active PostgreSQL connection.
+ *   key_name  - Key name to look up.
+ *
+ * Returns:
+ *   strdup'd PEM string on success.  Caller must free().
+ *   NULL if not found or on error.
+ ******************************************************************************/
+char *mtc_db_get_public_key(PGconn *conn, const char *key_name)
+{
+    PGresult *res;
+    const char *params[1];
+    char *val;
+
+    if (!conn || !key_name) return NULL;
+
+    params[0] = key_name;
+    res = PQexecParams(conn,
+        "SELECT key_value FROM mtc_public_keys WHERE key_name = $1",
+        1, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
+        PQclear(res);
+        return NULL;
+    }
+
+    val = strdup(PQgetvalue(res, 0, 0));
+    PQclear(res);
+    return val;
+}
