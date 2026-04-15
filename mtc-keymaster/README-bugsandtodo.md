@@ -1209,6 +1209,15 @@ local filesystem access, which is game over regardless.
 ML-KEM is post-quantum — recorded traffic can't be decrypted later by
 a quantum computer.
 
+### Protocol Name: MQC (Merkle Quantum Connect)
+
+The signed key exchange protocol described above is named **MQC** —
+Merkle Quantum Connect. Merkle-based authentication + quantum-resistant
+encryption. Distinct from TLS. Enabled via `--enable-mqc` or
+`cfg.mtc_store` in the SLC API.
+
+Usage: "Should we enable MQC when we rebuild wolfGuard?"
+
 **Metadata leakage: PARTIAL WEAKNESS.**
 The initial messages (step 1-2) are plaintext. An eavesdropper sees the
 cert\_index values, revealing who is connecting to whom (traffic analysis).
