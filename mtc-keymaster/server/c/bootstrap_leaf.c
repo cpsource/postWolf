@@ -23,6 +23,7 @@
  ******************************************************************************/
 
 #include "mtc_crypt.h"
+#include "mtc_pubkey_db.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -767,6 +768,10 @@ int main(int argc, char *argv[])
 
         json_object_put(resp);
     }
+
+    /* Store public key in Neon mtc_public_keys table */
+    if (!g_trial_run && pub_key_pem)
+        mtc_store_public_key(subject, pub_key_pem);
 
     LOG("enrollment complete!");
     exit_code = 0;

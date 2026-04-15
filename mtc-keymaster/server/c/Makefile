@@ -34,21 +34,25 @@ make-mtc-checkpoint: mtc_checkendpoint.c mtc_checkendpoint.h mtc_db.c mtc_db.h
 doxygen:
 	doxygen Doxyfile
 
-bootstrap_ca: bootstrap_ca.c mtc_crypt.c mtc_crypt.h
+bootstrap_ca: bootstrap_ca.c mtc_crypt.c mtc_crypt.h mtc_pubkey_db.c mtc_pubkey_db.h
 	$(CC) -Wall -Wextra -O2 \
 		$(shell pkg-config --cflags wolfssl) -DWOLFSSL_USE_OPTIONS_H \
 		$(shell pkg-config --cflags json-c) \
-		-o bootstrap_ca bootstrap_ca.c mtc_crypt.c \
+		$(shell pkg-config --cflags libpq) \
+		-o bootstrap_ca bootstrap_ca.c mtc_crypt.c mtc_pubkey_db.c \
 		$(shell pkg-config --libs wolfssl) \
-		$(shell pkg-config --libs json-c)
+		$(shell pkg-config --libs json-c) \
+		$(shell pkg-config --libs libpq)
 
-bootstrap_leaf: bootstrap_leaf.c mtc_crypt.c mtc_crypt.h
+bootstrap_leaf: bootstrap_leaf.c mtc_crypt.c mtc_crypt.h mtc_pubkey_db.c mtc_pubkey_db.h
 	$(CC) -Wall -Wextra -O2 \
 		$(shell pkg-config --cflags wolfssl) -DWOLFSSL_USE_OPTIONS_H \
 		$(shell pkg-config --cflags json-c) \
-		-o bootstrap_leaf bootstrap_leaf.c mtc_crypt.c \
+		$(shell pkg-config --cflags libpq) \
+		-o bootstrap_leaf bootstrap_leaf.c mtc_crypt.c mtc_pubkey_db.c \
 		$(shell pkg-config --libs wolfssl) \
-		$(shell pkg-config --libs json-c)
+		$(shell pkg-config --libs json-c) \
+		$(shell pkg-config --libs libpq)
 
 test-mtc-crypt: mtc_crypt.c mtc_crypt.h
 	$(CC) -Wall -Wextra -O2 -DTEST_MAIN \

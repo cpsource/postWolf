@@ -27,6 +27,7 @@
  ******************************************************************************/
 
 #include "mtc_crypt.h"
+#include "mtc_pubkey_db.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -803,6 +804,13 @@ int main(int argc, char *argv[])
         }
 
         json_object_put(resp);
+    }
+
+    /* Store public key in Neon mtc_public_keys table */
+    if (!g_trial_run && pub_key_pem) {
+        char ca_key_name[512];
+        snprintf(ca_key_name, sizeof(ca_key_name), "%s-ca", subject);
+        mtc_store_public_key(ca_key_name, pub_key_pem);
     }
 
     LOG("enrollment complete!");

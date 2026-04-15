@@ -14,6 +14,7 @@ from pathlib import Path
 
 DEFAULT_TPM_DIR = Path.home() / ".TPM"
 DEFAULT_SERVER = "localhost:8444"
+DEFAULT_ENV_FILE = Path.home() / ".env"
 
 
 def normalize_server_url(server):
@@ -152,6 +153,75 @@ def verify_entry(entry_dir, server, ssl_ctx):
     return result
 
 
+def get_neon_connstr():
+    """Read MERKLE_NEON connection string from env or ~/.env."""
+    cs = os.environ.get("MERKLE_NEON")
+    if cs:
+        return cs
+    try:
+        with open(DEFAULT_ENV_FILE, "r") as f:
+            for line in f:
+                if line.startswith("MERKLE_NEON="):
+                    val = line[12:].strip()
+                    # Strip surrounding quotes
+                    if len(val) >= 2 and val[0] in ('"', "'") and val[-1] == val[0]:
+                        val = val[1:-1]
+                    return val
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def check_pubkey_db(entry_name, pub_key_path):
+    """Check if the public key is in the Neon mtc_public_keys table.
+
+    Returns a dict with:
+      db_found: True/False/None (None = DB unavailable)
+      db_match: True/False/None (None = not checked)
+      error: string or None
+    """
+    result = {"db_found": None, "db_match": None, "error": None}
+
+    try:
+        import psycopg2
+    except ImportError:
+        result["error"] = "psycopg2 not installed"
+        return result
+
+    cs = get_neon_connstr()
+    if not cs:
+        result["error"] = "MERKLE_NEON not found"
+        return result
+
+    # Read local public key
+    local_key = None
+    if pub_key_path.exists():
+        local_key = pub_key_path.read_text()
+
+    try:
+        conn = psycopg2.connect(cs)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT key_value FROM mtc_public_keys WHERE key_name = %s",
+            (entry_name,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if row is None:
+            result["db_found"] = False
+            return result
+
+        result["db_found"] = True
+        if local_key is not None:
+            result["db_match"] = (row[0].strip() == local_key.strip())
+        return result
+
+    except Exception as e:
+        result["error"] = str(e)
+        return result
+
+
 def show_entry(entry_dir, verbose=False, verify_result=None):
     """Display information about a single TPM entry."""
     name = entry_dir.name
@@ -242,10 +312,16 @@ def show_entry(entry_dir, verbose=False, verify_result=None):
 
     if verify_result is not None:
         ok = lambda v: "OK" if v else ("FAIL" if v is False else "?")
+        db_status = ok(verify_result.get("db_found"))
+        if verify_result.get("db_match") is False:
+            db_status = "MISMATCH"
+        elif verify_result.get("db_match") is True:
+            db_status = "OK"
         print(f"      Verify:     server={ok(verify_result['server_found'])}  "
               f"revoked={'YES' if verify_result['revoked'] else 'no'}  "
               f"proof={ok(verify_result['proof_match'])}  "
-              f"time={ok(verify_result['time_valid'])}")
+              f"time={ok(verify_result['time_valid'])}  "
+              f"pubkey_db={db_status}")
         if verify_result["errors"]:
             for err in verify_result["errors"]:
                 print(f"      *** {err}")
@@ -353,6 +429,17 @@ def main():
         vr = None
         if args.verify:
             vr = verify_entry(entry_dir, args.server, ssl_ctx)
+            # Check mtc_public_keys table
+            pub_key_path = entry_dir / "public_key.pem"
+            db_result = check_pubkey_db(entry_dir.name, pub_key_path)
+            vr["db_found"] = db_result["db_found"]
+            vr["db_match"] = db_result["db_match"]
+            if db_result["error"]:
+                vr["errors"].append(f"pubkey_db: {db_result['error']}")
+            elif db_result["db_found"] is False:
+                vr["errors"].append("public key not in Neon mtc_public_keys")
+            elif db_result["db_match"] is False:
+                vr["errors"].append("public key MISMATCH with Neon mtc_public_keys")
             if vr["errors"]:
                 verify_ok = False
         show_entry(entry_dir, verbose=args.verbose, verify_result=vr)
