@@ -51,6 +51,15 @@
 #define MQC_GCM_IV_SZ       12
 #define MQC_GCM_TAG_SZ      16
 #define MQC_MAX_MSG          (1024 * 1024)  /* 1MB max message */
+#define MQC_MAX_HANDSHAKE    (128 * 1024)   /* 128KB max handshake JSON */
+
+/* --- Logging --- */
+
+#define MQC_LOG(fmt, ...) \
+    fprintf(stderr, "[MQC %s:%d] " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
+
+#define MQC_SECURITY(fmt, ...) \
+    fprintf(stderr, "[MQC-SECURITY %s:%d] " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
 
 /* --- Internal structures --- */
 
@@ -437,7 +446,7 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
                               peer_index, &peer_pubkey, &peer_pubkey_sz);
         if (ret != 0) {
-            fprintf(stderr, "[mqc] peer verification failed for index %d\n",
+            MQC_SECURITY("PEER_VERIFY_FAILED: peer for index %d\n",
                     peer_index);
             goto fail;
         }
@@ -461,7 +470,7 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
             free(peer_pubkey);
 
             if (ret != 0 || !verified) {
-                fprintf(stderr, "[mqc] server signature verification failed\n");
+                MQC_SECURITY("SIG_VERIFY_FAILED: server signature invalid");
                 goto fail;
             }
         }
@@ -534,14 +543,25 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
     fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
     if (fd < 0) return NULL;
 
-    fprintf(stderr, "[mqc] accepted connection\n");
+    {
+        char ip[64] = "unknown";
+        inet_ntop(AF_INET, &cli_addr.sin_addr, ip, sizeof(ip));
+        MQC_LOG("accepted connection from %s:%d", ip, ntohs(cli_addr.sin_port));
+    }
 
     if (wc_InitRng(&rng) != 0) { close(fd); return NULL; }
     rng_ok = 1;
 
     /* Receive client's handshake */
     ret = read_json_block(fd, json_buf, sizeof(json_buf));
-    if (ret <= 0) goto fail;
+    if (ret <= 0) {
+        MQC_SECURITY("handshake read failed (empty or malformed, fd=%d)", fd);
+        goto fail;
+    }
+    if (ret > MQC_MAX_HANDSHAKE) {
+        MQC_SECURITY("handshake too large: %d bytes (max %d)", ret, MQC_MAX_HANDSHAKE);
+        goto fail;
+    }
 
     {
         struct json_object *req, *val;
@@ -582,7 +602,7 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
                               peer_index, &peer_pubkey, &peer_pubkey_sz);
         if (ret != 0) {
-            fprintf(stderr, "[mqc] peer verification failed for index %d\n",
+            MQC_SECURITY("PEER_VERIFY_FAILED: peer for index %d\n",
                     peer_index);
             goto fail;
         }
@@ -606,7 +626,7 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
             free(peer_pubkey);
 
             if (ret != 0 || !verified) {
-                fprintf(stderr, "[mqc] client signature verification failed\n");
+                MQC_SECURITY("SIG_VERIFY_FAILED: client signature invalid");
                 goto fail;
             }
         }
@@ -768,7 +788,11 @@ static int enc_recv(int fd, const uint8_t *aes_key, uint64_t *seq,
         nonce, MQC_GCM_IV_SZ, tag, MQC_GCM_TAG_SZ, NULL, 0);
     wc_AesFree(&aes);
     free(ct);
-    if (ret != 0) return -1;
+    if (ret != 0) {
+        MQC_SECURITY("GCM_AUTH_FAILED: decryption failed (tampered data or wrong key, seq=%lu)",
+                     (unsigned long)(*seq - 1));
+        return -1;
+    }
     return ct_sz;
 }
 
@@ -959,7 +983,7 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
             wc_dilithium_free(&peer_dil);
             free(peer_pubkey);
             if (ret != 0 || !verified) {
-                fprintf(stderr, "[mqc-enc] server signature failed\n");
+                MQC_SECURITY("SIG_VERIFY_FAILED: encrypted mode server signature invalid");
                 goto fail;
             }
         }
@@ -1568,7 +1592,12 @@ int mqc_read(mqc_conn_t *conn, void *buf, int sz)
     wc_AesFree(&aes);
     free(ct);
 
-    if (ret != 0) return -1;
+    if (ret != 0) {
+        MQC_SECURITY("GCM_AUTH_FAILED: data decryption failed "
+                     "(tampered data or wrong key, peer=%d seq=%lu)",
+                     conn->peer_index, (unsigned long)(conn->recv_seq - 1));
+        return -1;
+    }
 
     return ct_sz;
 }

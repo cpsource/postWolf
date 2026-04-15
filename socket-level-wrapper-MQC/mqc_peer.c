@@ -28,6 +28,12 @@
 #include <curl/curl.h>
 #include <json-c/json.h>
 
+#define MQC_LOG(fmt, ...) \
+    fprintf(stderr, "[MQC %s:%d] " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
+
+#define MQC_SECURITY(fmt, ...) \
+    fprintf(stderr, "[MQC-SECURITY %s:%d] " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
+
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/sha256.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
@@ -551,7 +557,7 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
         }
     }
 
-    fprintf(stderr, "[mqc-peer] no public key available for cert %d (%s)\n",
+    MQC_SECURITY("PUBKEY_MISSING: no public key for cert %d (%s)\n",
             cert_index, subject);
     return -1;
 }
@@ -634,7 +640,7 @@ int mqc_peer_verify(const char *mtc_server,
 
     /* 5. Check revocation */
     if (check_revoked(mtc_server, cert_index)) {
-        fprintf(stderr, "[mqc-peer] cert %d is REVOKED\n", cert_index);
+        MQC_SECURITY("CERT_REVOKED: cert %d is revoked", cert_index);
         json_object_put(cert_json);
         return -1;
     }
@@ -655,7 +661,7 @@ int mqc_peer_verify(const char *mtc_server,
 
         if (not_before > 0 && not_after > 0) {
             if (now < not_before || now > not_after) {
-                fprintf(stderr, "[mqc-peer] cert %d has expired or not yet valid\n",
+                MQC_SECURITY("CERT_EXPIRED: cert %d expired or not yet valid",
                         cert_index);
                 json_object_put(cert_json);
                 return -1;
