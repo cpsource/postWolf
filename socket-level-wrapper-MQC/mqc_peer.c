@@ -330,13 +330,99 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
         }
     }
 
-    /* Not cached — this is a limitation. The peer's public key needs
-     * to be available via the MTC server or pre-distributed.
-     * For now, return error. Phase 3+ will add a server endpoint
-     * or Neon query to resolve public keys by cert_index. */
+    /* Fetch from Neon mtc_public_keys table via MTC server.
+     * The subject is the key_name in the table. */
+    {
+        char fetch_url[512], svr[512];
+        char *fetch_body;
+        long fetch_code = 0;
+
+        /* Try fetching the public key PEM from the MTC server's
+         * public key endpoint. For now, we construct a direct query
+         * via the Neon DB using the subject as key_name. */
+
+        /* Strategy: the public key was stored by bootstrap_ca/bootstrap_leaf
+         * into Neon mtc_public_keys with key_name = subject.
+         * We can't query Neon directly from here (no libpq linked),
+         * so try to read from the TPM directory using the subject. */
+        {
+            char tpm_key_path[512];
+            const char *h = getenv("HOME");
+            if (!h) h = "/tmp";
+
+            /* Try ~/.TPM/<subject_safe>/public_key.pem */
+            {
+                char subj_safe[256];
+                unsigned int si;
+                snprintf(subj_safe, sizeof(subj_safe), "%s", subject);
+                for (si = 0; si < strlen(subj_safe); si++)
+                    if (subj_safe[si] == ':') subj_safe[si] = '_';
+
+                snprintf(tpm_key_path, sizeof(tpm_key_path),
+                         "%s/.TPM/%s/public_key.pem", h, subj_safe);
+                {
+                    char *pem2 = read_file_str(tpm_key_path);
+                    if (pem2) {
+                        unsigned char der2[4096];
+                        int der2_sz = wc_PubKeyPemToDer(
+                            (const unsigned char *)pem2,
+                            (int)strlen(pem2), der2, (int)sizeof(der2));
+                        free(pem2);
+                        if (der2_sz > 0) {
+                            *out = malloc((size_t)der2_sz);
+                            if (*out) {
+                                memcpy(*out, der2, (size_t)der2_sz);
+                                *out_sz = der2_sz;
+
+                                /* Cache to peer dir for next time */
+                                {
+                                    char pd[512], pp[560];
+                                    snprintf(pd, sizeof(pd),
+                                             "%s/.TPM/%s/%d",
+                                             h, PEER_CACHE_DIR, cert_index);
+                                    ensure_dir(pd);
+                                    snprintf(pp, sizeof(pp),
+                                             "%s/public_key.pem", pd);
+                                    char *orig_pem = read_file_str(tpm_key_path);
+                                    if (orig_pem) {
+                                        write_file_str(pp, orig_pem);
+                                        free(orig_pem);
+                                    }
+                                }
+
+                                return 0;
+                            }
+                        }
+                    }
+                }
+
+                /* Also try ~/.mtc-ca-data/<subject>/public_key.pem */
+                snprintf(tpm_key_path, sizeof(tpm_key_path),
+                         "%s/.mtc-ca-data/%s/public_key.pem", h, subject);
+                {
+                    char *pem3 = read_file_str(tpm_key_path);
+                    if (pem3) {
+                        unsigned char der3[4096];
+                        int der3_sz = wc_PubKeyPemToDer(
+                            (const unsigned char *)pem3,
+                            (int)strlen(pem3), der3, (int)sizeof(der3));
+                        free(pem3);
+                        if (der3_sz > 0) {
+                            *out = malloc((size_t)der3_sz);
+                            if (*out) {
+                                memcpy(*out, der3, (size_t)der3_sz);
+                                *out_sz = der3_sz;
+                                return 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fprintf(stderr, "[mqc-peer] no public key available for cert %d (%s)\n",
             cert_index, subject);
-    (void)url; (void)server; (void)body; (void)code;
     return -1;
 }
 

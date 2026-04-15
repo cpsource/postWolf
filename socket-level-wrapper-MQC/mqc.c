@@ -262,6 +262,7 @@ mqc_ctx_t *mqc_ctx_new(const mqc_cfg_t *cfg)
             return NULL;
         }
 
+        /* Store the full DER. We'll try multiple import strategies. */
         ctx->privkey_der = malloc((size_t)der_sz);
         if (!ctx->privkey_der) {
             mqc_ctx_free(ctx);
@@ -300,9 +301,9 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
     MlKemKey mlkem;
     dilithium_key dil;
     WC_RNG rng;
-    uint8_t encaps_key[2048];
+    uint8_t encaps_key[4096];
     word32 encaps_key_sz;
-    uint8_t sig[5000];
+    uint8_t sig[8192];
     word32 sig_sz = sizeof(sig);
     uint8_t shared_secret[WC_ML_KEM_SS_SZ];
     uint8_t aes_key[MQC_AES_KEY_SZ];
@@ -345,17 +346,23 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
     ret = wc_MlKemKey_MakeKey(&mlkem, &rng);
     if (ret != 0) { fprintf(stderr, "[mqc] ML-KEM keygen: %d\n", ret); goto fail; }
 
-    encaps_key_sz = sizeof(encaps_key);
+    wc_MlKemKey_PublicKeySize(&mlkem, &encaps_key_sz);
+    if (encaps_key_sz > sizeof(encaps_key)) {
+        fprintf(stderr, "[mqc] ML-KEM pub key too large: %u\n", encaps_key_sz);
+        goto fail;
+    }
     ret = wc_MlKemKey_EncodePublicKey(&mlkem, encaps_key, encaps_key_sz);
     if (ret != 0) { fprintf(stderr, "[mqc] ML-KEM encode pub: %d\n", ret); goto fail; }
-    wc_MlKemKey_PublicKeySize(&mlkem, &encaps_key_sz);
 
     /* Sign encaps key with our ML-DSA-87 key */
     wc_dilithium_init(&dil);
     dil_ok = 1;
     wc_dilithium_set_level(&dil, WC_ML_DSA_87);
-    ret = wc_dilithium_import_private(ctx->privkey_der,
-        (word32)ctx->privkey_der_sz, &dil);
+    {
+        word32 dil_idx = 0;
+        ret = wc_Dilithium_PrivateKeyDecode(ctx->privkey_der, &dil_idx,
+            &dil, (word32)ctx->privkey_der_sz);
+    }
     if (ret != 0) { fprintf(stderr, "[mqc] DSA import: %d\n", ret); goto fail; }
 
     ret = wc_dilithium_sign_ctx_msg(NULL, 0,
@@ -392,9 +399,9 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
     {
         struct json_object *resp, *val;
         const char *ct_hex, *resp_sig_hex;
-        uint8_t ciphertext[2048];
+        uint8_t ciphertext[4096];
         int ct_sz;
-        uint8_t resp_sig[5000];
+        uint8_t resp_sig[8192];
         int resp_sig_sz;
         int peer_index;
         unsigned char *peer_pubkey = NULL;
@@ -439,8 +446,11 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
             int verified = 0;
             wc_dilithium_init(&peer_dil);
             wc_dilithium_set_level(&peer_dil, WC_ML_DSA_87);
-            ret = wc_dilithium_import_public(peer_pubkey, (word32)peer_pubkey_sz,
-                                              &peer_dil);
+            {
+                word32 peer_idx = 0;
+                ret = wc_Dilithium_PublicKeyDecode(peer_pubkey, &peer_idx,
+                    &peer_dil, (word32)peer_pubkey_sz);
+            }
             if (ret == 0) {
                 ret = wc_dilithium_verify_ctx_msg(resp_sig, (word32)resp_sig_sz,
                     NULL, 0, ciphertext, (word32)ct_sz, &verified, &peer_dil);
@@ -509,9 +519,9 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
     dilithium_key dil;
     WC_RNG rng;
     uint8_t shared_secret[WC_ML_KEM_SS_SZ];
-    uint8_t ciphertext[2048];
+    uint8_t ciphertext[4096];
     word32 ct_sz;
-    uint8_t sig[5000];
+    uint8_t sig[8192];
     word32 sig_sz = sizeof(sig);
     uint8_t aes_key[MQC_AES_KEY_SZ];
     char json_buf[64000];
@@ -534,9 +544,9 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
     {
         struct json_object *req, *val;
         const char *ek_hex, *req_sig_hex;
-        uint8_t encaps_key[2048];
+        uint8_t encaps_key[4096];
         int ek_sz;
-        uint8_t req_sig[5000];
+        uint8_t req_sig[8192];
         int req_sig_sz;
         int peer_index;
         unsigned char *peer_pubkey = NULL;
@@ -581,8 +591,11 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
             int verified = 0;
             wc_dilithium_init(&peer_dil);
             wc_dilithium_set_level(&peer_dil, WC_ML_DSA_87);
-            ret = wc_dilithium_import_public(peer_pubkey, (word32)peer_pubkey_sz,
-                                              &peer_dil);
+            {
+                word32 peer_idx = 0;
+                ret = wc_Dilithium_PublicKeyDecode(peer_pubkey, &peer_idx,
+                    &peer_dil, (word32)peer_pubkey_sz);
+            }
             if (ret == 0) {
                 ret = wc_dilithium_verify_ctx_msg(req_sig, (word32)req_sig_sz,
                     NULL, 0, encaps_key, (word32)ek_sz, &verified, &peer_dil);
@@ -621,9 +634,12 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
         wc_dilithium_init(&dil);
         dil_ok = 1;
         wc_dilithium_set_level(&dil, WC_ML_DSA_87);
-        ret = wc_dilithium_import_private(ctx->privkey_der,
-            (word32)ctx->privkey_der_sz, &dil);
-        if (ret != 0) goto fail;
+        {
+            word32 dil_idx2 = 0;
+            ret = wc_Dilithium_PrivateKeyDecode(ctx->privkey_der, &dil_idx2,
+                &dil, (word32)ctx->privkey_der_sz);
+        }
+        if (ret != 0) { fprintf(stderr, "[mqc] server DSA import: %d\n", ret); goto fail; }
 
         ret = wc_dilithium_sign_ctx_msg(NULL, 0,
             ciphertext, ct_sz, sig, &sig_sz, &dil, &rng);
