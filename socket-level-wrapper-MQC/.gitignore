@@ -1,0 +1,5 @@
+# Build artifacts
+*.o
+libmqc.a
+examples/echo_server
+examples/echo_client
