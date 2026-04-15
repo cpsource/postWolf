@@ -1166,3 +1166,53 @@ When you receive a cert\_index you haven't seen before:
 10. Use the public key to verify the peer's signature
 
 Subsequent connections to the same peer: step 1 hits cache, skip 2-9.
+
+### Security Analysis
+
+**MITM (Man in the Middle): SAFE.**
+Attacker intercepts NodeA's message and substitutes their own ML-KEM key.
+But they can't sign it with NodeA's ML-DSA-87 private key — NodeB rejects
+the forged signature. The attacker would need to compromise the private
+key, which never leaves the node.
+
+**Replay attack: SAFE.**
+ML-KEM encaps key is ephemeral — fresh every connection. Replaying an
+old message gives an old encaps key, but the attacker can't derive the
+shared secret without the corresponding ephemeral private key (destroyed
+after use).
+
+**Impersonation: SAFE.**
+Requires the victim's ML-DSA-87 private key to sign. The Merkle tree
+binds the public key to the cert\_index — can't substitute a different
+key because the hash wouldn't match the logged entry.
+
+**Compromised MTC server: PARTIALLY SAFE.**
+The server could return a fake certificate for a cert\_index, but the
+Merkle inclusion proof and cosignature would fail verification. The
+server can't forge the Ed25519 cosignature without the CA's private key.
+However, if BOTH the MTC server AND the CA cosigning key are compromised,
+a fake cert could be injected.
+
+**Denial of service: VULNERABLE.**
+An attacker could flood connection attempts, forcing the responder to do
+expensive ML-KEM + ML-DSA operations. Rate limiting helps but PQ
+operations are inherently slower than classical ones.
+
+**Downgrade attack: NOT APPLICABLE.**
+Only one protocol version. No TLS version negotiation to downgrade.
+
+**Cache poisoning: LOW RISK.**
+Possible if an attacker can write to `~/.TPM/peers/`. But that requires
+local filesystem access, which is game over regardless.
+
+**Harvest now, decrypt later: SAFE.**
+ML-KEM is post-quantum — recorded traffic can't be decrypted later by
+a quantum computer.
+
+**Metadata leakage: PARTIAL WEAKNESS.**
+The initial messages (step 1-2) are plaintext. An eavesdropper sees the
+cert\_index values, revealing who is connecting to whom (traffic analysis).
+**Fix:** Send cert\_index in an encrypted follow-up message after the
+ML-KEM shared secret is established. Costs an extra half round trip but
+hides peer identities from passive observers. Consider for high-security
+deployments.
