@@ -232,8 +232,11 @@ static void mqc_redis_init(void)
 
     s_redis = redisConnectWithTimeout("127.0.0.1", 6379, timeout);
     if (!s_redis || s_redis->err) {
+        MQC_LOG("Redis connect failed: %s — rate limiting disabled",
+                s_redis ? s_redis->errstr : "NULL context");
         if (s_redis) { redisFree(s_redis); s_redis = NULL; }
-        /* Fail-open: no Redis = no rate limiting */
+    } else {
+        MQC_LOG("Redis connected for rate limiting");
     }
 }
 
@@ -246,8 +249,9 @@ static int redis_incr(const char *key, int ttl_secs)
 
     reply = redisCommand(s_redis, "INCR %s", key);
     if (!reply || reply->type != REDIS_REPLY_INTEGER) {
+        MQC_LOG("Redis INCR failed for %s — fail-open", key);
         if (reply) freeReplyObject(reply);
-        return 0;  /* fail-open */
+        return 0;
     }
     count = (int)reply->integer;
     freeReplyObject(reply);
