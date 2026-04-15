@@ -53,6 +53,7 @@
 #define MQC_GCM_TAG_SZ      16
 #define MQC_MAX_MSG          (1024 * 1024)  /* 1MB max message */
 #define MQC_MAX_HANDSHAKE    (128 * 1024)   /* 128KB max handshake JSON */
+#define MQC_HANDSHAKE_TIMEOUT 10            /* seconds to complete handshake */
 
 #define MQC_ABUSE_THRESHOLD  25  /* reject if abuse score >= 25% */
 
@@ -195,6 +196,24 @@ static void make_nonce(uint64_t seq, uint8_t nonce[MQC_GCM_IV_SZ])
     nonce[9]  = (uint8_t)(seq >> 16);
     nonce[10] = (uint8_t)(seq >> 8);
     nonce[11] = (uint8_t)(seq);
+}
+
+/* --- Socket timeout --- */
+
+static void set_socket_timeout(int fd, int seconds)
+{
+    struct timeval tv;
+    tv.tv_sec = seconds;
+    tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
+static void clear_socket_timeout(int fd)
+{
+    struct timeval tv = {0, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
 /* --- AbuseIPDB check --- */
@@ -690,6 +709,9 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
         }
     }
 
+    /* Handshake timeout — drop slowloris connections */
+    set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
+
     if (wc_InitRng(&rng) != 0) { close(fd); return NULL; }
     rng_ok = 1;
 
@@ -842,6 +864,7 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
         conn->peer_index = peer_index;
         conn->send_seq = 0;
         conn->recv_seq = 0;
+        clear_socket_timeout(fd);
 
         fprintf(stderr, "[mqc] session established with peer %d\n", peer_index);
     }
@@ -1184,6 +1207,7 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
         MQC_LOG("accepted encrypted connection from %s:%d", ip, ntohs(cli_addr.sin_port));
         if (mqc_abuse_check(ip) != 0) { close(fd); return NULL; }
     }
+    set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
 
     if (wc_InitRng(&rng) != 0) { close(fd); return NULL; }
     rng_ok = 1;
@@ -1349,6 +1373,7 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
                 conn->peer_index = peer_index;
                 conn->send_seq = 1;
                 conn->recv_seq = 1;
+                clear_socket_timeout(fd);
             }
         }
     }
@@ -1394,6 +1419,7 @@ static int auto_accept_detect(int listen_fd, char *json_buf, int json_bufsz,
         MQC_LOG("auto-accept from %s:%d", ip, ntohs(cli_addr.sin_port));
         if (mqc_abuse_check(ip) != 0) { close(fd); return -1; }
     }
+    set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
 
     ret = read_json_block(fd, json_buf, json_bufsz);
     if (ret <= 0) { close(fd); return -1; }
@@ -1502,6 +1528,7 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
             if (!conn) goto clear_fail;
             conn->fd = fd; memcpy(conn->aes_key, aes_key, MQC_AES_KEY_SZ);
             conn->peer_index = peer_index;
+            clear_socket_timeout(fd);
             fprintf(stderr, "[mqc-auto] clear session with peer %d\n", peer_index);
         }
         secure_zero(shared_secret, sizeof(shared_secret));
@@ -1632,6 +1659,7 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
                 conn->fd = fd; memcpy(conn->aes_key, aes_key, MQC_AES_KEY_SZ);
                 conn->peer_index = peer_index;
                 conn->send_seq = 1; conn->recv_seq = 1;
+                clear_socket_timeout(fd);
                 fprintf(stderr, "[mqc-auto] encrypted session with peer %d\n", peer_index);
             }
         }
