@@ -74,6 +74,19 @@ int mqc_listen(const char *host, int port);
  * Returns NULL if accept or any verification step fails. */
 mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd);
 
+/* Connect/accept with encrypted identity (hides cert_index from eavesdroppers).
+ * Two-phase handshake: ML-KEM key exchange first (plaintext), then
+ * cert_index + signatures encrypted with the derived key.
+ * Adds half a round trip compared to mqc_connect/mqc_accept. */
+mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port);
+mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd);
+
+/* Auto-detecting accept: peeks at the first byte to determine if the
+ * client is using clear or encrypted identity mode.
+ * 0x7B ('{') = clear JSON → mqc_accept
+ * Otherwise  = encrypted  → mqc_accept_encrypted */
+mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd);
+
 /* --- I/O --- */
 
 /* Read and decrypt data. Returns bytes read, 0 on close, -1 on error. */

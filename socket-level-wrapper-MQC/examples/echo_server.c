@@ -31,7 +31,7 @@ static int load_ca_pubkey(const char *mtc_server)
 
 int main(int argc, char *argv[])
 {
-    const char *tpm_path;
+    const char *tpm_path = NULL;
     int port = DEFAULT_PORT;
     int listen_fd;
     mqc_ctx_t *ctx;
@@ -42,10 +42,9 @@ int main(int argc, char *argv[])
 
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <tpm_path> [port]\n", argv[0]);
-        fprintf(stderr, "  tpm_path: ~/.TPM/<domain> directory\n");
+        fprintf(stderr, "  Server auto-detects clear vs encrypted mode.\n");
         return 1;
     }
-
     tpm_path = argv[1];
     if (argc > 2)
         port = atoi(argv[2]);
@@ -72,12 +71,12 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    printf("MQC echo server listening on port %d\n", port);
+    printf("MQC echo server listening on port %d (auto-detect mode)\n", port);
 
     for (;;) {
         printf("Waiting for connection...\n");
 
-        conn = mqc_accept(ctx, listen_fd);
+        conn = mqc_accept_auto(ctx, listen_fd);
         if (!conn) {
             fprintf(stderr, "mqc_accept failed\n");
             continue;

@@ -32,23 +32,27 @@ int main(int argc, char *argv[])
     const char *tpm_path;
     const char *host;
     int port = DEFAULT_PORT;
+    int encrypted = 0;
     mqc_ctx_t *ctx;
     mqc_conn_t *conn;
     mqc_cfg_t cfg;
     const char *msg = "Hello MQC!";
     char buf[BUF_SZ];
-    int n;
+    int n, i, pos;
 
-    if (argc < 3) {
-        fprintf(stderr, "Usage: %s <tpm_path> <host> [port]\n", argv[0]);
-        fprintf(stderr, "  tpm_path: ~/.TPM/<domain> directory\n");
+    /* Parse args */
+    pos = 0;
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--encrypted") == 0)
+            encrypted = 1;
+        else if (pos == 0) { tpm_path = argv[i]; pos++; }
+        else if (pos == 1) { host = argv[i]; pos++; }
+        else if (pos == 2) { port = atoi(argv[i]); pos++; }
+    }
+    if (pos < 2) {
+        fprintf(stderr, "Usage: %s [--encrypted] <tpm_path> <host> [port]\n", argv[0]);
         return 1;
     }
-
-    tpm_path = argv[1];
-    host = argv[2];
-    if (argc > 3)
-        port = atoi(argv[3]);
 
     load_ca_pubkey(DEFAULT_SERVER);
 
@@ -65,8 +69,10 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    printf("Connecting to %s:%d...\n", host, port);
-    conn = mqc_connect(ctx, host, port);
+    printf("Connecting to %s:%d%s...\n", host, port,
+           encrypted ? " (encrypted identity)" : "");
+    conn = encrypted ? mqc_connect_encrypted(ctx, host, port)
+                     : mqc_connect(ctx, host, port);
     if (!conn) {
         fprintf(stderr, "mqc_connect failed\n");
         mqc_ctx_free(ctx);
