@@ -1,0 +1,182 @@
+# MQC Implementation Plan
+
+## Overview
+
+Implement the MQC (Merkle Quantum Connect) protocol as a standalone
+library in `socket-level-wrapper-MQC/`. This replaces TLS 1.3 + X.509
+with a pure post-quantum protocol using ML-KEM key exchange, ML-DSA-87
+signed authentication, and Merkle tree proof verification.
+
+See `README-MQC-specifications.md` for the full protocol specification.
+
+## File Inventory
+
+```
+socket-level-wrapper-MQC/
+    README-MQC-specifications.md   DONE  — protocol spec
+    README-MQC.plan                DONE  — this file
+    mqc.h                          TODO  — public API header
+    mqc.c                          TODO  — protocol implementation
+    mqc_peer.h                     TODO  — peer verification header
+    mqc_peer.c                     TODO  — peer fetch/cache/verify
+    Makefile                       TODO  — build system
+    examples/
+        echo_server.c              TODO  — demo server
+        echo_client.c              TODO  — demo client
+```
+
+## Implementation Order
+
+### Step 1: mqc.h — Public API Header
+
+Define all types and function prototypes:
+- `mqc_role_t` enum (MQC_CLIENT, MQC_SERVER)
+- `mqc_cfg_t` struct (role, tpm_path, mtc_server, ca_pubkey)
+- `mqc_ctx_t`, `mqc_conn_t` opaque handles
+- All public functions (ctx_new, ctx_free, connect, listen, accept,
+  read, recv, write, send, close, get_fd, get_peer_index)
+
+No implementation, just declarations.
+
+### Step 2: mqc_peer.h / mqc_peer.c — Peer Verification
+
+This is the Merkle trust engine. Independent of the handshake.
+
+**mqc_peer.h exports:**
+- `mqc_peer_verify(mtc_server, ca_pubkey, ca_pubkey_sz, cert_index, pubkey_out, pubkey_sz_out)` — returns 0 if peer is valid
+- `mqc_peer_get_pubkey(cert_index, pubkey_out, pubkey_sz_out)` — get cached pubkey
+
+**mqc_peer.c implements:**
+1. Cache check: `~/.TPM/peers/<index>/certificate.json`
+2. HTTP fetch: `GET https://<mtc_server>/certificate/<index>` via libcurl
+3. Parse JSON: extract tbs_entry, inclusion_proof, cosignatures, subtree_hash
+4. Checkpoint fetch: `GET https://<mtc_server>/log/checkpoint` (cached 5 min)
+5. Merkle verify: `wc_MtcVerifyInclusionProof()`
+6. Cosignature verify: `wc_MtcVerifyCosignature()` with CA pubkey
+7. Revocation check: `GET https://<mtc_server>/revoked/<index>`
+8. Validity check: not_before <= now <= not_after
+9. Extract and return peer's public key (from `subject_public_key_hash`
+   + fetch `public_key.pem` or resolve from the Neon `mtc_public_keys` table)
+10. Cache to `~/.TPM/peers/<index>/`
+
+**Dependencies:** libcurl, json-c, wolfSSL (crypto only)
+
+### Step 3: mqc.c — Core Protocol
+
+**Helper functions (static):**
+- `secure_zero(buf, len)` — volatile zero
+- `to_hex(data, sz, out)` / `hex_to_bytes(hex, out, out_sz)` — hex conversion
+- `write_all(fd, buf, len)` / `read_all(fd, buf, len)` — full I/O
+- `read_json_block(fd, buf, bufsz)` — read until brace depth 0
+- `send_encrypted(conn, data, len)` — 4-byte len prefix + AES-256-GCM encrypt
+- `recv_encrypted(conn, buf, bufsz)` — 4-byte len prefix + AES-256-GCM decrypt
+
+**mqc_ctx_new(cfg):**
+1. Allocate ctx, copy config strings
+2. Read `{tpm_path}/certificate.json` → extract `cert_index`
+3. Read `{tpm_path}/private_key.pem` → convert PEM to DER
+4. Initialize dilithium_key from DER for signing
+5. Store mtc_server, ca_pubkey
+
+**mqc_ctx_free(ctx):**
+1. Zero and free private key material
+2. Free strings and ctx
+
+**mqc_connect(ctx, host, port):**
+1. DNS resolve + TCP connect (getaddrinfo loop)
+2. Generate ephemeral ML-KEM-768 keypair:
+   - `wc_MlKemKey_Init(&key, WC_ML_KEM_768, NULL, INVALID_DEVID)`
+   - `wc_MlKemKey_MakeKey(&key, &rng)`
+   - `wc_MlKemKey_EncodePublicKey(&key, encaps_key, encaps_key_sz)`
+3. Sign encaps_key with our ML-DSA-87 key:
+   - `wc_dilithium_sign_ctx_msg(sig, &sig_sz, NULL, 0, encaps_key, encaps_key_sz, &our_dil_key, &rng)`
+4. Build JSON: `{"cert_index":N, "mlkem_encaps_key":"<hex>", "signature":"<hex>"}`
+5. Send JSON over TCP
+6. Receive server's JSON response
+7. Parse: peer cert_index, mlkem_ciphertext, signature
+8. Verify peer: `mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ..., peer_index, &peer_pubkey, &peer_pubkey_sz)`
+9. Verify server's signature over ciphertext using peer_pubkey
+10. Decapsulate: `wc_MlKemKey_Decapsulate(&key, shared_secret, ciphertext, ct_len)`
+11. Derive AES key: `wc_HKDF(WC_SHA256, shared_secret, 32, NULL, 0, "mqc-session", 11, aes_key, 32)`
+12. Allocate mqc_conn_t, populate fd + aes_key + peer_index
+13. Zero ephemeral keys
+14. Return conn
+
+**mqc_accept(ctx, listen_fd):**
+1. TCP accept
+2. Receive client's JSON
+3. Parse: peer cert_index, mlkem_encaps_key, signature
+4. Verify peer: `mqc_peer_verify(...)`
+5. Verify client's signature over encaps_key
+6. Import encaps key: `wc_MlKemKey_DecodePublicKey(&key, encaps_key_bytes, sz)`
+7. Encapsulate: `wc_MlKemKey_Encapsulate(&key, ciphertext, shared_secret, &rng)`
+8. Sign ciphertext with our ML-DSA-87 key
+9. Build and send response JSON
+10. Derive AES key (same HKDF)
+11. Return conn
+
+**mqc_read(conn, buf, sz):**
+1. Recv 4-byte length prefix (network order)
+2. Recv that many bytes of ciphertext
+3. Derive nonce from recv_seq++ (12 bytes: 4 zero + 8-byte big-endian seq)
+4. `wc_AesGcmDecrypt(&aes, plaintext, ciphertext, ct_len, nonce, 12, tag, 16, NULL, 0)`
+5. Copy to buf, return plaintext length
+
+**mqc_write(conn, buf, sz):**
+1. Derive nonce from send_seq++
+2. `wc_AesGcmEncrypt(&aes, ciphertext, buf, sz, nonce, 12, tag, 16, NULL, 0)`
+3. Send 4-byte length prefix + ciphertext + tag
+
+**mqc_listen(host, port):**
+Pure POSIX socket code (same as slc_listen).
+
+**mqc_close(conn):**
+1. `close(conn->fd)`
+2. `secure_zero(conn->aes_key, 32)`
+3. `free(conn)`
+
+**mqc_get_fd(conn):** return conn->fd
+**mqc_get_peer_index(conn):** return conn->peer_index
+**mqc_recv / mqc_send:** aliases for read/write
+
+### Step 4: Makefile
+
+- Build `libmqc.a` from `mqc.o` + `mqc_peer.o`
+- Build `examples/echo_server` and `examples/echo_client`
+- Link: wolfSSL (crypto), json-c, libcurl
+- No wolfSSL TLS — crypto primitives only
+
+### Step 5: examples/echo_server.c
+
+- Accept `<tpm_path> [port]` on command line
+- Create mqc_ctx with MQC_SERVER role
+- Listen, accept, echo loop, close
+- Print peer_index after handshake
+
+### Step 6: examples/echo_client.c
+
+- Accept `<tpm_path> <host> [port]` on command line
+- Create mqc_ctx with MQC_CLIENT role
+- Connect, send "Hello MQC!", read echo, print, close
+
+## Testing Checklist
+
+- [ ] `make` — library + examples build clean
+- [ ] echo_server + echo_client: "Hello MQC!" round trip
+- [ ] Peer cert cached in `~/.TPM/peers/<index>/`
+- [ ] Second connection: cache hit (no MTC server fetch)
+- [ ] Wrong cert_index: handshake fails with verification error
+- [ ] Revoked cert: handshake fails
+- [ ] Expired cert: handshake fails
+- [ ] Data integrity: modify ciphertext → GCM decrypt fails
+- [ ] Large messages: send/receive > 4KB
+- [ ] Multiple sequential connections on same listener
+
+## Dependencies
+
+| Library | Purpose | Linked via |
+|---------|---------|------------|
+| wolfSSL | ML-KEM, ML-DSA, AES-GCM, HKDF, SHA-256, Merkle verify | pkg-config wolfssl |
+| json-c | JSON parsing | pkg-config json-c |
+| libcurl | HTTP GET for MTC server fetch | -lcurl |
+| POSIX | Sockets, file I/O | system |
