@@ -46,6 +46,7 @@
 
 #include <curl/curl.h>
 #include <json-c/json.h>
+#include <hiredis/hiredis.h>
 
 #define MQC_HKDF_INFO      "mqc-session"
 #define MQC_AES_KEY_SZ      32
@@ -56,6 +57,10 @@
 #define MQC_HANDSHAKE_TIMEOUT 10            /* seconds to complete handshake */
 
 #define MQC_ABUSE_THRESHOLD  25  /* reject if abuse score >= 25% */
+#define MQC_RL_CONNECT_MIN   10  /* max connections per minute per IP */
+#define MQC_RL_CONNECT_HOUR  60  /* max connections per hour per IP */
+#define MQC_RL_FAIL_MIN       3  /* max failed handshakes per minute per IP */
+#define MQC_RL_FAIL_HOUR     10  /* max failed handshakes per hour per IP */
 
 /* --- Logging --- */
 
@@ -214,6 +219,96 @@ static void clear_socket_timeout(int fd)
     struct timeval tv = {0, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
+/* --- Redis rate limiting --- */
+
+static redisContext *s_redis = NULL;
+
+static void mqc_redis_init(void)
+{
+    struct timeval timeout = { 1, 0 };
+    if (s_redis) return;  /* already connected */
+
+    s_redis = redisConnectWithTimeout("127.0.0.1", 6379, timeout);
+    if (!s_redis || s_redis->err) {
+        if (s_redis) { redisFree(s_redis); s_redis = NULL; }
+        /* Fail-open: no Redis = no rate limiting */
+    }
+}
+
+static int redis_incr(const char *key, int ttl_secs)
+{
+    redisReply *reply;
+    int count;
+
+    if (!s_redis) return 0;
+
+    reply = redisCommand(s_redis, "INCR %s", key);
+    if (!reply || reply->type != REDIS_REPLY_INTEGER) {
+        if (reply) freeReplyObject(reply);
+        return 0;  /* fail-open */
+    }
+    count = (int)reply->integer;
+    freeReplyObject(reply);
+
+    if (count == 1) {
+        reply = redisCommand(s_redis, "EXPIRE %s %d", key, ttl_secs);
+        if (reply) freeReplyObject(reply);
+    }
+    return count;
+}
+
+/* Check rate limit for a connection attempt. Returns 0 = OK, -1 = reject. */
+static int mqc_ratelimit_check(const char *ip)
+{
+    char key[128];
+    int count_m, count_h;
+
+    mqc_redis_init();
+    if (!s_redis) return 0;  /* no Redis = allow */
+
+    /* Per-minute */
+    snprintf(key, sizeof(key), "mqc:%s:conn:m", ip);
+    count_m = redis_incr(key, 60);
+
+    /* Per-hour */
+    snprintf(key, sizeof(key), "mqc:%s:conn:h", ip);
+    count_h = redis_incr(key, 3600);
+
+    if (count_m > MQC_RL_CONNECT_MIN) {
+        MQC_SECURITY("RATE_LIMITED: %s connect %d/min (max %d)",
+                     ip, count_m, MQC_RL_CONNECT_MIN);
+        return -1;
+    }
+    if (count_h > MQC_RL_CONNECT_HOUR) {
+        MQC_SECURITY("RATE_LIMITED: %s connect %d/hr (max %d)",
+                     ip, count_h, MQC_RL_CONNECT_HOUR);
+        return -1;
+    }
+    return 0;
+}
+
+/* Record a failed handshake for rate limiting. Returns 0 = OK, -1 = too many failures. */
+static int mqc_ratelimit_fail(const char *ip)
+{
+    char key[128];
+    int count_m, count_h;
+
+    if (!s_redis) return 0;
+
+    snprintf(key, sizeof(key), "mqc:%s:fail:m", ip);
+    count_m = redis_incr(key, 60);
+
+    snprintf(key, sizeof(key), "mqc:%s:fail:h", ip);
+    count_h = redis_incr(key, 3600);
+
+    if (count_m > MQC_RL_FAIL_MIN || count_h > MQC_RL_FAIL_HOUR) {
+        MQC_SECURITY("FAIL_RATE_LIMITED: %s failures %d/min %d/hr",
+                     ip, count_m, count_h);
+        return -1;
+    }
+    return 0;
 }
 
 /* --- AbuseIPDB check --- */
@@ -702,11 +797,10 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
         inet_ntop(AF_INET, &cli_addr.sin_addr, ip, sizeof(ip));
         MQC_LOG("accepted connection from %s:%d", ip, ntohs(cli_addr.sin_port));
 
-        /* AbuseIPDB check */
-        if (mqc_abuse_check(ip) != 0) {
-            close(fd);
-            return NULL;
-        }
+        /* AbuseIPDB + rate limit checks */
+        if (mqc_abuse_check(ip) != 0) { close(fd); return NULL; }
+        if (mqc_ratelimit_check(ip) != 0) { close(fd); return NULL; }
+        if (mqc_ratelimit_fail(ip) != 0) { close(fd); return NULL; }
     }
 
     /* Handshake timeout — drop slowloris connections */
@@ -1206,6 +1300,8 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
         inet_ntop(AF_INET, &cli_addr.sin_addr, ip, sizeof(ip));
         MQC_LOG("accepted encrypted connection from %s:%d", ip, ntohs(cli_addr.sin_port));
         if (mqc_abuse_check(ip) != 0) { close(fd); return NULL; }
+        if (mqc_ratelimit_check(ip) != 0) { close(fd); return NULL; }
+        if (mqc_ratelimit_fail(ip) != 0) { close(fd); return NULL; }
     }
     set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
 
@@ -1418,6 +1514,8 @@ static int auto_accept_detect(int listen_fd, char *json_buf, int json_bufsz,
         inet_ntop(AF_INET, &cli_addr.sin_addr, ip, sizeof(ip));
         MQC_LOG("auto-accept from %s:%d", ip, ntohs(cli_addr.sin_port));
         if (mqc_abuse_check(ip) != 0) { close(fd); return -1; }
+        if (mqc_ratelimit_check(ip) != 0) { close(fd); return -1; }
+        if (mqc_ratelimit_fail(ip) != 0) { close(fd); return -1; }
     }
     set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
 

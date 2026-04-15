@@ -197,7 +197,7 @@ The GCM nonce is derived from a per-connection sequence number
 | **Impersonation** | SAFE | Requires victim's private key; public key bound to cert_index via Merkle tree |
 | **Harvest now, decrypt later** | SAFE | ML-KEM is quantum-resistant |
 | **Compromised MTC server** | PARTIALLY SAFE | Can't forge cosignatures without CA key; if both MTC server + CA key compromised, fake certs possible |
-| **DoS** | VULNERABLE | PQ operations are expensive; rate limit connections |
+| **DoS** | MITIGATED | Redis rate limiting (10/min, 60/hr per IP), failed handshake tracking (3/min, 10/hr), AbuseIPDB screening (25% threshold), 10-second handshake timeout |
 | **Downgrade** | N/A | Single protocol version, no negotiation |
 | **Metadata leakage** | CONFIGURABLE | Clear mode: cert_index in plaintext (reveals who). Encrypted mode: cert_index encrypted (hidden). Use `mqc_connect_encrypted` for privacy. |
 
@@ -365,6 +365,49 @@ int main(void)
 | Repeat connection overhead | Full cert every time | Zero (cache hit) |
 | Dependencies | Full TLS stack (wolfSSL ~500KB) | wolfSSL crypto only (~100KB) |
 | X.509 required | Yes | No |
+
+## Server Defense Layers
+
+MQC servers enforce four layers of connection defense, applied in order:
+
+### 1. Redis Rate Limiting (per-IP)
+
+Requires Redis on `127.0.0.1:6379`. Fail-open if Redis unavailable.
+
+| Counter | Limit | TTL | Redis Key Pattern |
+|---------|-------|-----|-------------------|
+| Connections per minute | 10 | 60s | `mqc:<ip>:conn:m` |
+| Connections per hour | 60 | 3600s | `mqc:<ip>:conn:h` |
+| Failed handshakes per minute | 3 | 60s | `mqc:<ip>:fail:m` |
+| Failed handshakes per hour | 10 | 3600s | `mqc:<ip>:fail:h` |
+
+Counters increment on every attempt (even rejected ones) to prevent
+burst abuse after a window reset.
+
+### 2. AbuseIPDB Screening
+
+Checks the client IP against the AbuseIPDB API if `ABUSEIPDB_TOKEN`
+is set in environment or `~/.env`. Rejects connections with abuse
+confidence score >= 25%.
+
+### 3. Handshake Timeout
+
+10-second `SO_RCVTIMEO`/`SO_SNDTIMEO` applied during handshake.
+Dropped after successful handshake completion. Prevents slowloris-style
+attacks that hold connections open without completing the protocol.
+
+### 4. Security Logging
+
+All failures logged with `[MQC-SECURITY]` prefix including:
+- `RATE_LIMITED` / `FAIL_RATE_LIMITED` — per-IP rate limits exceeded
+- `ABUSEIPDB_REJECTED` — known-bad IP with score
+- `SIG_VERIFY_FAILED` — invalid ML-DSA-87 signature (MITM attempt)
+- `PEER_VERIFY_FAILED` — Merkle proof verification failure
+- `CERT_REVOKED` / `CERT_EXPIRED` — revoked or expired peer cert
+- `GCM_AUTH_FAILED` — tampered data (with peer index + sequence number)
+- `PUBKEY_MISSING` — peer public key not resolvable
+
+All entries include function name + line number for tracing.
 
 ## Cryptographic Algorithms
 

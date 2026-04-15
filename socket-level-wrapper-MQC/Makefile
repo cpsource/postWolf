@@ -8,7 +8,7 @@ CFLAGS  += $(shell pkg-config --cflags wolfssl) -DWOLFSSL_USE_OPTIONS_H
 CFLAGS  += $(shell pkg-config --cflags json-c)
 LDFLAGS += $(shell pkg-config --libs wolfssl)
 LDFLAGS += $(shell pkg-config --libs json-c)
-LDFLAGS += -lcurl
+LDFLAGS += -lcurl -lhiredis
 
 AR      ?= ar
 
