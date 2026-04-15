@@ -1078,3 +1078,91 @@ struct slc_conn {
 2. `wc_MtcVerifyCosignature()` — Ed25519 cosignature valid
 3. `GET /revoked/<index>` — not revoked
 4. `not_before <= now <= not_after` — not expired
+
+---
+
+## Appendix: Signed Key Exchange Protocol (Final Design)
+
+### Problem
+
+ML-DSA-87 is a signature algorithm — it proves identity but can't
+encrypt or exchange keys. Two MTC-enrolled nodes need both
+authentication AND a shared secret for encryption.
+
+### Solution: Signed Ephemeral Key Exchange
+
+Combine key exchange and authentication in a single round trip.
+Each side signs its ephemeral key exchange material with its
+ML-DSA-87 private key. The other side verifies using the peer's
+public key from the Merkle transparency log.
+
+### Protocol (1 round trip)
+
+```
+NodeA → NodeB:
+  {
+    "cert_index": 72,
+    "mlkem_encaps_key": "<hex>",     # ephemeral ML-KEM public key
+    "signature": "<hex>"             # ML-DSA-87 signature over mlkem_encaps_key
+  }
+
+NodeB → NodeA:
+  {
+    "cert_index": 73,
+    "mlkem_ciphertext": "<hex>",     # ML-KEM encapsulation result
+    "signature": "<hex>"             # ML-DSA-87 signature over mlkem_ciphertext
+  }
+```
+
+### What Each Side Does
+
+**NodeA (initiator):**
+1. Generate ephemeral ML-KEM keypair
+2. Sign the ML-KEM encaps key with own ML-DSA-87 private key
+3. Send cert\_index + encaps key + signature
+4. Receive NodeB's cert\_index + ciphertext + signature
+5. Look up NodeB's public key (cache or MTC server fetch + Merkle verify)
+6. Verify NodeB's signature over the ciphertext
+7. ML-KEM decapsulate → shared secret
+8. Derive AES-256-GCM key from shared secret
+
+**NodeB (responder):**
+1. Receive NodeA's cert\_index + encaps key + signature
+2. Look up NodeA's public key (cache or MTC server fetch + Merkle verify)
+3. Verify NodeA's signature over the encaps key
+4. ML-KEM encapsulate with NodeA's encaps key → ciphertext + shared secret
+5. Sign the ciphertext with own ML-DSA-87 private key
+6. Send cert\_index + ciphertext + signature
+7. Derive AES-256-GCM key from shared secret
+
+### Security Properties
+
+- **Authentication:** Both sides prove identity by signing with their
+  ML-DSA-87 private key. Signatures verified against Merkle-authenticated
+  public keys from the transparency log.
+- **Confidentiality:** ML-KEM shared secret → AES-256-GCM for all traffic.
+  Post-quantum resistant.
+- **No replay:** Ephemeral ML-KEM keys are fresh per connection.
+- **No MITM:** Attacker can't forge ML-DSA-87 signatures without the
+  private keys. Can't substitute their own ML-KEM keys because the
+  signatures wouldn't verify.
+- **No public keys on the wire:** Only cert\_index integers. Public keys
+  resolved from the Merkle tree.
+- **1 round trip:** Authentication + key exchange in a single message
+  each direction. Compare to TLS 1.3: 1-2 round trips with full cert.
+
+### Peer Key Resolution
+
+When you receive a cert\_index you haven't seen before:
+1. Check `~/.TPM/peers/<index>/certificate.json` (local cache)
+2. If miss: `GET /certificate/<index>` from MTC server (factsorlie.com:8444)
+3. Verify Merkle inclusion proof: `wc_MtcVerifyInclusionProof()`
+4. Verify cosignature: `wc_MtcVerifyCosignature()`
+5. Check `GET /revoked/<index>` — reject if revoked
+6. Check `not_before <= now <= not_after` — reject if expired
+7. Extract `subject_public_key_hash` from the verified proof
+8. Fetch full public key, hash it, confirm matches
+9. Cache in `~/.TPM/peers/<index>/` for next time
+10. Use the public key to verify the peer's signature
+
+Subsequent connections to the same peer: step 1 hits cache, skip 2-9.
