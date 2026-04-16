@@ -54,6 +54,12 @@ bootstrap_leaf: bootstrap_leaf.c mtc_crypt.c mtc_crypt.h mtc_pubkey_db.c mtc_pub
 		$(shell pkg-config --libs json-c) \
 		$(shell pkg-config --libs libpq)
 
+show-tpm: show-tpm.c
+	$(CC) -Wall -Wextra -O2 \
+		$(shell pkg-config --cflags json-c) \
+		-o show-tpm show-tpm.c \
+		$(shell pkg-config --libs json-c) -lcurl -lm
+
 test-mtc-crypt: mtc_crypt.c mtc_crypt.h
 	$(CC) -Wall -Wextra -O2 -DTEST_MAIN \
 		$(shell pkg-config --cflags wolfGuard) -DWOLFSSL_USE_OPTIONS_H \
@@ -61,9 +67,9 @@ test-mtc-crypt: mtc_crypt.c mtc_crypt.h
 		$(shell pkg-config --libs wolfGuard)
 
 clean:
-	rm -f mtc_server mtc_checkendpoint mtc_crypt_test bootstrap_leaf bootstrap_ca
+	rm -f mtc_server mtc_checkendpoint mtc_crypt_test bootstrap_leaf bootstrap_ca show-tpm
 
 clean-doxygen:
 	rm -rf html
 
-.PHONY: all clean clean-doxygen doxygen make-mtc-checkpoint test-mtc-crypt bootstrap_leaf bootstrap_ca
+.PHONY: all clean clean-doxygen doxygen make-mtc-checkpoint test-mtc-crypt bootstrap_leaf bootstrap_ca show-tpm
