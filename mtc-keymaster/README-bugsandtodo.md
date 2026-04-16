@@ -530,17 +530,14 @@ Distribute the CA cosigner pubkey out-of-band (bundled with clients,
 via signed DNS TXT, or similar) so no client ever trusts the MTC
 server for initial bootstrap.
 
-**9c. Load CA cosigner pubkey in every MQC client**
+**9c. Load CA cosigner pubkey in every MQC client — DONE**
 
-Task #2 only wires the loader into `show-tpm`.  Every other MQC
-client needs the same loader or an equivalent out-of-band key source:
-
-- `socket-level-wrapper-MQC/examples/echo_client.c`
-- `socket-level-wrapper-MQC/examples/echo_server.c`
-- Any future application using `libmqc.a`
-
-Without this, those clients would pass a zeroed `ca_pubkey` and
-`mqc_peer_verify` would fail with `COSIG_NO_CA_KEY`.
+`mqc_load_ca_pubkey(mtc_server, out32)` is now a public API in
+`socket-level-wrapper-MQC/mqc_peer.h`.  It reads (or TOFU-fetches)
+`~/.TPM/ca-cosigner.pem`, decodes the PEM, and returns the raw
+32-byte Ed25519 key.  `show-tpm`, `examples/echo_client`, and
+`examples/echo_server` all call it.  Future `libmqc.a` consumers
+should use it too.
 
 **9d. Converge cosig message format with wolfSSL's `wc_MtcVerifyCosignature`**
 

@@ -44,4 +44,9 @@ int mqc_peer_verify(const char *mtc_server,
 int mqc_peer_get_cached_pubkey(int cert_index,
                                unsigned char **pubkey_out, int *pubkey_sz_out);
 
+/* Load the CA cosigner's raw 32-byte Ed25519 public key into out32.
+ * Uses the local cache at ~/.TPM/ca-cosigner.pem and falls back to
+ * GET /ca/public-key on mtc_server (TOFU).  Returns 0 on success. */
+int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out32);
+
 #endif /* MQC_PEER_H */

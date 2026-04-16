@@ -41,6 +41,7 @@
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/wolfcrypt/mtc.h>
 #include <wolfssl/wolfcrypt/ed25519.h>
+#include <wolfssl/wolfcrypt/coding.h>
 
 /* Verify a Merkle inclusion proof per RFC 9162 Section 2.1.3.
  *
@@ -835,6 +836,121 @@ static void cache_peer_cert(int cert_index, const char *cert_json_str)
 
     snprintf(path, sizeof(path), "%s/certificate.json", dir2);
     write_file_str(path, cert_json_str);
+}
+
+/******************************************************************************
+ * Function:    pem_extract_ed25519_raw
+ *
+ * Description:
+ *   Pull the raw 32-byte Ed25519 public key out of an RFC 8410 SPKI PEM.
+ *   Works whether the PEM header is the proper "-----BEGIN PUBLIC KEY-----"
+ *   or the mislabelled "-----BEGIN EDDSA PRIVATE KEY-----" the MTC server
+ *   currently emits — we base64-decode the body and take the last 32
+ *   bytes of the DER.
+ ******************************************************************************/
+static int pem_extract_ed25519_raw(const char *pem, byte *out32)
+{
+    const char *body_start, *end, *p;
+    char  b64[1024];
+    int   blen = 0;
+    byte  der[256];
+    word32 der_len = sizeof(der);
+
+    if (!pem) return -1;
+    body_start = strchr(pem, '\n');
+    if (!body_start) return -1;
+    body_start++;
+    end = strstr(body_start, "-----END");
+    if (!end) return -1;
+    for (p = body_start; p < end && blen < (int)sizeof(b64) - 1; p++) {
+        if (*p != '\r' && *p != '\n' && *p != ' ' && *p != '\t')
+            b64[blen++] = *p;
+    }
+    b64[blen] = '\0';
+    if (Base64_Decode((const byte *)b64, (word32)blen, der, &der_len) != 0)
+        return -1;
+    if (der_len < 32) return -1;
+    memcpy(out32, der + der_len - 32, 32);
+    return 0;
+}
+
+/******************************************************************************
+ * Function:    mqc_load_ca_pubkey
+ *
+ * Description:
+ *   Load the CA cosigner's raw 32-byte Ed25519 public key — the trust
+ *   anchor any MQC peer needs to verify log cosignatures.  Prefers a
+ *   cached copy at ~/.TPM/ca-cosigner.pem; on miss, fetches
+ *   GET /ca/public-key from mtc_server (TOFU) and populates the cache.
+ *
+ *   This is the shared helper used by show-tpm, echo_server,
+ *   echo_client, and any other MQC-capable tool.  Long-term, the CA
+ *   pubkey should be distributed out-of-band to eliminate the
+ *   trust-on-first-use window (tracked in README-bugsandtodo.md §9b).
+ ******************************************************************************/
+int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out32)
+{
+    const char *home = getenv("HOME");
+    char cache_path[512];
+    char *pem = NULL;
+    int rc = -1;
+
+    if (!mtc_server || !out32) return -1;
+    if (!home) home = "/tmp";
+    snprintf(cache_path, sizeof(cache_path),
+             "%s/.TPM/ca-cosigner.pem", home);
+
+    /* Try local cache first. */
+    pem = read_file_str(cache_path);
+    if (pem) {
+        rc = pem_extract_ed25519_raw(pem, (byte *)out32);
+        free(pem);
+        if (rc == 0) return 0;
+        fprintf(stderr, "[mqc] cached %s malformed; refetching\n",
+                cache_path);
+    }
+
+    /* Fetch from server (TOFU). */
+    {
+        char url[512], server[512];
+        char *body;
+        long code = 0;
+        struct json_object *obj = NULL, *val;
+
+        normalize_server(mtc_server, server, sizeof(server));
+        snprintf(url, sizeof(url), "%s/ca/public-key", server);
+        body = http_get(url, &code);
+        if (!body || code != 200) {
+            fprintf(stderr,
+                    "[mqc] cannot fetch CA pubkey from %s (code=%ld)\n",
+                    url, code);
+            free(body);
+            return -1;
+        }
+        obj = json_tokener_parse(body);
+        free(body);
+        if (!obj ||
+            !json_object_object_get_ex(obj, "public_key_pem", &val)) {
+            fprintf(stderr,
+                    "[mqc] /ca/public-key missing public_key_pem\n");
+            if (obj) json_object_put(obj);
+            return -1;
+        }
+        pem = strdup(json_object_get_string(val));
+        json_object_put(obj);
+        if (!pem) return -1;
+
+        rc = pem_extract_ed25519_raw(pem, (byte *)out32);
+        if (rc == 0)
+            write_file_str(cache_path, pem);
+        free(pem);
+        if (rc != 0) {
+            fprintf(stderr,
+                    "[mqc] /ca/public-key PEM could not be decoded\n");
+            return -1;
+        }
+    }
+    return 0;
 }
 
 /******************************************************************************
