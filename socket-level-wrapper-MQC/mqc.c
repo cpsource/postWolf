@@ -726,9 +726,9 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
 
         if (ct_sz <= 0 || resp_sig_sz <= 0) goto fail;
 
-        /* Verify peer */
+        /* Verify peer (client-side: skip revocation check) */
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
-                              peer_index, &peer_pubkey, &peer_pubkey_sz);
+                              peer_index, 0, &peer_pubkey, &peer_pubkey_sz);
         if (ret != 0) {
             MQC_SECURITY("PEER_VERIFY_FAILED: peer for index %d\n",
                     peer_index);
@@ -889,9 +889,9 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
 
         if (ek_sz <= 0 || req_sig_sz <= 0) goto fail;
 
-        /* Verify peer */
+        /* Verify peer (server-side: check revocation) */
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
-                              peer_index, &peer_pubkey, &peer_pubkey_sz);
+                              peer_index, 1, &peer_pubkey, &peer_pubkey_sz);
         if (ret != 0) {
             MQC_SECURITY("PEER_VERIFY_FAILED: peer for index %d\n",
                     peer_index);
@@ -1251,9 +1251,9 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
         json_object_put(r2);
         if (resp_sig_sz <= 0) goto fail;
 
-        /* Verify peer via Merkle */
+        /* Verify peer via Merkle (client-side: skip revocation) */
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
-                              peer_index, &peer_pubkey, &peer_pubkey_sz);
+                              peer_index, 0, &peer_pubkey, &peer_pubkey_sz);
         if (ret != 0) goto fail;
 
         /* The server signed its ML-KEM ciphertext — but we already consumed it.
@@ -1435,9 +1435,10 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
                 json_object_put(r2);
                 if (cli_sig_sz <= 0) goto fail;
 
-                /* Verify peer */
+                /* Verify peer (server-side: check revocation) */
                 ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey,
-                    ctx->ca_pubkey_sz, peer_index, &peer_pubkey, &peer_pubkey_sz);
+                    ctx->ca_pubkey_sz, peer_index, 1,
+                    &peer_pubkey, &peer_pubkey_sz);
                 if (ret != 0) goto fail;
 
                 /* Verify client signed the encaps_key it sent */
@@ -1628,8 +1629,9 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
             json_object_put(req);
             if (ek_sz <= 0 || req_sig_sz <= 0) goto clear_fail;
 
+            /* Server-side auto-accept (clear): check revocation */
             ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
-                                  peer_index, &peer_pubkey, &peer_pubkey_sz);
+                                  peer_index, 1, &peer_pubkey, &peer_pubkey_sz);
             if (ret != 0) goto clear_fail;
 
             { dilithium_key pd; int v = 0; wc_dilithium_init(&pd); wc_dilithium_set_level(&pd, WC_ML_DSA_87);
@@ -1772,8 +1774,9 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
                 json_object_put(r2);
                 if (cli_sig_sz <= 0) goto enc_fail;
 
+                /* Server-side auto-accept (encrypted): check revocation */
                 ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
-                                      peer_index, &peer_pubkey, &peer_pubkey_sz);
+                                      peer_index, 1, &peer_pubkey, &peer_pubkey_sz);
                 if (ret != 0) goto enc_fail;
 
                 /* Client signed the encaps_key it sent */

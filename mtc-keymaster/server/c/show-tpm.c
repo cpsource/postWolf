@@ -607,9 +607,17 @@ int main(int argc, char *argv[])
             struct dirent *de;
             if (d) {
                 while ((de = readdir(d)) != NULL) {
+                    struct stat st;
+                    char full[1024];
                     if (de->d_name[0] == '.') continue;
                     if (strcmp(de->d_name, "peers") == 0) continue;
                     if (strcmp(de->d_name, "ech") == 0) continue;
+                    /* Only directories qualify as TPM identities.  Skips
+                     * stray files like revoked.json sitting at ~/.TPM/. */
+                    snprintf(full, sizeof(full), "%s/%s",
+                             tpm_dir, de->d_name);
+                    if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode))
+                        continue;
                     snprintf(auto_path, sizeof(auto_path), "%s/%s",
                              tpm_dir, de->d_name);
                     mqc_tpm_path = auto_path;

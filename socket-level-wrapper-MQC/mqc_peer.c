@@ -142,6 +142,7 @@ static int mqc_hex_to_bytes(const char *hex, byte *out, int out_cap)
 #define PEER_CACHE_DIR   "peers"
 #define CHECKPOINT_CACHE "checkpoint_cache.json"
 #define CHECKPOINT_TTL   300  /* 5 minutes */
+#define REVOKED_TTL      3600 /* seconds — 1 hour per-peer TTL */
 
 /******************************************************************************
  * libcurl write callback — accumulates response body in a malloc'd buffer.
@@ -224,6 +225,18 @@ static int peer_cache_path(int cert_index, char *out, int outsz)
     const char *home = getenv("HOME");
     if (!home) return -1;
     snprintf(out, (size_t)outsz, "%s/.TPM/%s/%d/certificate.json",
+             home, PEER_CACHE_DIR, cert_index);
+    return 0;
+}
+
+/* Path to a cached hex-encoded leaf_hash for a peer cert.  The leaf
+ * hash is immutable (content-addressed), so once cached it is
+ * reusable forever without contacting the MTC HTTP server. */
+static int peer_leaf_hash_path(int cert_index, char *out, int outsz)
+{
+    const char *home = getenv("HOME");
+    if (!home) return -1;
+    snprintf(out, (size_t)outsz, "%s/.TPM/%s/%d/leaf_hash.hex",
              home, PEER_CACHE_DIR, cert_index);
     return 0;
 }
@@ -319,36 +332,114 @@ static struct json_object *fetch_certificate(const char *mtc_server,
 }
 
 /******************************************************************************
+ * Function:    peer_revoked_cache_path
+ *
+ * Description:
+ *   Build path to the per-peer revocation cache file
+ *   ~/.TPM/peers/<cert_index>/revoked.json.
+ ******************************************************************************/
+static int peer_revoked_cache_path(int cert_index, char *out, int outsz)
+{
+    const char *home = getenv("HOME");
+    if (!home) return -1;
+    snprintf(out, (size_t)outsz, "%s/.TPM/%s/%d/revoked.json",
+             home, PEER_CACHE_DIR, cert_index);
+    return 0;
+}
+
+/* check_revoked return codes:
+ *   0  = not revoked (fresh cached status allows connection)
+ *   1  = revoked (cached status says so, or fresh fetch confirmed)
+ *  -1  = cache miss or stale; fresh single-cert status was fetched
+ *        and persisted, but caller must drop this connection as a
+ *        safety measure.  The peer will find the cache fresh on retry.
+ */
+
+/******************************************************************************
  * Function:    check_revoked
  *
  * Description:
- *   GET /revoked/<index> from MTC server. Returns 1 if revoked, 0 if not.
+ *   Per-peer revocation check with a 1-hour TTL cache.  The cache lives
+ *   at ~/.TPM/peers/<n>/revoked.json and holds a single JSON object:
+ *       { "revoked": false }   or   { "revoked": true }
+ *   File mtime drives the TTL — anything fresher than REVOKED_TTL is
+ *   trusted; anything older (or missing) triggers a fresh single-cert
+ *   fetch of GET /revoked/<n> and returns -1 so the caller drops the
+ *   current connection.  The peer's next attempt finds the cache fresh.
  ******************************************************************************/
 static int check_revoked(const char *mtc_server, int cert_index)
 {
-    char url[512], server[512];
-    char *body;
-    long code = 0;
+    char cache_path[512];
+    struct stat st;
+    int cache_fresh = 0;
 
-    normalize_server(mtc_server, server, sizeof(server));
-    snprintf(url, sizeof(url), "%s/revoked/%d", server, cert_index);
+    if (peer_revoked_cache_path(cert_index, cache_path,
+                                sizeof(cache_path)) != 0)
+        return 0;
 
-    body = http_get(url, &code);
-    if (!body) return 0;  /* can't reach server — assume not revoked */
+    if (stat(cache_path, &st) == 0 &&
+        (long)(time(NULL) - st.st_mtime) <= REVOKED_TTL)
+        cache_fresh = 1;
 
-    {
-        struct json_object *obj = json_tokener_parse(body);
-        free(body);
-        if (obj) {
-            struct json_object *val;
-            int revoked = 0;
-            if (json_object_object_get_ex(obj, "revoked", &val))
-                revoked = json_object_get_boolean(val);
-            json_object_put(obj);
-            return revoked;
+    if (cache_fresh) {
+        char *body = read_file_str(cache_path);
+        int revoked = 0;
+        if (body) {
+            struct json_object *obj = json_tokener_parse(body);
+            free(body);
+            if (obj) {
+                struct json_object *val;
+                if (json_object_object_get_ex(obj, "revoked", &val))
+                    revoked = json_object_get_boolean(val);
+                json_object_put(obj);
+            }
         }
+        return revoked ? 1 : 0;
     }
-    return 0;
+
+    /* Cache missing or stale → single-cert fetch + drop. */
+    {
+        char url[512], server[512];
+        char *body;
+        long code = 0;
+        int revoked = 0;
+
+        normalize_server(mtc_server, server, sizeof(server));
+        snprintf(url, sizeof(url), "%s/revoked/%d", server, cert_index);
+        body = http_get(url, &code);
+        if (!body || code != 200) {
+            free(body);
+            return -1;   /* can't refresh — drop to be safe */
+        }
+        {
+            struct json_object *obj = json_tokener_parse(body);
+            if (obj) {
+                struct json_object *val;
+                if (json_object_object_get_ex(obj, "revoked", &val))
+                    revoked = json_object_get_boolean(val);
+                json_object_put(obj);
+            }
+        }
+
+        /* Persist a compact record (just the status).  Sets mtime to
+         * now so the next handshake within 1h will find the cache
+         * fresh and skip the server round-trip. */
+        {
+            char out[64];
+            snprintf(out, sizeof(out), "{\"revoked\":%s}\n",
+                     revoked ? "true" : "false");
+            write_file_str(cache_path, out);
+        }
+        free(body);
+
+        if (mqc_get_verbose())
+            fprintf(stderr, "[mqc-peer] revoked status refreshed for "
+                    "cert %d (revoked=%d) — dropping connection, peer "
+                    "will retry with fresh cache\n",
+                    cert_index, revoked);
+
+        return -1;  /* drop; peer retries and finds fresh cache */
+    }
 }
 
 /******************************************************************************
@@ -685,7 +776,7 @@ static void cache_peer_cert(int cert_index, const char *cert_json_str)
  ******************************************************************************/
 int mqc_peer_verify(const char *mtc_server,
                     const unsigned char *ca_pubkey, int ca_pubkey_sz,
-                    int cert_index,
+                    int cert_index, int is_server,
                     unsigned char **pubkey_out, int *pubkey_sz_out)
 {
     struct json_object *cert_json = NULL;
@@ -748,29 +839,74 @@ int mqc_peer_verify(const char *mtc_server,
         word64 subtree_start = 0, subtree_end = 0;
         int vret;
 
-        /* Fetch leaf_hash from the log entry endpoint */
-        normalize_server(mtc_server, svr, sizeof(svr));
-        snprintf(url, sizeof(url), "%s/log/entry/%d", svr, cert_index);
-        body = http_get(url, &http_code);
-        if (!body || http_code != 200) {
-            MQC_SECURITY("LEAF_FETCH_FAILED: cert %d (code=%ld)",
-                         cert_index, http_code);
-            free(body);
-            json_object_put(cert_json);
-            return -1;
+        /* Obtain leaf_hash.  The leaf hash is content-addressed — the bytes
+         * at a given tree position never change — so once we have it, we
+         * cache it under ~/.TPM/peers/<n>/leaf_hash.hex and reuse forever.
+         * Only fetch /log/entry/<n> on a cold cache. */
+        {
+            char lh_cache_path[512];
+            int got = 0;
+            if (peer_leaf_hash_path(cert_index,
+                                    lh_cache_path,
+                                    sizeof(lh_cache_path)) == 0) {
+                char *cached_hex = read_file_str(lh_cache_path);
+                if (cached_hex) {
+                    /* Trim trailing whitespace / newline. */
+                    size_t n = strlen(cached_hex);
+                    while (n > 0 && (cached_hex[n-1] == '\n' ||
+                                     cached_hex[n-1] == '\r' ||
+                                     cached_hex[n-1] == ' ')) {
+                        cached_hex[--n] = '\0';
+                    }
+                    if (mqc_hex_to_bytes(cached_hex, leaf_hash,
+                                         MTC_HASH_SZ) == MTC_HASH_SZ) {
+                        got = 1;
+                        if (mqc_get_verbose())
+                            fprintf(stderr,
+                                "[mqc-peer] leaf_hash cache hit for cert %d\n",
+                                cert_index);
+                    }
+                    free(cached_hex);
+                }
+            }
+
+            if (!got) {
+                normalize_server(mtc_server, svr, sizeof(svr));
+                snprintf(url, sizeof(url), "%s/log/entry/%d",
+                         svr, cert_index);
+                body = http_get(url, &http_code);
+                if (!body || http_code != 200) {
+                    MQC_SECURITY("LEAF_FETCH_FAILED: cert %d (code=%ld)",
+                                 cert_index, http_code);
+                    free(body);
+                    json_object_put(cert_json);
+                    return -1;
+                }
+                entry_obj = json_tokener_parse(body);
+                free(body);
+                if (!entry_obj ||
+                    !json_object_object_get_ex(entry_obj, "leaf_hash",
+                                               &lh_val) ||
+                    mqc_hex_to_bytes(json_object_get_string(lh_val),
+                                     leaf_hash, MTC_HASH_SZ)
+                        != MTC_HASH_SZ) {
+                    MQC_SECURITY("LEAF_FETCH_PARSE: cert %d", cert_index);
+                    if (entry_obj) json_object_put(entry_obj);
+                    json_object_put(cert_json);
+                    return -1;
+                }
+                /* Persist to cache. */
+                {
+                    const char *lh_hex_s = json_object_get_string(lh_val);
+                    write_file_str(lh_cache_path, lh_hex_s);
+                }
+                json_object_put(entry_obj);
+                if (mqc_get_verbose())
+                    fprintf(stderr,
+                        "[mqc-peer] leaf_hash fetched and cached for cert %d\n",
+                        cert_index);
+            }
         }
-        entry_obj = json_tokener_parse(body);
-        free(body);
-        if (!entry_obj ||
-            !json_object_object_get_ex(entry_obj, "leaf_hash", &lh_val) ||
-            mqc_hex_to_bytes(json_object_get_string(lh_val),
-                             leaf_hash, MTC_HASH_SZ) != MTC_HASH_SZ) {
-            MQC_SECURITY("LEAF_FETCH_PARSE: cert %d", cert_index);
-            if (entry_obj) json_object_put(entry_obj);
-            json_object_put(cert_json);
-            return -1;
-        }
-        json_object_put(entry_obj);
 
         /* Extract proof fields from the cert response */
         if (!json_object_object_get_ex(cert_json,
@@ -854,10 +990,27 @@ int mqc_peer_verify(const char *mtc_server,
      * fields from the JSON and calling the wolfSSL crypto API. */
 
     /* 5. Check revocation */
-    if (check_revoked(mtc_server, cert_index)) {
-        MQC_SECURITY("CERT_REVOKED: cert %d is revoked", cert_index);
-        json_object_put(cert_json);
-        return -1;
+    /* Revocation check runs only on the acceptor (server-role) side —
+     * that's the party at risk of accepting a revoked incoming peer.
+     * The initiator doesn't need to verify the server isn't revoked
+     * (the server proved possession of its private key during the
+     * handshake; revoked status is a separate policy decision for the
+     * acceptor). */
+    if (is_server) {
+        int rev = check_revoked(mtc_server, cert_index);
+        if (rev == 1) {
+            MQC_SECURITY("CERT_REVOKED: cert %d is revoked", cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        if (rev == -1) {
+            MQC_SECURITY("REVOKED_CACHE_REFRESH: cert %d (dropping; "
+                         "peer will retry with fresh cache)",
+                         cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        /* rev == 0 → cached "not revoked", proceed. */
     }
 
     /* 6. Check validity */
