@@ -40,6 +40,7 @@
 #include <wolfssl/wolfcrypt/asn_public.h>
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/wolfcrypt/mtc.h>
+#include <wolfssl/wolfcrypt/ed25519.h>
 
 /* Verify a Merkle inclusion proof per RFC 9162 Section 2.1.3.
  *
@@ -109,6 +110,71 @@ static int mqc_verify_inclusion_proof(int leaf_index, int start, int end,
     }
 
     return (XMEMCMP(cur, expected_root, MTC_HASH_SZ) == 0) ? 0 : -1;
+}
+
+/* Verify an Ed25519 cosignature in the server's message format —
+ * the exact layout produced by mtc_store_cosign() in
+ * mtc-keymaster/server/c/mtc_store.c:735-780:
+ *
+ *   "mtc-subtree/v1\n\x00" (16 bytes, including the trailing NUL)
+ *   || cosigner_id (strlen bytes, no terminator)
+ *   || log_id      (strlen bytes)
+ *   || start       (8 bytes, big-endian uint64)
+ *   || end         (8 bytes, big-endian uint64)
+ *   || subtree_hash (32 bytes)
+ *
+ * We intentionally don't call wolfSSL's wc_MtcVerifyCosignature
+ * because it uses a different label and omits cosigner_id/log_id.
+ *
+ * Returns 0 if the signature verifies, -1 otherwise. */
+static int verify_cosignature(const byte *ca_pubkey, int ca_pubkey_sz,
+                              const char *cosigner_id, const char *log_id,
+                              long long start, long long end,
+                              const byte *subtree_hash,
+                              const byte *sig, int sig_sz)
+{
+    byte msg[256];
+    int msg_sz = 0;
+    int i;
+    ed25519_key key;
+    int ret, verified = 0;
+    size_t co_len, lo_len;
+    uint64_t s64, e64;
+
+    if (!ca_pubkey || ca_pubkey_sz != 32) return -1;
+    if (!cosigner_id || !log_id) return -1;
+    if (!subtree_hash || !sig || sig_sz != 64) return -1;
+
+    co_len = strlen(cosigner_id);
+    lo_len = strlen(log_id);
+    if (16 + co_len + lo_len + 8 + 8 + MTC_HASH_SZ > sizeof(msg))
+        return -1;
+
+    /* Build message in server's exact byte order. */
+    memcpy(msg, "mtc-subtree/v1\n\x00", 16);
+    msg_sz = 16;
+    memcpy(msg + msg_sz, cosigner_id, co_len); msg_sz += (int)co_len;
+    memcpy(msg + msg_sz, log_id, lo_len);      msg_sz += (int)lo_len;
+
+    s64 = (uint64_t)start;
+    e64 = (uint64_t)end;
+    for (i = 7; i >= 0; i--)
+        msg[msg_sz++] = (byte)((s64 >> (i * 8)) & 0xff);
+    for (i = 7; i >= 0; i--)
+        msg[msg_sz++] = (byte)((e64 >> (i * 8)) & 0xff);
+
+    memcpy(msg + msg_sz, subtree_hash, MTC_HASH_SZ);
+    msg_sz += MTC_HASH_SZ;
+
+    /* Verify. */
+    if (wc_ed25519_init(&key) != 0) return -1;
+    ret = wc_ed25519_import_public(ca_pubkey, (word32)ca_pubkey_sz, &key);
+    if (ret != 0) { wc_ed25519_free(&key); return -1; }
+    ret = wc_ed25519_verify_msg(sig, (word32)sig_sz,
+                                msg, (word32)msg_sz,
+                                &verified, &key);
+    wc_ed25519_free(&key);
+    return (ret == 0 && verified) ? 0 : -1;
 }
 
 /* Decode a hex string into a byte buffer.  Returns number of bytes
@@ -984,10 +1050,102 @@ int mqc_peer_verify(const char *mtc_server,
                     cert_index);
     }
 
-    /* 4. Verify cosignature */
-    /* TODO: implement wc_MtcVerifyCosignature() with ca_pubkey.
-     * Deferred to next iteration — requires extracting cosignature
-     * fields from the JSON and calling the wolfSSL crypto API. */
+    /* 4. Verify Ed25519 cosignature over the subtree root.
+     *
+     * This binds the (start, end, subtree_hash) we just validated
+     * via the inclusion proof to the CA cosigner's Ed25519 key that
+     * the caller loaded out-of-band.  Without this check, a
+     * malicious MTC HTTP server could hand us a consistent but
+     * fabricated (leafHash, proof, subtreeHash) triple. */
+    {
+        struct json_object *sc, *cosig_arr, *cosig, *val;
+        const char *cosigner_id, *log_id, *sig_hex;
+        byte subtree_hash[MTC_HASH_SZ];
+        byte sig[64];
+        long long start = 0, end = 0;
+        int i, zeroed = 1;
+
+        /* Require a non-zero 32-byte CA pubkey. */
+        if (!ca_pubkey || ca_pubkey_sz != 32) {
+            MQC_SECURITY("COSIG_NO_CA_KEY: cert %d (pubkey_sz=%d)",
+                         cert_index, ca_pubkey_sz);
+            json_object_put(cert_json);
+            return -1;
+        }
+        for (i = 0; i < ca_pubkey_sz; i++)
+            if (ca_pubkey[i] != 0) { zeroed = 0; break; }
+        if (zeroed) {
+            MQC_SECURITY("COSIG_NO_CA_KEY: cert %d (pubkey is zero)",
+                         cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+
+        if (!json_object_object_get_ex(cert_json,
+                "standalone_certificate", &sc) ||
+            !json_object_object_get_ex(sc, "cosignatures", &cosig_arr) ||
+            !json_object_is_type(cosig_arr, json_type_array) ||
+            json_object_array_length(cosig_arr) == 0) {
+            MQC_SECURITY("COSIG_MISSING: cert %d", cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        cosig = json_object_array_get_idx(cosig_arr, 0);
+        if (!cosig ||
+            !json_object_object_get_ex(cosig, "cosigner_id", &val)) {
+            MQC_SECURITY("COSIG_MALFORMED: cert %d cosigner_id",
+                         cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        cosigner_id = json_object_get_string(val);
+        if (!json_object_object_get_ex(cosig, "log_id", &val)) {
+            MQC_SECURITY("COSIG_MALFORMED: cert %d log_id", cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        log_id = json_object_get_string(val);
+        if (!json_object_object_get_ex(cosig, "start", &val)) {
+            MQC_SECURITY("COSIG_MALFORMED: cert %d start", cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        start = json_object_get_int64(val);
+        if (!json_object_object_get_ex(cosig, "end", &val)) {
+            MQC_SECURITY("COSIG_MALFORMED: cert %d end", cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        end = json_object_get_int64(val);
+        if (!json_object_object_get_ex(cosig, "subtree_hash", &val) ||
+            mqc_hex_to_bytes(json_object_get_string(val),
+                             subtree_hash, MTC_HASH_SZ) != MTC_HASH_SZ) {
+            MQC_SECURITY("COSIG_MALFORMED: cert %d subtree_hash",
+                         cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        if (!json_object_object_get_ex(cosig, "signature", &val) ||
+            mqc_hex_to_bytes(json_object_get_string(val),
+                             sig, (int)sizeof(sig)) != 64) {
+            MQC_SECURITY("COSIG_MALFORMED: cert %d signature",
+                         cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+
+        if (verify_cosignature(ca_pubkey, ca_pubkey_sz,
+                               cosigner_id, log_id,
+                               start, end,
+                               subtree_hash, sig, 64) != 0) {
+            MQC_SECURITY("COSIG_INVALID: cert %d", cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        if (mqc_get_verbose())
+            fprintf(stderr, "[mqc-peer] cosignature OK for cert %d\n",
+                    cert_index);
+    }
 
     /* 5. Check revocation */
     /* Revocation check runs only on the acceptor (server-role) side —

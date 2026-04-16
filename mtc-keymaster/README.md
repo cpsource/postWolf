@@ -236,6 +236,75 @@ The store path is configurable via `--store` flag or
 5. **QUIC Examples** (`examples/quic-mtc/`) demonstrate the full stack:
    ngtcp2 QUIC transport + wolfSSL TLS 1.3 + MTC certificate verification.
 
+## Keys and Cosignatures
+
+Three distinct keys, easy to confuse. Only one of them cosigns anything.
+
+### Key 1 — Log operator's Ed25519 key (the "cosigner")
+
+- Lives on the MTC CA/Log server at `~/.mtc-ca-data/ca_key.der`.
+- Public half is served at `GET /ca/public-key` and cached by clients
+  at `~/.TPM/ca-cosigner.pem`.
+- **Signs the tree root tuple** `(start, end, subtree_hash)` on every
+  cert response and checkpoint, per the MTC draft.
+- This is the only cosigner in the system. It is the out-of-band trust
+  anchor that clients must obtain before they can verify anything.
+
+### Key 2 — A domain CA's ML-DSA-87 key
+
+- Example: `factsorlie.com-ca` at cert_index 73.
+- Lives in `~/.TPM/factsorlie.com-ca/private_key.pem`.
+- Registered in the log as a "CA" entry — its presence grants authority
+  to enroll sub-domains under its DNS scope (validated via a
+  `_mtc-ca.<domain>` TXT record at enrollment).
+- **Does not cosign anything.** Used only to prove identity during its
+  own MQC / TLS handshakes (post-quantum signatures over handshake
+  messages).
+
+### Key 3 — A leaf's ML-DSA-87 key
+
+- Example: `factsorlie.com` at cert_index 72.
+- Lives in `~/.TPM/factsorlie.com/private_key.pem`.
+- **Does not cosign anything.** Used only to prove identity during its
+  own handshakes. Enrollment is authorized by the CA (key 2) that owns
+  the parent domain.
+
+### End-to-end verification chain (client1 → client2 handshake)
+
+For client2 at cert_index N:
+
+```
+client1 holds:  the log operator's Ed25519 pubkey (key 1), loaded
+                out-of-band into ~/.TPM/ca-cosigner.pem
+
+client1 fetches: GET /certificate/N → standalone_certificate
+  ├─ tbs_entry (client2's subject + spk_hash)
+  ├─ inclusion_proof (sibling hashes)
+  ├─ subtree_hash (claimed log root)
+  └─ cosignatures[0] (Ed25519 signature by key 1 over subtree_hash)
+
+client1 checks, in order:
+  1. Cosignature verifies against key 1 over (start, end, subtree_hash)
+     → subtree_hash is the log's real root.
+  2. Inclusion proof walks leaf_hash + siblings back to subtree_hash
+     → leaf N is actually in the log at that root.
+  3. tbs_entry names client2's domain and ML-DSA-87 spk_hash.
+  4. MQC / TLS handshake: client2 signs a freshly-generated challenge
+     with key 2 or key 3. client1 verifies against the spk_hash from
+     tbs_entry.
+```
+
+Step 1 uses key 1. Step 4 uses key 2 or key 3. Steps 2 and 3 are pure
+hash/JSON checks. Without step 1 (the cosignature), steps 2–4 tell you
+only that whatever the server returned is self-consistent — not that
+it corresponds to the real transparency log.
+
+### Algorithm choices
+
+The log cosigner is Ed25519 per the MTC draft. Per-peer identity keys
+(keys 2 and 3) are ML-DSA-87 for post-quantum resistance. Migrating
+the cosigner to a post-quantum algorithm is a known future step.
+
 ## Standards
 
 - [draft-ietf-plants-merkle-tree-certs-02](https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/) -- Merkle Tree Certificates

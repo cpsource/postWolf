@@ -32,6 +32,9 @@
 #include <curl/curl.h>
 #include "mqc.h"
 
+#include <wolfssl/options.h>
+#include <wolfssl/wolfcrypt/coding.h>
+
 #define DEFAULT_TPM_DIR    ".TPM"
 #define DEFAULT_SERVER     "localhost:8444"
 #define DEFAULT_MQC_SERVER "localhost:8446"
@@ -199,6 +202,108 @@ static void normalize_server(const char *server, char *out, int outsz)
         snprintf(out, (size_t)outsz, "%s", server);
     else
         snprintf(out, (size_t)outsz, "https://%s", server);
+}
+
+/* Extract the raw 32-byte Ed25519 public key from an RFC 8410 PEM.
+ * The PEM header may be the correct "-----BEGIN PUBLIC KEY-----" or
+ * the mislabelled "-----BEGIN EDDSA PRIVATE KEY-----" the MTC server
+ * currently emits — we don't care, we base64-decode the body and
+ * take the last 32 bytes of the DER SPKI.  Returns 0 on success. */
+static int pem_extract_ed25519_raw(const char *pem, unsigned char *out32)
+{
+    const char *body_start = strchr(pem, '\n');
+    const char *p, *end;
+    char b64[1024];
+    int blen = 0;
+    unsigned char der[256];
+    word32 der_len = sizeof(der);
+
+    if (!body_start) return -1;
+    body_start++;
+    end = strstr(body_start, "-----END");
+    if (!end) return -1;
+
+    for (p = body_start; p < end && blen < (int)sizeof(b64) - 1; p++) {
+        if (*p != '\r' && *p != '\n' && *p != ' ' && *p != '\t')
+            b64[blen++] = *p;
+    }
+    b64[blen] = '\0';
+
+    if (Base64_Decode((const unsigned char *)b64, (word32)blen,
+                      der, &der_len) != 0)
+        return -1;
+    if (der_len < 32) return -1;
+
+    memcpy(out32, der + der_len - 32, 32);
+    return 0;
+}
+
+/* Load the CA cosigner's raw 32-byte Ed25519 public key into out32.
+ * Prefers a cached copy at ~/.TPM/ca-cosigner.pem; on miss, fetches
+ * GET /ca/public-key from `server` (TOFU) and populates the cache.
+ * Returns 0 on success. */
+static int load_ca_cosigner_pubkey(const char *server, unsigned char *out32)
+{
+    const char *home = getenv("HOME");
+    char cache_path[512];
+    char *pem = NULL;
+    int rc = -1;
+
+    if (!home) home = "/tmp";
+    snprintf(cache_path, sizeof(cache_path), "%s/.TPM/ca-cosigner.pem", home);
+
+    pem = read_file(cache_path);
+    if (pem) {
+        rc = pem_extract_ed25519_raw(pem, out32);
+        free(pem);
+        if (rc == 0) return 0;
+        fprintf(stderr, "warning: cached %s is malformed; refetching\n",
+                cache_path);
+    }
+
+    /* Fetch from server (TOFU). */
+    {
+        char url[1024], svr[512];
+        char *body;
+        long code = 0;
+        struct json_object *obj, *val;
+
+        normalize_server(server, svr, sizeof(svr));
+        snprintf(url, sizeof(url), "%s/ca/public-key", svr);
+        body = http_get(url, &code);
+        if (!body || code != 200) {
+            fprintf(stderr,
+                    "error: cannot fetch CA public key from %s (code=%ld)\n",
+                    url, code);
+            free(body);
+            return -1;
+        }
+        obj = json_tokener_parse(body);
+        free(body);
+        if (!obj ||
+            !json_object_object_get_ex(obj, "public_key_pem", &val)) {
+            fprintf(stderr,
+                    "error: /ca/public-key response missing public_key_pem\n");
+            if (obj) json_object_put(obj);
+            return -1;
+        }
+        pem = strdup(json_object_get_string(val));
+        json_object_put(obj);
+        if (!pem) return -1;
+
+        rc = pem_extract_ed25519_raw(pem, out32);
+        if (rc == 0) {
+            FILE *f = fopen(cache_path, "w");
+            if (f) { fputs(pem, f); fclose(f); }
+        }
+        free(pem);
+        if (rc != 0) {
+            fprintf(stderr,
+                    "error: could not extract raw key from /ca/public-key PEM\n");
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static void time_remaining(double not_after, char *out, int outsz)
@@ -650,9 +755,16 @@ int main(int argc, char *argv[])
         cfg.tpm_path   = mqc_tpm_path;
         cfg.mtc_server = DEFAULT_SERVER;  /* TLS server for peer key resolution */
 
-        /* CA pubkey: zeroed for now (same as echo_client) */
+        /* Load the CA cosigner's raw 32-byte Ed25519 pubkey.  First
+         * fetch is TOFU over HTTPS to the TLS MTC server; subsequent
+         * runs hit the on-disk cache. */
         static unsigned char ca_pubkey[32];
-        memset(ca_pubkey, 0, sizeof(ca_pubkey));
+        if (load_ca_cosigner_pubkey(DEFAULT_SERVER, ca_pubkey) != 0) {
+            fprintf(stderr,
+                "Error: could not load CA cosigner pubkey (required "
+                "for MQC cosignature verification)\n");
+            return 1;
+        }
         cfg.ca_pubkey    = ca_pubkey;
         cfg.ca_pubkey_sz = 32;
 

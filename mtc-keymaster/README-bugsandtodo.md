@@ -502,6 +502,72 @@ Reproducible builds (option 1) should be a longer-term goal.
 
 ---
 
+### 9. MQC cosignature verification — follow-ups
+
+**Priority:** Low–Medium — hygiene after task #2 (client-side Ed25519
+cosignature verifier in `socket-level-wrapper-MQC/mqc_peer.c`) lands.
+These were explicitly left out of task #2's scope to keep the change
+focused.
+
+**9a. `/ca/public-key` PEM header is mislabelled**
+
+`mtc_store_get_public_key_pem()` currently produces
+`-----BEGIN EDDSA PRIVATE KEY-----` around the Ed25519 *public* key
+DER.  The DER body is correct; only the label is wrong.  Clients work
+around it by base64-decoding the body and slicing the last 32 bytes.
+Once the label is fixed to `-----BEGIN PUBLIC KEY-----`, clients can
+use `wc_PubKeyPemToDer` + `wc_Ed25519PublicKeyDecode` cleanly.
+
+**Files:** `mtc-keymaster/server/c/mtc_store.c` (`mtc_store_get_public_key_pem`)
+
+**9b. Eliminate TOFU on first `/ca/public-key` fetch**
+
+Currently `show-tpm --mqc` performs a trust-on-first-use fetch of the
+CA cosigner pubkey from the MTC HTTP server and caches it at
+`~/.TPM/ca-cosigner.pem`.  That first fetch is over TLS to the same
+server whose signatures we're about to verify — not ideal.
+Distribute the CA cosigner pubkey out-of-band (bundled with clients,
+via signed DNS TXT, or similar) so no client ever trusts the MTC
+server for initial bootstrap.
+
+**9c. Load CA cosigner pubkey in every MQC client**
+
+Task #2 only wires the loader into `show-tpm`.  Every other MQC
+client needs the same loader or an equivalent out-of-band key source:
+
+- `socket-level-wrapper-MQC/examples/echo_client.c`
+- `socket-level-wrapper-MQC/examples/echo_server.c`
+- Any future application using `libmqc.a`
+
+Without this, those clients would pass a zeroed `ca_pubkey` and
+`mqc_peer_verify` would fail with `COSIG_NO_CA_KEY`.
+
+**9d. Converge cosig message format with wolfSSL's `wc_MtcVerifyCosignature`**
+
+The MTC server signs over:
+```
+"mtc-subtree/v1\n\x00" (16 bytes)
+|| cosigner_id || log_id
+|| start (8 BE) || end (8 BE)
+|| subtree_hash (32 bytes)
+```
+
+but wolfSSL's reference `wc_MtcVerifyCosignature` expects:
+```
+"MTC SubtreeSign v1" (18 bytes)
+|| start (8 BE) || end (8 BE)
+|| subtree_hash (32 bytes)
+```
+
+The formats disagree on label and on whether `cosigner_id` / `log_id`
+are part of the signed message.  Converging to the wolfSSL shape lets
+us drop our hand-rolled verifier in `mqc_peer.c` and call the upstream
+API directly.  Requires editing `mtc_store_cosign` in
+`mtc-keymaster/server/c/mtc_store.c` and re-running `admin_recosign
+--write` once the new format is active.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
