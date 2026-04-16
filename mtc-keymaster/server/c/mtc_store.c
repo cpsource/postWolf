@@ -755,10 +755,17 @@ int mtc_store_cosign(MtcStore *store, int start, int end,
     memcpy(msg + msg_sz, store->log_id, strlen(store->log_id));
     msg_sz += (int)strlen(store->log_id);
 
-    for (i = 7; i >= 0; i--)
-        msg[msg_sz++] = (uint8_t)((start >> (i * 8)) & 0xff);
-    for (i = 7; i >= 0; i--)
-        msg[msg_sz++] = (uint8_t)((end >> (i * 8)) & 0xff);
+    {
+        /* Cast to uint64_t before shifting; start/end are int (32-bit)
+         * and shifting by >= 32 is UB.  On x86 SHR takes count mod 32,
+         * which corrupted the big-endian encoding. */
+        uint64_t s64 = (uint64_t)(unsigned int)start;
+        uint64_t e64 = (uint64_t)(unsigned int)end;
+        for (i = 7; i >= 0; i--)
+            msg[msg_sz++] = (uint8_t)((s64 >> (i * 8)) & 0xff);
+        for (i = 7; i >= 0; i--)
+            msg[msg_sz++] = (uint8_t)((e64 >> (i * 8)) & 0xff);
+    }
 
     memcpy(msg + msg_sz, subtree_hash, MTC_HASH_SIZE);
     msg_sz += MTC_HASH_SIZE;
