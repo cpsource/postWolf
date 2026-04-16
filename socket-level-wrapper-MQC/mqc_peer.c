@@ -17,6 +17,7 @@
  ******************************************************************************/
 
 #include "mqc_peer.h"
+#include "mqc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -605,7 +606,7 @@ int mqc_peer_verify(const char *mtc_server,
         if (cached) {
             cert_json = json_tokener_parse(cached);
             free(cached);
-            if (cert_json)
+            if (cert_json && mqc_get_verbose())
                 fprintf(stderr, "[mqc-peer] cache hit for cert %d\n",
                         cert_index);
         }
@@ -624,7 +625,8 @@ int mqc_peer_verify(const char *mtc_server,
                 JSON_C_TO_STRING_PRETTY);
             cache_peer_cert(cert_index, s);
         }
-        fprintf(stderr, "[mqc-peer] fetched and cached cert %d\n", cert_index);
+        if (mqc_get_verbose())
+            fprintf(stderr, "[mqc-peer] fetched and cached cert %d\n", cert_index);
     }
 
     /* 3. Verify Merkle inclusion proof */

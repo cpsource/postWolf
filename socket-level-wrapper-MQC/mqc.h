@@ -112,6 +112,10 @@ int mqc_get_fd(mqc_conn_t *conn);
 /* Get peer's cert_index (valid after successful connect/accept). */
 int mqc_get_peer_index(mqc_conn_t *conn);
 
+/* Set/get log verbosity.  0 = errors only (default), 1 = trace. */
+void mqc_set_verbose(int level);
+int  mqc_get_verbose(void);
+
 #ifdef __cplusplus
 }
 #endif

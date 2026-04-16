@@ -37,11 +37,12 @@
 #define DEFAULT_MQC_SERVER "localhost:8446"
 #define MAX_ENTRIES        256
 
-/* Global MQC state for --mqc mode */
+/* Global state */
 static mqc_ctx_t  *g_mqc_ctx  = NULL;
 static const char  *g_mqc_host = "localhost";
 static int          g_mqc_port = 8446;
 static int          g_use_mqc  = 0;
+static int          g_trace    = 0;
 
 /* --- Helpers --- */
 
@@ -75,6 +76,8 @@ static char *http_get(const char *url, long *code)
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    if (g_trace)
+        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
 
     res = curl_easy_perform(curl);
     if (code) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, code);
@@ -516,6 +519,7 @@ static void usage(const char *prog)
     printf("  --tpm-path PATH  TPM identity for MQC (default: first entry in ~/.TPM)\n");
     printf("  -s, --server H:P Server address (default: %s)\n", DEFAULT_SERVER);
     printf("  -v, --verbose    Verbose output\n");
+    printf("  --trace          Show protocol-level trace (TLS/MQC handshakes)\n");
     printf("  --cnt N          Show only first N entries\n");
     printf("  -d, --dir DIR    TPM directory (default: ~/.TPM)\n");
     printf("  -h, --help       Show this help\n");
@@ -526,7 +530,7 @@ int main(int argc, char *argv[])
     const char *server = DEFAULT_SERVER;
     const char *tpm_dir_arg = NULL;
     const char *mqc_tpm_path = NULL;
-    int verify = 0, verbose = 0, use_mqc = 0, cnt = 0;
+    int verify = 0, verbose = 0, use_mqc = 0, trace = 0, cnt = 0;
     char tpm_dir[512];
     tpm_entry_t entries[MAX_ENTRIES];
     int num_entries = 0;
@@ -548,6 +552,8 @@ int main(int argc, char *argv[])
             server = argv[++i];
         else if ((strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0))
             verbose = 1;
+        else if (strcmp(argv[i], "--trace") == 0)
+            trace = 1;
         else if (strcmp(argv[i], "--cnt") == 0 && i + 1 < argc)
             cnt = atoi(argv[++i]);
         else if ((strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--dir") == 0)
@@ -569,6 +575,11 @@ int main(int argc, char *argv[])
     }
 
     g_use_mqc = use_mqc;
+
+    /* Enable trace output if --trace */
+    g_trace = trace;
+    if (trace)
+        mqc_set_verbose(1);
 
     /* Initialize MQC if --mqc mode */
     if (use_mqc && verify) {
