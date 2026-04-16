@@ -115,6 +115,10 @@ int slc_ctx_get_ech_configs(slc_ctx_t *ctx, unsigned char *buf, int *sz);
 /* Get the raw file descriptor for use with select/poll. */
 int slc_get_fd(slc_conn_t *conn);
 
+/* Set/get log verbosity.  0 = errors only (default), 1 = trace. */
+void slc_set_verbose(int level);
+int  slc_get_verbose(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -57,10 +57,10 @@
 #define MQC_HANDSHAKE_TIMEOUT 10            /* seconds to complete handshake */
 
 #define MQC_ABUSE_THRESHOLD  25  /* reject if abuse score >= 25% */
-#define MQC_RL_CONNECT_MIN   10  /* max connections per minute per IP */
-#define MQC_RL_CONNECT_HOUR  60  /* max connections per hour per IP */
-#define MQC_RL_FAIL_MIN       3  /* max failed handshakes per minute per IP */
-#define MQC_RL_FAIL_HOUR     10  /* max failed handshakes per hour per IP */
+#define MQC_RL_CONNECT_MIN   100   /* max connections per minute per IP */
+#define MQC_RL_CONNECT_HOUR  1000  /* max connections per hour per IP */
+#define MQC_RL_FAIL_MIN       10   /* max failed handshakes per minute per IP */
+#define MQC_RL_FAIL_HOUR     100   /* max failed handshakes per hour per IP */
 
 /* --- Logging --- */
 
@@ -621,7 +621,10 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
             close(fd); fd = -1;
         }
         freeaddrinfo(res);
-        if (fd < 0) return NULL;
+        if (fd < 0) {
+            MQC_TRACE("[mqc] TCP connect to %s:%d failed\n", host, port);
+            return NULL;
+        }
     }
 
     MQC_TRACE("[mqc] connected to %s:%d\n", host, port);
@@ -793,6 +796,7 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
     return conn;
 
 fail:
+    MQC_TRACE("[mqc] connect to %s:%d failed (handshake)\n", host, port);
     secure_zero(shared_secret, sizeof(shared_secret));
     secure_zero(aes_key, sizeof(aes_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
@@ -1120,7 +1124,10 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
             close(fd); fd = -1;
         }
         freeaddrinfo(res);
-        if (fd < 0) return NULL;
+        if (fd < 0) {
+            MQC_TRACE("[mqc-enc] TCP connect to %s:%d failed\n", host, port);
+            return NULL;
+        }
     }
     MQC_TRACE("[mqc-enc] connected to %s:%d\n", host, port);
 
@@ -1296,6 +1303,7 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
     return conn;
 
 fail:
+    MQC_TRACE("[mqc-enc] connect to %s:%d failed (handshake)\n", host, port);
     secure_zero(shared_secret, sizeof(shared_secret));
     secure_zero(aes_key, sizeof(aes_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);

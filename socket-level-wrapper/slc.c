@@ -31,6 +31,16 @@
 #include <stdio.h>
 #include <errno.h>
 
+/* --- Logging --- */
+
+static int s_slc_verbose = 0;
+
+void slc_set_verbose(int level) { s_slc_verbose = level; }
+int  slc_get_verbose(void) { return s_slc_verbose; }
+
+#define SLC_TRACE(fmt, ...) do { if (s_slc_verbose) \
+    fprintf(stderr, fmt, ##__VA_ARGS__); } while(0)
+
 /* --- Internal structures --- */
 
 struct slc_ctx {
@@ -638,8 +648,12 @@ slc_conn_t *slc_connect(slc_ctx_t *ctx, const char *host, int port)
     }
     freeaddrinfo(res);
 
-    if (fd < 0)
+    if (fd < 0) {
+        SLC_TRACE("[slc] TCP connect to %s:%d failed\n", host, port);
         return NULL;
+    }
+
+    SLC_TRACE("[slc] connected to %s:%d\n", host, port);
 
     /* Create SSL connection */
     conn = slc_conn_new(ctx, fd);
@@ -695,12 +709,15 @@ slc_conn_t *slc_connect(slc_ctx_t *ctx, const char *host, int port)
 
         ret = wolfSSL_connect(conn->ssl);
         if (ret != WOLFSSL_SUCCESS) {
+            SLC_TRACE("[slc] TLS handshake to %s:%d failed (retry without ECH)\n", host, port);
             wolfSSL_free(conn->ssl);
             close(fd);
             free(conn);
             return NULL;
         }
+        SLC_TRACE("[slc] TLS handshake to %s:%d OK (without ECH)\n", host, port);
 #else
+        SLC_TRACE("[slc] TLS handshake to %s:%d failed\n", host, port);
         wolfSSL_free(conn->ssl);
         close(fd);
         free(conn);
@@ -708,6 +725,7 @@ slc_conn_t *slc_connect(slc_ctx_t *ctx, const char *host, int port)
 #endif
     }
 
+    SLC_TRACE("[slc] TLS session established with %s:%d\n", host, port);
     return conn;
 }
 

@@ -88,13 +88,14 @@ static char *http_get(const char *url, long *code)
 }
 
 /* MQC-based HTTP GET: open a fresh connection per request (server is
- * one-request-per-connection) */
+ * one-request-per-connection).  Uses dynamic allocation for large responses. */
 static char *mqc_http_get(const char *path_only, long *code)
 {
     mqc_conn_t *conn;
     char req[1024];
-    char buf[8192];
-    int n, total = 0;
+    char *buf = NULL;
+    int buf_sz = 0, buf_cap = 0;
+    int n;
     char *body_start;
     long status = 0;
 
@@ -110,22 +111,32 @@ static char *mqc_http_get(const char *path_only, long *code)
         return NULL;
     }
 
-    /* Read response */
-    while (total < (int)sizeof(buf) - 1) {
-        n = mqc_read(conn, buf + total, (int)sizeof(buf) - 1 - total);
+    /* Read response into dynamically growing buffer */
+    buf_cap = 16384;
+    buf = malloc((size_t)buf_cap);
+    if (!buf) { mqc_close(conn); return NULL; }
+
+    while (1) {
+        /* Grow buffer if needed */
+        if (buf_sz >= buf_cap - 1) {
+            buf_cap *= 2;
+            char *tmp = realloc(buf, (size_t)buf_cap);
+            if (!tmp) break;
+            buf = tmp;
+        }
+        n = mqc_read(conn, buf + buf_sz, buf_cap - 1 - buf_sz);
         if (n <= 0) break;
-        total += n;
-        buf[total] = '\0';
+        buf_sz += n;
+        buf[buf_sz] = '\0';
         /* Check if we have full headers + body */
         body_start = strstr(buf, "\r\n\r\n");
         if (body_start) {
             body_start += 4;
-            /* Parse Content-Length */
             char *cl = strcasestr(buf, "Content-Length:");
             if (cl) {
                 int content_len = atoi(cl + 15);
                 int header_len = (int)(body_start - buf);
-                int body_have = total - header_len;
+                int body_have = buf_sz - header_len;
                 if (body_have >= content_len)
                     break;
             } else {
@@ -133,20 +144,24 @@ static char *mqc_http_get(const char *path_only, long *code)
             }
         }
     }
-    buf[total] = '\0';
+    buf[buf_sz] = '\0';
     mqc_close(conn);
 
     /* Parse status code */
-    if (strncmp(buf, "HTTP/1.", 7) == 0)
+    if (buf_sz >= 12 && strncmp(buf, "HTTP/1.", 7) == 0)
         status = atol(buf + 9);
     if (code) *code = status;
 
     /* Find body */
     body_start = strstr(buf, "\r\n\r\n");
-    if (!body_start) return NULL;
+    if (!body_start) { free(buf); return NULL; }
     body_start += 4;
 
-    return strdup(body_start);
+    {
+        char *result = strdup(body_start);
+        free(buf);
+        return result;
+    }
 }
 
 /* Unified HTTP GET — dispatches to MQC or curl */
