@@ -39,6 +39,104 @@
 #include <wolfssl/wolfcrypt/sha256.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
 #include <wolfssl/wolfcrypt/settings.h>
+#include <wolfssl/wolfcrypt/mtc.h>
+
+/* Verify a Merkle inclusion proof per RFC 9162 Section 2.1.3.
+ *
+ * This mirrors the server's inclusion_path() construction (see
+ * mtc-keymaster/server/c/mtc_merkle.c:306-331).  At each recursion
+ * level, split at k = largest power of 2 < n.  If m < k, the leaf is
+ * in the left subtree and the sibling (right subtree root) appears on
+ * the right; else the leaf is in the right subtree and the sibling
+ * (left subtree root) appears on the left.  Proof entries are emitted
+ * bottom-up by the server, so we walk them in the same order.
+ *
+ * Used instead of wolfSSL's wc_MtcVerifyInclusionProof which assumes a
+ * balanced binary tree (idx & 1 bit walk) — correct only when the
+ * subtree size is a power of 2.
+ *
+ * Returns 0 if the proof reconstructs expected_root, -1 otherwise. */
+static int mqc_verify_inclusion_proof(int leaf_index, int start, int end,
+                                      const byte *leaf_hash,
+                                      const byte *inclusion_path,
+                                      int path_count,
+                                      const byte *expected_root)
+{
+    byte cur[MTC_HASH_SZ];
+    byte next[MTC_HASH_SZ];
+    int  dir_stack[MTC_MAX_PROOF_DEPTH]; /* 0 = sibling on right, 1 = on left */
+    int  depth = 0;
+    int  m, n, i, ret;
+
+    if (leaf_index < start || leaf_index >= end) return -1;
+    if (path_count < 0 || path_count > MTC_MAX_PROOF_DEPTH) return -1;
+
+    /* Walk down the recursive split to record sibling direction per level.
+     * Top of the stack (pushed first) corresponds to the outermost
+     * recursion level; the deepest level (pushed last) matches the first
+     * proof entry emitted by the server. */
+    m = leaf_index - start;
+    n = end - start;
+    while (n > 1) {
+        int k = 1;
+        while (k * 2 < n) k *= 2;
+        if (m < k) {
+            dir_stack[depth++] = 0;   /* sibling (right subtree) on right */
+            n = k;
+        } else {
+            dir_stack[depth++] = 1;   /* sibling (left subtree) on left  */
+            m -= k;
+            n -= k;
+        }
+    }
+
+    if (depth != path_count) return -1;
+
+    /* Walk back up: the first proof entry is the deepest sibling. */
+    XMEMCPY(cur, leaf_hash, MTC_HASH_SZ);
+    for (i = 0; i < path_count; i++) {
+        const byte *sibling = inclusion_path + i * MTC_HASH_SZ;
+        int dir = dir_stack[depth - 1 - i];
+        if (dir == 0) {
+            /* sibling on right → cur is left child */
+            ret = wc_MtcHashNode(next, cur, sibling);
+        } else {
+            /* sibling on left → cur is right child */
+            ret = wc_MtcHashNode(next, sibling, cur);
+        }
+        if (ret != 0) return -1;
+        XMEMCPY(cur, next, MTC_HASH_SZ);
+    }
+
+    return (XMEMCMP(cur, expected_root, MTC_HASH_SZ) == 0) ? 0 : -1;
+}
+
+/* Decode a hex string into a byte buffer.  Returns number of bytes
+ * written (hex_len / 2), or -1 on odd length, invalid hex digit, or
+ * overflow. */
+static int mqc_hex_to_bytes(const char *hex, byte *out, int out_cap)
+{
+    int len, i;
+    if (!hex) return -1;
+    len = (int)strlen(hex);
+    if (len & 1) return -1;
+    if (len / 2 > out_cap) return -1;
+    for (i = 0; i < len; i += 2) {
+        int hi, lo;
+        char ch = hex[i];
+        if      (ch >= '0' && ch <= '9') hi = ch - '0';
+        else if (ch >= 'a' && ch <= 'f') hi = 10 + (ch - 'a');
+        else if (ch >= 'A' && ch <= 'F') hi = 10 + (ch - 'A');
+        else return -1;
+        ch = hex[i + 1];
+        if      (ch >= '0' && ch <= '9') lo = ch - '0';
+        else if (ch >= 'a' && ch <= 'f') lo = 10 + (ch - 'a');
+        else if (ch >= 'A' && ch <= 'F') lo = 10 + (ch - 'A');
+        else return -1;
+        out[i / 2] = (byte)((hi << 4) | lo);
+    }
+    return len / 2;
+}
 
 /* Cache directory under ~/.TPM */
 #define PEER_CACHE_DIR   "peers"
@@ -629,11 +727,126 @@ int mqc_peer_verify(const char *mtc_server,
             fprintf(stderr, "[mqc-peer] fetched and cached cert %d\n", cert_index);
     }
 
-    /* 3. Verify Merkle inclusion proof */
-    /* TODO: implement full wc_MtcVerifyInclusionProof() check.
-     * For now, we trust the server's response (the cert was in the log
-     * or the server wouldn't have returned it). Full verification
-     * requires fetching the checkpoint and recomputing the proof. */
+    /* 3. Verify Merkle inclusion proof.
+     *
+     * The authoritative leaf hash comes from /log/entry/<cert_index>
+     * (computed over the exact bytes the server stored, sidestepping
+     * any JSON-serialization ambiguity).  The proof path, subtree
+     * bounds, and expected root come from the /certificate/<n>
+     * response we already have.  wolfSSL's wc_MtcVerifyInclusionProof
+     * walks the path per RFC 9162 Section 2.1.3. */
+    {
+        char url[512], svr[512];
+        char *body = NULL;
+        long http_code = 0;
+        struct json_object *entry_obj = NULL, *lh_val;
+        struct json_object *sc, *proof_arr, *val;
+        byte leaf_hash[MTC_HASH_SZ];
+        byte subtree_hash[MTC_HASH_SZ];
+        byte *inclusion_path = NULL;
+        int path_count = 0, i;
+        word64 subtree_start = 0, subtree_end = 0;
+        int vret;
+
+        /* Fetch leaf_hash from the log entry endpoint */
+        normalize_server(mtc_server, svr, sizeof(svr));
+        snprintf(url, sizeof(url), "%s/log/entry/%d", svr, cert_index);
+        body = http_get(url, &http_code);
+        if (!body || http_code != 200) {
+            MQC_SECURITY("LEAF_FETCH_FAILED: cert %d (code=%ld)",
+                         cert_index, http_code);
+            free(body);
+            json_object_put(cert_json);
+            return -1;
+        }
+        entry_obj = json_tokener_parse(body);
+        free(body);
+        if (!entry_obj ||
+            !json_object_object_get_ex(entry_obj, "leaf_hash", &lh_val) ||
+            mqc_hex_to_bytes(json_object_get_string(lh_val),
+                             leaf_hash, MTC_HASH_SZ) != MTC_HASH_SZ) {
+            MQC_SECURITY("LEAF_FETCH_PARSE: cert %d", cert_index);
+            if (entry_obj) json_object_put(entry_obj);
+            json_object_put(cert_json);
+            return -1;
+        }
+        json_object_put(entry_obj);
+
+        /* Extract proof fields from the cert response */
+        if (!json_object_object_get_ex(cert_json,
+                "standalone_certificate", &sc) ||
+            !json_object_object_get_ex(sc, "subtree_start", &val)) {
+            MQC_SECURITY("PROOF_MISSING: cert %d subtree_start", cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        subtree_start = (word64)json_object_get_int64(val);
+        if (!json_object_object_get_ex(sc, "subtree_end", &val)) {
+            MQC_SECURITY("PROOF_MISSING: cert %d subtree_end", cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        subtree_end = (word64)json_object_get_int64(val);
+        if (!json_object_object_get_ex(sc, "subtree_hash", &val) ||
+            mqc_hex_to_bytes(json_object_get_string(val),
+                             subtree_hash, MTC_HASH_SZ) != MTC_HASH_SZ) {
+            MQC_SECURITY("PROOF_MALFORMED: cert %d subtree_hash", cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        if (!json_object_object_get_ex(sc, "inclusion_proof", &proof_arr) ||
+            !json_object_is_type(proof_arr, json_type_array)) {
+            MQC_SECURITY("PROOF_MISSING: cert %d inclusion_proof", cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        path_count = (int)json_object_array_length(proof_arr);
+        if (path_count > MTC_MAX_PROOF_DEPTH) {
+            MQC_SECURITY("PROOF_TOO_DEEP: cert %d (%d hashes)",
+                         cert_index, path_count);
+            json_object_put(cert_json);
+            return -1;
+        }
+        if (path_count > 0) {
+            inclusion_path = (byte *)malloc((size_t)path_count * MTC_HASH_SZ);
+            if (!inclusion_path) {
+                json_object_put(cert_json);
+                return -1;
+            }
+            for (i = 0; i < path_count; i++) {
+                struct json_object *h = json_object_array_get_idx(proof_arr, i);
+                if (mqc_hex_to_bytes(json_object_get_string(h),
+                        inclusion_path + i * MTC_HASH_SZ,
+                        MTC_HASH_SZ) != MTC_HASH_SZ) {
+                    MQC_SECURITY("PROOF_MALFORMED: cert %d hash[%d]",
+                                 cert_index, i);
+                    free(inclusion_path);
+                    json_object_put(cert_json);
+                    return -1;
+                }
+            }
+        }
+
+        /* Verify the proof using the RFC 9162 split-at-k algorithm
+         * (server uses the same in mtc_merkle.c:inclusion_path). */
+        vret = mqc_verify_inclusion_proof(cert_index,
+                                          (int)subtree_start,
+                                          (int)subtree_end,
+                                          leaf_hash,
+                                          inclusion_path,
+                                          path_count,
+                                          subtree_hash);
+        free(inclusion_path);
+
+        if (vret != 0) {
+            MQC_SECURITY("PROOF_INVALID: cert %d", cert_index);
+            json_object_put(cert_json);
+            return -1;
+        }
+        if (mqc_get_verbose())
+            fprintf(stderr, "[mqc-peer] inclusion proof OK for cert %d\n",
+                    cert_index);
+    }
 
     /* 4. Verify cosignature */
     /* TODO: implement wc_MtcVerifyCosignature() with ca_pubkey.
