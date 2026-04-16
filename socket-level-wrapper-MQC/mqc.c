@@ -293,26 +293,46 @@ static int mqc_ratelimit_check(const char *ip)
     return 0;
 }
 
-/* Record a failed handshake for rate limiting. Returns 0 = OK, -1 = too many failures. */
-static int mqc_ratelimit_fail(const char *ip)
+/* Check if IP has too many recent failures (does NOT increment).
+ * Returns 0 = OK, -1 = too many failures. */
+static int mqc_ratelimit_fail_check(const char *ip)
 {
     char key[128];
-    int count_m, count_h;
+    redisReply *reply;
+    int count_m = 0, count_h = 0;
 
     if (!s_redis) return 0;
 
     snprintf(key, sizeof(key), "mqc:%s:fail:m", ip);
-    count_m = redis_incr(key, 60);
+    reply = redisCommand(s_redis, "GET %s", key);
+    if (reply) { if (reply->str) count_m = atoi(reply->str); freeReplyObject(reply); }
 
     snprintf(key, sizeof(key), "mqc:%s:fail:h", ip);
-    count_h = redis_incr(key, 3600);
+    reply = redisCommand(s_redis, "GET %s", key);
+    if (reply) { if (reply->str) count_h = atoi(reply->str); freeReplyObject(reply); }
 
-    if (count_m > MQC_RL_FAIL_MIN || count_h > MQC_RL_FAIL_HOUR) {
+    if (count_m >= MQC_RL_FAIL_MIN || count_h >= MQC_RL_FAIL_HOUR) {
         MQC_SECURITY("FAIL_RATE_LIMITED: %s failures %d/min %d/hr",
                      ip, count_m, count_h);
         return -1;
     }
     return 0;
+}
+
+/* Record a failed handshake (increment counters). */
+static void mqc_ratelimit_fail_record(const char *ip)
+{
+    char key[128];
+
+    if (!s_redis) return;
+
+    snprintf(key, sizeof(key), "mqc:%s:fail:m", ip);
+    redis_incr(key, 60);
+
+    snprintf(key, sizeof(key), "mqc:%s:fail:h", ip);
+    redis_incr(key, 3600);
+
+    MQC_SECURITY("handshake failure recorded for %s", ip);
 }
 
 /* --- AbuseIPDB check --- */
@@ -335,7 +355,7 @@ static size_t abuse_write_cb(void *ptr, size_t size, size_t nmemb, void *ud)
 /* Read ABUSEIPDB_TOKEN from environment or ~/.env. Returns NULL if not found. */
 static const char *get_abuseipdb_token(void)
 {
-    static char token[256] = {0};
+    static char token[512] = {0};
     const char *env;
     FILE *f;
     char line[512];
@@ -383,7 +403,7 @@ static int abuseipdb_check(const char *ip)
     CURL *curl;
     CURLcode cres;
     char url[512];
-    char auth_header[300];
+    char auth_header[600];
     struct curl_slist *headers = NULL;
     struct abuse_buf buf = {NULL, 0};
     int score = -1;
@@ -792,20 +812,18 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
     int ret;
     mqc_conn_t *conn = NULL;
     int mlkem_ok = 0, dil_ok = 0, rng_ok = 0;
+    char client_ip[64] = "unknown";
 
     fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
     if (fd < 0) return NULL;
 
-    {
-        char ip[64] = "unknown";
-        inet_ntop(AF_INET, &cli_addr.sin_addr, ip, sizeof(ip));
-        MQC_LOG("accepted connection from %s:%d", ip, ntohs(cli_addr.sin_port));
+    inet_ntop(AF_INET, &cli_addr.sin_addr, client_ip, sizeof(client_ip));
+    MQC_LOG("accepted connection from %s:%d", client_ip, ntohs(cli_addr.sin_port));
 
-        /* AbuseIPDB + rate limit checks */
-        if (mqc_abuse_check(ip) != 0) { close(fd); return NULL; }
-        if (mqc_ratelimit_check(ip) != 0) { close(fd); return NULL; }
-        if (mqc_ratelimit_fail(ip) != 0) { close(fd); return NULL; }
-    }
+    /* AbuseIPDB + rate limit checks */
+    if (mqc_abuse_check(client_ip) != 0) { close(fd); return NULL; }
+    if (mqc_ratelimit_check(client_ip) != 0) { close(fd); return NULL; }
+    if (mqc_ratelimit_fail_check(client_ip) != 0) { close(fd); return NULL; }
 
     /* Handshake timeout — drop slowloris connections */
     set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
@@ -975,6 +993,7 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
     return conn;
 
 fail:
+    mqc_ratelimit_fail_record(client_ip);
     secure_zero(shared_secret, sizeof(shared_secret));
     secure_zero(aes_key, sizeof(aes_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
@@ -1296,17 +1315,17 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
     int ret;
     mqc_conn_t *conn = NULL;
     int mlkem_ok = 0, dil_ok = 0, rng_ok = 0;
+    char client_ip[64] = "unknown";
 
     fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
     if (fd < 0) return NULL;
-    {
-        char ip[64] = "unknown";
-        inet_ntop(AF_INET, &cli_addr.sin_addr, ip, sizeof(ip));
-        MQC_LOG("accepted encrypted connection from %s:%d", ip, ntohs(cli_addr.sin_port));
-        if (mqc_abuse_check(ip) != 0) { close(fd); return NULL; }
-        if (mqc_ratelimit_check(ip) != 0) { close(fd); return NULL; }
-        if (mqc_ratelimit_fail(ip) != 0) { close(fd); return NULL; }
-    }
+
+    inet_ntop(AF_INET, &cli_addr.sin_addr, client_ip, sizeof(client_ip));
+    MQC_LOG("accepted encrypted connection from %s:%d", client_ip, ntohs(cli_addr.sin_port));
+    if (mqc_abuse_check(client_ip) != 0) { close(fd); return NULL; }
+    if (mqc_ratelimit_check(client_ip) != 0) { close(fd); return NULL; }
+    if (mqc_ratelimit_fail_check(client_ip) != 0) { close(fd); return NULL; }
+
     set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
 
     if (wc_InitRng(&rng) != 0) { close(fd); return NULL; }
@@ -1487,6 +1506,7 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
     return conn;
 
 fail:
+    mqc_ratelimit_fail_record(client_ip);
     secure_zero(shared_secret, sizeof(shared_secret));
     secure_zero(aes_key, sizeof(aes_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
@@ -1519,7 +1539,7 @@ static int auto_accept_detect(int listen_fd, char *json_buf, int json_bufsz,
         MQC_LOG("auto-accept from %s:%d", ip, ntohs(cli_addr.sin_port));
         if (mqc_abuse_check(ip) != 0) { close(fd); return -1; }
         if (mqc_ratelimit_check(ip) != 0) { close(fd); return -1; }
-        if (mqc_ratelimit_fail(ip) != 0) { close(fd); return -1; }
+        if (mqc_ratelimit_fail_check(ip) != 0) { close(fd); return -1; }
     }
     set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
 
@@ -1603,7 +1623,8 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
               if (ret != 0 || !v) goto clear_fail; }
 
             ret = wc_MlKemKey_Init(&mlkem, WC_ML_KEM_768, NULL, INVALID_DEVID);
-            if (ret != 0) goto clear_fail; mlkem_ok = 1;
+            if (ret != 0) goto clear_fail;
+            mlkem_ok = 1;
             ret = wc_MlKemKey_DecodePublicKey(&mlkem, encaps_key, (word32)ek_sz);
             if (ret != 0) goto clear_fail;
             ct_sz = sizeof(ciphertext); wc_MlKemKey_CipherTextSize(&mlkem, &ct_sz);
@@ -1641,6 +1662,10 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
         return conn;
 
     clear_fail:
+        { struct sockaddr_in pa; socklen_t pl = sizeof(pa); char cip[64] = "unknown";
+          if (getpeername(fd, (struct sockaddr *)&pa, &pl) == 0)
+              inet_ntop(AF_INET, &pa.sin_addr, cip, sizeof(cip));
+          mqc_ratelimit_fail_record(cip); }
         secure_zero(shared_secret, sizeof(shared_secret));
         secure_zero(aes_key, sizeof(aes_key));
         if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
@@ -1674,7 +1699,8 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
 
             r1 = json_tokener_parse(json_buf);
             if (!r1 || !json_object_object_get_ex(r1, "mlkem_encaps_key", &v1)) {
-                if (r1) json_object_put(r1); goto enc_fail;
+                if (r1) json_object_put(r1);
+                goto enc_fail;
             }
             ek_hex = json_object_get_string(v1);
             ek_sz = hex_to_bytes(ek_hex, encaps_key, sizeof(encaps_key));
@@ -1683,7 +1709,8 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
 
             /* Encapsulate */
             ret = wc_MlKemKey_Init(&mlkem, WC_ML_KEM_768, NULL, INVALID_DEVID);
-            if (ret != 0) goto enc_fail; mlkem_ok = 1;
+            if (ret != 0) goto enc_fail;
+            mlkem_ok = 1;
             ret = wc_MlKemKey_DecodePublicKey(&mlkem, encaps_key, (word32)ek_sz);
             if (ret != 0) goto enc_fail;
             ct_sz = sizeof(ciphertext); wc_MlKemKey_CipherTextSize(&mlkem, &ct_sz);
@@ -1774,6 +1801,10 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
         return conn;
 
     enc_fail:
+        { struct sockaddr_in pa; socklen_t pl = sizeof(pa); char cip[64] = "unknown";
+          if (getpeername(fd, (struct sockaddr *)&pa, &pl) == 0)
+              inet_ntop(AF_INET, &pa.sin_addr, cip, sizeof(cip));
+          mqc_ratelimit_fail_record(cip); }
         secure_zero(shared_secret, sizeof(shared_secret));
         secure_zero(aes_key, sizeof(aes_key));
         if (mlkem_ok) wc_MlKemKey_Free(&mlkem);

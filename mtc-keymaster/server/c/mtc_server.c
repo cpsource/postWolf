@@ -96,6 +96,9 @@ static void usage(const char *prog)
     printf("  --tls-ca FILE    CA cert for client verification\n");
     printf("  --ech-name NAME  ECH public name (e.g., factsorlie.com)\n");
     printf("  --dh-port PORT   Bootstrap DH port for pre-TLS enrollment (default: disabled)\n");
+    printf("  --mqc-port PORT  MQC listener port (default: disabled)\n");
+    printf("  --tpm-path PATH  TPM identity path for MQC (e.g., ~/.TPM/factsorlie.com-ca)\n");
+    printf("  --mtc-server URL MTC server URL for MQC peer verification\n");
     printf("  --log-level N    Log level: 0=error 1=warn 2=info 3=debug 4=trace (default: 2)\n");
     printf("  --log-file PATH  Log file (default: /var/log/mtc/mtc_server.log)\n");
     printf("  -h, --help       Show this help\n");
@@ -144,6 +147,9 @@ int main(int argc, char *argv[])
     const char *tls_ca = NULL;
     const char *ech_name = NULL;
     int dh_port = 0;
+    int mqc_port = 0;
+    const char *tpm_path = NULL;
+    const char *mtc_server_url = NULL;
     int log_level = MTC_LOG_INFO;
     const char *log_file = NULL;
     MtcStore store;
@@ -176,6 +182,12 @@ int main(int argc, char *argv[])
             ech_name = argv[++i];
         else if (strcmp(argv[i], "--dh-port") == 0 && i + 1 < argc)
             dh_port = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--mqc-port") == 0 && i + 1 < argc)
+            mqc_port = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--tpm-path") == 0 && i + 1 < argc)
+            tpm_path = argv[++i];
+        else if (strcmp(argv[i], "--mtc-server") == 0 && i + 1 < argc)
+            mtc_server_url = argv[++i];
         else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc)
             log_level = atoi(argv[++i]);
         else if (strcmp(argv[i], "--log-file") == 0 && i + 1 < argc)
@@ -236,6 +248,25 @@ int main(int argc, char *argv[])
     if (dh_port > 0) {
         if (mtc_bootstrap_start(host, dh_port, &store) != 0)
             LOG_WARN("bootstrap listener failed to start on port %d", dh_port);
+    }
+
+    /* 8b. Start MQC listener if --mqc-port was given */
+    if (mqc_port > 0) {
+        if (!tpm_path) {
+            fprintf(stderr, "--mqc-port requires --tpm-path\n");
+            return 1;
+        }
+        /* Build MTC server URL from host:port if not explicitly given */
+        char mtc_url_buf[256];
+        const char *mtc_url = mtc_server_url;
+        if (!mtc_url) {
+            snprintf(mtc_url_buf, sizeof(mtc_url_buf),
+                     "https://%s:%d", host, port);
+            mtc_url = mtc_url_buf;
+        }
+        if (mtc_mqc_start(host, mqc_port, &store, tpm_path, mtc_url,
+                          store.ca_pub_key, store.ca_pub_key_sz) != 0)
+            LOG_WARN("MQC listener failed to start on port %d", mqc_port);
     }
 
     /* 9. Run HTTP server (blocks indefinitely) */

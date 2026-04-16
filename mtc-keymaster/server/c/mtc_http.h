@@ -18,6 +18,7 @@
 
 #include "mtc_store.h"
 #include "slc.h"
+#include "mqc.h"
 
 /**
  * @brief TLS configuration for the server.
@@ -61,5 +62,22 @@ typedef struct {
  */
 int mtc_http_serve(const char *host, int port, MtcStore *store,
                    const mtc_tls_cfg_t *tls_cfg);
+
+/**
+ * @brief  Start MQC listener on a background thread.
+ *
+ * @param[in] host      Bind address (NULL = "0.0.0.0").
+ * @param[in] port      MQC port (e.g., 8446).
+ * @param[in] store     Initialised MTC store.
+ * @param[in] tpm_path  Path to server's TPM identity (e.g., ~/.TPM/factsorlie.com-ca).
+ * @param[in] mtc_server MTC server URL for peer verification.
+ * @param[in] ca_pubkey  CA Ed25519 cosigner public key.
+ * @param[in] ca_pubkey_sz Size of ca_pubkey.
+ *
+ * @return  0 on success, -1 on failure.
+ */
+int mtc_mqc_start(const char *host, int port, MtcStore *store,
+                  const char *tpm_path, const char *mtc_server,
+                  const unsigned char *ca_pubkey, int ca_pubkey_sz);
 
 #endif

@@ -51,6 +51,7 @@
 #include "mtc_log.h"
 #include "mtc_ca_validate.h"
 #include "mtc_ratelimit.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,6 +93,7 @@
  ******************************************************************************/
 typedef struct {
     slc_conn_t *tls;        /**< TLS connection (non-NULL = TLS mode)      */
+    mqc_conn_t *mqc;        /**< MQC connection (non-NULL = MQC mode)      */
     int         fd;         /**< Raw socket fd (used in plain mode, or for
                                  getpeername when TLS is active)            */
     char        ip_str[64]; /**< Client IP string for logging/abuse checks */
@@ -113,6 +115,8 @@ typedef struct {
  ******************************************************************************/
 static int cio_read(client_io *io, void *buf, int sz)
 {
+    if (io->mqc)
+        return mqc_read(io->mqc, buf, sz);
     if (io->tls)
         return slc_read(io->tls, buf, sz);
     return (int)recv(io->fd, buf, (size_t)sz, 0);
@@ -134,6 +138,8 @@ static int cio_read(client_io *io, void *buf, int sz)
  ******************************************************************************/
 static int cio_write(client_io *io, const void *buf, int sz)
 {
+    if (io->mqc)
+        return mqc_write(io->mqc, buf, sz);
     if (io->tls)
         return slc_write(io->tls, buf, sz);
     return (int)send(io->fd, buf, (size_t)sz, 0);
@@ -152,7 +158,10 @@ static int cio_write(client_io *io, const void *buf, int sz)
  ******************************************************************************/
 static void cio_close(client_io *io)
 {
-    if (io->tls) {
+    if (io->mqc) {
+        mqc_close(io->mqc);
+        io->mqc = NULL;
+    } else if (io->tls) {
         slc_close(io->tls);
         io->tls = NULL;
     } else if (io->fd >= 0) {
@@ -1829,5 +1838,115 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
         g_slc_ctx = NULL;
         slc_ctx_free(ctx);
     }
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* MQC listener (port 8446)                                           */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    int          listen_fd;
+    MtcStore    *store;
+    mqc_ctx_t   *mqc_ctx;
+} mqc_listener_arg_t;
+
+static void *mqc_listener_thread(void *arg)
+{
+    mqc_listener_arg_t *la = (mqc_listener_arg_t *)arg;
+    int listen_fd = la->listen_fd;
+    MtcStore *store = la->store;
+    mqc_ctx_t *mqc_ctx = la->mqc_ctx;
+    free(la);
+
+    LOG_INFO("MQC listener ready (fd=%d)", listen_fd);
+
+    for (;;) {
+        client_io cio;
+        memset(&cio, 0, sizeof(cio));
+        cio.fd = -1;
+
+        /* Accept MQC connection (auto-detects clear/encrypted) */
+        cio.mqc = mqc_accept_auto(mqc_ctx, listen_fd);
+        if (cio.mqc == NULL) {
+            LOG_WARN("MQC accept failed");
+            continue;
+        }
+
+        cio.fd = mqc_get_fd(cio.mqc);
+
+        /* Get client IP */
+        {
+            struct sockaddr_in peer;
+            socklen_t peer_len = sizeof(peer);
+            if (getpeername(cio.fd, (struct sockaddr *)&peer, &peer_len) == 0)
+                inet_ntop(AF_INET, &peer.sin_addr, cio.ip_str, sizeof(cio.ip_str));
+        }
+
+        LOG_INFO("MQC connection from %s (peer_index=%d)",
+                 cio.ip_str, mqc_get_peer_index(cio.mqc));
+
+        /* Ensure DB connection */
+        if (store->use_db)
+            mtc_db_ensure_connected(&store->db);
+
+        /* Handle request using the same dispatcher as TLS */
+        handle_request(&cio, store);
+        cio_close(&cio);
+    }
+
+    return NULL;
+}
+
+int mtc_mqc_start(const char *host, int port, MtcStore *store,
+                  const char *tpm_path, const char *mtc_server,
+                  const unsigned char *ca_pubkey, int ca_pubkey_sz)
+{
+    int listen_fd;
+    mqc_cfg_t cfg;
+    mqc_ctx_t *ctx;
+    pthread_t tid;
+    mqc_listener_arg_t *la;
+
+    /* Create MQC context */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.role       = MQC_SERVER;
+    cfg.tpm_path   = tpm_path;
+    cfg.mtc_server = mtc_server;
+    cfg.ca_pubkey  = ca_pubkey;
+    cfg.ca_pubkey_sz = ca_pubkey_sz;
+
+    ctx = mqc_ctx_new(&cfg);
+    if (!ctx) {
+        LOG_ERROR("MQC context creation failed");
+        return -1;
+    }
+
+    /* Listen */
+    listen_fd = mqc_listen(host, port);
+    if (listen_fd < 0) {
+        LOG_ERROR("MQC listen failed on %s:%d",
+                  host ? host : "0.0.0.0", port);
+        mqc_ctx_free(ctx);
+        return -1;
+    }
+
+    /* Launch thread */
+    la = malloc(sizeof(*la));
+    if (!la) { close(listen_fd); mqc_ctx_free(ctx); return -1; }
+    la->listen_fd = listen_fd;
+    la->store = store;
+    la->mqc_ctx = ctx;
+
+    if (pthread_create(&tid, NULL, mqc_listener_thread, la) != 0) {
+        LOG_ERROR("MQC thread creation failed");
+        free(la);
+        close(listen_fd);
+        mqc_ctx_free(ctx);
+        return -1;
+    }
+    pthread_detach(tid);
+
+    LOG_INFO("MQC started on %s:%d", host ? host : "0.0.0.0", port);
     return 0;
 }
