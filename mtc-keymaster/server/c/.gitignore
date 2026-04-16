@@ -4,6 +4,7 @@ mtc_checkendpoint
 mtc_crypt_test
 bootstrap_leaf
 bootstrap_ca
+show-tpm
 
 # Doxygen output
 html/

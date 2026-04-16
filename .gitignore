@@ -215,6 +215,7 @@ TAGS
 .DS_Store
 support/cyassl.pc
 support/wolfssl.pc
+support/wolfGuard.pc
 cyassl/ctaocrypt/stamp-h1
 stamp-h1
 clang_output_*

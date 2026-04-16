@@ -1603,6 +1603,10 @@ static void handle_request(client_io *io, MtcStore *store)
         }
     }
 
+    /* Ensure DB connection is alive before dispatching */
+    if (store->use_db)
+        mtc_db_ensure_connected(&store->db);
+
     /* Dispatch */
     LOG_DEBUG("%s %s from %s", method, path, io->ip_str);
 

@@ -190,6 +190,60 @@ PGconn *mtc_db_connect(void)
     return conn;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_ensure_connected
+ *
+ * Description:
+ *   Checks if the DB connection is still alive. If the connection has
+ *   dropped (Neon idle timeout, network blip), attempts to reconnect.
+ *   Call before any DB operation to handle transient failures.
+ *
+ * Input Arguments:
+ *   conn_ptr  - Pointer to the PGconn pointer (e.g., &store->db).
+ *               On reconnect, the old connection is freed and replaced.
+ *
+ * Returns:
+ *    0  if the connection is good (possibly after reconnect).
+ *   -1  if reconnect failed (connection is NULL).
+ ******************************************************************************/
+int mtc_db_ensure_connected(PGconn **conn_ptr)
+{
+    if (!conn_ptr) return -1;
+
+    /* No connection at all */
+    if (!*conn_ptr) {
+        *conn_ptr = mtc_db_connect();
+        return *conn_ptr ? 0 : -1;
+    }
+
+    /* Check if connection is still alive */
+    if (PQstatus(*conn_ptr) == CONNECTION_OK) {
+        /* Connection looks OK, but Neon may have closed it server-side.
+         * Send a lightweight query to confirm. */
+        PGresult *res = PQexec(*conn_ptr, "SELECT 1");
+        if (res && PQresultStatus(res) == PGRES_TUPLES_OK) {
+            PQclear(res);
+            return 0;  /* Connection is good */
+        }
+        PQclear(res);
+        /* Fall through to reconnect */
+    }
+
+    /* Connection is dead — reconnect */
+    fprintf(stderr, "[db] connection lost, attempting reconnect...\n");
+    PQfinish(*conn_ptr);
+    *conn_ptr = NULL;
+
+    *conn_ptr = mtc_db_connect();
+    if (*conn_ptr) {
+        fprintf(stderr, "[db] reconnected successfully\n");
+        return 0;
+    }
+
+    fprintf(stderr, "[db] reconnect failed\n");
+    return -1;
+}
+
 /* ------------------------------------------------------------------ */
 /* Schema                                                              */
 /* ------------------------------------------------------------------ */

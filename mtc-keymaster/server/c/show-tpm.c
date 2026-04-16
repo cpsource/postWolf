@@ -153,7 +153,7 @@ typedef struct {
 
 static int load_entry(const char *tpm_dir, const char *name, tpm_entry_t *e)
 {
-    char path[512];
+    char path[1024];
     char *json_str;
     struct json_object *obj, *sc, *tbs, *val;
 
@@ -226,7 +226,7 @@ static int load_entry(const char *tpm_dir, const char *name, tpm_entry_t *e)
 
 static void verify_entry(tpm_entry_t *e, const char *server)
 {
-    char url[512], svr[512];
+    char url[1024], svr[512];
     char *body;
     long code = 0;
 
@@ -256,7 +256,7 @@ static void verify_entry(tpm_entry_t *e, const char *server)
         if (srv_obj) {
             struct json_object *srv_sc, *srv_tbs, *srv_val;
             struct json_object *loc_obj, *loc_sc, *loc_tbs, *loc_val;
-            char loc_path[512];
+            char loc_path[1024];
             char *loc_json;
 
             /* Read local cert for comparison */
@@ -325,7 +325,7 @@ static void verify_entry(tpm_entry_t *e, const char *server)
         strcat(e->v_errors, "public key not in Neon; ");
     } else {
         /* Compare with local key */
-        char loc_key_path[512];
+        char loc_key_path[1024];
         const char *home = getenv("HOME");
         if (!home) home = "/tmp";
         snprintf(loc_key_path, sizeof(loc_key_path),
@@ -358,6 +358,7 @@ static void verify_entry(tpm_entry_t *e, const char *server)
 
 static void print_entry(const tpm_entry_t *e, int verbose, int verify)
 {
+    (void)verbose;  /* TODO: use for detailed file listing */
     char status[64];
     char nb_str[64], na_str[64];
     int expired;
@@ -491,7 +492,7 @@ int main(int argc, char *argv[])
             return 1;
         }
         while ((de = readdir(d)) != NULL && num_entries < MAX_ENTRIES) {
-            char epath[512];
+            char epath[1024];
             struct stat st;
             if (de->d_name[0] == '.') continue;
             snprintf(epath, sizeof(epath), "%s/%s", tpm_dir, de->d_name);
@@ -519,12 +520,12 @@ int main(int argc, char *argv[])
 
     /* Verify if requested */
     if (verify) {
-        char svr[512];
+        char svr[1024];
         normalize_server(server, svr, sizeof(svr));
 
         /* Quick connectivity check */
         {
-            char url[512];
+            char url[1024];
             long code = 0;
             char *body;
             snprintf(url, sizeof(url), "%s/", svr);

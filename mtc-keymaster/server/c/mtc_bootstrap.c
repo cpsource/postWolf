@@ -248,6 +248,10 @@ static int recv_length_prefixed(int fd, unsigned char *buf, int bufsz)
  ******************************************************************************/
 static int handle_bootstrap_client(int fd, MtcStore *store)
 {
+    /* Ensure DB connection is alive (may have dropped since last request) */
+    if (store->use_db)
+        mtc_db_ensure_connected(&store->db);
+
     /* DH exchange state */
     curve25519_key server_key, client_key;
     WC_RNG rng;

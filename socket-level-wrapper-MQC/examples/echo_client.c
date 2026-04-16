@@ -30,7 +30,7 @@ static int load_ca_pubkey(const char *mtc_server)
 int main(int argc, char *argv[])
 {
     const char *tpm_path;
-    const char *host;
+    const char *host = NULL;
     int port = DEFAULT_PORT;
     int encrypted = 0;
     mqc_ctx_t *ctx;
