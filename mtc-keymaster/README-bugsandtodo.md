@@ -565,6 +565,74 @@ API directly.  Requires editing `mtc_store_cosign` in
 
 ---
 
+### 10. MQCP echo handshake never completes
+
+**Priority:** Medium — MQCP is the QUIC-inspired transport under
+`socket-level-wrapper-QUIC/`.  The MQC (TCP) and SLC (TLS 1.3 + MTC)
+transports round-trip cleanly; MQCP does not.
+
+**Symptoms** (observed during phase-5 end-to-end testing):
+
+Running the bundled echo pair:
+
+```
+cd socket-level-wrapper-QUIC
+./examples/echo_server ~/.TPM/factsorlie.com-ca 5443 &
+./examples/echo_client ~/.TPM/factsorlie.com localhost 5443 "Hello QUIC!"
+```
+
+Client emits:
+```
+[MQCP mqcp_ctx_new] Context created: cert_index=72
+[MQCP-HS mqcp_handshake_client_start] Client sent ClientHello (5 frags)
+[MQCP-HS mqcp_handshake_check_timers] Retransmit handshake (attempt 1)
+[MQCP-HS mqcp_handshake_check_timers] Retransmit handshake (attempt 2)
+[MQCP-HS mqcp_handshake_check_timers] Retransmit handshake (attempt 3)
+```
+and then gives up.
+
+Server emits only:
+```
+[MQCP mqcp_ctx_new] Context created: cert_index=73
+[MQCP mqcp_listen] Listening on :::5443 (fd=3)
+```
+— never logs the `"New connection"` line from `mqcp_accept`.
+
+**What that tells us:** the server's `poll()` loop either isn't
+seeing incoming UDP datagrams, or `mqcp_accept()` receives them but
+never completes ClientHello reassembly and so returns NULL.  Client
+retransmission suggests the server is simply not ACKing or responding
+at all.
+
+**Suspected causes** (unverified, worth checking in this order):
+
+1. UDP socket on the server is bound but not actually reading —
+   check whether `mqcp_accept` calls `recvfrom` in its path and
+   whether the poll-ready event is being consumed.
+2. ClientHello arrives as multiple fragments but the reassembly
+   logic can't correlate them to a pending pseudo-connection
+   because no pseudo-connection exists before the first fragment
+   arrives.
+3. Address-family mismatch: `mqcp_listen` shows "Listening on
+   :::5443" (IPv6 wildcard) while the client may be sending to
+   127.0.0.1 (IPv4).  If the server's socket is pure IPv6 without
+   `IPV6_V6ONLY=0`, IPv4 packets would be silently dropped.
+
+**No dependency on phase-5 work:** MQCP (`libmqcp.a`) has its own
+peer-verification path (`mqcp_peer.c`) — it does not call the new
+`mqc_peer_verify` or `mqc_load_ca_pubkey` from libmqc.  The comment
+in `mqcp_peer.c` ("matching MQC's mqc_peer_verify") is documentation
+only.
+
+**Files to investigate:**
+- `socket-level-wrapper-QUIC/mqcp_conn.c`  — `mqcp_listen`, socket setup
+- `socket-level-wrapper-QUIC/mqcp_handshake.c` — `mqcp_accept`,
+  ClientHello reassembly
+- `socket-level-wrapper-QUIC/examples/echo_server.c` — poll loop
+  around `mqcp_accept` / `mqcp_process`
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
