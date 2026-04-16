@@ -258,7 +258,10 @@ int mtc_store_init(MtcStore *store, const char *data_dir,
         store->db = mtc_db_connect();
         if (store->db) {
             store->use_db = 1;
-            mtc_db_init_schema(store->db);
+            if (mtc_db_init_schema(store->db) != 0) {
+                fprintf(stderr, "[store] WARNING: DB schema init failed, "
+                        "continuing with potentially incomplete tables\n");
+            }
             printf("[store] using PostgreSQL (Neon) for persistence\n");
             fflush(stdout);
         }
@@ -637,8 +640,9 @@ int mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz)
             tbs_json = tbs_str;
         }
 
-        mtc_db_save_entry(store->db, idx, entry_type, tbs_json,
-            entry, entrySz, lh);
+        if (mtc_db_save_entry(store->db, idx, entry_type, tbs_json,
+                entry, entrySz, lh) != 0)
+            fprintf(stderr, "[store] WARNING: DB save_entry failed for index %d\n", idx);
         free(tbs_str);
     }
 
@@ -646,8 +650,11 @@ int mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz)
     if (store->tree.size % MTC_LANDMARK_INTERVAL == 0 &&
         store->landmark_count < MTC_MAX_LANDMARKS) {
         store->landmarks[store->landmark_count++] = store->tree.size;
-        if (store->use_db && store->db)
-            mtc_db_save_landmark(store->db, store->tree.size);
+        if (store->use_db && store->db) {
+            if (mtc_db_save_landmark(store->db, store->tree.size) != 0)
+                fprintf(stderr, "[store] WARNING: DB save_landmark failed for size %d\n",
+                        store->tree.size);
+        }
     }
 
     return idx;
@@ -870,8 +877,11 @@ int mtc_store_revoke(MtcStore *store, int cert_index, const char *reason)
     }
 
     /* Persist to DB */
-    if (store->use_db && store->db)
-        mtc_db_save_revocation(store->db, cert_index, reason);
+    if (store->use_db && store->db) {
+        if (mtc_db_save_revocation(store->db, cert_index, reason) != 0)
+            fprintf(stderr, "[store] WARNING: DB save_revocation failed for index %d\n",
+                    cert_index);
+    }
 
     /* Persist to file */
     {

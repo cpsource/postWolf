@@ -249,8 +249,12 @@ static int recv_length_prefixed(int fd, unsigned char *buf, int bufsz)
 static int handle_bootstrap_client(int fd, MtcStore *store)
 {
     /* Ensure DB connection is alive (may have dropped since last request) */
-    if (store->use_db)
-        mtc_db_ensure_connected(&store->db);
+    if (store->use_db) {
+        if (mtc_db_ensure_connected(&store->db) != 0) {
+            fprintf(stderr, "[bootstrap] DB connection lost and reconnect failed\n");
+            store->db = NULL;
+        }
+    }
 
     /* DH exchange state */
     curve25519_key server_key, client_key;
@@ -710,7 +714,8 @@ static int handle_bootstrap_client(int fd, MtcStore *store)
         mtc_store_save(store);
         if (store->use_db && store->db) {
             const char *cert_str = json_object_to_json_string(result);
-            mtc_db_save_certificate(store->db, index, cert_str);
+            if (mtc_db_save_certificate(store->db, index, cert_str) != 0)
+                fprintf(stderr, "[bootstrap] WARNING: DB save_certificate failed for index %d\n", index);
         }
 
         /* --- Step 3: Send encrypted certificate response --- */

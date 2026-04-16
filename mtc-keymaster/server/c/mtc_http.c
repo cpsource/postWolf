@@ -517,6 +517,11 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
     long expires;
     struct json_object *resp;
     int ret, ca_index = -1;
+
+    if (!store->db) {
+        http_send_error(io, 503, "database not available");
+        return;
+    }
     int is_leaf = 0;
 
     (void)body_len;
@@ -1109,7 +1114,8 @@ static void handle_certificate_renew(client_io *io, MtcStore *store,
         mtc_store_save(store);
         if (store->use_db && store->db) {
             const char *cert_str = json_object_to_json_string(result);
-            mtc_db_save_certificate(store->db, new_index, cert_str);
+            if (mtc_db_save_certificate(store->db, new_index, cert_str) != 0)
+                LOG_ERROR("renew: DB save_certificate failed for index %d", new_index);
         }
 
         LOG_INFO("renew: issued new cert for '%s' at index %d (was %d)",
@@ -1613,8 +1619,12 @@ static void handle_request(client_io *io, MtcStore *store)
     }
 
     /* Ensure DB connection is alive before dispatching */
-    if (store->use_db)
-        mtc_db_ensure_connected(&store->db);
+    if (store->use_db) {
+        if (mtc_db_ensure_connected(&store->db) != 0) {
+            LOG_ERROR("DB connection lost and reconnect failed");
+            store->db = NULL;
+        }
+    }
 
     /* Dispatch */
     LOG_DEBUG("%s %s from %s", method, path, io->ip_str);
@@ -1887,8 +1897,12 @@ static void *mqc_listener_thread(void *arg)
                  cio.ip_str, mqc_get_peer_index(cio.mqc));
 
         /* Ensure DB connection */
-        if (store->use_db)
-            mtc_db_ensure_connected(&store->db);
+        if (store->use_db) {
+            if (mtc_db_ensure_connected(&store->db) != 0) {
+                LOG_ERROR("MQC: DB connection lost and reconnect failed");
+                store->db = NULL;
+            }
+        }
 
         /* Handle request using the same dispatcher as TLS */
         handle_request(&cio, store);
