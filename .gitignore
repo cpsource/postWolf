@@ -506,3 +506,6 @@ test_ech_overflow
 lets-encrypt
 wolfssl-issues/
 mtc-keymaster/server/c/mtc_checkendpoint
+
+# Third-party reference clones (not part of the build — see TODO #12)
+cJSON/
