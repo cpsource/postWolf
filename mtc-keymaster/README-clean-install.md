@@ -56,24 +56,32 @@ chmod 600 ~/.env
 
 ## 4. Build postWolf
 
+One command builds everything — library, wrappers, and `mtc_server`:
+
 ```bash
 cd ~/postWolf
-./autogen.sh
-./configure.sh   # --enable-quic --enable-ech --enable-tls13 --enable-mtc --enable-all --quiet
-make -j$(nproc)
+./autogen.sh        # only needed after touching configure.ac
+./make-all.sh
 ```
 
-This builds `libwolfssl` with TLS 1.3, ECH, MTC, ML-KEM hybrids, and
-DTLS 1.3 support. The socket-level-wrapper (`libslc.a`) is built
-automatically as part of the top-level make.
+`make-all.sh` runs the full sequence: `./configure.sh`, the autotools
+library build + install (so `pkg-config --libs postWolf` resolves),
+then `make -f Makefile.tools` to build the SLC/MQC/QUIC wrappers and
+the MTC keymaster binaries, and finally installs them to
+`/usr/local/bin`.
 
-## 5. Build the C Server
+If you'd rather run the steps by hand:
 
 ```bash
-make -C mtc-keymaster/server/c
+./configure.sh                       # --enable-quic --enable-ech --enable-tls13 --enable-mtc --enable-all
+make -f Makefile
+sudo make -f Makefile install
+sudo ldconfig
+make -f Makefile.tools               # builds mtc_server, show-tpm, bootstrap_{ca,leaf}, admin_recosign
+sudo make -f Makefile.tools install
 ```
 
-Produces `mtc_server` binary. Builds with `-Werror` (warnings are errors).
+The tools build with `-Werror` (warnings are errors).
 
 ## 6. Create ML-DSA-87 TLS Certificate for the Server
 

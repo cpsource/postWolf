@@ -70,17 +70,24 @@ If ANY step fails, the connection is torn down and NULL is returned.
 ## Building
 
 Requires postWolf to be configured and built in the parent directory.
+From a fresh checkout, the top-level driver does everything:
 
 ```bash
-# Build postWolf first (if not already done)
 cd ..
-./configure.sh    # or: ./configure --enable-quic --enable-ech --enable-tls13 --enable-mtc --enable-all --quiet
-make
-
-# Build SLC library and examples
-cd socket-level-wrapper
-make
+./make-all.sh        # library + SLC + MQC + QUIC + MTC tools
 ```
+
+To rebuild only SLC (library already present):
+
+```bash
+cd socket-level-wrapper
+make                 # produces libslc.a + examples/echo_{server,client}
+```
+
+Note that SLC links against the in-tree `../src/.libs/libpostWolf.so`
+(with rpath), so it does *not* require `sudo make install` of the
+library — unlike MQC, QUIC, and the MTC tools, which resolve postWolf
+through `pkg-config`.
 
 This produces:
 - `libslc.a` — static library

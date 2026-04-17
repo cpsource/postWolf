@@ -29,16 +29,35 @@ post-quantum key exchange + auditable certificate trust.
 
 ## Build
 
-postWolf is enabled by configuring wolfSSL with all four features:
+The fastest path on a fresh checkout is the top-level driver script,
+which configures wolfSSL, builds and installs `libpostWolf`, and then
+builds and installs the SLC/MQC/QUIC wrappers plus the MTC tools:
+
+```bash
+./make-all.sh
+```
+
+### Manual sequence
+
+The driver expands to:
+
+```bash
+./configure.sh                       # wolfSSL with TLS13 + ECH + MLKEM + MTC
+make -f Makefile                     # library
+sudo make -f Makefile install        # installs libpostWolf + postWolf.pc
+sudo ldconfig
+make -f Makefile.tools               # SLC, MQC, QUIC, MTC tools
+sudo make -f Makefile.tools install  # installs mtc_server + helpers
+```
+
+The intermediate install is required: MQC, QUIC, and the MTC tools
+consume postWolf through `pkg-config`, which only resolves once
+`/usr/local/lib/pkgconfig/postWolf.pc` is in place.
+
+If you only need to regenerate the raw configure flags:
 
 ```bash
 ./configure --enable-tls13 --enable-ech --enable-mlkem --enable-mtc --enable-all
-```
-
-Or use the convenience script:
-
-```bash
-./configure.sh
 ```
 
 ## Components

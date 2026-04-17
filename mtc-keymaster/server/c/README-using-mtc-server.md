@@ -3,15 +3,23 @@
 ## Building
 
 All projects build from the postWolf root directory. A `Makefile.tools`
-at the root orchestrates the sub-projects. It is separate from the
-autotools `Makefile` used for the postWolf library itself, so it must
-be invoked explicitly with `-f`.
+at the root orchestrates the sub-projects (SLC, MQC, QUIC, MTC). It is
+separate from the autotools `Makefile` used for the postWolf library
+itself, so it must be invoked explicitly with `-f`. On a fresh checkout
+use the top-level driver instead — it runs the library build, installs
+it (required so `pkg-config` can find `postWolf.pc`), then runs
+`Makefile.tools`:
 
 ```bash
 cd ~/postWolf
+./make-all.sh
+```
 
-# Build everything: libslc.a, libmqc.a, mtc_server, show-tpm,
-# bootstrap_ca, bootstrap_leaf
+To rebuild only the tools when the library is already installed:
+
+```bash
+# Build everything: libslc.a, libmqc.a, libmqcp.a, mtc_server, show-tpm,
+# bootstrap_ca, bootstrap_leaf, admin_recosign
 make -f Makefile.tools
 
 # Install tools to /usr/local/bin and run ldconfig
