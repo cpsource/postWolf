@@ -758,6 +758,68 @@ each wrapper), swap `pkg-config --cflags/--libs json-c` for local
 include paths, then migrate source files one at a time in the order
 above.
 
+### 13. Log and alert on nonce domain/fp mismatches during enrollment
+
+**Priority:** Low–Medium — current behavior is safe but noisy.  The
+binding check in `mtc_db_validate_and_consume_nonce` (`mtc_db.c:1222`)
+already rejects a nonce submitted with the wrong `domain` or `fp` —
+that discussion is captured in `README-nonce.md`.  We deliberately
+chose *not* to invalidate the nonce on failure because that would
+create a DoS primitive: anyone who learned the nonce (leaked log
+line, chat paste, email) could burn a legitimate holder's enrollment
+by posting one bogus request.
+
+What we're missing is observability: right now the failure path in
+`mtc_bootstrap.c:532` collapses four distinct outcomes into a single
+`LOG_WARN("bootstrap: invalid, expired, or used nonce for '%s'")`:
+
+1. Nonce never existed in the DB (likely probing / random guessing).
+2. Nonce existed but expired (benign — clock skew or slow handoff).
+3. Nonce existed and was already consumed (replay attempt).
+4. Nonce existed, pending, unexpired — but the submitted `domain` or
+   `fp` didn't match the bound values.  **This is the attacker
+   signal** — possession of the nonce but not the keypair / not the
+   intended subject.
+
+**Fix sketch:**
+
+1. Before the atomic `UPDATE`, run a diagnostic `SELECT … WHERE nonce
+   = $1` to classify the failure.  Acceptable to do this only on the
+   failure path (UPDATE returned 0 rows), so the hot path stays one
+   round trip.  There is no TOCTOU concern for the log line itself
+   because the UPDATE already decided the outcome.
+2. For case (4), emit a distinct log tag (`MQC_SECURITY`-style or a
+   new `LOG_SECURITY("NONCE_MISMATCH: ...")`) carrying:
+   - `nonce` (redacted — first 16 hex + `...` matches the existing
+     `LOG_INFO` style at `mtc_bootstrap.c:548`)
+   - `expected_domain` (from the DB row)
+   - `submitted_domain` (from the request)
+   - `expected_fp` and `submitted_fp` (first 16 hex each)
+   - Source IP (`ip_str` is already on `client_io`)
+3. Bump a per-IP failed-enrollment counter (reuse or extend
+   `mtc_ratelimit.c`) so an attacker sweeping `fp` or `domain` values
+   against a known nonce hits a ceiling.  Existing `RL_ENROLL` bucket
+   may already cover this — audit before adding a new one.
+4. Optionally, report persistent mismatch floods to AbuseIPDB if the
+   same IP crosses a threshold (see `README-abuseipdb.md`); reuse the
+   existing reporting path rather than inventing a new one.
+
+**What NOT to do:** do not mark the nonce `consumed` or otherwise
+mutate its row on a mismatch.  That is the DoS primitive discussed
+above.  The nonce's natural 15-minute TTL is the correct bound.
+
+**Files to change:**
+- `mtc-keymaster/server/c/mtc_bootstrap.c` — expand the failure branch
+  at line 529-545 to call the new classifier before sending the
+  error response.
+- `mtc-keymaster/server/c/mtc_db.c` / `mtc_db.h` — add a
+  `mtc_db_classify_nonce_failure()` helper (or inline the SELECT) so
+  the HTTP handler and the bootstrap handler can both call it.
+- `mtc-keymaster/server/c/mtc_ratelimit.{c,h}` — confirm `RL_ENROLL`
+  already covers failed attempts, or add `RL_ENROLL_FAILED`.
+- `mtc-keymaster/README-nonce.md` — add a "Observability" section
+  once implemented, so the doc matches the shipped behavior.
+
 ---
 
 ## Appendix: Server Directory Layout
