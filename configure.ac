@@ -1641,10 +1641,10 @@ fi
 # postWolf
 AC_ARG_ENABLE([postwolf],
     [AS_HELP_STRING([--enable-postwolf],[Enable postWolf dependencies (default: disabled)])],
-    [ ENABLED_WOLFGUARD=$enableval ],
-    [ ENABLED_WOLFGUARD=no ]
+    [ ENABLED_POSTWOLF=$enableval ],
+    [ ENABLED_POSTWOLF=no ]
     )
-if test "$ENABLED_WOLFGUARD" = "yes"
+if test "$ENABLED_POSTWOLF" = "yes"
 then
     test "$enable_ecc" = "" && enable_ecc=yes
     test "$enable_sha256" = "" && enable_sha256=yes
@@ -11407,7 +11407,7 @@ if test "$enable_shared" = "no"; then
     fi
 fi
 
-if test "$ENABLED_WOLFGUARD" = "yes"; then
+if test "$ENABLED_POSTWOLF" = "yes"; then
     if test "$ENABLED_ECC" = "no" ||
        test "$ENABLED_SHA256" = "no" ||
        test "$ENABLED_AESGCM" = "no" ||

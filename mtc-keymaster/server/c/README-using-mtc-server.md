@@ -2,19 +2,20 @@
 
 ## Building
 
-All projects build from the postWolf root directory. A `GNUmakefile` at the
-root orchestrates the sub-projects (it takes precedence over the autotools
-`Makefile` used for the postWolf library itself).
+All projects build from the postWolf root directory. A `Makefile.tools`
+at the root orchestrates the sub-projects. It is separate from the
+autotools `Makefile` used for the postWolf library itself, so it must
+be invoked explicitly with `-f`.
 
 ```bash
 cd ~/postWolf
 
 # Build everything: libslc.a, libmqc.a, mtc_server, show-tpm,
 # bootstrap_ca, bootstrap_leaf
-make
+make -f Makefile.tools
 
 # Install tools to /usr/local/bin and run ldconfig
-sudo make install
+sudo make -f Makefile.tools install
 ```
 
 After `make install`, all tools are on `$PATH` and the shared library

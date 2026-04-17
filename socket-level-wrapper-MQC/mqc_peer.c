@@ -377,7 +377,7 @@ static void normalize_server(const char *server, char *out, int outsz)
 static struct json_object *fetch_certificate(const char *mtc_server,
                                              int cert_index)
 {
-    char url[512], server[512];
+    char url[768], server[512];
     char *body;
     long code = 0;
     struct json_object *obj;
@@ -466,7 +466,7 @@ static int check_revoked(const char *mtc_server, int cert_index)
 
     /* Cache missing or stale → single-cert fetch + drop. */
     {
-        char url[512], server[512];
+        char url[768], server[512];
         char *body;
         long code = 0;
         int revoked = 0;
@@ -540,9 +540,6 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
 
     struct json_object *sc, *tbs, *val;
     const char *subject;
-    char url[512], server[512];
-    char *body;
-    long code = 0;
 
     if (!json_object_object_get_ex(cert_json, "standalone_certificate", &sc))
         return -1;
@@ -596,14 +593,6 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
     /* Fetch from Neon mtc_public_keys table via MTC server.
      * The subject is the key_name in the table. */
     {
-        char fetch_url[512], svr[512];
-        char *fetch_body;
-        long fetch_code = 0;
-
-        /* Try fetching the public key PEM from the MTC server's
-         * public key endpoint. For now, we construct a direct query
-         * via the Neon DB using the subject as key_name. */
-
         /* Strategy: the public key was stored by bootstrap_ca/bootstrap_leaf
          * into Neon mtc_public_keys with key_name = subject.
          * We can't query Neon directly from here (no libpq linked),
@@ -696,7 +685,7 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
                  * The server exposes public keys at a search endpoint
                  * or we can try the certificate search by subject. */
                 {
-                    char pub_url[512], svr[512];
+                    char pub_url[768], svr[512];
                     char *pub_body;
                     long pub_code = 0;
 
@@ -824,7 +813,7 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
  ******************************************************************************/
 static void cache_peer_cert(int cert_index, const char *cert_json_str)
 {
-    char dir1[512], dir2[512], path[560];
+    char dir1[512], dir2[560], path[620];
     const char *home = getenv("HOME");
     if (!home) return;
 
@@ -912,7 +901,7 @@ int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out32)
 
     /* Fetch from server (TOFU). */
     {
-        char url[512], server[512];
+        char url[768], server[512];
         char *body;
         long code = 0;
         struct json_object *obj = NULL, *val;
@@ -1009,7 +998,7 @@ int mqc_peer_verify(const char *mtc_server,
      * response we already have.  wolfSSL's wc_MtcVerifyInclusionProof
      * walks the path per RFC 9162 Section 2.1.3. */
     {
-        char url[512], svr[512];
+        char url[768], svr[512];
         char *body = NULL;
         long http_code = 0;
         struct json_object *entry_obj = NULL, *lh_val;
@@ -1175,7 +1164,7 @@ int mqc_peer_verify(const char *mtc_server,
      * fabricated (leafHash, proof, subtreeHash) triple. */
     {
         struct json_object *sc, *cosig_arr, *cosig, *val;
-        const char *cosigner_id, *log_id, *sig_hex;
+        const char *cosigner_id, *log_id;
         byte subtree_hash[MTC_HASH_SZ];
         byte sig[64];
         long long start = 0, end = 0;

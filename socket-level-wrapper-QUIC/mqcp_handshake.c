@@ -235,6 +235,8 @@ static int build_client_hello(mqcp_handshake_t *hs, struct mqcp_ctx *ctx,
 
 static int process_server_hello(mqcp_handshake_t *hs, struct mqcp_ctx *ctx,
                                 const uint8_t *msg, uint32_t msg_len) {
+    (void)ctx;
+
     word32 ct_sz = 0;
     wc_MlKemKey_CipherTextSize(&hs->mlkem, &ct_sz);
 

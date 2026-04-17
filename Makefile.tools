@@ -1,4 +1,4 @@
-# GNUmakefile — top-level build for postWolf tools
+# Makefile.tools — top-level build for postWolf tools
 #
 # Builds the socket-level wrappers (SLC, MQC, QUIC) and MTC keymaster
 # tools (server, show-tpm, bootstrap_ca, bootstrap_leaf).
@@ -7,9 +7,9 @@
 #   ./configure.sh && make -f Makefile && sudo make -f Makefile install && sudo ldconfig
 #
 # Usage:
-#   make                 Build SLC, MQC, QUIC, and all MTC tools
-#   sudo make install    Install tools to /usr/local/bin and run ldconfig
-#   make clean           Clean all build artifacts
+#   make -f Makefile.tools               Build SLC, MQC, QUIC, and all MTC tools
+#   sudo make -f Makefile.tools install  Install tools to /usr/local/bin and run ldconfig
+#   make -f Makefile.tools clean         Clean all build artifacts
 
 SLC_DIR = socket-level-wrapper
 MQC_DIR = socket-level-wrapper-MQC
