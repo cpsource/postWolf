@@ -820,6 +820,53 @@ above.  The nonce's natural 15-minute TTL is the correct bound.
 - `mtc-keymaster/README-nonce.md` — add a "Observability" section
   once implemented, so the doc matches the shipped behavior.
 
+### 14. Purge main.py references from the docs
+
+**Priority:** Low — cosmetic doc cleanup after a deletion.
+
+`mtc-keymaster/tools/python/main.py` was removed in phase-6 because
+its functionality (`bootstrap`, `enroll`, `enroll-ca`, `verify`,
+`monitor`) is now covered by the C binaries (`bootstrap_ca`,
+`bootstrap_leaf`, `show-tpm`) plus `issue_leaf_nonce.py`.  The
+script also had a stale `--server http://localhost:8443` default
+that no listener matches anymore.
+
+The delete commit did *not* update the six docs that still reference
+`main.py`:
+
+| File | Flavor of reference |
+|---|---|
+| `README.md` | CLI description + example invocations on 8443 |
+| `README-postWolf.md` | Project overview bullet (tools/python list) |
+| `README-clean-install.md` | Step-by-step bootstrap / CA enroll / leaf enroll / verify walkthrough (heaviest) |
+| `README-ml-dsa-87.md` | Example enrollment flow |
+| `server/c/README-using-mtc-server.md` | Command-reference table (`main.py bootstrap`, `main.py enroll`, etc.) |
+| `README-bugsandtodo.md` | Historical notes in #3, #4, and the DNS-cache section (safer to leave alone — they document past state) |
+
+**Cleanup sketch:**
+
+Replace each active-instruction `main.py` example with the current
+C-tooling equivalent, preserving intent:
+
+| Old | New |
+|---|---|
+| `python3 main.py --server https://localhost:8444 bootstrap` | Fetch CA pubkey once via `show-tpm -s localhost:8444` (or `mqc_load_ca_pubkey` for API users) |
+| `python3 main.py --server ... enroll-ca <cert.pem>` | `bootstrap_ca --server HOST:8445 ...` |
+| `python3 main.py --server ... enroll <domain> --nonce ...` | `bootstrap_leaf --server HOST:8445 --domain <d> --nonce ...` |
+| `python3 main.py --server ... verify <index>` | `show-tpm --verify --index <index> -s HOST:8444` |
+| "monitor" command | No direct replacement — drop from docs unless we add a C monitor |
+
+Historical `main.py` references in `README-bugsandtodo.md` (items #3,
+#4, and the DNS-cache note) should be left intact — they document
+past decisions, and rewriting them distorts the record.
+
+**Files to change:**
+- `mtc-keymaster/README.md`
+- `README-postWolf.md`
+- `mtc-keymaster/README-clean-install.md`
+- `mtc-keymaster/README-ml-dsa-87.md`
+- `mtc-keymaster/server/c/README-using-mtc-server.md`
+
 ---
 
 ## Appendix: Server Directory Layout
