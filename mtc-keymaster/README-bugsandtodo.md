@@ -631,6 +631,133 @@ only.
 - `socket-level-wrapper-QUIC/examples/echo_server.c` — poll loop
   around `mqcp_accept` / `mqcp_process`
 
+### 11. MQC peer verify uses libcurl (8444/TLS) instead of MQC (8446)
+
+**Priority:** Medium — post-quantum consistency issue.  The handshake
+and session are authenticated over ML-KEM-768 + ML-DSA-87 + AES-256-GCM,
+but the lookups `mqc_peer_verify` performs to decide *whether to trust
+the peer* all ride classical TLS on port 8444.
+
+**Current behavior** (`socket-level-wrapper-MQC/mqc_peer.c`):
+
+Every security-critical lookup is a libcurl `GET https://<mtc_server>/…`
+call — resolving to port 8444 (the TLS 1.3 HTTP API):
+
+| Endpoint | Site in `mqc_peer.c` |
+|---|---|
+| `/certificate/<n>` | `fetch_certificate` @ line 386 |
+| `/revoked/<n>` | `check_revoked` @ line 475 |
+| `/ca/public-key` | `mqc_load_ca_pubkey` @ line 921 |
+| `/log/entry/<n>` | `mqc_peer_verify` @ line 1057 |
+| `/public-key/<subject>` | `extract_pubkey_from_cert` @ line 772 |
+
+**Why it matters:** the MQC listener at `mtc_http.c:1864` already serves
+the same routes over the post-quantum channel on port 8446 (it routes
+through the same `handle_request` dispatcher — see line 1908).  So the
+server side is wired up; only the client bypasses it.
+
+An attacker who can break TLS on 8444 — today via CA compromise / MITM,
+or in a post-quantum future via harvested ECDHE / ECDSA keys — can:
+
+- Suppress revocations by forging `{"revoked": false}` for a revoked
+  cert (the 24-hour cache then masks the tampering for a full day).
+- Poison first-contact TOFU of the CA key by returning an attacker key
+  at `/ca/public-key`.
+- Feed a forged cosignature/proof chain that passes local verification
+  because the CA pubkey the client TOFU'd was the attacker's.
+
+The whole point of MQC is to move the trust chain off classical crypto;
+routing the decisions through TLS re-introduces the weakness MQC was
+meant to eliminate.
+
+**Fix sketch:**
+
+Add a small PQ request helper to libmqc that opens an MQC connection,
+sends an HTTP-shaped `GET <path> HTTP/1.1\r\n\r\n`, reads the response,
+and returns the body + status.  Then replace each `http_get(...)` site
+in `mqc_peer.c` with the new helper targeting `mtc_server:8446`.
+
+Bootstrap subtlety: `mqc_load_ca_pubkey` runs *before* we have a
+verified CA key (TOFU), so its first-contact fetch may have to stay on
+a different channel (or be explicitly TOFU'd over MQC with a big
+warning log).  All subsequent lookups — including `/revoked/<n>` —
+have a CA key in hand and can authenticate the MQC peer.
+
+**Files to change:**
+- `socket-level-wrapper-MQC/mqc_peer.c` — replace five `http_get` call
+  sites listed above
+- `socket-level-wrapper-MQC/mqc.c` / `mqc.h` — add `mqc_http_get()`
+  helper (or similar)
+- `socket-level-wrapper-MQC/examples/echo_{client,server}.c` — update
+  `DEFAULT_SERVER` to point at `:8446` when the switch is made
+
+### 12. Consider vendoring cJSON to drop the `libjson-c` apt dependency
+
+**Priority:** Low — nothing is broken.  Raised during phase-6 after a
+scoping exercise against `DaveGamble/cJSON` (cloned to `~/postWolf/cJSON`
+for reference, kept out of the build).
+
+**Current state:** we rely on the Ubuntu-packaged `libjson-c-dev`
+(0.17-1build1 as of 2026-04).  No rolled-our-own JSON code anywhere
+in the tree — every call goes through `json_object_*` /
+`json_tokener_*` and every Makefile links via
+`pkg-config --cflags/--libs json-c` (or `-ljson-c` in
+`examples/quic-mtc/Makefile` and upstream wolfSSL's own `Makefile`).
+
+**Scope of a migration:** roughly 1,150 json-c API call sites across
+15 files, ~12k LOC affected:
+
+| Area | Files |
+|---|---|
+| MQC wrapper | `socket-level-wrapper-MQC/{mqc,mqc_peer}.c` |
+| mtc-keymaster server | `mtc_http.c`, `mtc_db.c`, `mtc_store.c`, `mtc_ca_validate.c`, `mtc_bootstrap.c`, `mtc_checkendpoint.c` |
+| mtc-keymaster tools | `show-tpm.c`, `bootstrap_ca.c`, `bootstrap_leaf.c`, `admin_recosign.c` |
+| wolfSSL MTC glue | `src/ssl_mtc.c` (confirm this is ours, not upstream, before touching) |
+
+**Not a sed-able migration.**  The two APIs are shaped differently
+enough that every site needs to be read:
+
+| Operation | json-c | cJSON |
+|---|---|---|
+| Get field | `json_object_object_get_ex(o,"k",&v)` (out-param + int return) | `v = cJSON_GetObjectItemCaseSensitive(o,"k")` (returns pointer, NULL on miss) |
+| Lifetime | reference-counted (`json_object_put` on each ref) | tree-owned (`cJSON_Delete(root)` frees everything) |
+| Parse | `json_tokener_parse(s)` | `cJSON_Parse(s)` |
+| Serialize | `json_object_to_json_string_ext(o, flags)` | `cJSON_Print(o)` / `cJSON_PrintUnformatted(o)` |
+
+The lifetime-model difference is the real risk.  json-c's
+`json_object_put` calls are sprinkled through error-exit paths and
+struct teardown.  With cJSON there's one `cJSON_Delete(root)` at the
+end.  Each existing `json_object_put` has to be classified: drop it
+(if the object is owned by a root that's still freed elsewhere) or
+restructure (if we were leaning on ref-counting for shared ownership).
+Get it wrong and you have either a leak or a double-free.
+
+**Pros of switching:**
+- Self-contained build; one less apt package on target systems.
+- Source is in-tree, so we can audit / patch / add Doxygen to it.
+- MIT-licensed, same as ours — no license friction.
+
+**Cons of switching:**
+- We inherit maintenance (including security patches) instead of
+  riding the distro's updates.  json-c is a mature library that's
+  seen many advisories over the years.
+- ~1,150 call-site edits, all hand-reviewed, is a real-world
+  regression risk.
+- No functional benefit — the JSON we parse is not a bottleneck.
+
+**Recommendation:** park it.  Revisit only if a concrete requirement
+(e.g. a target platform without an easy apt path to `libjson-c-dev`,
+or a security incident we can't get a timely upstream fix for) makes
+self-containment necessary.  If we do pick it up, sequence the work
+per file with a build + functional test between each file, not
+big-bang.
+
+**Files to touch (if we proceed):**  Makefiles first — add
+`cJSON.c` / `cJSON.h` under a `third_party/cjson/` (or vendor into
+each wrapper), swap `pkg-config --cflags/--libs json-c` for local
+include paths, then migrate source files one at a time in the order
+above.
+
 ---
 
 ## Appendix: Server Directory Layout
