@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=ubuntu
 Group=ubuntu
-ExecStart=/home/ubuntu/wolfssl-new/mtc-keymaster/server/c/mtc_server \
+ExecStart=/home/ubuntu/postWolf/mtc-keymaster/server/c/mtc_server \
     --port 8444 \
     --data-dir /home/ubuntu/.mtc-ca-data \
     --tokenpath /home/ubuntu/.env \
@@ -19,7 +19,7 @@ Restart=on-failure
 RestartSec=5
 Environment=HOME=/home/ubuntu
 Environment=LD_LIBRARY_PATH=/usr/local/lib
-WorkingDirectory=/home/ubuntu/wolfssl-new/mtc-keymaster/server/c
+WorkingDirectory=/home/ubuntu/postWolf/mtc-keymaster/server/c
 
 [Install]
 WantedBy=multi-user.target

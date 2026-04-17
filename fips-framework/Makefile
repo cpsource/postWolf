@@ -1,7 +1,7 @@
 # fips-framework Makefile
 #
 # Builds fips-manifest-submit and fips-manifest-verify against wolfCrypt.
-# Assumes wolfssl-new has been configured and built in the parent directory.
+# Assumes postWolf has been configured and built in the parent directory.
 
 WOLFSSL_DIR = ..
 WOLFSSL_INC = $(WOLFSSL_DIR)

@@ -1,7 +1,7 @@
 # socket-level-wrapper Makefile
 #
 # Builds libslc.a and example echo client/server.
-# Requires wolfssl-new built in the parent directory.
+# Requires postWolf built in the parent directory.
 #
 # wolfSSL stores its feature flags (HAVE_ECH, WOLFSSL_TLS13, HAVE_MTC, etc.)
 # in AM_CFLAGS in the Makefile, not in wolfssl/options.h. We extract them

@@ -131,7 +131,7 @@ from combining files from different valid releases into an inconsistent kit.
 - `README-fips.md`: document snapshot verification
 
 **Note:** Snapshot is most valuable when the system manages multiple packages
-or multi-component releases. For a single-package system (wolfssl-new only),
+or multi-component releases. For a single-package system (postWolf only),
 the Timestamp role provides most of the freeze protection value. Implement
 Snapshot if/when the system expands to multiple packages.
 

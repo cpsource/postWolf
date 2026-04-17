@@ -9,7 +9,7 @@ cd socket-level-wrapper
 make
 ```
 
-Requires wolfssl-new to be built in the parent directory first.
+Requires postWolf to be built in the parent directory first.
 
 ## Run
 

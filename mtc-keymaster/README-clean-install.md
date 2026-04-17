@@ -54,10 +54,10 @@ EOF
 chmod 600 ~/.env
 ```
 
-## 4. Build wolfssl-new
+## 4. Build postWolf
 
 ```bash
-cd ~/wolfssl-new
+cd ~/postWolf
 ./autogen.sh
 ./configure.sh   # --enable-quic --enable-ech --enable-tls13 --enable-mtc --enable-all --quiet
 make -j$(nproc)
@@ -81,7 +81,7 @@ The MTC server itself needs a TLS certificate to accept connections.
 We use ML-DSA-87 (CRYSTALS-Dilithium level 5) for post-quantum security.
 
 ```bash
-cd ~/wolfssl-new/mtc-keymaster/tools/python
+cd ~/postWolf/mtc-keymaster/tools/python
 
 python3 create_server_cert.py factsorlie.com
 ```
@@ -110,7 +110,7 @@ On first startup the server auto-generates an Ed25519 CA key pair for
 Merkle tree cosigning and creates all database tables.
 
 ```bash
-cd ~/wolfssl-new/mtc-keymaster/server/c
+cd ~/postWolf/mtc-keymaster/server/c
 
 ./mtc_server \
     --port 8444 \
@@ -142,7 +142,7 @@ Stop the server with Ctrl+C once verified.
 ## 8. Install Server Service (systemd)
 
 ```bash
-sudo cp ~/wolfssl-new/mtc-keymaster/server/c/mtc-ca.service \
+sudo cp ~/postWolf/mtc-keymaster/server/c/mtc-ca.service \
     /etc/systemd/system/mtc-ca.service
 
 # Edit if your paths differ from the defaults
@@ -166,7 +166,7 @@ Fetch the CA's Ed25519 public key and store it locally. This is a
 one-time trust establishment step.
 
 ```bash
-cd ~/wolfssl-new/mtc-keymaster/tools/python
+cd ~/postWolf/mtc-keymaster/tools/python
 
 python3 main.py --server https://localhost:8444 bootstrap
 ```
@@ -283,7 +283,7 @@ for full documentation.
 **Option A: Cron (simple)**
 
 ```bash
-cd ~/wolfssl-new/mtc-keymaster/renew-tool
+cd ~/postWolf/mtc-keymaster/renew-tool
 ./install_cron.sh
 # Installs daily cron job at 3 AM
 ```
@@ -299,9 +299,9 @@ After=network.target
 [Service]
 Type=oneshot
 User=ubuntu
-ExecStart=/usr/bin/python3 /home/ubuntu/wolfssl-new/mtc-keymaster/renew-tool/renew.py --neon
+ExecStart=/usr/bin/python3 /home/ubuntu/postWolf/mtc-keymaster/renew-tool/renew.py --neon
 Environment=HOME=/home/ubuntu
-WorkingDirectory=/home/ubuntu/wolfssl-new/mtc-keymaster/renew-tool
+WorkingDirectory=/home/ubuntu/postWolf/mtc-keymaster/renew-tool
 ```
 
 Create `/etc/systemd/system/mtc-renew.timer`:
@@ -333,7 +333,7 @@ journalctl -u mtc-renew -f
 To wipe all state and cold-start:
 
 ```bash
-bash ~/wolfssl-new/mtc-keymaster/tools/clearout.sh
+bash ~/postWolf/mtc-keymaster/tools/clearout.sh
 ```
 
 This deletes `~/.TPM/`, `~/.mtc-ca-data/`, and truncates all Neon

@@ -18,7 +18,7 @@ cd fips-framework
 make
 ```
 
-Requires wolfCrypt headers and library (built from the parent wolfssl-new tree).
+Requires wolfCrypt headers and library (built from the parent postWolf tree).
 
 ## Usage
 
@@ -28,8 +28,8 @@ Requires wolfCrypt headers and library (built from the parent wolfssl-new tree).
 # Set the MTC server URL
 export MTC_SERVER=factsorlie.com:8080
 
-# After building wolfssl-new with FIPS:
-./fips-manifest-submit --package wolfssl-new \
+# After building postWolf with FIPS:
+./fips-manifest-submit --package postWolf \
                        --tag v5.9.0 \
                        --source-dir ../wolfcrypt/src \
                        --output fips-manifest-receipt.json

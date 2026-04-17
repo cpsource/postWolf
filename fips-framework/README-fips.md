@@ -6,7 +6,7 @@ Traditional FIPS source checksum systems (like OpenSSL's `fips-sources.checksums
 
 ## The Solution
 
-wolfssl-new anchors FIPS source checksums in an **external, append-only Merkle Tree transparency log** maintained by the MTC server. At build time, a manifest of every FIPS source file's SHA256 hash is submitted to the server, which logs it into the Merkle tree and signs the tree root with Ed25519. The manifest cannot be altered after submission without detection, because:
+postWolf anchors FIPS source checksums in an **external, append-only Merkle Tree transparency log** maintained by the MTC server. At build time, a manifest of every FIPS source file's SHA256 hash is submitted to the server, which logs it into the Merkle tree and signs the tree root with Ed25519. The manifest cannot be altered after submission without detection, because:
 
 1. The Merkle tree is append-only — modifying a leaf changes the root hash
 2. The tree root is signed with the server's Ed25519 private key — forging a signature requires compromising the server
@@ -47,7 +47,7 @@ The server stores:
 
 After a successful FIPS build, the administrator runs the manifest submission script. This is typically integrated into the build system (`debian/rules` or `Makefile`) but can also be run manually.
 
-**Step 1: Build wolfssl-new with FIPS**
+**Step 1: Build postWolf with FIPS**
 
 ```bash
 ./configure --enable-fips ...
@@ -149,7 +149,7 @@ Old receipts signed with the compromised key should be considered invalid. The a
 
 ### What You Need
 
-- The wolfssl-new source code (tarball, `.deb` source package, or git clone)
+- The postWolf source code (tarball, `.deb` source package, or git clone)
 - The `fips-manifest-receipt.json` file (shipped with the release — contains manifest, inclusion proof, and Ed25519 cosignature)
 - The `fips-manifest-verify` tool (built from `fips-framework/`, linked against wolfCrypt)
 - The CA Ed25519 public key (32 bytes — published on the project website, DNS TXT record, or pinned in `fips-framework/config/ca-pubkey.h`)
@@ -184,7 +184,7 @@ What happens:
 **Output on success:**
 ```
 FIPS Manifest Verification: PASS
-  Package:    wolfssl-new
+  Package:    postWolf
   Git tag:    v5.9.0
   Log index:  42
   Expires:    2027-04-05T00:00:00Z (valid)
@@ -280,7 +280,7 @@ The script reports exactly which files differ from the logged manifest. This is 
 
 ## How It Compares to OpenSSL's Approach
 
-| | OpenSSL | wolfssl-new (this system) |
+| | OpenSSL | postWolf (this system) |
 |---|---------|--------------------------|
 | **Checksums stored** | In the repo (`fips-sources.checksums`) | In an external append-only Merkle tree |
 | **Signed by** | No signature (plain SHA256) | Ed25519 cosignature on tree root |
@@ -348,7 +348,7 @@ Submit a FIPS build manifest to the transparency log.
 **Request:**
 ```json
 {
-  "package": "wolfssl-new",
+  "package": "postWolf",
   "git_commit": "abc123def456...",
   "git_tag": "v5.9.0",
   "expires": "2027-04-05T00:00:00Z",
@@ -384,7 +384,7 @@ Retrieve a stored manifest by log index.
 {
   "type": "fips-build-manifest",
   "version": 1,
-  "package": "wolfssl-new",
+  "package": "postWolf",
   "git_commit": "abc123def456...",
   "git_tag": "v5.9.0",
   "timestamp": 1712188800.0,
@@ -424,8 +424,8 @@ Search for manifests by package name or git tag.
 ```json
 {
   "results": [
-    {"index": 42, "package": "wolfssl-new", "git_tag": "v5.9.0", "timestamp": 1712188800.0},
-    {"index": 38, "package": "wolfssl-new", "git_tag": "v5.8.0", "timestamp": 1709510400.0}
+    {"index": 42, "package": "postWolf", "git_tag": "v5.9.0", "timestamp": 1712188800.0},
+    {"index": 38, "package": "postWolf", "git_tag": "v5.8.0", "timestamp": 1709510400.0}
   ]
 }
 ```
@@ -452,7 +452,7 @@ The **leaf is the kit publisher**. After the CA issues a leaf certificate, the l
 ONE-TIME SETUP                          EACH RELEASE
 ==============                          ============
 
-CA enrolls via DNS TXT                  Leaf builds wolfssl-new
+CA enrolls via DNS TXT                  Leaf builds postWolf
     |                                       |
     +-- Proves domain control               +-- make && fips-hash.sh && make
     +-- CA cert logged in Merkle tree       |

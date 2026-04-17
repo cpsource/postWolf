@@ -69,10 +69,10 @@ If ANY step fails, the connection is torn down and NULL is returned.
 
 ## Building
 
-Requires wolfssl-new to be configured and built in the parent directory.
+Requires postWolf to be configured and built in the parent directory.
 
 ```bash
-# Build wolfssl-new first (if not already done)
+# Build postWolf first (if not already done)
 cd ..
 ./configure.sh    # or: ./configure --enable-quic --enable-ech --enable-tls13 --enable-mtc --enable-all --quiet
 make

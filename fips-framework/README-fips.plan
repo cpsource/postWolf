@@ -1,10 +1,10 @@
-# Plan: Server-Verified FIPS Source Checksums for wolfssl-new
+# Plan: Server-Verified FIPS Source Checksums for postWolf
 
 ## Context
 
 OpenSSL's FIPS integrity system stores SHA256 checksums of source files in the same repository as the source. An attacker with write access can modify both a source file and its checksum — nothing downstream detects it. The HMAC key is public, so rebuilding and re-running `fipsinstall` produces valid MACs for the tampered binary.
 
-wolfssl-new has the same weakness in `fips-hash.sh` / `fips_test.c`. However, wolfssl-new already has a **Merkle Tree Certificate (MTC) transparency log** with Ed25519 cosignatures, inclusion proofs, and a REST API — implemented as a **C server** (`mtc-keymaster/server/c/`). We can leverage this infrastructure to anchor FIPS source checksums in the append-only server-side log, making tampering detectable.
+postWolf has the same weakness in `fips-hash.sh` / `fips_test.c`. However, postWolf already has a **Merkle Tree Certificate (MTC) transparency log** with Ed25519 cosignatures, inclusion proofs, and a REST API — implemented as a **C server** (`mtc-keymaster/server/c/`). We can leverage this infrastructure to anchor FIPS source checksums in the append-only server-side log, making tampering detectable.
 
 **Goal:** At build time, log a signed manifest of FIPS source file checksums to the C MTC server. At verification time, any party can check local source files against the server-logged manifest using inclusion proofs and Ed25519 signatures — with or without network access.
 
@@ -20,7 +20,7 @@ Entry type byte: `0x02` (new — existing types are `0x00` null, `0x01` TBS cert
 {
   "type": "fips-build-manifest",
   "version": 1,
-  "package": "wolfssl-new",
+  "package": "postWolf",
   "git_commit": "abc123...",
   "git_tag": "v5.9.0",
   "timestamp": 1712188800.0,
@@ -220,7 +220,7 @@ dependency is the pinned CA public key (32 bytes, obtained out-of-band).
 4. Tamper with a FIPS source file, run `./fips-manifest-verify.sh` — confirm **failure**
 5. Restore file, run `./fips-manifest-verify.sh` — confirm **pass**
 6. Test offline: stop server, verify using cached receipt — confirm **pass**
-7. Test search: `./fips-framework/fips-manifest-verify --search --package wolfssl-new`
+7. Test search: `./fips-framework/fips-manifest-verify --search --package postWolf`
 8. Test retrieval: `./fips-framework/fips-manifest-verify --get-manifest 0`
 
 ### Security Properties

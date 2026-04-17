@@ -444,7 +444,7 @@ any tool you compile to check the compiler.
    - Requires deterministic build flags (`-frandom-seed`, fixed `SOURCE_DATE_EPOCH`, etc.)
    - Requires stripping or normalizing non-deterministic artifacts (timestamps,
      build paths, `__FILE__` macros)
-   - The wolfssl-new build already stores `.build_params` — extend this to
+   - The postWolf build already stores `.build_params` — extend this to
      capture the full environment for reproducibility
 
 2. **Compiler checksum in the FIPS manifest** — Record the SHA256 of the
