@@ -867,6 +867,93 @@ past decisions, and rewriting them distorts the record.
 - `mtc-keymaster/README-ml-dsa-87.md`
 - `mtc-keymaster/server/c/README-using-mtc-server.md`
 
+### 15. Gate leaf-nonce issuance by cryptographic caller identity (MQC-only)
+
+**Priority:** Medium — follow-up enabled by moving `issue_leaf_nonce` to
+MQC on port 8446.
+
+**Why this is only possible now:** the Python `issue_leaf_nonce.py` hits
+`POST /enrollment/nonce` over classical TLS on 8444.  The server sees
+a source IP and a `(domain, fingerprint)` pair but has no
+cryptographic evidence of *who* is making the request.  Today the
+policy check is: "does a registered CA exist for `<domain>`?"
+(`mtc_http.c:584-596`, via `mtc_db_find_ca_for_domain`).  Anyone who
+can reach port 8444 and knows the request format can issue a pending
+nonce for any domain whose CA is registered — the binding check at
+consumption time is what actually keeps it safe.
+
+With the new C `issue_leaf_nonce` using MQC on 8446, the server's MQC
+layer authenticates the caller's cert_index (the CA operator's
+enrolled ML-DSA-87 identity) before `handle_request` ever sees the
+body.  That gives us a stronger server-side policy:
+
+> **Only the CA that holds the registered CA cert for `<domain>` may
+> issue a leaf nonce for that domain.**
+
+**Fix sketch:**
+
+1. In `handle_enrollment_nonce` (`mtc_http.c:510`), when the transport
+   is MQC (`io->mqc != NULL` — confirm the existing flag), extract the
+   caller's cert_index via `mqc_get_peer_index(io->mqc)`.
+2. Look up the cert for that index in `mtc_certificates` and read its
+   subject.
+3. For `type=leaf` nonces, reject (`403`) unless the caller's subject
+   is `<domain>-ca` (or, more generally, matches the CA registered for
+   `<domain>` in `mtc_db_find_ca_for_domain`).
+4. Keep the existing "a registered CA exists for this domain" check
+   as a cheap first-pass filter; the identity check is a stricter
+   second pass that only applies to MQC-authenticated requests.
+5. Log (structured) both success and rejections, in line with TODO
+   #13.
+
+**Migration concern:** the Python `issue_leaf_nonce.py` on port 8444
+would keep working under the old looser policy (no caller-identity
+check) until we sunset it.  That's fine — enforce the stricter rule
+only for MQC-authenticated requests so we don't break the lax path
+before the C tool has distribution.  Eventually: return 410 on
+`POST /enrollment/nonce` at 8444 (mirroring what we did with
+`/certificate/request`).
+
+**Files to change:**
+- `mtc-keymaster/server/c/mtc_http.c` — extend
+  `handle_enrollment_nonce` with an MQC-identity check before the
+  `mtc_db_create_nonce` call.
+- `mtc-keymaster/server/c/mtc_db.c` / `mtc_db.h` — add
+  `mtc_db_get_cert_subject(conn, cert_index, out, outsz)` (or reuse
+  any existing helper).
+- `mtc-keymaster/server/c/mtc_http.h` — ensure `client_io` exposes the
+  MQC connection pointer so we can reach `mqc_get_peer_index`.
+
+### 16. Tighten TODO #13 observability once MQC-authenticated issuance lands
+
+**Priority:** Low — refinement of TODO #13.
+
+Once TODO #15 ships, failed enrollment attempts carry a cryptographic
+caller identity (the peer's cert_index) instead of just a source IP.
+That makes the log-and-alert work from TODO #13 considerably sharper:
+
+- **Current TODO #13 log record:** `source IP`, `submitted_domain`,
+  `submitted_fp`, classification of the failure.
+- **After TODO #15:** same fields plus `caller_cert_index` and
+  `caller_subject` from the MQC peer.  Logging the caller's subject
+  changes a mismatch alert from "an IP is probing nonce binding" to
+  "principal X attempted to mint a nonce for domain Y they don't
+  control" — a much stronger signal, and something worth escalating
+  directly (not just AbuseIPDB).
+
+**Fix sketch:**
+- Wire the caller's cert_index / subject into the log record added by
+  TODO #13.
+- Consider a distinct log tag (`NONCE_CROSS_CA_ATTEMPT`) for the case
+  where the caller is a valid CA but for a *different* domain — that's
+  the clearest sign of an insider / compromised-CA scenario.
+- Rate-limiting by caller_cert_index becomes an option in addition to
+  rate-limiting by IP; a single CA operator flooding the endpoint can
+  now be throttled without affecting other operators sharing NAT.
+
+**No files to change yet** — this TODO stays a pointer until TODOs
+#13 and #15 are both in progress.
+
 ---
 
 ## Appendix: Server Directory Layout

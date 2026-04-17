@@ -6,6 +6,7 @@ bootstrap_leaf
 bootstrap_ca
 show-tpm
 admin_recosign
+issue_leaf_nonce
 
 # Doxygen output
 html/
