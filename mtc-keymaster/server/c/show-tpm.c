@@ -4,16 +4,13 @@
  *
  * Description:
  *   Lists MTC certificates in ~/.TPM, displays status, and optionally
- *   verifies each entry against the MTC server.
- *
- *   Default: connects via SLC (TLS) on port 8444.
- *   With --mqc: connects via MQC (post-quantum) on port 8446.
+ *   verifies each entry against the MTC server over MQC (post-quantum)
+ *   on port 8446.
  *
  * Usage:
  *   show-tpm                          List entries
- *   show-tpm --verify                 List + verify against server
- *   show-tpm --verify --mqc           Verify using MQC protocol
- *   show-tpm --verify -s HOST:PORT    Custom server
+ *   show-tpm --verify                 List + verify against server (MQC/8446)
+ *   show-tpm --verify -s HOST:PORT    Custom MQC server
  *   show-tpm -v                       Verbose output
  *   show-tpm --cnt N                  Show first N entries
  *
@@ -29,64 +26,21 @@
 #include <math.h>
 
 #include <json-c/json.h>
-#include <curl/curl.h>
 #include "mqc.h"
 #include "mqc_peer.h"
 
-#define DEFAULT_TPM_DIR    ".TPM"
-#define DEFAULT_SERVER     "localhost:8444"
-#define DEFAULT_MQC_SERVER "localhost:8446"
-#define MAX_ENTRIES        256
+#define DEFAULT_TPM_DIR   ".TPM"
+#define DEFAULT_SERVER    "localhost:8446"   /* MQC endpoint (this tool) */
+#define MTC_TLS_SERVER    "localhost:8444"   /* TLS endpoint (library TOFU) */
+#define MAX_ENTRIES       256
 
 /* Global state */
 static mqc_ctx_t  *g_mqc_ctx  = NULL;
 static const char  *g_mqc_host = "localhost";
 static int          g_mqc_port = 8446;
-static int          g_use_mqc  = 0;
 static int          g_trace    = 0;
 
 /* --- Helpers --- */
-
-struct curl_buf { char *data; size_t sz; };
-
-static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb, void *ud)
-{
-    struct curl_buf *b = (struct curl_buf *)ud;
-    size_t total = size * nmemb;
-    char *tmp = realloc(b->data, b->sz + total + 1);
-    if (!tmp) return 0;
-    b->data = tmp;
-    memcpy(b->data + b->sz, ptr, total);
-    b->sz += total;
-    b->data[b->sz] = '\0';
-    return total;
-}
-
-static char *http_get(const char *url, long *code)
-{
-    CURL *curl;
-    CURLcode res;
-    struct curl_buf buf = {NULL, 0};
-
-    curl = curl_easy_init();
-    if (!curl) return NULL;
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    if (g_trace)
-        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-
-    res = curl_easy_perform(curl);
-    if (code) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, code);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) { free(buf.data); return NULL; }
-    return buf.data;
-}
 
 /* MQC-based HTTP GET: open a fresh connection per request (server is
  * one-request-per-connection).  Uses dynamic allocation for large responses. */
@@ -165,15 +119,6 @@ static char *mqc_http_get(const char *path_only, long *code)
     }
 }
 
-/* Unified HTTP GET — dispatches to MQC or curl */
-static char *do_http_get(const char *url, const char *path_only, long *code,
-                         int use_mqc)
-{
-    if (use_mqc)
-        return mqc_http_get(path_only, code);
-    return http_get(url, code);
-}
-
 static char *read_file(const char *path)
 {
     FILE *f = fopen(path, "r");
@@ -192,18 +137,6 @@ static char *read_file(const char *path)
     fclose(f);
     return buf;
 }
-
-static void normalize_server(const char *server, char *out, int outsz)
-{
-    if (strncmp(server, "http://", 7) == 0 ||
-        strncmp(server, "https://", 8) == 0)
-        snprintf(out, (size_t)outsz, "%s", server);
-    else
-        snprintf(out, (size_t)outsz, "https://%s", server);
-}
-
-/* CA cosigner pubkey loader is provided by libmqc
- * (socket-level-wrapper-MQC/mqc_peer.h: mqc_load_ca_pubkey). */
 
 static void time_remaining(double not_after, char *out, int outsz)
 {
@@ -324,9 +257,9 @@ static int load_entry(const char *tpm_dir, const char *name, tpm_entry_t *e)
     return 1;
 }
 
-static void verify_entry(tpm_entry_t *e, const char *server)
+static void verify_entry(tpm_entry_t *e)
 {
-    char url[1024], svr[512], path[512];
+    char path[512];
     char *body;
     long code = 0;
 
@@ -335,12 +268,9 @@ static void verify_entry(tpm_entry_t *e, const char *server)
         return;
     }
 
-    normalize_server(server, svr, sizeof(svr));
-
     /* Check server has the cert */
     snprintf(path, sizeof(path), "/certificate/%d", e->cert_index);
-    snprintf(url, sizeof(url), "%s%s", svr, path);
-    body = do_http_get(url, path, &code, g_use_mqc);
+    body = mqc_http_get(path, &code);
     if (!body || code != 200) {
         e->v_server_found = 0;
         snprintf(e->v_errors + strlen(e->v_errors),
@@ -392,8 +322,7 @@ static void verify_entry(tpm_entry_t *e, const char *server)
 
     /* Check revocation */
     snprintf(path, sizeof(path), "/revoked/%d", e->cert_index);
-    snprintf(url, sizeof(url), "%s%s", svr, path);
-    body = do_http_get(url, path, &code, g_use_mqc);
+    body = mqc_http_get(path, &code);
     if (body) {
         struct json_object *rev = json_tokener_parse(body);
         if (rev) {
@@ -421,8 +350,7 @@ static void verify_entry(tpm_entry_t *e, const char *server)
 
     /* Check pubkey_db */
     snprintf(path, sizeof(path), "/public-key/%s", e->name);
-    snprintf(url, sizeof(url), "%s%s", svr, path);
-    body = do_http_get(url, path, &code, g_use_mqc);
+    body = mqc_http_get(path, &code);
     if (!body || code != 200) {
         e->v_pubkey_db = 0;
         strcat(e->v_errors, "public key not in Neon; ");
@@ -533,12 +461,11 @@ static void usage(const char *prog)
 {
     printf("Show the contents of the ~/.TPM credential store.\n\n");
     printf("Usage: %s [options]\n\n", prog);
-    printf("  --verify         Verify entries against MTC server\n");
-    printf("  --mqc            Use MQC protocol (port 8446) instead of TLS (port 8444)\n");
+    printf("  --verify         Verify entries against MTC server over MQC (port 8446)\n");
     printf("  --tpm-path PATH  TPM identity for MQC (default: first entry in ~/.TPM)\n");
-    printf("  -s, --server H:P Server address (default: %s)\n", DEFAULT_SERVER);
+    printf("  -s, --server H:P MQC server address (default: %s)\n", DEFAULT_SERVER);
     printf("  -v, --verbose    Verbose output\n");
-    printf("  --trace          Show protocol-level trace (TLS/MQC handshakes)\n");
+    printf("  --trace          Show MQC protocol-level trace\n");
     printf("  --cnt N          Show only first N entries\n");
     printf("  -d, --dir DIR    TPM directory (default: ~/.TPM)\n");
     printf("  -h, --help       Show this help\n");
@@ -549,7 +476,7 @@ int main(int argc, char *argv[])
     const char *server = DEFAULT_SERVER;
     const char *tpm_dir_arg = NULL;
     const char *mqc_tpm_path = NULL;
-    int verify = 0, verbose = 0, use_mqc = 0, trace = 0, cnt = 0;
+    int verify = 0, verbose = 0, trace = 0, cnt = 0;
     char tpm_dir[512];
     tpm_entry_t entries[MAX_ENTRIES];
     int num_entries = 0;
@@ -560,10 +487,6 @@ int main(int argc, char *argv[])
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--verify") == 0)
             verify = 1;
-        else if (strcmp(argv[i], "--mqc") == 0) {
-            use_mqc = 1;
-            server = DEFAULT_MQC_SERVER;
-        }
         else if (strcmp(argv[i], "--tpm-path") == 0 && i + 1 < argc)
             mqc_tpm_path = argv[++i];
         else if ((strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--server") == 0)
@@ -593,15 +516,13 @@ int main(int argc, char *argv[])
         snprintf(tpm_dir, sizeof(tpm_dir), "%s/%s", home, DEFAULT_TPM_DIR);
     }
 
-    g_use_mqc = use_mqc;
-
     /* Enable trace output if --trace */
     g_trace = trace;
     if (trace)
         mqc_set_verbose(1);
 
-    /* Initialize MQC if --mqc mode */
-    if (use_mqc && verify) {
+    /* Initialize MQC when verification is requested */
+    if (verify) {
         mqc_cfg_t cfg;
 
         /* Auto-detect TPM path: use --tpm-path or first entry in ~/.TPM */
@@ -652,13 +573,13 @@ int main(int argc, char *argv[])
         memset(&cfg, 0, sizeof(cfg));
         cfg.role       = MQC_CLIENT;
         cfg.tpm_path   = mqc_tpm_path;
-        cfg.mtc_server = DEFAULT_SERVER;  /* TLS server for peer key resolution */
+        cfg.mtc_server = MTC_TLS_SERVER;  /* TLS server for peer key resolution */
 
         /* Load the CA cosigner's raw 32-byte Ed25519 pubkey.  First
          * fetch is TOFU over HTTPS to the TLS MTC server; subsequent
          * runs hit the on-disk cache. */
         static unsigned char ca_pubkey[32];
-        if (mqc_load_ca_pubkey(DEFAULT_SERVER, ca_pubkey) != 0) {
+        if (mqc_load_ca_pubkey(MTC_TLS_SERVER, ca_pubkey) != 0) {
             fprintf(stderr,
                 "Error: could not load CA cosigner pubkey (required "
                 "for MQC cosignature verification)\n");
@@ -711,19 +632,13 @@ int main(int argc, char *argv[])
 
     /* Verify if requested */
     if (verify) {
-        char svr[1024];
-        normalize_server(server, svr, sizeof(svr));
-
         /* Quick connectivity check */
         {
-            char url[2048];
             long code = 0;
-            char *body;
-            snprintf(url, sizeof(url), "%s/", svr);
-            body = do_http_get(url, "/", &code, use_mqc);
+            char *body = mqc_http_get("/", &code);
             if (!body || code != 200) {
-                fprintf(stderr, "Error: cannot reach server at %s\n",
-                        use_mqc ? server : svr);
+                fprintf(stderr, "Error: cannot reach server at mqc://%s\n",
+                        server);
                 free(body);
                 return 1;
             }
@@ -731,21 +646,16 @@ int main(int argc, char *argv[])
                 struct json_object *info = json_tokener_parse(body);
                 struct json_object *ca_val;
                 if (info && json_object_object_get_ex(info, "ca_name", &ca_val))
-                    printf("Server:    %s%s (%s)\n",
-                           use_mqc ? "mqc://" : "",
-                           use_mqc ? server : svr,
-                           json_object_get_string(ca_val));
+                    printf("Server:    mqc://%s (%s)\n",
+                           server, json_object_get_string(ca_val));
                 else
-                    printf("Server:    %s%s\n",
-                           use_mqc ? "mqc://" : "",
-                           use_mqc ? server : svr);
+                    printf("Server:    mqc://%s\n", server);
                 if (info) json_object_put(info);
             }
             free(body);
         }
 
-        if (use_mqc)
-            printf("Mode:      MQC (post-quantum)\n");
+        printf("Mode:      MQC (post-quantum)\n");
     }
 
     /* Print header */
@@ -756,7 +666,7 @@ int main(int argc, char *argv[])
     /* Process entries */
     for (i = 0; i < num_entries; i++) {
         if (verify)
-            verify_entry(&entries[i], server);
+            verify_entry(&entries[i]);
 
         print_entry(&entries[i], verbose, verify);
 
