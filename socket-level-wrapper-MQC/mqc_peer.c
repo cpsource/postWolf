@@ -209,7 +209,7 @@ static int mqc_hex_to_bytes(const char *hex, byte *out, int out_cap)
 #define PEER_CACHE_DIR   "peers"
 #define CHECKPOINT_CACHE "checkpoint_cache.json"
 #define CHECKPOINT_TTL   300  /* 5 minutes */
-#define REVOKED_TTL      3600 /* seconds — 1 hour per-peer TTL */
+#define REVOKED_TTL      86400 /* seconds — 24 hour per-peer TTL */
 
 /******************************************************************************
  * libcurl write callback — accumulates response body in a malloc'd buffer.
@@ -426,7 +426,7 @@ static int peer_revoked_cache_path(int cert_index, char *out, int outsz)
  * Function:    check_revoked
  *
  * Description:
- *   Per-peer revocation check with a 1-hour TTL cache.  The cache lives
+ *   Per-peer revocation check with a 24-hour TTL cache.  The cache lives
  *   at ~/.TPM/peers/<n>/revoked.json and holds a single JSON object:
  *       { "revoked": false }   or   { "revoked": true }
  *   File mtime drives the TTL — anything fresher than REVOKED_TTL is
