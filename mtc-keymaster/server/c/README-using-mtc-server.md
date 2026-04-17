@@ -2,12 +2,12 @@
 
 ## Building
 
-All projects build from the wolfGuard root directory. A `GNUmakefile` at the
+All projects build from the postWolf root directory. A `GNUmakefile` at the
 root orchestrates the sub-projects (it takes precedence over the autotools
-`Makefile` used for the wolfGuard library itself).
+`Makefile` used for the postWolf library itself).
 
 ```bash
-cd ~/wolfGuard
+cd ~/postWolf
 
 # Build everything: libslc.a, libmqc.a, mtc_server, show-tpm,
 # bootstrap_ca, bootstrap_leaf
@@ -31,13 +31,13 @@ cache is refreshed — no `LD_LIBRARY_PATH` needed.
 | `sudo make install` | Install binaries to `/usr/local/bin`, run `ldconfig` |
 | `make clean` | Clean all sub-project build artifacts |
 
-### Rebuilding the wolfGuard library
+### Rebuilding the postWolf library
 
-The wolfGuard shared library (libwolfGuard.so) is built separately via
+The postWolf shared library (libpostWolf.so) is built separately via
 autotools and rarely needs rebuilding:
 
 ```bash
-cd ~/wolfGuard
+cd ~/postWolf
 ./configure.sh
 make -f Makefile
 sudo make -f Makefile install

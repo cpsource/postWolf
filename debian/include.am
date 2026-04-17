@@ -18,7 +18,7 @@ deb-docker:
 deb-clean:
 	dh_clean --exclude=debian/control --exclude=debian/changelog \
 		--exclude=debian/rules || true
-	rm -rf debian/libwolfGuard debian/libwolfGuard-dev debian/files \
+	rm -rf debian/libpostWolf debian/libpostWolf-dev debian/files \
 		debian/*.substvars debian/.debhelper debian/tmp
 	rm -f debian/debhelper-build-stamp
 

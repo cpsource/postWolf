@@ -7,8 +7,8 @@ if BUILD_EXAMPLE_SERVERS
 noinst_PROGRAMS += examples/echoserver/echoserver
 noinst_HEADERS += examples/echoserver/echoserver.h
 examples_echoserver_echoserver_SOURCES      = examples/echoserver/echoserver.c
-examples_echoserver_echoserver_LDADD        = src/libwolfGuard@LIBSUFFIX@.la $(LIB_STATIC_ADD)
-examples_echoserver_echoserver_DEPENDENCIES = src/libwolfGuard@LIBSUFFIX@.la
+examples_echoserver_echoserver_LDADD        = src/libpostWolf@LIBSUFFIX@.la $(LIB_STATIC_ADD)
+examples_echoserver_echoserver_DEPENDENCIES = src/libpostWolf@LIBSUFFIX@.la
 endif
 EXTRA_DIST += examples/echoserver/echoserver.sln
 EXTRA_DIST += examples/echoserver/echoserver.vcproj

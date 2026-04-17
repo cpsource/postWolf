@@ -1347,7 +1347,7 @@ Merkle Quantum Connect. Merkle-based authentication + quantum-resistant
 encryption. Distinct from TLS. Enabled via `--enable-mqc` or
 `cfg.mtc_store` in the SLC API.
 
-Usage: "Should we enable MQC when we rebuild wolfGuard?"
+Usage: "Should we enable MQC when we rebuild postWolf?"
 
 **Metadata leakage: PARTIAL WEAKNESS.**
 The initial messages (step 1-2) are plaintext. An eavesdropper sees the

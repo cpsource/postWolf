@@ -5,8 +5,8 @@ if BUILD_EXAMPLE_CLIENTS
 noinst_PROGRAMS += examples/client/client
 noinst_HEADERS += examples/client/client.h
 examples_client_client_SOURCES      = examples/client/client.c
-examples_client_client_LDADD        = src/libwolfGuard@LIBSUFFIX@.la $(LIB_STATIC_ADD) $(WOLFSENTRY_LIB)
-examples_client_client_DEPENDENCIES = src/libwolfGuard@LIBSUFFIX@.la
+examples_client_client_LDADD        = src/libpostWolf@LIBSUFFIX@.la $(LIB_STATIC_ADD) $(WOLFSENTRY_LIB)
+examples_client_client_DEPENDENCIES = src/libpostWolf@LIBSUFFIX@.la
 examples_client_client_CFLAGS = $(WOLFSENTRY_INCLUDE) $(AM_CFLAGS)
 endif
 EXTRA_DIST += examples/client/client.sln

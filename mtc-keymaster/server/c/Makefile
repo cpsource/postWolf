@@ -1,11 +1,11 @@
 CC      ?= gcc
 CFLAGS  += -Wall -Wextra -Werror -O2
-CFLAGS  += $(shell pkg-config --cflags wolfGuard) -DWOLFSSL_USE_OPTIONS_H
+CFLAGS  += $(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H
 CFLAGS  += $(shell pkg-config --cflags json-c)
 CFLAGS  += $(shell pkg-config --cflags libpq)
 CFLAGS  += -I../../../socket-level-wrapper
 CFLAGS  += -I../../../socket-level-wrapper-MQC
-LDFLAGS += $(shell pkg-config --libs wolfGuard)
+LDFLAGS += $(shell pkg-config --libs postWolf)
 LDFLAGS += $(shell pkg-config --libs json-c)
 LDFLAGS += $(shell pkg-config --libs libpq)
 LDFLAGS += -lresolv -lhiredis -lpthread
@@ -43,49 +43,49 @@ doxygen:
 
 bootstrap_ca: bootstrap_ca.c mtc_crypt.c mtc_crypt.h mtc_pubkey_db.c mtc_pubkey_db.h
 	$(CC) -Wall -Wextra -O2 \
-		$(shell pkg-config --cflags wolfGuard) -DWOLFSSL_USE_OPTIONS_H \
+		$(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H \
 		$(shell pkg-config --cflags json-c) \
 		$(shell pkg-config --cflags libpq) \
 		-o bootstrap_ca bootstrap_ca.c mtc_crypt.c mtc_pubkey_db.c \
-		$(shell pkg-config --libs wolfGuard) \
+		$(shell pkg-config --libs postWolf) \
 		$(shell pkg-config --libs json-c) \
 		$(shell pkg-config --libs libpq)
 
 bootstrap_leaf: bootstrap_leaf.c mtc_crypt.c mtc_crypt.h mtc_pubkey_db.c mtc_pubkey_db.h
 	$(CC) -Wall -Wextra -O2 \
-		$(shell pkg-config --cflags wolfGuard) -DWOLFSSL_USE_OPTIONS_H \
+		$(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H \
 		$(shell pkg-config --cflags json-c) \
 		$(shell pkg-config --cflags libpq) \
 		-o bootstrap_leaf bootstrap_leaf.c mtc_crypt.c mtc_pubkey_db.c \
-		$(shell pkg-config --libs wolfGuard) \
+		$(shell pkg-config --libs postWolf) \
 		$(shell pkg-config --libs json-c) \
 		$(shell pkg-config --libs libpq)
 
 admin_recosign: admin_recosign.c mtc_store.c mtc_store.h mtc_merkle.c mtc_merkle.h mtc_db.c mtc_db.h mtc_log.c mtc_log.h
 	$(CC) -Wall -Wextra -O2 \
-		$(shell pkg-config --cflags wolfGuard) -DWOLFSSL_USE_OPTIONS_H \
+		$(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H \
 		$(shell pkg-config --cflags json-c) \
 		$(shell pkg-config --cflags libpq) \
 		-o admin_recosign admin_recosign.c mtc_store.c mtc_merkle.c mtc_db.c mtc_log.c \
-		$(shell pkg-config --libs wolfGuard) \
+		$(shell pkg-config --libs postWolf) \
 		$(shell pkg-config --libs json-c) \
 		$(shell pkg-config --libs libpq) \
 		-lcurl
 
 show-tpm: show-tpm.c $(MQC_LIB)
 	$(CC) -Wall -Wextra -O2 \
-		$(shell pkg-config --cflags wolfGuard) -DWOLFSSL_USE_OPTIONS_H \
+		$(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H \
 		$(shell pkg-config --cflags json-c) \
 		-I../../../socket-level-wrapper-MQC \
 		-o show-tpm show-tpm.c $(MQC_LIB) \
-		$(shell pkg-config --libs wolfGuard) \
+		$(shell pkg-config --libs postWolf) \
 		$(shell pkg-config --libs json-c) -lcurl -lhiredis -lpthread -lm
 
 test-mtc-crypt: mtc_crypt.c mtc_crypt.h
 	$(CC) -Wall -Wextra -O2 -DTEST_MAIN \
-		$(shell pkg-config --cflags wolfGuard) -DWOLFSSL_USE_OPTIONS_H \
+		$(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H \
 		-o mtc_crypt_test mtc_crypt.c \
-		$(shell pkg-config --libs wolfGuard)
+		$(shell pkg-config --libs postWolf)
 
 BINDIR ?= /usr/local/bin
 

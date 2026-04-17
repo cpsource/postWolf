@@ -1,4 +1,4 @@
-# wolfGuard Design Decisions & Architecture
+# postWolf Design Decisions & Architecture
 
 ## Enrollment Architecture (Decided)
 

@@ -5,8 +5,8 @@
 EXTRA_DIST += \
     IDE/INTIME-RTOS/README.md \
     IDE/INTIME-RTOS/user_settings.h \
-    IDE/INTIME-RTOS/libwolfGuard.c \
-    IDE/INTIME-RTOS/libwolfGuard.vcxproj \
+    IDE/INTIME-RTOS/libpostWolf.c \
+    IDE/INTIME-RTOS/libpostWolf.vcxproj \
     IDE/INTIME-RTOS/wolfExamples.c \
     IDE/INTIME-RTOS/wolfExamples.h \
     IDE/INTIME-RTOS/wolfExamples.vcxproj \

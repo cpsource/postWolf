@@ -5,8 +5,8 @@
 if BUILD_SNIFFTEST
 noinst_PROGRAMS += sslSniffer/sslSnifferTest/snifftest
 sslSniffer_sslSnifferTest_snifftest_SOURCES = sslSniffer/sslSnifferTest/snifftest.c
-sslSniffer_sslSnifferTest_snifftest_LDADD        = src/libwolfGuard@LIBSUFFIX@.la -lpcap $(LIB_STATIC_ADD)
-sslSniffer_sslSnifferTest_snifftest_DEPENDENCIES = src/libwolfGuard@LIBSUFFIX@.la
+sslSniffer_sslSnifferTest_snifftest_LDADD        = src/libpostWolf@LIBSUFFIX@.la -lpcap $(LIB_STATIC_ADD)
+sslSniffer_sslSnifferTest_snifftest_DEPENDENCIES = src/libpostWolf@LIBSUFFIX@.la
 endif
 EXTRA_DIST += sslSniffer/README.md
 EXTRA_DIST += sslSniffer/sslSniffer.vcproj

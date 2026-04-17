@@ -4,10 +4,10 @@
 
 CC      ?= gcc
 CFLAGS  += -Wall -Wextra -O2
-CFLAGS  += $(shell pkg-config --cflags wolfGuard) -DWOLFSSL_USE_OPTIONS_H
+CFLAGS  += $(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H
 CFLAGS  += -I. -Ilibudp/include
 
-LDFLAGS += $(shell pkg-config --libs wolfGuard)
+LDFLAGS += $(shell pkg-config --libs postWolf)
 LDFLAGS += -Llibudp -ludp
 
 AR      ?= ar

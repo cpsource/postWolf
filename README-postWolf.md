@@ -1,6 +1,6 @@
-# wolfGuard
+# postWolf
 
-**wolfGuard** is the integrated security stack built on wolfSSL that combines
+**postWolf** is the integrated security stack built on wolfSSL that combines
 four technologies into a single, defence-in-depth communications layer:
 
 | Layer | Technology | What it does |
@@ -29,7 +29,7 @@ post-quantum key exchange + auditable certificate trust.
 
 ## Build
 
-wolfGuard is enabled by configuring wolfSSL with all four features:
+postWolf is enabled by configuring wolfSSL with all four features:
 
 ```bash
 ./configure --enable-tls13 --enable-ech --enable-mlkem --enable-mtc --enable-all
@@ -124,7 +124,7 @@ with ECH support.
 
 ## Post-Quantum Readiness
 
-wolfGuard addresses both sides of the post-quantum threat:
+postWolf addresses both sides of the post-quantum threat:
 
 - **Key exchange:** ML-KEM hybrid protects against harvest-now,
   decrypt-later attacks.  Even if a quantum computer breaks the ECDH
@@ -143,4 +143,4 @@ wolfGuard addresses both sides of the post-quantum threat:
 
 ## License
 
-wolfGuard is part of wolfSSL.  See [LICENSING](LICENSING) for details.
+postWolf is part of wolfSSL.  See [LICENSING](LICENSING) for details.

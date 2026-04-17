@@ -1,9 +1,9 @@
-# GNUmakefile — top-level build for wolfGuard tools
+# GNUmakefile — top-level build for postWolf tools
 #
 # Builds the socket-level wrappers (SLC, MQC, QUIC) and MTC keymaster
 # tools (server, show-tpm, bootstrap_ca, bootstrap_leaf).
 #
-# The wolfGuard library itself is built separately via autotools:
+# The postWolf library itself is built separately via autotools:
 #   ./configure.sh && make -f Makefile && sudo make -f Makefile install && sudo ldconfig
 #
 # Usage:
@@ -36,7 +36,7 @@ quic:
 mtc: slc mqc
 	$(MAKE) -C $(MTC_DIR)
 
-# Install wolfGuard library (autotools) + ldconfig
+# Install postWolf library (autotools) + ldconfig
 install-lib:
 	$(MAKE) -f Makefile install
 	ldconfig

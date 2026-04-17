@@ -6,7 +6,7 @@
 if BUILD_EXAMPLE_ASN1
 noinst_PROGRAMS += examples/pem/pem
 examples_pem_pem_SOURCES = examples/pem/pem.c
-examples_pem_pem_LDADD        = src/libwolfGuard@LIBSUFFIX@.la $(LIB_STATIC_ADD)
-examples_pem_pem_DEPENDENCIES = src/libwolfGuard@LIBSUFFIX@.la
+examples_pem_pem_LDADD        = src/libpostWolf@LIBSUFFIX@.la $(LIB_STATIC_ADD)
+examples_pem_pem_DEPENDENCIES = src/libpostWolf@LIBSUFFIX@.la
 endif
 

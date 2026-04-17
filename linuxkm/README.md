@@ -18,7 +18,7 @@ Supported features:
 - `CONFIG_CRYPTO_FIPS`, and crypto-manager self-tests.
 - FIPS-compliant patches to `drivers/char/random.c`, covering kernels 5.10 to
   6.15.
-- Supports FIPS-compliant WireGuard (https://github.com/wolfssl/wolfguard).
+- Supports FIPS-compliant WireGuard (https://github.com/wolfssl/postwolf).
 - TLS 1.3 and DTLS 1.3 kernel offload.
 
 ## Building and Installing

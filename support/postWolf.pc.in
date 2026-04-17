@@ -3,9 +3,9 @@ exec_prefix=@exec_prefix@
 libdir=@libdir@
 includedir=@includedir@
 
-Name: wolfGuard
-Description: wolfGuard C library.
+Name: postWolf
+Description: postWolf C library.
 Version: @VERSION@
-Libs: -L${libdir} -lwolfGuard
+Libs: -L${libdir} -lpostWolf
 Libs.private: @LIBM@ @PC_LIBS_PRIVATE@
 Cflags: -I${includedir}

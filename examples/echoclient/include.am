@@ -7,8 +7,8 @@ if BUILD_EXAMPLE_CLIENTS
 noinst_PROGRAMS += examples/echoclient/echoclient
 noinst_HEADERS += examples/echoclient/echoclient.h
 examples_echoclient_echoclient_SOURCES      = examples/echoclient/echoclient.c
-examples_echoclient_echoclient_LDADD        = src/libwolfGuard@LIBSUFFIX@.la $(LIB_STATIC_ADD)
-examples_echoclient_echoclient_DEPENDENCIES = src/libwolfGuard@LIBSUFFIX@.la
+examples_echoclient_echoclient_LDADD        = src/libpostWolf@LIBSUFFIX@.la $(LIB_STATIC_ADD)
+examples_echoclient_echoclient_DEPENDENCIES = src/libpostWolf@LIBSUFFIX@.la
 endif
 EXTRA_DIST += examples/echoclient/echoclient.sln
 EXTRA_DIST += examples/echoclient/echoclient.vcproj

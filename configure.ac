@@ -58,7 +58,7 @@ CONFIGURE_OPTIONS="$ac_configure_args"
 AC_SUBST([CONFIGURE_OPTIONS])
 
 # shared library versioning
-# The three numbers in the libwolfGuard.so.*.*.* file name. Unfortunately
+# The three numbers in the libpostWolf.so.*.*.* file name. Unfortunately
 
 # increment if interfaces have been removed or changed
 WOLFSSL_LIBRARY_VERSION_FIRST=44
@@ -1289,7 +1289,7 @@ then
         AC_MSG_ERROR([--enable-all-osp is incompatible with --enable-linuxkm-defaults])
     fi
 
-    test "$enable_wolfguard" = "" && enable_wolfguard=yes
+    test "$enable_postwolf" = "" && enable_postwolf=yes
     test "$enable_webserver" = "" && enable_webserver=yes
 
     if test "$ENABLED_SP_MATH" != "yes"
@@ -1638,9 +1638,9 @@ then
     AM_CFLAGS="$AM_CFLAGS -DWOLFSSL_ECDSA_DETERMINISTIC_K_VARIANT"
 fi
 
-# wolfGuard
-AC_ARG_ENABLE([wolfguard],
-    [AS_HELP_STRING([--enable-wolfguard],[Enable wolfGuard dependencies (default: disabled)])],
+# postWolf
+AC_ARG_ENABLE([postwolf],
+    [AS_HELP_STRING([--enable-postwolf],[Enable postWolf dependencies (default: disabled)])],
     [ ENABLED_WOLFGUARD=$enableval ],
     [ ENABLED_WOLFGUARD=no ]
     )
@@ -10364,7 +10364,7 @@ AC_SUBST([ENABLED_LINUXKM_LKCAPI_REGISTER])
 # Library Suffix
 LIBSUFFIX=""
 AC_ARG_WITH([libsuffix],
-    [AS_HELP_STRING([--with-libsuffix=SUFFIX],[Library artifact SUFFIX, ie libwolfGuardSUFFIX.so])],
+    [AS_HELP_STRING([--with-libsuffix=SUFFIX],[Library artifact SUFFIX, ie libpostWolfSUFFIX.so])],
     [
         if test "x$withval" != "xno" ; then
             LIBSUFFIX=$withval
@@ -11414,7 +11414,7 @@ if test "$ENABLED_WOLFGUARD" = "yes"; then
        test "$ENABLED_HMAC" = "no" ||
        test "$ENABLED_RNG" = "no"
     then
-        AC_MSG_ERROR([--enable-wolfguard requires ECC, SHA256-HMAC, AES-GCM, and RNG.])
+        AC_MSG_ERROR([--enable-postwolf requires ECC, SHA256-HMAC, AES-GCM, and RNG.])
     fi
 fi
 
@@ -11743,7 +11743,7 @@ AC_CONFIG_FILES([stamp-h], [echo timestamp > stamp-h])
 AC_CONFIG_FILES([Makefile
         wolfssl/version.h
         wolfssl/options.h
-        support/wolfGuard.pc
+        support/postWolf.pc
         debian/control
         debian/changelog
         rpm/spec
