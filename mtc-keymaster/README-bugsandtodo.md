@@ -954,6 +954,94 @@ That makes the log-and-alert work from TODO #13 considerably sharper:
 **No files to change yet** — this TODO stays a pointer until TODOs
 #13 and #15 are both in progress.
 
+### 17. MQC client connect retry subsystem
+
+**Priority:** Medium — observed during phase-7 smoke testing of
+`issue_leaf_nonce` against a live `mtc-ca.service` on port 8446.
+
+**Observed symptom:** the *first* `mqc_connect` call from a cold
+client tool failed with `"Error: mqc_connect to localhost:8446
+failed"`, printing no protocol-level trace (no context setup lines,
+no handshake frames).  An immediate retry in the same process —
+triggered by passing `--trace`, which only changes verbosity — fully
+succeeded, and every subsequent run completed normally (either 200
+with a fresh nonce or 409 duplicate-pending, both valid outcomes).
+
+Service state was confirmed good before and after: `systemctl
+is-active mtc-ca.service` = active, all three listeners (8444, 8445,
+8446) open.  This means the failure was not server-down, not
+cert_index-mismatch, not a pubkey issue — the three things a real
+handshake failure would surface.  The most likely cause is a
+transient cold-start: an accept-side socket buffer not yet drained,
+an internal MQC context state that settles on second contact, or
+packet loss on the local loopback at handshake time.
+
+**Why it warrants more than a shrug:** every new MQC-over-8446 tool
+(`show-tpm`, `issue_leaf_nonce`, and the helpers TODO #11 will add
+to replace libcurl in `mqc_peer.c`) will hit this same cold-start
+path.  A one-off transient failure that a human can retry is a
+one-off *visible* transient failure for programmatic callers too —
+that's going to show up as flaky CI, flaky monitoring probes, and
+mid-operation aborts in tools that expect a single attempt to work.
+
+**Fix sketch:**
+
+1. **Put the retry in libmqc, not in each tool.**  Add a thin
+   wrapper, e.g. `mqc_connect_retry(ctx, host, port, opts)`, that
+   encapsulates the policy so every client gets the same behavior:
+
+   ```c
+   typedef struct {
+       int max_attempts;     /* default 3 */
+       int initial_delay_ms; /* default 200 */
+       double backoff;       /* default 2.0  — 200ms, 400ms, 800ms */
+       int timeout_ms;       /* per-attempt connect timeout */
+   } mqc_retry_opts_t;
+   ```
+
+   Tools should keep calling the primitive `mqc_connect` only when
+   they have a specific reason (e.g. test harnesses that want to
+   observe a single attempt).  `mqc_connect_retry` becomes the default
+   for end-user tooling.
+
+2. **Classify which failures are retryable.**  A connect-level error
+   (TCP/UDP refused, handshake never completed, timeout) is retryable.
+   A cryptographic failure (CA pubkey mismatch, peer not in log,
+   cosignature invalid, subtree hash mismatch) is *not* — retrying
+   it will just repeat the same deterministic rejection.  The
+   classifier lives where `mqc_connect` currently returns its NULL:
+   the internal error path already knows which kind of failure
+   occurred; expose it to callers (e.g. via `mqc_last_error()` or a
+   small `mqc_status_t` return from `mqc_connect_retry`) so retryable
+   vs. fatal is a first-class distinction.
+
+3. **Honor `mqc_set_verbose(1)` on each retry** so the cold-start
+   case produces a comparable trace to a successful attempt.  Right
+   now `--trace` accidentally *is* the workaround because the second
+   MQC context initialization after the verbose flag flips is what
+   actually succeeds — but that's coincidence, not design.
+
+4. **Narrow the scope of the retry to connect + handshake.**  Once
+   a connection is established and a request is in flight, retrying
+   a POST has different semantics (could mint a second nonce row).
+   `mqc_connect_retry` should only run the connect loop; anything
+   built on top is the caller's responsibility.
+
+**Call-site audit (will need updating after the helper lands):**
+
+- `mtc-keymaster/server/c/show-tpm.c` — `mqc_http_get` @ line 57
+- `mtc-keymaster/server/c/issue_leaf_nonce.c` — `mqc_http_post` @ its
+  single `mqc_connect` call
+- `socket-level-wrapper-MQC/mqc_peer.c` — once TODO #11 replaces
+  libcurl with MQC, every lookup path gains a connect site
+
+**Files to change:**
+- `socket-level-wrapper-MQC/mqc.h` — add `mqc_connect_retry` +
+  `mqc_retry_opts_t` + error classification enum.
+- `socket-level-wrapper-MQC/mqc.c` — implement the retry/backoff
+  policy and failure classification.
+- Tools above — switch from `mqc_connect` to `mqc_connect_retry`.
+
 ---
 
 ## Appendix: Server Directory Layout
