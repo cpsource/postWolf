@@ -57,18 +57,26 @@
 #define MQC_HANDSHAKE_TIMEOUT 10            /* seconds to complete handshake */
 
 #define MQC_ABUSE_THRESHOLD  25  /* reject if abuse score >= 25% */
-#define MQC_RL_CONNECT_MIN   10  /* max connections per minute per IP */
-#define MQC_RL_CONNECT_HOUR  60  /* max connections per hour per IP */
-#define MQC_RL_FAIL_MIN       3  /* max failed handshakes per minute per IP */
-#define MQC_RL_FAIL_HOUR     10  /* max failed handshakes per hour per IP */
+#define MQC_RL_CONNECT_MIN   100   /* max connections per minute per IP */
+#define MQC_RL_CONNECT_HOUR  1000  /* max connections per hour per IP */
+#define MQC_RL_FAIL_MIN       10   /* max failed handshakes per minute per IP */
+#define MQC_RL_FAIL_HOUR     100   /* max failed handshakes per hour per IP */
 
 /* --- Logging --- */
 
-#define MQC_LOG(fmt, ...) \
-    fprintf(stderr, "[MQC %s:%d] " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
+static int s_mqc_verbose = 0;
+
+void mqc_set_verbose(int level) { s_mqc_verbose = level; }
+int  mqc_get_verbose(void) { return s_mqc_verbose; }
+
+#define MQC_LOG(fmt, ...) do { if (s_mqc_verbose) \
+    fprintf(stderr, "[MQC %s:%d] " fmt "\n", __func__, __LINE__, ##__VA_ARGS__); } while(0)
 
 #define MQC_SECURITY(fmt, ...) \
     fprintf(stderr, "[MQC-SECURITY %s:%d] " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
+
+#define MQC_TRACE(fmt, ...) do { if (s_mqc_verbose) \
+    fprintf(stderr, fmt, ##__VA_ARGS__); } while(0)
 
 /* --- Internal structures --- */
 
@@ -293,26 +301,46 @@ static int mqc_ratelimit_check(const char *ip)
     return 0;
 }
 
-/* Record a failed handshake for rate limiting. Returns 0 = OK, -1 = too many failures. */
-static int mqc_ratelimit_fail(const char *ip)
+/* Check if IP has too many recent failures (does NOT increment).
+ * Returns 0 = OK, -1 = too many failures. */
+static int mqc_ratelimit_fail_check(const char *ip)
 {
     char key[128];
-    int count_m, count_h;
+    redisReply *reply;
+    int count_m = 0, count_h = 0;
 
     if (!s_redis) return 0;
 
     snprintf(key, sizeof(key), "mqc:%s:fail:m", ip);
-    count_m = redis_incr(key, 60);
+    reply = redisCommand(s_redis, "GET %s", key);
+    if (reply) { if (reply->str) count_m = atoi(reply->str); freeReplyObject(reply); }
 
     snprintf(key, sizeof(key), "mqc:%s:fail:h", ip);
-    count_h = redis_incr(key, 3600);
+    reply = redisCommand(s_redis, "GET %s", key);
+    if (reply) { if (reply->str) count_h = atoi(reply->str); freeReplyObject(reply); }
 
-    if (count_m > MQC_RL_FAIL_MIN || count_h > MQC_RL_FAIL_HOUR) {
+    if (count_m >= MQC_RL_FAIL_MIN || count_h >= MQC_RL_FAIL_HOUR) {
         MQC_SECURITY("FAIL_RATE_LIMITED: %s failures %d/min %d/hr",
                      ip, count_m, count_h);
         return -1;
     }
     return 0;
+}
+
+/* Record a failed handshake (increment counters). */
+static void mqc_ratelimit_fail_record(const char *ip)
+{
+    char key[128];
+
+    if (!s_redis) return;
+
+    snprintf(key, sizeof(key), "mqc:%s:fail:m", ip);
+    redis_incr(key, 60);
+
+    snprintf(key, sizeof(key), "mqc:%s:fail:h", ip);
+    redis_incr(key, 3600);
+
+    MQC_SECURITY("handshake failure recorded for %s", ip);
 }
 
 /* --- AbuseIPDB check --- */
@@ -335,7 +363,7 @@ static size_t abuse_write_cb(void *ptr, size_t size, size_t nmemb, void *ud)
 /* Read ABUSEIPDB_TOKEN from environment or ~/.env. Returns NULL if not found. */
 static const char *get_abuseipdb_token(void)
 {
-    static char token[256] = {0};
+    static char token[512] = {0};
     const char *env;
     FILE *f;
     char line[512];
@@ -383,7 +411,7 @@ static int abuseipdb_check(const char *ip)
     CURL *curl;
     CURLcode cres;
     char url[512];
-    char auth_header[300];
+    char auth_header[600];
     struct curl_slist *headers = NULL;
     struct abuse_buf buf = {NULL, 0};
     int score = -1;
@@ -537,7 +565,7 @@ mqc_ctx_t *mqc_ctx_new(const mqc_cfg_t *cfg)
         secure_zero(der, (unsigned int)der_sz);
     }
 
-    fprintf(stderr, "[mqc] context ready: cert_index=%d role=%s\n",
+    MQC_TRACE("[mqc] context ready: cert_index=%d role=%s\n",
             ctx->our_cert_index,
             ctx->role == MQC_CLIENT ? "client" : "server");
 
@@ -593,10 +621,13 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
             close(fd); fd = -1;
         }
         freeaddrinfo(res);
-        if (fd < 0) return NULL;
+        if (fd < 0) {
+            MQC_TRACE("[mqc] TCP connect to %s:%d failed\n", host, port);
+            return NULL;
+        }
     }
 
-    fprintf(stderr, "[mqc] connected to %s:%d\n", host, port);
+    MQC_TRACE("[mqc] connected to %s:%d\n", host, port);
 
     /* Init crypto */
     if (wc_InitRng(&rng) != 0) goto fail;
@@ -653,7 +684,7 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
             goto fail;
     }
 
-    fprintf(stderr, "[mqc] sent handshake (cert_index=%d)\n", ctx->our_cert_index);
+    MQC_TRACE("[mqc] sent handshake (cert_index=%d)\n", ctx->our_cert_index);
 
     /* Receive server response */
     ret = read_json_block(fd, json_buf, sizeof(json_buf));
@@ -695,9 +726,9 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
 
         if (ct_sz <= 0 || resp_sig_sz <= 0) goto fail;
 
-        /* Verify peer */
+        /* Verify peer (client-side: skip revocation check) */
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
-                              peer_index, &peer_pubkey, &peer_pubkey_sz);
+                              peer_index, 0, &peer_pubkey, &peer_pubkey_sz);
         if (ret != 0) {
             MQC_SECURITY("PEER_VERIFY_FAILED: peer for index %d\n",
                     peer_index);
@@ -728,7 +759,7 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
             }
         }
 
-        fprintf(stderr, "[mqc] peer %d verified + signature OK\n", peer_index);
+        MQC_TRACE("[mqc] peer %d verified + signature OK\n", peer_index);
 
         /* Decapsulate */
         ret = wc_MlKemKey_Decapsulate(&mlkem, shared_secret,
@@ -753,7 +784,7 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
         conn->send_seq = 0;
         conn->recv_seq = 0;
 
-        fprintf(stderr, "[mqc] session established with peer %d\n", peer_index);
+        MQC_TRACE("[mqc] session established with peer %d\n", peer_index);
     }
 
     /* Cleanup */
@@ -765,6 +796,7 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
     return conn;
 
 fail:
+    MQC_TRACE("[mqc] connect to %s:%d failed (handshake)\n", host, port);
     secure_zero(shared_secret, sizeof(shared_secret));
     secure_zero(aes_key, sizeof(aes_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
@@ -792,20 +824,18 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
     int ret;
     mqc_conn_t *conn = NULL;
     int mlkem_ok = 0, dil_ok = 0, rng_ok = 0;
+    char client_ip[64] = "unknown";
 
     fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
     if (fd < 0) return NULL;
 
-    {
-        char ip[64] = "unknown";
-        inet_ntop(AF_INET, &cli_addr.sin_addr, ip, sizeof(ip));
-        MQC_LOG("accepted connection from %s:%d", ip, ntohs(cli_addr.sin_port));
+    inet_ntop(AF_INET, &cli_addr.sin_addr, client_ip, sizeof(client_ip));
+    MQC_LOG("accepted connection from %s:%d", client_ip, ntohs(cli_addr.sin_port));
 
-        /* AbuseIPDB + rate limit checks */
-        if (mqc_abuse_check(ip) != 0) { close(fd); return NULL; }
-        if (mqc_ratelimit_check(ip) != 0) { close(fd); return NULL; }
-        if (mqc_ratelimit_fail(ip) != 0) { close(fd); return NULL; }
-    }
+    /* AbuseIPDB + rate limit checks */
+    if (mqc_abuse_check(client_ip) != 0) { close(fd); return NULL; }
+    if (mqc_ratelimit_check(client_ip) != 0) { close(fd); return NULL; }
+    if (mqc_ratelimit_fail_check(client_ip) != 0) { close(fd); return NULL; }
 
     /* Handshake timeout — drop slowloris connections */
     set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
@@ -859,9 +889,9 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
 
         if (ek_sz <= 0 || req_sig_sz <= 0) goto fail;
 
-        /* Verify peer */
+        /* Verify peer (server-side: check revocation) */
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
-                              peer_index, &peer_pubkey, &peer_pubkey_sz);
+                              peer_index, 1, &peer_pubkey, &peer_pubkey_sz);
         if (ret != 0) {
             MQC_SECURITY("PEER_VERIFY_FAILED: peer for index %d\n",
                     peer_index);
@@ -892,7 +922,7 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
             }
         }
 
-        fprintf(stderr, "[mqc] peer %d verified + signature OK\n", peer_index);
+        MQC_TRACE("[mqc] peer %d verified + signature OK\n", peer_index);
 
         /* Import client's encaps key and encapsulate */
         ret = wc_MlKemKey_Init(&mlkem, WC_ML_KEM_768, NULL, INVALID_DEVID);
@@ -964,7 +994,7 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
         conn->recv_seq = 0;
         clear_socket_timeout(fd);
 
-        fprintf(stderr, "[mqc] session established with peer %d\n", peer_index);
+        MQC_TRACE("[mqc] session established with peer %d\n", peer_index);
     }
 
     secure_zero(shared_secret, sizeof(shared_secret));
@@ -975,6 +1005,7 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
     return conn;
 
 fail:
+    mqc_ratelimit_fail_record(client_ip);
     secure_zero(shared_secret, sizeof(shared_secret));
     secure_zero(aes_key, sizeof(aes_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
@@ -1093,9 +1124,12 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
             close(fd); fd = -1;
         }
         freeaddrinfo(res);
-        if (fd < 0) return NULL;
+        if (fd < 0) {
+            MQC_TRACE("[mqc-enc] TCP connect to %s:%d failed\n", host, port);
+            return NULL;
+        }
     }
-    fprintf(stderr, "[mqc-enc] connected to %s:%d\n", host, port);
+    MQC_TRACE("[mqc-enc] connected to %s:%d\n", host, port);
 
     if (wc_InitRng(&rng) != 0) goto fail;
     rng_ok = 1;
@@ -1122,7 +1156,7 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
         if (write_all(fd, (unsigned char *)json_buf, (unsigned int)json_len) != 0)
             goto fail;
     }
-    fprintf(stderr, "[mqc-enc] phase 1: sent ML-KEM key (plaintext)\n");
+    MQC_TRACE("[mqc-enc] phase 1: sent ML-KEM key (plaintext)\n");
 
     /* Receive server's ML-KEM ciphertext (plaintext) */
     ret = read_json_block(fd, json_buf, sizeof(json_buf));
@@ -1152,7 +1186,7 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
         NULL, 0, (const byte *)MQC_HKDF_INFO,
         (word32)strlen(MQC_HKDF_INFO), aes_key, MQC_AES_KEY_SZ);
     if (ret != 0) goto fail;
-    fprintf(stderr, "[mqc-enc] phase 1: ML-KEM shared secret derived\n");
+    MQC_TRACE("[mqc-enc] phase 1: ML-KEM shared secret derived\n");
 
     /* Phase 2: encrypted identity exchange */
     /* Sign the encaps key we sent (proves we generated it) */
@@ -1182,7 +1216,7 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
         if (enc_send(fd, aes_key, &hs_seq, json_buf, id_len) != 0)
             goto fail;
     }
-    fprintf(stderr, "[mqc-enc] phase 2: sent identity (encrypted, cert_index=%d)\n",
+    MQC_TRACE("[mqc-enc] phase 2: sent identity (encrypted, cert_index=%d)\n",
             ctx->our_cert_index);
 
     /* Receive encrypted server identity */
@@ -1217,9 +1251,9 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
         json_object_put(r2);
         if (resp_sig_sz <= 0) goto fail;
 
-        /* Verify peer via Merkle */
+        /* Verify peer via Merkle (client-side: skip revocation) */
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
-                              peer_index, &peer_pubkey, &peer_pubkey_sz);
+                              peer_index, 0, &peer_pubkey, &peer_pubkey_sz);
         if (ret != 0) goto fail;
 
         /* The server signed its ML-KEM ciphertext — but we already consumed it.
@@ -1249,7 +1283,7 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
                 goto fail;
             }
         }
-        fprintf(stderr, "[mqc-enc] peer %d verified + signature OK\n", peer_index);
+        MQC_TRACE("[mqc-enc] peer %d verified + signature OK\n", peer_index);
 
         conn = calloc(1, sizeof(*conn));
         if (!conn) goto fail;
@@ -1260,7 +1294,7 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
         conn->recv_seq = 1;
     }
 
-    fprintf(stderr, "[mqc-enc] session established\n");
+    MQC_TRACE("[mqc-enc] session established\n");
     secure_zero(shared_secret, sizeof(shared_secret));
     secure_zero(aes_key, sizeof(aes_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
@@ -1269,6 +1303,7 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
     return conn;
 
 fail:
+    MQC_TRACE("[mqc-enc] connect to %s:%d failed (handshake)\n", host, port);
     secure_zero(shared_secret, sizeof(shared_secret));
     secure_zero(aes_key, sizeof(aes_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
@@ -1296,17 +1331,17 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
     int ret;
     mqc_conn_t *conn = NULL;
     int mlkem_ok = 0, dil_ok = 0, rng_ok = 0;
+    char client_ip[64] = "unknown";
 
     fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
     if (fd < 0) return NULL;
-    {
-        char ip[64] = "unknown";
-        inet_ntop(AF_INET, &cli_addr.sin_addr, ip, sizeof(ip));
-        MQC_LOG("accepted encrypted connection from %s:%d", ip, ntohs(cli_addr.sin_port));
-        if (mqc_abuse_check(ip) != 0) { close(fd); return NULL; }
-        if (mqc_ratelimit_check(ip) != 0) { close(fd); return NULL; }
-        if (mqc_ratelimit_fail(ip) != 0) { close(fd); return NULL; }
-    }
+
+    inet_ntop(AF_INET, &cli_addr.sin_addr, client_ip, sizeof(client_ip));
+    MQC_LOG("accepted encrypted connection from %s:%d", client_ip, ntohs(cli_addr.sin_port));
+    if (mqc_abuse_check(client_ip) != 0) { close(fd); return NULL; }
+    if (mqc_ratelimit_check(client_ip) != 0) { close(fd); return NULL; }
+    if (mqc_ratelimit_fail_check(client_ip) != 0) { close(fd); return NULL; }
+
     set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
 
     if (wc_InitRng(&rng) != 0) { close(fd); return NULL; }
@@ -1365,7 +1400,7 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
                 NULL, 0, (const byte *)MQC_HKDF_INFO,
                 (word32)strlen(MQC_HKDF_INFO), aes_key, MQC_AES_KEY_SZ);
             if (ret != 0) goto fail;
-            fprintf(stderr, "[mqc-enc] phase 1: ML-KEM done, channel encrypted\n");
+            MQC_TRACE("[mqc-enc] phase 1: ML-KEM done, channel encrypted\n");
 
             /* Phase 2: receive encrypted client identity */
             {
@@ -1400,9 +1435,10 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
                 json_object_put(r2);
                 if (cli_sig_sz <= 0) goto fail;
 
-                /* Verify peer */
+                /* Verify peer (server-side: check revocation) */
                 ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey,
-                    ctx->ca_pubkey_sz, peer_index, &peer_pubkey, &peer_pubkey_sz);
+                    ctx->ca_pubkey_sz, peer_index, 1,
+                    &peer_pubkey, &peer_pubkey_sz);
                 if (ret != 0) goto fail;
 
                 /* Verify client signed the encaps_key it sent */
@@ -1427,7 +1463,7 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
                         goto fail;
                     }
                 }
-                fprintf(stderr, "[mqc-enc] peer %d verified + signature OK\n",
+                MQC_TRACE("[mqc-enc] peer %d verified + signature OK\n",
                         peer_index);
 
                 /* Send our encrypted identity */
@@ -1478,7 +1514,7 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
         }
     }
 
-    fprintf(stderr, "[mqc-enc] session established\n");
+    MQC_TRACE("[mqc-enc] session established\n");
     secure_zero(shared_secret, sizeof(shared_secret));
     secure_zero(aes_key, sizeof(aes_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
@@ -1487,6 +1523,7 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
     return conn;
 
 fail:
+    mqc_ratelimit_fail_record(client_ip);
     secure_zero(shared_secret, sizeof(shared_secret));
     secure_zero(aes_key, sizeof(aes_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
@@ -1519,7 +1556,7 @@ static int auto_accept_detect(int listen_fd, char *json_buf, int json_bufsz,
         MQC_LOG("auto-accept from %s:%d", ip, ntohs(cli_addr.sin_port));
         if (mqc_abuse_check(ip) != 0) { close(fd); return -1; }
         if (mqc_ratelimit_check(ip) != 0) { close(fd); return -1; }
-        if (mqc_ratelimit_fail(ip) != 0) { close(fd); return -1; }
+        if (mqc_ratelimit_fail_check(ip) != 0) { close(fd); return -1; }
     }
     set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
 
@@ -1534,7 +1571,7 @@ static int auto_accept_detect(int listen_fd, char *json_buf, int json_bufsz,
     *is_encrypted = json_object_object_get_ex(obj, "cert_index", &val) ? 0 : 1;
     json_object_put(obj);
 
-    fprintf(stderr, "[mqc-auto] detected %s mode\n",
+    MQC_TRACE("[mqc-auto] detected %s mode\n",
             *is_encrypted ? "encrypted" : "clear");
     return fd;
 }
@@ -1592,8 +1629,9 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
             json_object_put(req);
             if (ek_sz <= 0 || req_sig_sz <= 0) goto clear_fail;
 
+            /* Server-side auto-accept (clear): check revocation */
             ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
-                                  peer_index, &peer_pubkey, &peer_pubkey_sz);
+                                  peer_index, 1, &peer_pubkey, &peer_pubkey_sz);
             if (ret != 0) goto clear_fail;
 
             { dilithium_key pd; int v = 0; wc_dilithium_init(&pd); wc_dilithium_set_level(&pd, WC_ML_DSA_87);
@@ -1603,7 +1641,8 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
               if (ret != 0 || !v) goto clear_fail; }
 
             ret = wc_MlKemKey_Init(&mlkem, WC_ML_KEM_768, NULL, INVALID_DEVID);
-            if (ret != 0) goto clear_fail; mlkem_ok = 1;
+            if (ret != 0) goto clear_fail;
+            mlkem_ok = 1;
             ret = wc_MlKemKey_DecodePublicKey(&mlkem, encaps_key, (word32)ek_sz);
             if (ret != 0) goto clear_fail;
             ct_sz = sizeof(ciphertext); wc_MlKemKey_CipherTextSize(&mlkem, &ct_sz);
@@ -1631,7 +1670,7 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
             conn->fd = fd; memcpy(conn->aes_key, aes_key, MQC_AES_KEY_SZ);
             conn->peer_index = peer_index;
             clear_socket_timeout(fd);
-            fprintf(stderr, "[mqc-auto] clear session with peer %d\n", peer_index);
+            MQC_TRACE("[mqc-auto] clear session with peer %d\n", peer_index);
         }
         secure_zero(shared_secret, sizeof(shared_secret));
         secure_zero(aes_key, sizeof(aes_key));
@@ -1641,6 +1680,10 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
         return conn;
 
     clear_fail:
+        { struct sockaddr_in pa; socklen_t pl = sizeof(pa); char cip[64] = "unknown";
+          if (getpeername(fd, (struct sockaddr *)&pa, &pl) == 0)
+              inet_ntop(AF_INET, &pa.sin_addr, cip, sizeof(cip));
+          mqc_ratelimit_fail_record(cip); }
         secure_zero(shared_secret, sizeof(shared_secret));
         secure_zero(aes_key, sizeof(aes_key));
         if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
@@ -1674,7 +1717,8 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
 
             r1 = json_tokener_parse(json_buf);
             if (!r1 || !json_object_object_get_ex(r1, "mlkem_encaps_key", &v1)) {
-                if (r1) json_object_put(r1); goto enc_fail;
+                if (r1) json_object_put(r1);
+                goto enc_fail;
             }
             ek_hex = json_object_get_string(v1);
             ek_sz = hex_to_bytes(ek_hex, encaps_key, sizeof(encaps_key));
@@ -1683,7 +1727,8 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
 
             /* Encapsulate */
             ret = wc_MlKemKey_Init(&mlkem, WC_ML_KEM_768, NULL, INVALID_DEVID);
-            if (ret != 0) goto enc_fail; mlkem_ok = 1;
+            if (ret != 0) goto enc_fail;
+            mlkem_ok = 1;
             ret = wc_MlKemKey_DecodePublicKey(&mlkem, encaps_key, (word32)ek_sz);
             if (ret != 0) goto enc_fail;
             ct_sz = sizeof(ciphertext); wc_MlKemKey_CipherTextSize(&mlkem, &ct_sz);
@@ -1702,7 +1747,7 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
                 (const byte*)MQC_HKDF_INFO, (word32)strlen(MQC_HKDF_INFO), aes_key, MQC_AES_KEY_SZ);
             if (ret != 0) goto enc_fail;
 
-            fprintf(stderr, "[mqc-auto] encrypted: ML-KEM done, receiving identity\n");
+            MQC_TRACE("[mqc-auto] encrypted: ML-KEM done, receiving identity\n");
 
             /* Receive encrypted client identity */
             { uint64_t hs_seq = 0;
@@ -1729,8 +1774,9 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
                 json_object_put(r2);
                 if (cli_sig_sz <= 0) goto enc_fail;
 
+                /* Server-side auto-accept (encrypted): check revocation */
                 ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
-                                      peer_index, &peer_pubkey, &peer_pubkey_sz);
+                                      peer_index, 1, &peer_pubkey, &peer_pubkey_sz);
                 if (ret != 0) goto enc_fail;
 
                 /* Client signed the encaps_key it sent */
@@ -1740,7 +1786,7 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
                   wc_dilithium_free(&pd); free(peer_pubkey);
                   if (ret != 0 || !v) { fprintf(stderr, "[mqc-auto] encrypted: client sig failed\n"); goto enc_fail; } }
 
-                fprintf(stderr, "[mqc-auto] encrypted: peer %d verified\n", peer_index);
+                MQC_TRACE("[mqc-auto] encrypted: peer %d verified\n", peer_index);
 
                 /* Send our encrypted identity */
                 { uint8_t our_sig[8192]; word32 our_sig_sz = sizeof(our_sig);
@@ -1762,7 +1808,7 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
                 conn->peer_index = peer_index;
                 conn->send_seq = 1; conn->recv_seq = 1;
                 clear_socket_timeout(fd);
-                fprintf(stderr, "[mqc-auto] encrypted session with peer %d\n", peer_index);
+                MQC_TRACE("[mqc-auto] encrypted session with peer %d\n", peer_index);
             }
         }
 
@@ -1774,6 +1820,10 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
         return conn;
 
     enc_fail:
+        { struct sockaddr_in pa; socklen_t pl = sizeof(pa); char cip[64] = "unknown";
+          if (getpeername(fd, (struct sockaddr *)&pa, &pl) == 0)
+              inet_ntop(AF_INET, &pa.sin_addr, cip, sizeof(cip));
+          mqc_ratelimit_fail_record(cip); }
         secure_zero(shared_secret, sizeof(shared_secret));
         secure_zero(aes_key, sizeof(aes_key));
         if (mlkem_ok) wc_MlKemKey_Free(&mlkem);

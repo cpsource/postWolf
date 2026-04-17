@@ -7,6 +7,7 @@
  */
 
 #include "mqc.h"
+#include "mqc_peer.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,14 +16,13 @@
 #define DEFAULT_SERVER  "localhost:8444"
 #define BUF_SZ          4096
 
-/* TODO: load CA pubkey from file or server */
 static unsigned char ca_pubkey[32];
 static int ca_pubkey_sz = 0;
 
 static int load_ca_pubkey(const char *mtc_server)
 {
-    (void)mtc_server;
-    memset(ca_pubkey, 0, sizeof(ca_pubkey));
+    if (mqc_load_ca_pubkey(mtc_server, ca_pubkey) != 0)
+        return -1;
     ca_pubkey_sz = 32;
     return 0;
 }
@@ -30,7 +30,7 @@ static int load_ca_pubkey(const char *mtc_server)
 int main(int argc, char *argv[])
 {
     const char *tpm_path;
-    const char *host;
+    const char *host = NULL;
     int port = DEFAULT_PORT;
     int encrypted = 0;
     mqc_ctx_t *ctx;

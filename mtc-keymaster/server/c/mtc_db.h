@@ -407,6 +407,16 @@ void mtc_db_consume_nonce(PGconn *conn, const char *nonce_hex);
 void mtc_db_expire_nonces(PGconn *conn);
 
 /**
+ * @brief    Check connection and reconnect if needed.
+ *
+ * @param[in,out] conn_ptr  Pointer to PGconn pointer. May be replaced
+ *                          on reconnect.
+ *
+ * @return  0 if connected, -1 if reconnect failed.
+ */
+int mtc_db_ensure_connected(PGconn **conn_ptr);
+
+/**
  * @brief    Look up a public key by name from mtc_public_keys.
  *
  * @param[in]  conn      Active PostgreSQL connection.

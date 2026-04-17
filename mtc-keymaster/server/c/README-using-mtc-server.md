@@ -1,16 +1,57 @@
 # Using the MTC CA Server
 
+## Building
+
+All projects build from the wolfGuard root directory. A `GNUmakefile` at the
+root orchestrates the sub-projects (it takes precedence over the autotools
+`Makefile` used for the wolfGuard library itself).
+
+```bash
+cd ~/wolfGuard
+
+# Build everything: libslc.a, libmqc.a, mtc_server, show-tpm,
+# bootstrap_ca, bootstrap_leaf
+make
+
+# Install tools to /usr/local/bin and run ldconfig
+sudo make install
+```
+
+After `make install`, all tools are on `$PATH` and the shared library
+cache is refreshed — no `LD_LIBRARY_PATH` needed.
+
+### Build targets
+
+| Command | What it builds |
+|---------|---------------|
+| `make` | SLC (TLS wrapper), MQC (post-quantum), all MTC tools |
+| `make slc` | `socket-level-wrapper/libslc.a` only |
+| `make mqc` | `socket-level-wrapper-MQC/libmqc.a` only |
+| `make mtc` | `mtc-keymaster/server/c/` tools (depends on slc + mqc) |
+| `sudo make install` | Install binaries to `/usr/local/bin`, run `ldconfig` |
+| `make clean` | Clean all sub-project build artifacts |
+
+### Rebuilding the wolfGuard library
+
+The wolfGuard shared library (libwolfGuard.so) is built separately via
+autotools and rarely needs rebuilding:
+
+```bash
+cd ~/wolfGuard
+./configure.sh
+make -f Makefile
+sudo make -f Makefile install
+sudo ldconfig
+```
+
 ## Quick Start
 
 ```bash
-# Build
-make
-
 # Start (minimal, for testing)
-./mtc_server --port 8444 --data-dir ~/.mtc-ca-data
+mtc_server --port 8444 --data-dir ~/.mtc-ca-data
 
-# Start (production, with TLS + ECH)
-./mtc_server \
+# Start (production: TLS + ECH + DH bootstrap + MQC)
+mtc_server \
     --port 8444 \
     --data-dir ~/.mtc-ca-data \
     --tokenpath ~/.env \
@@ -18,7 +59,10 @@ make
     --log-id 32473.2 \
     --tls-cert ~/.mtc-ca-data/server-cert.pem \
     --tls-key ~/.mtc-ca-data/server-key.pem \
-    --ech-name factsorlie.com
+    --ech-name factsorlie.com \
+    --dh-port 8445 \
+    --mqc-port 8446 \
+    --tpm-path ~/.TPM/factsorlie.com-ca
 ```
 
 ## Command-Line Options
@@ -35,6 +79,10 @@ make
 | `--tls-key FILE` | — | PEM server private key |
 | `--tls-ca FILE` | — | CA cert for client verification (optional) |
 | `--ech-name NAME` | — | ECH public name (e.g., factsorlie.com) |
+| `--dh-port PORT` | — | Bootstrap DH port for pre-TLS enrollment (e.g., 8445) |
+| `--mqc-port PORT` | — | MQC post-quantum listener port (e.g., 8446) |
+| `--tpm-path PATH` | — | TPM identity for MQC (e.g., `~/.TPM/factsorlie.com-ca`). Required when `--mqc-port` is set |
+| `--mtc-server URL` | auto | MTC server URL for MQC peer verification. Defaults to `https://HOST:PORT` |
 | `--abuse-threshold N` | 75 | AbuseIPDB score threshold for general access |
 | `--log-level N` | 2 | Log verbosity (see below) |
 | `--log-file PATH` | /var/log/mtc/mtc_server.log | Log file path |
@@ -162,6 +210,58 @@ redis-cli GET "rl:203.0.113.42:0:m"
 redis-cli KEYS "rl:*" | xargs redis-cli DEL
 ```
 
+## Listener Ports
+
+The server can run up to three listeners simultaneously, all serving the
+same REST API through a unified request dispatcher:
+
+| Port | Protocol | Flag | Purpose |
+|------|----------|------|---------|
+| 8444 | TLS 1.3 (SLC) | `--port` | Primary HTTPS API |
+| 8445 | DH bootstrap | `--dh-port` | Pre-TLS enrollment (X25519 + AES) |
+| 8446 | MQC | `--mqc-port` | Post-quantum API (ML-KEM-768 + ML-DSA-87 + AES-256-GCM) |
+
+The DH bootstrap and MQC listeners run on background threads. The TLS
+listener runs on the main thread and blocks.
+
+### MQC (Post-Quantum) Listener
+
+The MQC port speaks the same HTTP API as the TLS port, but over the MQC
+post-quantum protocol instead of TLS. Connections are authenticated via
+Merkle tree certificates and ML-DSA-87 signatures.
+
+The server's MQC identity comes from `--tpm-path` (e.g.,
+`~/.TPM/factsorlie.com-ca`), which must contain `certificate.json` and
+`private_key.pem` (ML-DSA-87).
+
+The server auto-detects whether a client uses clear or encrypted identity
+mode (no configuration needed).
+
+### MQC Rate Limits
+
+Separate from the HTTP rate limits, the MQC listener has its own
+connection-level rate limiting:
+
+| Counter | Per-IP/Min | Per-IP/Hour | Description |
+|---------|-----------|------------|-------------|
+| Connect | 10 | 60 | Total MQC connections |
+| Fail | 3 | 10 | Failed handshakes only (incremented on actual failure) |
+
+Redis keys: `mqc:<ip>:conn:m`, `mqc:<ip>:conn:h`, `mqc:<ip>:fail:m`,
+`mqc:<ip>:fail:h`.
+
+### Client Tools over MQC
+
+`show-tpm` supports verification over the MQC protocol:
+
+```bash
+# Verify TPM entries via MQC (post-quantum)
+show-tpm --mqc --verify
+
+# With explicit TPM identity and server
+show-tpm --mqc --verify --tpm-path ~/.TPM/factsorlie.com -s localhost:8446
+```
+
 ## Input Validation
 
 The server validates all request parameters:
@@ -233,13 +333,11 @@ sudo systemctl start mtc-ca
 
 ### Service File
 
-`mtc-ca.service` runs the server with TLS + ECH on port 8444.
-Edit the file if your paths or settings differ.
-
-To add logging options to the service, edit the `ExecStart` line:
+`mtc-ca.service` runs the server with TLS + ECH on port 8444, DH bootstrap
+on port 8445, and MQC on port 8446. Edit the file if your paths differ.
 
 ```ini
-ExecStart=/home/ubuntu/wolfssl-new/mtc-keymaster/server/c/mtc_server \
+ExecStart=/usr/local/bin/mtc_server \
     --port 8444 \
     --data-dir /home/ubuntu/.mtc-ca-data \
     --tokenpath /home/ubuntu/.env \
@@ -248,8 +346,10 @@ ExecStart=/home/ubuntu/wolfssl-new/mtc-keymaster/server/c/mtc_server \
     --tls-cert /home/ubuntu/.mtc-ca-data/server-cert.pem \
     --tls-key /home/ubuntu/.mtc-ca-data/server-key.pem \
     --ech-name factsorlie.com \
-    --log-level 2 \
-    --log-file /var/log/mtc/mtc_server.log
+    --log-level 4 \
+    --dh-port 8445 \
+    --mqc-port 8446 \
+    --tpm-path /home/ubuntu/.TPM/factsorlie.com-ca
 ```
 
 ## API Endpoints
@@ -305,6 +405,17 @@ Client tools are in `mtc-keymaster/tools/python/`:
 | `create_leaf_cert.py <domain>` | Generate leaf key pair |
 | `create_server_cert.py <domain>` | Generate ML-DSA-87 server TLS cert |
 | `ca_dns_txt.py <cert.pem>` | Generate/verify DNS TXT for CA validation |
+
+## C Tools
+
+Installed to `/usr/local/bin` by `sudo make install`:
+
+| Tool | Purpose |
+|------|---------|
+| `mtc_server` | MTC CA/Log server |
+| `show-tpm` | List and verify `~/.TPM` credential store |
+| `bootstrap_ca` | DH bootstrap CA enrollment client |
+| `bootstrap_leaf` | DH bootstrap leaf enrollment client |
 
 ## See Also
 

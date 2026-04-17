@@ -502,6 +502,137 @@ Reproducible builds (option 1) should be a longer-term goal.
 
 ---
 
+### 9. MQC cosignature verification — follow-ups
+
+**Priority:** Low–Medium — hygiene after task #2 (client-side Ed25519
+cosignature verifier in `socket-level-wrapper-MQC/mqc_peer.c`) lands.
+These were explicitly left out of task #2's scope to keep the change
+focused.
+
+**9a. `/ca/public-key` PEM header is mislabelled**
+
+`mtc_store_get_public_key_pem()` currently produces
+`-----BEGIN EDDSA PRIVATE KEY-----` around the Ed25519 *public* key
+DER.  The DER body is correct; only the label is wrong.  Clients work
+around it by base64-decoding the body and slicing the last 32 bytes.
+Once the label is fixed to `-----BEGIN PUBLIC KEY-----`, clients can
+use `wc_PubKeyPemToDer` + `wc_Ed25519PublicKeyDecode` cleanly.
+
+**Files:** `mtc-keymaster/server/c/mtc_store.c` (`mtc_store_get_public_key_pem`)
+
+**9b. Eliminate TOFU on first `/ca/public-key` fetch**
+
+Currently `show-tpm --mqc` performs a trust-on-first-use fetch of the
+CA cosigner pubkey from the MTC HTTP server and caches it at
+`~/.TPM/ca-cosigner.pem`.  That first fetch is over TLS to the same
+server whose signatures we're about to verify — not ideal.
+Distribute the CA cosigner pubkey out-of-band (bundled with clients,
+via signed DNS TXT, or similar) so no client ever trusts the MTC
+server for initial bootstrap.
+
+**9c. Load CA cosigner pubkey in every MQC client — DONE**
+
+`mqc_load_ca_pubkey(mtc_server, out32)` is now a public API in
+`socket-level-wrapper-MQC/mqc_peer.h`.  It reads (or TOFU-fetches)
+`~/.TPM/ca-cosigner.pem`, decodes the PEM, and returns the raw
+32-byte Ed25519 key.  `show-tpm`, `examples/echo_client`, and
+`examples/echo_server` all call it.  Future `libmqc.a` consumers
+should use it too.
+
+**9d. Converge cosig message format with wolfSSL's `wc_MtcVerifyCosignature`**
+
+The MTC server signs over:
+```
+"mtc-subtree/v1\n\x00" (16 bytes)
+|| cosigner_id || log_id
+|| start (8 BE) || end (8 BE)
+|| subtree_hash (32 bytes)
+```
+
+but wolfSSL's reference `wc_MtcVerifyCosignature` expects:
+```
+"MTC SubtreeSign v1" (18 bytes)
+|| start (8 BE) || end (8 BE)
+|| subtree_hash (32 bytes)
+```
+
+The formats disagree on label and on whether `cosigner_id` / `log_id`
+are part of the signed message.  Converging to the wolfSSL shape lets
+us drop our hand-rolled verifier in `mqc_peer.c` and call the upstream
+API directly.  Requires editing `mtc_store_cosign` in
+`mtc-keymaster/server/c/mtc_store.c` and re-running `admin_recosign
+--write` once the new format is active.
+
+---
+
+### 10. MQCP echo handshake never completes
+
+**Priority:** Medium — MQCP is the QUIC-inspired transport under
+`socket-level-wrapper-QUIC/`.  The MQC (TCP) and SLC (TLS 1.3 + MTC)
+transports round-trip cleanly; MQCP does not.
+
+**Symptoms** (observed during phase-5 end-to-end testing):
+
+Running the bundled echo pair:
+
+```
+cd socket-level-wrapper-QUIC
+./examples/echo_server ~/.TPM/factsorlie.com-ca 5443 &
+./examples/echo_client ~/.TPM/factsorlie.com localhost 5443 "Hello QUIC!"
+```
+
+Client emits:
+```
+[MQCP mqcp_ctx_new] Context created: cert_index=72
+[MQCP-HS mqcp_handshake_client_start] Client sent ClientHello (5 frags)
+[MQCP-HS mqcp_handshake_check_timers] Retransmit handshake (attempt 1)
+[MQCP-HS mqcp_handshake_check_timers] Retransmit handshake (attempt 2)
+[MQCP-HS mqcp_handshake_check_timers] Retransmit handshake (attempt 3)
+```
+and then gives up.
+
+Server emits only:
+```
+[MQCP mqcp_ctx_new] Context created: cert_index=73
+[MQCP mqcp_listen] Listening on :::5443 (fd=3)
+```
+— never logs the `"New connection"` line from `mqcp_accept`.
+
+**What that tells us:** the server's `poll()` loop either isn't
+seeing incoming UDP datagrams, or `mqcp_accept()` receives them but
+never completes ClientHello reassembly and so returns NULL.  Client
+retransmission suggests the server is simply not ACKing or responding
+at all.
+
+**Suspected causes** (unverified, worth checking in this order):
+
+1. UDP socket on the server is bound but not actually reading —
+   check whether `mqcp_accept` calls `recvfrom` in its path and
+   whether the poll-ready event is being consumed.
+2. ClientHello arrives as multiple fragments but the reassembly
+   logic can't correlate them to a pending pseudo-connection
+   because no pseudo-connection exists before the first fragment
+   arrives.
+3. Address-family mismatch: `mqcp_listen` shows "Listening on
+   :::5443" (IPv6 wildcard) while the client may be sending to
+   127.0.0.1 (IPv4).  If the server's socket is pure IPv6 without
+   `IPV6_V6ONLY=0`, IPv4 packets would be silently dropped.
+
+**No dependency on phase-5 work:** MQCP (`libmqcp.a`) has its own
+peer-verification path (`mqcp_peer.c`) — it does not call the new
+`mqc_peer_verify` or `mqc_load_ca_pubkey` from libmqc.  The comment
+in `mqcp_peer.c` ("matching MQC's mqc_peer_verify") is documentation
+only.
+
+**Files to investigate:**
+- `socket-level-wrapper-QUIC/mqcp_conn.c`  — `mqcp_listen`, socket setup
+- `socket-level-wrapper-QUIC/mqcp_handshake.c` — `mqcp_accept`,
+  ClientHello reassembly
+- `socket-level-wrapper-QUIC/examples/echo_server.c` — poll loop
+  around `mqcp_accept` / `mqcp_process`
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the

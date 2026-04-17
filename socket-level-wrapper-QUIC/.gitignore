@@ -1,0 +1,6 @@
+*.o
+*.a
+examples/echo_client
+examples/echo_server
+libudp/examples/echo_client
+libudp/examples/echo_server
