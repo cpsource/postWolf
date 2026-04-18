@@ -1044,6 +1044,81 @@ mid-operation aborts in tools that expect a single attempt to work.
 
 ---
 
+### 18. Server-side: don't drop the handshake after revocation cache refresh
+
+**Priority:** Medium — functionality is correct today (client tools
+paper over it with a 100 ms retry, commit 90b4fb6e8), but the
+root cause lives on the server and every new MQC-over-8446 consumer
+inherits the workaround.
+
+**Observed symptom:** the *first* MQC handshake for a given
+`cert_index` after a server restart (or after the 24 h revocation
+cache TTL expires) fails.  The client sees
+`"Error: cannot reach server at mqc://localhost:8446"` even though
+the server is fully healthy.  Any second attempt succeeds.
+
+**Root cause:** in `socket-level-wrapper-MQC/mqc_peer.c` the helper
+`check_revoked` is documented to return `-1` on cache-miss-then-fresh-fetch:
+
+```
+/* check_revoked return codes:
+ *   0  = not revoked (fresh cached status allows connection)
+ *   1  = revoked (cached status says so, or fresh fetch confirmed)
+ *  -1  = cache miss or stale; fresh single-cert status was fetched
+ *        and persisted, but caller must drop this connection as a
+ *        safety measure.  The peer will find the cache fresh on retry.
+ */
+```
+
+The callers (both client-verifies-server and server-verifies-client)
+honor that `-1` and drop the otherwise-usable connection.  The fresh
+revocation status is *already known* at that point — the drop is
+belt-and-suspenders, not a correctness requirement.
+
+**Current workaround:** `tools/c/show-tpm.c` and
+`tools/c/issue_leaf_nonce.c` each do a one-shot 100 ms retry around
+`mqc_connect` (see commit 90b4fb6e8).  Works, but it:
+- hides a known-benign failure from callers instead of fixing it,
+- makes every new MQC tool re-implement the retry,
+- doubles cold-start latency by a hardcoded 100 ms, and
+- interacts poorly with TODO #17's more principled retry/backoff
+  policy (both will be trying to paper over the same server quirk).
+
+**Fix sketch:**
+
+1. **Investigate the "safety measure" comment.** `git log -p` on
+   `mqc_peer.c` around the `check_revoked` function and find the commit
+   that introduced the `-1` drop.  Understand what threat or race the
+   author had in mind.  This is the 30-second due-diligence that
+   distinguishes "the drop was defensive against a real risk" from
+   "the drop was habit, not design."
+
+2. **Assuming no load-bearing reason, stop dropping.** When the fresh
+   fetch successfully returns a revocation status, use it.  Collapse
+   the return codes to just `{not revoked, revoked, transport error}`
+   — there is no longer a "fresh fetch means drop" case.
+
+3. **If there *is* a load-bearing reason,** write it into the comment
+   so future readers don't second-guess it, and leave the workaround in
+   place.  At minimum distinguish "this drop is deliberate" from "this
+   drop is a TODO."
+
+4. **Remove the client-side retry** in `tools/c/show-tpm.c` and
+   `tools/c/issue_leaf_nonce.c` once the server no longer drops.
+   Anything TODO #17 builds can focus on real transient failures, not
+   this synthetic one.
+
+**Files to change:**
+- `socket-level-wrapper-MQC/mqc_peer.c` — adjust `check_revoked`
+  return codes and the caller(s) that interpret the `-1` drop.
+- `mtc-keymaster/server2/c/mtc_http.c` — if any server-side callers
+  of the handshake path depend on the drop.
+- `mtc-keymaster/tools/c/show-tpm.c`,
+  `mtc-keymaster/tools/c/issue_leaf_nonce.c` — remove the 100 ms
+  retry shim once the root cause is fixed.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
