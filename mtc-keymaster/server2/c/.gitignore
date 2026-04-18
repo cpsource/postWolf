@@ -1,0 +1,12 @@
+# Build artifacts
+mtc_server
+mtc_checkendpoint
+mtc_crypt_test
+bootstrap_leaf
+bootstrap_ca
+show-tpm
+admin_recosign
+issue_leaf_nonce
+
+# Doxygen output
+html/
