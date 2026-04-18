@@ -166,6 +166,54 @@ static int read_all(int fd, unsigned char *buf, unsigned int len)
 }
 
 /******************************************************************************
+ * Function:    send_ca_pubkey_plaintext  (static)
+ *
+ * Description:
+ *   Reply to a {"op":"ca_pubkey"} bootstrap request with the CA's Ed25519
+ *   log-cosigner public key as plaintext JSON — no DH exchange.  Same
+ *   payload shape as GET /ca/public-key on the HTTP port so clients can
+ *   reuse parsing.  Safe in the clear: it is a public key, and clients
+ *   must TOFU-pin it regardless of transport.
+ ******************************************************************************/
+static int send_ca_pubkey_plaintext(int fd, MtcStore *store)
+{
+    struct json_object *obj;
+    char pem[1024];
+    int pemSz;
+    const char *json_str;
+    int rc = -1;
+
+    obj = json_object_new_object();
+    if (!obj)
+        return -1;
+
+    json_object_object_add(obj, "ca_name",
+        json_object_new_string(store->ca_name));
+    json_object_object_add(obj, "cosigner_id",
+        json_object_new_string(store->cosigner_id));
+    json_object_object_add(obj, "algorithm",
+        json_object_new_string("Ed25519"));
+
+    pemSz = mtc_store_get_public_key_pem(store, pem, (int)sizeof(pem));
+    if (pemSz > 0) {
+        pem[pemSz] = '\0';
+        json_object_object_add(obj, "public_key_pem",
+            json_object_new_string(pem));
+    }
+
+    json_str = json_object_to_json_string(obj);
+    if (json_str) {
+        size_t len = strlen(json_str);
+        if (write_all(fd, (const unsigned char *)json_str,
+                      (unsigned int)len) == 0)
+            rc = 0;
+    }
+
+    json_object_put(obj);
+    return rc;
+}
+
+/******************************************************************************
  * Function:    read_plaintext_json  (static)
  *
  * Description:
@@ -285,18 +333,39 @@ static int handle_bootstrap_client(int fd, MtcStore *store)
     MtcCryptCtx *crypt_ctx = NULL;
     int ret, rng_ok = 0, server_key_ok = 0, client_key_ok = 0;
 
-    /* --- Step 1: Read client DH public key (plaintext JSON) --- */
+    /* --- Step 1: Read client request (plaintext JSON) --- */
     ret = read_plaintext_json(fd, json_buf, sizeof(json_buf));
     if (ret <= 0) {
-        LOG_WARN("bootstrap: failed to read DH request");
+        LOG_WARN("bootstrap: failed to read request");
         return -1;
     }
-    LOG_DEBUG("bootstrap: received DH request (%d bytes)", ret);
+    LOG_DEBUG("bootstrap: received request (%d bytes)", ret);
 
     req = json_tokener_parse(json_buf);
-    if (!req || !json_object_object_get_ex(req, "dh_public_key", &val)) {
-        LOG_WARN("bootstrap: invalid DH request JSON");
-        if (req) json_object_put(req);
+    if (!req) {
+        LOG_WARN("bootstrap: invalid request JSON");
+        return -1;
+    }
+
+    /* Handle simple ops (no DH needed) — currently only ca_pubkey fetch. */
+    if (json_object_object_get_ex(req, "op", &val)) {
+        const char *op = json_object_get_string(val);
+        int op_rc;
+        if (strcmp(op, "ca_pubkey") == 0) {
+            LOG_INFO("bootstrap: ca_pubkey request");
+            op_rc = send_ca_pubkey_plaintext(fd, store);
+            json_object_put(req);
+            return op_rc;
+        }
+        LOG_WARN("bootstrap: unknown op '%s'", op);
+        json_object_put(req);
+        return -1;
+    }
+
+    /* DH enrollment flow — expect dh_public_key */
+    if (!json_object_object_get_ex(req, "dh_public_key", &val)) {
+        LOG_WARN("bootstrap: missing 'dh_public_key' in request");
+        json_object_put(req);
         return -1;
     }
     hex_str = json_object_get_string(val);
