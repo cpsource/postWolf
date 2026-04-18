@@ -387,7 +387,47 @@ ExecStart=/usr/local/bin/mtc_server \
 |----------|-------------|
 | `POST /enrollment/nonce` | Request a server-issued nonce for CA enrollment |
 | `POST /certificate/request` | Request a certificate (leaf or CA with nonce) |
-| `POST /revoke` | Revoke a certificate |
+| `POST /revoke` | Revoke a LEAF certificate (CA-signed; see below) |
+
+### POST /revoke — CA-signed leaf revocation
+
+Authentication model:
+- Caller must be a **CA** (subject ends in `-ca`).
+- Target must be a **leaf** (subject does not end in `-ca`).
+- Target subject must be `<ca-domain>` or `*.<ca-domain>`.
+- A CA may not revoke itself (`ca_cert_index != cert_index`).
+
+Request body (all fields required):
+
+```json
+{
+  "ca_cert_index":     42,
+  "cert_index":        73,
+  "reason":            "key compromise",
+  "timestamp":         1776530000,
+  "ca_public_key_pem": "-----BEGIN PUBLIC KEY-----\n...",
+  "signature":         "<hex>"
+}
+```
+
+`signature` covers the UTF-8 string
+`revoke:<ca_cert_index>:<cert_index>:<reason>:<timestamp>` using
+whatever algorithm the CA's log entry recorded
+(EC-P256/P-384, Ed25519, ML-DSA-44/65/87). `timestamp` must be within
+±5 minutes of the server's clock.
+
+Error responses: `400` malformed/stale, `403` for every authorization
+violation (not a CA, target not a leaf, outside domain, self-revoke,
+PEM hash mismatch, signature mismatch), `404` if either index is not
+in the log.
+
+On success: `200 {revoked:true, cert_index:N, ca_cert_index:M,
+target_subject:"...", reason:"..."}` and the target is added to the
+server's signed revocation list immediately.
+
+Use `/usr/local/bin/revoke-key --target-index N` to build and sign
+this request automatically from your CA's on-disk identity — see the
+tool's `--help` for `--list`, `--refresh`, and `--dry-run` modes.
 
 ## First Startup Behavior
 

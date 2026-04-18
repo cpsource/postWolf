@@ -15,7 +15,7 @@ SERVER_DIR = ../../server2/c
 MQC_DIR = ../../../socket-level-wrapper-MQC
 MQC_LIB = $(MQC_DIR)/libmqc.a
 
-all: admin_recosign bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce
+all: admin_recosign bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key
 
 $(MQC_LIB):
 	$(MAKE) -C $(MQC_DIR)
@@ -53,6 +53,10 @@ issue_leaf_nonce: issue_leaf_nonce.c $(MQC_LIB)
 	$(CC) $(CFLAGS) -o $@ issue_leaf_nonce.c $(MQC_LIB) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) -lcurl -lhiredis -lpthread -lm
 
+revoke-key: revoke-key.c $(MQC_LIB)
+	$(CC) $(CFLAGS) -o $@ revoke-key.c $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) -lcurl -lhiredis -lpthread -lm
+
 BINDIR ?= /usr/local/bin
 
 install: all
@@ -62,8 +66,9 @@ install: all
 	install -m 755 bootstrap_leaf    $(DESTDIR)$(BINDIR)/bootstrap_leaf
 	install -m 755 show-tpm          $(DESTDIR)$(BINDIR)/show-tpm
 	install -m 755 issue_leaf_nonce  $(DESTDIR)$(BINDIR)/issue_leaf_nonce
+	install -m 755 revoke-key        $(DESTDIR)$(BINDIR)/revoke-key
 
 clean:
-	rm -f admin_recosign bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce
+	rm -f admin_recosign bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key
 
 .PHONY: all install clean

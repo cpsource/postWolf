@@ -954,6 +954,12 @@ static char *bootstrap_exchange(const char *host, int port, const char *req)
  *   (matching http_get's contract — caller parses with json_tokener_parse).
  *   Returns NULL on transport or protocol failure.
  ******************************************************************************/
+char *mqc_bootstrap_http_get(const char *mtc_server, const char *path,
+                             long *status)
+{
+    return bootstrap_http_get(mtc_server, path, status);
+}
+
 static char *bootstrap_http_get(const char *mtc_server, const char *path,
                                 long *status)
 {

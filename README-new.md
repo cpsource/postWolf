@@ -163,6 +163,38 @@ Canonical (C) client tools live in `mtc-keymaster/tools/c/` and install to
 - **`bootstrap_leaf`** — leaf enrollment with an issued nonce.
 - **`issue_leaf_nonce`** — CA operator issues a leaf enrollment nonce.
 - **`admin_recosign`** — operational tool for re-cosigning subtrees.
+- **`revoke-key`** — CA operator revokes a leaf in its domain; also
+  lists/refreshes the local revocation cache (see "Revocation" below).
+
+### Revocation
+
+`revoke-key` has three modes, all routed through the MTC server:
+
+```bash
+# CA operator: revoke a leaf in your domain (MQC/8446, signs with the
+# CA's private key from the auto-detected *-ca identity under ~/.TPM/).
+revoke-key --target-index 73 --reason "key compromise"
+
+# Anyone: list revoked leaves whose subject is DOMAIN or *.DOMAIN.
+# Public lookup — no identity needed; rides the bootstrap port (8445).
+revoke-key --list factsorlie.com
+
+# Anyone: re-pull /revoked and rewrite every ~/.TPM/peers/<n>/revoked.json
+# with fresh mtime + correct flag.  Useful before long-running sessions
+# to avoid the 24-hour-TTL cache-refresh drop on first contact.
+revoke-key --refresh
+```
+
+Authorization rules enforced by the server (signed payload over
+`revoke:<ca_idx>:<target_idx>:<reason>:<timestamp>`, ±5 min freshness):
+
+- Caller's cert must be a CA (subject ends in `-ca`).
+- Target must be a leaf (subject does not end in `-ca`).
+- Target subject must be `<ca-domain>` or `*.<ca-domain>`.
+- A CA cannot revoke itself.
+
+Full endpoint spec in `mtc-keymaster/server2/c/README-using-mtc-server.md`
+under `POST /revoke`.
 
 The server daemon `mtc_server` lives in `mtc-keymaster/server2/c/`
 (fork-after-accept, one child per connection). `mtc-keymaster/server/c/` is

@@ -1119,6 +1119,55 @@ belt-and-suspenders, not a correctness requirement.
 
 ---
 
+### 19. End-to-end test coverage for `/revoke` and `revoke-key`
+
+**Priority:** High — authentication-gated revocation landed in phase-7
+but only the two read-only subcommands (`--list`, `--refresh`) have
+been exercised against the live server.  The signing path was built,
+compiled, and dry-run'd, but never actually POSTed to `/revoke`
+because every test would mutate the production Merkle log.
+
+**What's verified today (2026-04-18):**
+
+- `revoke-key --list factsorlie.com` round-trips via the bootstrap
+  port; filters `/revoked` by subject suffix correctly.
+- `revoke-key --refresh` re-pulls `/revoked` and rewrites every
+  `~/.TPM/peers/<n>/revoked.json` with fresh mtime + correct
+  `{"revoked": true|false}` state.
+- `handle_revoke` builds, links, and passes `-Wall -Wextra -Werror`.
+
+**What still needs a test rig:**
+
+Stand up a scratch log (`tools/clearout.sh` → restart `mtc-ca.service`),
+enrol a disposable CA + two disposable leaves, and run the full
+positive + negative matrix.  Expected results:
+
+| Scenario | Expect | Current verification |
+|---|---|---|
+| CA revokes a leaf in its own domain | `200 {revoked:true}`, `/revoked/<n>` returns `true` on next call | NOT TESTED |
+| CA revokes itself (`ca_cert_index == cert_index`) | `403 "CA may not revoke itself"` | NOT TESTED |
+| CA revokes a leaf **outside** its domain | `403 "target leaf is not within the CA's domain"` | NOT TESTED |
+| CA revokes another CA (`-ca` target) | `403 "target is not a leaf"` | NOT TESTED |
+| Caller is a leaf, not a CA | `403 "caller is not a CA"` | NOT TESTED |
+| Signature valid but `ca_public_key_pem` hash ≠ logged hash | `403 "ca_public_key_pem does not match logged CA certificate"` | NOT TESTED |
+| Signature invalid for otherwise-valid payload | `403 "signature verification failed"` | NOT TESTED |
+| Timestamp > 5 min old | `400 "timestamp outside ±5 min freshness window"` | NOT TESTED |
+| Timestamp > 5 min in the future | `400` same message | NOT TESTED |
+| Every key algorithm: EC-P256, EC-P384, Ed25519, ML-DSA-44, ML-DSA-65, ML-DSA-87 | `200` on the matching CA, `403` if algorithm mismatched against log | NOT TESTED |
+
+**Cross-reference:** `tools/c/revoke-key.c` dry-run mode prints the
+exact body that would be POSTed, which is the easiest way to seed
+malformed inputs for the negative cases — e.g. hand-edit the
+dry-run output, `printf` it through `nc` or `curl -k
+https://localhost:8444/revoke` with `Content-Type: application/json`.
+
+**Files involved:**
+- `mtc-keymaster/server2/c/mtc_http.c` — `handle_revoke` (auth logic).
+- `mtc-keymaster/tools/c/revoke-key.c` — signing client.
+- `mtc-keymaster/tools/clearout.sh` — scratch-log reset.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the

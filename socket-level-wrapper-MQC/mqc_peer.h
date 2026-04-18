@@ -49,4 +49,18 @@ int mqc_peer_get_cached_pubkey(int cert_index,
  * GET /ca/public-key on mtc_server (TOFU).  Returns 0 on success. */
 int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out32);
 
+/* Run a GET over the DH bootstrap port's {"op":"http_get","path":...}
+ * proxy.  No MQC identity needed — these endpoints are pre-authentication
+ * public lookups (e.g. /revoked, /certificate/<n>, /log/entry/<n>).
+ *
+ * mtc_server:  host[:port] — only the host portion is used; the port
+ *              defaults to the compiled-in bootstrap port (8445).
+ * path:        URI path (e.g. "/revoked").
+ * status:      Output: HTTP-style status code written by the server.
+ *
+ * Returns a malloc'd NUL-terminated JSON string (caller frees) or NULL
+ * on transport failure.  Matches the contract of libcurl's http_get. */
+char *mqc_bootstrap_http_get(const char *mtc_server, const char *path,
+                             long *status);
+
 #endif /* MQC_PEER_H */

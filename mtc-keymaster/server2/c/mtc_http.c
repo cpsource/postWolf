@@ -1415,24 +1415,52 @@ static void handle_trust_anchors(client_io *io, MtcStore *store)
  * Function:    handle_revoke
  *
  * Description:
- *   POST /revoke — revoke a certificate by log index.
- *   Gated by enrollment-level AbuseIPDB check (revocation is privileged).
- *   Body: {"cert_index": N, "reason": "..."}
+ *   POST /revoke — revoke a LEAF certificate under a CA's authority.
  *
- * Input Arguments:
- *   io        - Client I/O context.
- *   store     - MTC store.
- *   body      - HTTP request body (JSON).
- *   body_len  - Length of body in bytes.
+ *   Authorization model:
+ *     - Only a CA (subject "<domain>-ca") may revoke.
+ *     - The CA may revoke only LEAVES (subject not ending in "-ca").
+ *     - The target leaf's subject must be within the CA's domain:
+ *       leaf subject == "<ca-domain>" or ends in ".<ca-domain>".
+ *     - The CA may not revoke itself (ca_cert_index != cert_index).
+ *     - The caller must sign a freshness-bound payload using the CA's
+ *       private key; the server rehashes the supplied PEM against the
+ *       CA's logged public-key hash.
+ *
+ *   Body (all fields required):
+ *     {
+ *       "ca_cert_index":     M,                    // the revoking CA
+ *       "cert_index":        N,                    // the leaf being revoked
+ *       "reason":            "...",
+ *       "timestamp":         <epoch, ±5 min>,
+ *       "ca_public_key_pem": "-----BEGIN ...-----\n...",
+ *       "signature":         "<hex>"
+ *     }
+ *
+ *   sign_msg = "revoke:<ca_cert_index>:<cert_index>:<reason>:<timestamp>"
  ******************************************************************************/
 static void handle_revoke(client_io *io, MtcStore *store,
                           const char *body, int body_len)
 {
     struct json_object *req, *val;
-    int cert_index;
-    const char *reason = NULL;
+    struct json_object *ca_cert_json, *ca_sc, *ca_tbs;
+    struct json_object *tgt_cert_json, *tgt_sc, *tgt_tbs;
+    int   ca_cert_index = -1;
+    int   cert_index    = -1;
+    const char *reason        = "";
+    const char *ca_pub_pem    = NULL;
+    const char *sig_hex       = NULL;
+    const char *ca_logged_hash;
+    const char *ca_algo;
+    const char *ca_subject;
+    const char *tgt_subject;
+    long timestamp = 0;
+    long now;
+    char computed_hash[65];
+    char ca_domain[256];
+    size_t ca_subj_len, ca_dom_len, tgt_subj_len;
 
-    /* Enrollment-level AbuseIPDB gate (revocation is privileged) */
+    /* Enrollment-level AbuseIPDB gate */
     if (io->ip_str[0] != '\0') {
         int score = mtc_checkendpoint(io->ip_str);
         if (score >= ABUSEIPDB_ENROLL_THRESHOLD) {
@@ -1450,6 +1478,13 @@ static void handle_revoke(client_io *io, MtcStore *store,
         return;
     }
 
+    if (!json_object_object_get_ex(req, "ca_cert_index", &val)) {
+        http_send_error(io, 400, "missing 'ca_cert_index'");
+        json_object_put(req);
+        return;
+    }
+    ca_cert_index = json_object_get_int(val);
+
     if (!json_object_object_get_ex(req, "cert_index", &val)) {
         http_send_error(io, 400, "missing 'cert_index'");
         json_object_put(req);
@@ -1460,19 +1495,311 @@ static void handle_revoke(client_io *io, MtcStore *store,
     if (json_object_object_get_ex(req, "reason", &val))
         reason = json_object_get_string(val);
 
+    if (!json_object_object_get_ex(req, "timestamp", &val)) {
+        http_send_error(io, 400, "missing 'timestamp'");
+        json_object_put(req);
+        return;
+    }
+    timestamp = (long)json_object_get_int64(val);
+
+    if (!json_object_object_get_ex(req, "ca_public_key_pem", &val)) {
+        http_send_error(io, 400, "missing 'ca_public_key_pem'");
+        json_object_put(req);
+        return;
+    }
+    ca_pub_pem = json_object_get_string(val);
+
+    if (!json_object_object_get_ex(req, "signature", &val)) {
+        http_send_error(io, 400, "missing 'signature'");
+        json_object_put(req);
+        return;
+    }
+    sig_hex = json_object_get_string(val);
+
+    /* --- Self-revocation check --- */
+    if (ca_cert_index == cert_index) {
+        LOG_WARN("revoke: CA %d attempted self-revocation", ca_cert_index);
+        http_send_error(io, 403, "CA may not revoke itself");
+        json_object_put(req);
+        return;
+    }
+
+    /* --- Freshness --- */
+    now = (long)time(NULL);
+    if (timestamp < now - 300 || timestamp > now + 300) {
+        LOG_WARN("revoke: stale/future timestamp %ld (server now=%ld)",
+                 timestamp, now);
+        http_send_error(io, 400,
+            "timestamp outside ±5 min freshness window");
+        json_object_put(req);
+        return;
+    }
+
+    /* --- Look up CA cert --- */
+    if (ca_cert_index < 0 || ca_cert_index >= store->cert_count ||
+        store->certificates[ca_cert_index] == NULL) {
+        http_send_error(io, 404, "CA certificate not found");
+        json_object_put(req);
+        return;
+    }
+    ca_cert_json = store->certificates[ca_cert_index];
+    if (!json_object_object_get_ex(ca_cert_json, "standalone_certificate",
+                                   &ca_sc) ||
+        !json_object_object_get_ex(ca_sc, "tbs_entry", &ca_tbs)) {
+        http_send_error(io, 500, "malformed CA cert");
+        json_object_put(req);
+        return;
+    }
+    if (!json_object_object_get_ex(ca_tbs, "subject", &val)) {
+        http_send_error(io, 500, "CA cert missing subject");
+        json_object_put(req);
+        return;
+    }
+    ca_subject = json_object_get_string(val);
+
+    /* Verify caller is a CA — subject ends in "-ca" */
+    ca_subj_len = strlen(ca_subject);
+    if (ca_subj_len < 3 || strcmp(ca_subject + ca_subj_len - 3, "-ca") != 0) {
+        LOG_WARN("revoke: caller subject '%s' is not a CA", ca_subject);
+        http_send_error(io, 403, "caller is not a CA");
+        json_object_put(req);
+        return;
+    }
+    /* Derive CA domain = subject minus "-ca" suffix */
+    ca_dom_len = ca_subj_len - 3;
+    if (ca_dom_len >= sizeof(ca_domain)) ca_dom_len = sizeof(ca_domain) - 1;
+    memcpy(ca_domain, ca_subject, ca_dom_len);
+    ca_domain[ca_dom_len] = '\0';
+
+    if (!json_object_object_get_ex(ca_tbs, "subject_public_key_hash", &val)) {
+        http_send_error(io, 500, "CA cert missing key hash");
+        json_object_put(req);
+        return;
+    }
+    ca_logged_hash = json_object_get_string(val);
+
+    ca_algo = "EC-P256";
+    if (json_object_object_get_ex(ca_tbs, "subject_public_key_algorithm",
+                                  &val))
+        ca_algo = json_object_get_string(val);
+
+    /* --- Look up target cert --- */
+    if (cert_index < 0 || cert_index >= store->cert_count ||
+        store->certificates[cert_index] == NULL) {
+        http_send_error(io, 404, "target certificate not found");
+        json_object_put(req);
+        return;
+    }
+    tgt_cert_json = store->certificates[cert_index];
+    if (!json_object_object_get_ex(tgt_cert_json, "standalone_certificate",
+                                   &tgt_sc) ||
+        !json_object_object_get_ex(tgt_sc, "tbs_entry", &tgt_tbs)) {
+        http_send_error(io, 500, "malformed target cert");
+        json_object_put(req);
+        return;
+    }
+    if (!json_object_object_get_ex(tgt_tbs, "subject", &val)) {
+        http_send_error(io, 500, "target cert missing subject");
+        json_object_put(req);
+        return;
+    }
+    tgt_subject = json_object_get_string(val);
+    tgt_subj_len = strlen(tgt_subject);
+
+    /* Verify target is a leaf (subject NOT ending in "-ca") */
+    if (tgt_subj_len >= 3 &&
+        strcmp(tgt_subject + tgt_subj_len - 3, "-ca") == 0) {
+        LOG_WARN("revoke: target '%s' is a CA, not a leaf", tgt_subject);
+        http_send_error(io, 403, "target is not a leaf");
+        json_object_put(req);
+        return;
+    }
+
+    /* Verify target subject is in CA's domain (exact or *.domain) */
+    {
+        int in_domain = 0;
+        if (tgt_subj_len == ca_dom_len &&
+            strcmp(tgt_subject, ca_domain) == 0) {
+            in_domain = 1;
+        } else if (tgt_subj_len > ca_dom_len + 1 &&
+                   tgt_subject[tgt_subj_len - ca_dom_len - 1] == '.' &&
+                   strcmp(tgt_subject + tgt_subj_len - ca_dom_len,
+                          ca_domain) == 0) {
+            in_domain = 1;
+        }
+        if (!in_domain) {
+            LOG_WARN("revoke: target '%s' not in CA domain '%s'",
+                     tgt_subject, ca_domain);
+            http_send_error(io, 403,
+                "target leaf is not within the CA's domain");
+            json_object_put(req);
+            return;
+        }
+    }
+
+    /* --- Hash caller's CA PEM vs logged CA hash --- */
+    {
+        wc_Sha256 sha;
+        uint8_t h[32];
+        int fi;
+        wc_InitSha256(&sha);
+        wc_Sha256Update(&sha, (const uint8_t *)ca_pub_pem,
+                        (word32)strlen(ca_pub_pem));
+        wc_Sha256Final(&sha, h);
+        wc_Sha256Free(&sha);
+        for (fi = 0; fi < 32; fi++)
+            snprintf(computed_hash + fi * 2, 3, "%02x", h[fi]);
+    }
+    if (strcmp(computed_hash, ca_logged_hash) != 0) {
+        LOG_WARN("revoke: CA key hash mismatch for ca_cert_index %d",
+                 ca_cert_index);
+        http_send_error(io, 403,
+            "ca_public_key_pem does not match logged CA certificate");
+        json_object_put(req);
+        return;
+    }
+
+    /* --- Verify signature --- */
+    {
+        uint8_t sig_bytes[8192];
+        int sig_len;
+        char sign_msg[MAX_PATH_SZ];
+        uint8_t msg_hash[32];
+        int verified = 0;
+        int ret;
+        uint8_t der_buf[4096];
+        int der_sz;
+
+        snprintf(sign_msg, sizeof(sign_msg), "revoke:%d:%d:%s:%ld",
+                 ca_cert_index, cert_index, reason, timestamp);
+
+        {
+            wc_Sha256 sha;
+            wc_InitSha256(&sha);
+            wc_Sha256Update(&sha, (const uint8_t *)sign_msg,
+                            (word32)strlen(sign_msg));
+            wc_Sha256Final(&sha, msg_hash);
+            wc_Sha256Free(&sha);
+        }
+
+        sig_len = (int)strlen(sig_hex) / 2;
+        if (sig_len <= 0 || sig_len > (int)sizeof(sig_bytes)) {
+            http_send_error(io, 400, "invalid signature length");
+            json_object_put(req);
+            return;
+        }
+        {
+            int si;
+            for (si = 0; si < sig_len; si++) {
+                unsigned int b;
+                if (sscanf(sig_hex + si * 2, "%02x", &b) != 1) {
+                    http_send_error(io, 400, "invalid signature hex");
+                    json_object_put(req);
+                    return;
+                }
+                sig_bytes[si] = (uint8_t)b;
+            }
+        }
+
+        der_sz = (int)sizeof(der_buf);
+        ret = wc_PubKeyPemToDer((const unsigned char *)ca_pub_pem,
+                                (int)strlen(ca_pub_pem),
+                                der_buf, der_sz);
+        if (ret < 0) {
+            LOG_WARN("revoke: CA PEM to DER failed: %d", ret);
+            http_send_error(io, 400, "invalid CA public key PEM");
+            json_object_put(req);
+            return;
+        }
+        der_sz = ret;
+
+        if (strcmp(ca_algo, "EC-P256") == 0 ||
+            strcmp(ca_algo, "EC-P384") == 0) {
+            ecc_key ecc;
+            word32 idx = 0;
+            wc_ecc_init(&ecc);
+            ret = wc_EccPublicKeyDecode(der_buf, &idx, &ecc,
+                                        (word32)der_sz);
+            if (ret == 0)
+                ret = wc_ecc_verify_hash(sig_bytes, (word32)sig_len,
+                                         msg_hash, 32, &verified, &ecc);
+            wc_ecc_free(&ecc);
+        }
+        else if (strcmp(ca_algo, "Ed25519") == 0) {
+            ed25519_key ed;
+            word32 idx = 0;
+            wc_ed25519_init(&ed);
+            ret = wc_Ed25519PublicKeyDecode(der_buf, &idx, &ed,
+                                            (word32)der_sz);
+            if (ret == 0)
+                ret = wc_ed25519_verify_msg(sig_bytes, (word32)sig_len,
+                                            (const uint8_t *)sign_msg,
+                                            (word32)strlen(sign_msg),
+                                            &verified, &ed);
+            wc_ed25519_free(&ed);
+        }
+        else if (strncmp(ca_algo, "ML-DSA-", 7) == 0) {
+            dilithium_key dil;
+            byte level;
+            if (strcmp(ca_algo, "ML-DSA-44") == 0)       level = WC_ML_DSA_44;
+            else if (strcmp(ca_algo, "ML-DSA-65") == 0)  level = WC_ML_DSA_65;
+            else if (strcmp(ca_algo, "ML-DSA-87") == 0)  level = WC_ML_DSA_87;
+            else {
+                http_send_error(io, 400, "unsupported ML-DSA variant");
+                json_object_put(req);
+                return;
+            }
+            wc_dilithium_init(&dil);
+            wc_dilithium_set_level(&dil, level);
+            ret = wc_dilithium_import_public(der_buf, (word32)der_sz, &dil);
+            if (ret == 0)
+                ret = wc_dilithium_verify_ctx_msg(sig_bytes,
+                                                   (word32)sig_len,
+                                                   NULL, 0,
+                                                   (const uint8_t *)sign_msg,
+                                                   (word32)strlen(sign_msg),
+                                                   &verified, &dil);
+            wc_dilithium_free(&dil);
+        }
+        else {
+            http_send_error(io, 400,
+                "unsupported key algorithm for revocation");
+            json_object_put(req);
+            return;
+        }
+
+        if (ret != 0 || !verified) {
+            LOG_WARN("revoke: signature verification failed "
+                     "(ca=%d target=%d algo=%s)",
+                     ca_cert_index, cert_index, ca_algo);
+            http_send_error(io, 403, "signature verification failed");
+            json_object_put(req);
+            return;
+        }
+    }
+
+    /* Authorized — perform the revocation */
     if (mtc_store_revoke(store, cert_index, reason) != 0) {
         http_send_error(io, 500, "revocation failed");
         json_object_put(req);
         return;
     }
 
+    LOG_INFO("revoke: cert %d ('%s') revoked by CA %d ('%s') reason='%s'",
+             cert_index, tgt_subject, ca_cert_index, ca_subject, reason);
+
     {
         struct json_object *resp = json_object_new_object();
-        json_object_object_add(resp, "revoked", json_object_new_boolean(1));
+        json_object_object_add(resp, "revoked",
+            json_object_new_boolean(1));
         json_object_object_add(resp, "cert_index",
             json_object_new_int(cert_index));
+        json_object_object_add(resp, "ca_cert_index",
+            json_object_new_int(ca_cert_index));
+        json_object_object_add(resp, "target_subject",
+            json_object_new_string(tgt_subject));
         json_object_object_add(resp, "reason",
-            json_object_new_string(reason ? reason : "unspecified"));
+            json_object_new_string(reason[0] ? reason : "unspecified"));
         http_send_json_obj(io, 200, resp);
         json_object_put(resp);
     }
