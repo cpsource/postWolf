@@ -34,20 +34,21 @@ case "$1" in
         journalctl -u "$SERVICE" -f
         ;;
     rebuild)
+        REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
         echo "Stopping $SERVICE..."
         sudo systemctl stop "$SERVICE"
-        echo "Rebuilding..."
-        make -C "$(dirname "$0")/../server/c" clean
-        make -C "$(dirname "$0")/../server/c"
-        if [ $? -eq 0 ]; then
-            echo "Starting $SERVICE..."
-            sudo systemctl start "$SERVICE"
-            sleep 1
-            sudo systemctl status "$SERVICE" --no-pager
-        else
-            echo "Build failed. Server not started."
+        echo "Rebuilding from $REPO_ROOT (Makefile.tools → server2/c + tools/c)..."
+        make -C "$REPO_ROOT" -f Makefile.tools clean || exit 1
+        make -C "$REPO_ROOT" -f Makefile.tools       || exit 1
+        echo "Installing to /usr/local/bin..."
+        sudo make -C "$REPO_ROOT" -f Makefile.tools install || {
+            echo "Install failed. Server not started."
             exit 1
-        fi
+        }
+        echo "Starting $SERVICE..."
+        sudo systemctl start "$SERVICE"
+        sleep 1
+        sudo systemctl status "$SERVICE" --no-pager
         ;;
     *)
         echo "Usage: $0 {start|stop|restart|status|logs|rebuild}"
