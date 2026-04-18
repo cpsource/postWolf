@@ -23,6 +23,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <unistd.h>
 #include <time.h>
 #include <errno.h>
 
@@ -863,14 +866,115 @@ static int pem_extract_ed25519_raw(const char *pem, byte *out32)
     return 0;
 }
 
+/** Default DH bootstrap port for ca_pubkey fetches. */
+#define MQC_BOOTSTRAP_PORT 8445
+
+/******************************************************************************
+ * Function:    extract_host  (static)
+ *
+ * Description:
+ *   Extract a bare hostname from an "mtc_server" config string like
+ *   "host:8444" or "https://host:8444" or plain "host".  Writes just the
+ *   host portion into out (no scheme, no port).
+ ******************************************************************************/
+static void extract_host(const char *server, char *out, int outsz)
+{
+    const char *p = server;
+    const char *end;
+    int len;
+
+    if (strncmp(p, "https://", 8) == 0) p += 8;
+    else if (strncmp(p, "http://", 7) == 0) p += 7;
+
+    end = strchr(p, ':');
+    if (!end) end = p + strlen(p);
+    len = (int)(end - p);
+    if (len >= outsz) len = outsz - 1;
+    memcpy(out, p, (size_t)len);
+    out[len] = '\0';
+}
+
+/******************************************************************************
+ * Function:    bootstrap_fetch_ca_pubkey  (static)
+ *
+ * Description:
+ *   Open a TCP connection to host:port (the DH bootstrap listener), send
+ *   a plaintext {"op":"ca_pubkey"} request, and read the JSON response by
+ *   brace-counting.  Returns a malloc'd NUL-terminated JSON string on
+ *   success, or NULL on any failure.
+ ******************************************************************************/
+static char *bootstrap_fetch_ca_pubkey(const char *host, int port)
+{
+    struct addrinfo hints, *res = NULL, *rp;
+    char port_str[8];
+    int fd = -1;
+    const char *req = "{\"op\":\"ca_pubkey\"}";
+    ssize_t sent;
+    char *buf = NULL;
+    int pos = 0, depth = 0, started = 0;
+    size_t cap = 4096;
+
+    snprintf(port_str, sizeof(port_str), "%d", port);
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if (getaddrinfo(host, port_str, &hints, &res) != 0)
+        return NULL;
+
+    for (rp = res; rp != NULL; rp = rp->ai_next) {
+        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (fd < 0) continue;
+        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    if (fd < 0) return NULL;
+
+    sent = send(fd, req, strlen(req), 0);
+    if (sent != (ssize_t)strlen(req)) {
+        close(fd);
+        return NULL;
+    }
+
+    buf = (char *)malloc(cap);
+    if (!buf) {
+        close(fd);
+        return NULL;
+    }
+
+    for (;;) {
+        char c;
+        ssize_t n = read(fd, &c, 1);
+        if (n <= 0) break;
+        if ((size_t)pos + 2 >= cap) {
+            size_t new_cap = cap * 2;
+            char *nb = (char *)realloc(buf, new_cap);
+            if (!nb) { free(buf); buf = NULL; break; }
+            buf = nb; cap = new_cap;
+        }
+        buf[pos++] = c;
+        if (c == '{') { depth++; started = 1; }
+        else if (c == '}') { depth--; }
+        if (started && depth == 0) break;
+    }
+    close(fd);
+    if (!buf) return NULL;
+    if (pos == 0 || !started || depth != 0) { free(buf); return NULL; }
+    buf[pos] = '\0';
+    return buf;
+}
+
 /******************************************************************************
  * Function:    mqc_load_ca_pubkey
  *
  * Description:
  *   Load the CA cosigner's raw 32-byte Ed25519 public key — the trust
  *   anchor any MQC peer needs to verify log cosignatures.  Prefers a
- *   cached copy at ~/.TPM/ca-cosigner.pem; on miss, fetches
- *   GET /ca/public-key from mtc_server (TOFU) and populates the cache.
+ *   cached copy at ~/.TPM/ca-cosigner.pem; on miss, fetches the key over
+ *   the DH bootstrap port (MQC_BOOTSTRAP_PORT) by sending a plaintext
+ *   {"op":"ca_pubkey"} request, then populates the cache (TOFU).
  *
  *   This is the shared helper used by show-tpm, echo_server,
  *   echo_client, and any other MQC-capable tool.  Long-term, the CA
@@ -899,21 +1003,19 @@ int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out32)
                 cache_path);
     }
 
-    /* Fetch from server (TOFU). */
+    /* Fetch from DH bootstrap port (TOFU).  No TLS — the payload is a
+     * public key that the caller pins regardless of transport. */
     {
-        char url[768], server[512];
+        char host[256];
         char *body;
-        long code = 0;
         struct json_object *obj = NULL, *val;
 
-        normalize_server(mtc_server, server, sizeof(server));
-        snprintf(url, sizeof(url), "%s/ca/public-key", server);
-        body = http_get(url, &code);
-        if (!body || code != 200) {
+        extract_host(mtc_server, host, sizeof(host));
+        body = bootstrap_fetch_ca_pubkey(host, MQC_BOOTSTRAP_PORT);
+        if (!body) {
             fprintf(stderr,
-                    "[mqc] cannot fetch CA pubkey from %s (code=%ld)\n",
-                    url, code);
-            free(body);
+                    "[mqc] cannot fetch CA pubkey from %s:%d (bootstrap)\n",
+                    host, MQC_BOOTSTRAP_PORT);
             return -1;
         }
         obj = json_tokener_parse(body);
@@ -921,7 +1023,7 @@ int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out32)
         if (!obj ||
             !json_object_object_get_ex(obj, "public_key_pem", &val)) {
             fprintf(stderr,
-                    "[mqc] /ca/public-key missing public_key_pem\n");
+                    "[mqc] bootstrap ca_pubkey missing public_key_pem\n");
             if (obj) json_object_put(obj);
             return -1;
         }
@@ -935,7 +1037,7 @@ int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out32)
         free(pem);
         if (rc != 0) {
             fprintf(stderr,
-                    "[mqc] /ca/public-key PEM could not be decoded\n");
+                    "[mqc] bootstrap ca_pubkey PEM could not be decoded\n");
             return -1;
         }
     }
