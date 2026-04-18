@@ -19,7 +19,7 @@ MQC_LIB = $(MQC_DIR)/libmqc.a
 SRCS = mtc_server.c mtc_merkle.c mtc_store.c mtc_http.c mtc_db.c mtc_checkendpoint.c mtc_log.c mtc_ratelimit.c mtc_crypt.c mtc_bootstrap.c mtc_ca_validate.c
 LDFLAGS += -lcurl
 
-all: mtc_server show-tpm bootstrap_ca bootstrap_leaf admin_recosign issue_leaf_nonce
+all: mtc_server
 
 $(SLC_LIB):
 	$(MAKE) -C $(SLC_DIR)
@@ -41,55 +41,6 @@ make-mtc-checkpoint: mtc_checkendpoint.c mtc_checkendpoint.h mtc_db.c mtc_db.h
 doxygen:
 	doxygen Doxyfile
 
-bootstrap_ca: bootstrap_ca.c mtc_crypt.c mtc_crypt.h mtc_pubkey_db.c mtc_pubkey_db.h
-	$(CC) -Wall -Wextra -O2 \
-		$(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H \
-		$(shell pkg-config --cflags json-c) \
-		$(shell pkg-config --cflags libpq) \
-		-o bootstrap_ca bootstrap_ca.c mtc_crypt.c mtc_pubkey_db.c \
-		$(shell pkg-config --libs postWolf) \
-		$(shell pkg-config --libs json-c) \
-		$(shell pkg-config --libs libpq)
-
-bootstrap_leaf: bootstrap_leaf.c mtc_crypt.c mtc_crypt.h mtc_pubkey_db.c mtc_pubkey_db.h
-	$(CC) -Wall -Wextra -O2 \
-		$(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H \
-		$(shell pkg-config --cflags json-c) \
-		$(shell pkg-config --cflags libpq) \
-		-o bootstrap_leaf bootstrap_leaf.c mtc_crypt.c mtc_pubkey_db.c \
-		$(shell pkg-config --libs postWolf) \
-		$(shell pkg-config --libs json-c) \
-		$(shell pkg-config --libs libpq)
-
-admin_recosign: admin_recosign.c mtc_store.c mtc_store.h mtc_merkle.c mtc_merkle.h mtc_db.c mtc_db.h mtc_log.c mtc_log.h
-	$(CC) -Wall -Wextra -O2 \
-		$(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H \
-		$(shell pkg-config --cflags json-c) \
-		$(shell pkg-config --cflags libpq) \
-		-o admin_recosign admin_recosign.c mtc_store.c mtc_merkle.c mtc_db.c mtc_log.c \
-		$(shell pkg-config --libs postWolf) \
-		$(shell pkg-config --libs json-c) \
-		$(shell pkg-config --libs libpq) \
-		-lcurl
-
-show-tpm: show-tpm.c $(MQC_LIB)
-	$(CC) -Wall -Wextra -O2 \
-		$(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H \
-		$(shell pkg-config --cflags json-c) \
-		-I../../../socket-level-wrapper-MQC \
-		-o show-tpm show-tpm.c $(MQC_LIB) \
-		$(shell pkg-config --libs postWolf) \
-		$(shell pkg-config --libs json-c) -lcurl -lhiredis -lpthread -lm
-
-issue_leaf_nonce: issue_leaf_nonce.c $(MQC_LIB)
-	$(CC) -Wall -Wextra -O2 \
-		$(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H \
-		$(shell pkg-config --cflags json-c) \
-		-I../../../socket-level-wrapper-MQC \
-		-o issue_leaf_nonce issue_leaf_nonce.c $(MQC_LIB) \
-		$(shell pkg-config --libs postWolf) \
-		$(shell pkg-config --libs json-c) -lcurl -lhiredis -lpthread -lm
-
 test-mtc-crypt: mtc_crypt.c mtc_crypt.h
 	$(CC) -Wall -Wextra -O2 -DTEST_MAIN \
 		$(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H \
@@ -101,14 +52,9 @@ BINDIR ?= /usr/local/bin
 install: all
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 755 mtc_server        $(DESTDIR)$(BINDIR)/mtc_server
-	install -m 755 show-tpm          $(DESTDIR)$(BINDIR)/show-tpm
-	install -m 755 bootstrap_ca      $(DESTDIR)$(BINDIR)/bootstrap_ca
-	install -m 755 bootstrap_leaf    $(DESTDIR)$(BINDIR)/bootstrap_leaf
-	install -m 755 admin_recosign    $(DESTDIR)$(BINDIR)/admin_recosign
-	install -m 755 issue_leaf_nonce  $(DESTDIR)$(BINDIR)/issue_leaf_nonce
 
 clean:
-	rm -f mtc_server mtc_checkendpoint mtc_crypt_test bootstrap_leaf bootstrap_ca show-tpm admin_recosign issue_leaf_nonce
+	rm -f mtc_server mtc_checkendpoint mtc_crypt_test
 
 clean-doxygen:
 	rm -rf html

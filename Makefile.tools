@@ -14,11 +14,12 @@
 SLC_DIR = socket-level-wrapper
 MQC_DIR = socket-level-wrapper-MQC
 QUIC_DIR = socket-level-wrapper-QUIC
-MTC_DIR = mtc-keymaster/server/c
+MTC_DIR   = mtc-keymaster/server2/c
+TOOLS_DIR = mtc-keymaster/tools/c
 
-.PHONY: all install clean slc mqc quic mtc install-lib
+.PHONY: all install clean slc mqc quic mtc tools install-lib
 
-all: slc mqc quic mtc
+all: slc mqc quic mtc tools
 
 # Socket-level wrapper (TLS)
 slc:
@@ -32,9 +33,15 @@ mqc:
 quic:
 	$(MAKE) -C $(QUIC_DIR)
 
-# MTC keymaster (server + tools) — depends on slc + mqc libraries
+# MTC keymaster server (mtc_server) — depends on slc + mqc libraries
 mtc: slc mqc
 	$(MAKE) -C $(MTC_DIR)
+
+# MTC keymaster client tools (show-tpm, bootstrap_ca, bootstrap_leaf,
+# admin_recosign, issue_leaf_nonce) — depends on mqc + shared helpers
+# in $(MTC_DIR)
+tools: mqc mtc
+	$(MAKE) -C $(TOOLS_DIR)
 
 # Install postWolf library (autotools) + ldconfig
 install-lib:
@@ -45,9 +52,11 @@ install-lib:
 install: all
 	ldconfig
 	$(MAKE) -C $(MTC_DIR) install
+	$(MAKE) -C $(TOOLS_DIR) install
 
 clean:
 	$(MAKE) -C $(SLC_DIR) clean
 	$(MAKE) -C $(MQC_DIR) clean
 	$(MAKE) -C $(QUIC_DIR) clean
 	$(MAKE) -C $(MTC_DIR) clean
+	$(MAKE) -C $(TOOLS_DIR) clean

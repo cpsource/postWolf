@@ -1,0 +1,6 @@
+# Build artifacts
+admin_recosign
+bootstrap_ca
+bootstrap_leaf
+show-tpm
+issue_leaf_nonce
