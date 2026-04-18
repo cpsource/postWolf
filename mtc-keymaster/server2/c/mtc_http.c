@@ -98,6 +98,15 @@ typedef struct {
     int         fd;         /**< Raw socket fd (used in plain mode, or for
                                  getpeername when TLS is active)            */
     char        ip_str[64]; /**< Client IP string for logging/abuse checks */
+
+    /* In-process capture mode: when capture_body != NULL, response bodies
+     * produced by http_send_json/http_send_error are strdup'd into
+     * *capture_body (caller frees) and the status code into *capture_status,
+     * instead of being written to a socket.  Used by the bootstrap port
+     * to proxy GET endpoints through handle_request without a network
+     * round-trip. */
+    char      **capture_body;
+    int        *capture_status;
 } client_io;
 
 /******************************************************************************
@@ -191,6 +200,12 @@ static void http_send_json(client_io *io, int status, const char *json_str)
 {
     char hdr[512];
     int hdr_len, body_len;
+
+    if (io->capture_body) {
+        if (io->capture_status) *io->capture_status = status;
+        *io->capture_body = strdup(json_str);
+        return;
+    }
 
     body_len = (int)strlen(json_str);
     hdr_len = snprintf(hdr, sizeof(hdr),
@@ -1523,6 +1538,95 @@ static void handle_ech_configs(client_io *io, MtcStore *store)
 }
 
 /******************************************************************************
+ * Function:    dispatch_get  (static)
+ *
+ * Description:
+ *   Route a GET path to the appropriate handler.  No rate limiting here;
+ *   callers apply their own (handle_request does RL_READ network-side;
+ *   the bootstrap capture path applies its own per-request limits).
+ ******************************************************************************/
+static void dispatch_get(client_io *io, MtcStore *store, const char *path)
+{
+    if (strcmp(path, "/") == 0 || strcmp(path, "") == 0) {
+        handle_index(io, store);
+    }
+    else if (strcmp(path, "/log") == 0) {
+        handle_log_state(io, store);
+    }
+    else if (strncmp(path, "/log/entry/", 11) == 0) {
+        int index = safe_atoi(path + 11, 10000000);
+        if (index < 0) { http_send_error(io, 400, "invalid index"); }
+        else handle_log_entry(io, store, index);
+    }
+    else if (strncmp(path, "/log/proof/", 11) == 0) {
+        int index = safe_atoi(path + 11, 10000000);
+        if (index < 0) { http_send_error(io, 400, "invalid index"); }
+        else handle_log_proof(io, store, index);
+    }
+    else if (strcmp(path, "/log/checkpoint") == 0) {
+        handle_checkpoint(io, store);
+    }
+    else if (strncmp(path, "/log/consistency", 16) == 0) {
+        handle_consistency(io, store, path);
+    }
+    else if (strncmp(path, "/certificate/search", 19) == 0) {
+        handle_search_certificates(io, store, path);
+    }
+    else if (strncmp(path, "/certificate/", 13) == 0) {
+        int index = safe_atoi(path + 13, 10000000);
+        if (index < 0) { http_send_error(io, 400, "invalid index"); }
+        else handle_get_certificate(io, store, index);
+    }
+    else if (strcmp(path, "/trust-anchors") == 0) {
+        handle_trust_anchors(io, store);
+    }
+    else if (strcmp(path, "/revoked") == 0) {
+        handle_revoked_list(io, store);
+    }
+    else if (strncmp(path, "/revoked/", 9) == 0) {
+        int index = safe_atoi(path + 9, 10000000);
+        if (index < 0) { http_send_error(io, 400, "invalid index"); }
+        else handle_revoked_check(io, store, index);
+    }
+    else if (strcmp(path, "/ca/public-key") == 0) {
+        handle_ca_public_key(io, store);
+    }
+    else if (strncmp(path, "/public-key/", 12) == 0) {
+        handle_public_key_lookup(io, store, path + 12);
+    }
+    else if (strcmp(path, "/ech/configs") == 0) {
+        handle_ech_configs(io, store);
+    }
+    else {
+        http_send_error(io, 404, "not found");
+    }
+}
+
+/******************************************************************************
+ * Function:    mtc_http_dispatch_get_capture
+ *
+ * Description:
+ *   Public in-process GET dispatcher.  Builds a capture-mode client_io,
+ *   calls dispatch_get, and returns the captured JSON body + HTTP-style
+ *   status code.  Caller owns *body_out (free it).  Used by the bootstrap
+ *   port's {"op":"http_get","path":...} handler to reach the same
+ *   endpoints as the network HTTP listener without a socket round-trip.
+ ******************************************************************************/
+int mtc_http_dispatch_get_capture(MtcStore *store, const char *path,
+                                  char **body_out, int *status_out)
+{
+    client_io io;
+    memset(&io, 0, sizeof(io));
+    io.fd = -1;
+    io.capture_body = body_out;
+    io.capture_status = status_out;
+    *body_out = NULL;
+    *status_out = 0;
+    dispatch_get(&io, store, path);
+    return (*body_out != NULL && *status_out != 0) ? 0 : -1;
+}
+
+/******************************************************************************
  * Function:    handle_request
  *
  * Description:
@@ -1631,59 +1735,7 @@ static void handle_request(client_io *io, MtcStore *store)
             http_send_error(io, 429, "rate limit exceeded");
             return;
         }
-        if (strcmp(path, "/") == 0 || strcmp(path, "") == 0) {
-            handle_index(io, store);
-        }
-        else if (strcmp(path, "/log") == 0) {
-            handle_log_state(io, store);
-        }
-        else if (strncmp(path, "/log/entry/", 11) == 0) {
-            int index = safe_atoi(path + 11, 10000000);
-            if (index < 0) { http_send_error(io, 400, "invalid index"); }
-            else handle_log_entry(io, store, index);
-        }
-        else if (strncmp(path, "/log/proof/", 11) == 0) {
-            int index = safe_atoi(path + 11, 10000000);
-            if (index < 0) { http_send_error(io, 400, "invalid index"); }
-            else handle_log_proof(io, store, index);
-        }
-        else if (strcmp(path, "/log/checkpoint") == 0) {
-            handle_checkpoint(io, store);
-        }
-        else if (strncmp(path, "/log/consistency", 16) == 0) {
-            handle_consistency(io, store, path);
-        }
-        else if (strncmp(path, "/certificate/search", 19) == 0) {
-            handle_search_certificates(io, store, path);
-        }
-        else if (strncmp(path, "/certificate/", 13) == 0) {
-            int index = safe_atoi(path + 13, 10000000);
-            if (index < 0) { http_send_error(io, 400, "invalid index"); }
-            else handle_get_certificate(io, store, index);
-        }
-        else if (strcmp(path, "/trust-anchors") == 0) {
-            handle_trust_anchors(io, store);
-        }
-        else if (strcmp(path, "/revoked") == 0) {
-            handle_revoked_list(io, store);
-        }
-        else if (strncmp(path, "/revoked/", 9) == 0) {
-            int index = safe_atoi(path + 9, 10000000);
-            if (index < 0) { http_send_error(io, 400, "invalid index"); }
-            else handle_revoked_check(io, store, index);
-        }
-        else if (strcmp(path, "/ca/public-key") == 0) {
-            handle_ca_public_key(io, store);
-        }
-        else if (strncmp(path, "/public-key/", 12) == 0) {
-            handle_public_key_lookup(io, store, path + 12);
-        }
-        else if (strcmp(path, "/ech/configs") == 0) {
-            handle_ech_configs(io, store);
-        }
-        else {
-            http_send_error(io, 404, "not found");
-        }
+        dispatch_get(io, store, path);
     }
     else if (strcmp(method, "POST") == 0) {
         if (strcmp(path, "/enrollment/nonce") == 0) {

@@ -41,6 +41,7 @@
 #include "mtc_merkle.h"
 #include "mtc_db.h"
 #include "mtc_log.h"
+#include "mtc_http.h"
 #include "mtc_checkendpoint.h"
 #include "mtc_ratelimit.h"
 #include "mtc_ca_validate.h"
@@ -163,6 +164,62 @@ static int read_all(int fd, unsigned char *buf, unsigned int len)
         got += (unsigned int)n;
     }
     return 0;
+}
+
+/******************************************************************************
+ * Function:    send_http_get_proxy  (static)
+ *
+ * Description:
+ *   Reply to {"op":"http_get","path":"<path>"} by running the path through
+ *   the in-process GET dispatcher (mtc_http_dispatch_get_capture) and
+ *   wrapping the captured body + status in a plaintext JSON reply:
+ *     {"status":<code>,"body":<json_body>}
+ *   Used to serve /certificate/<n>, /revoked/<n>, /public-key/<n>,
+ *   /log/entry/<n>, etc. over the bootstrap port without TLS.
+ ******************************************************************************/
+static int send_http_get_proxy(int fd, MtcStore *store, const char *path)
+{
+    char *inner_body = NULL;
+    int inner_status = 0;
+    struct json_object *outer;
+    const char *json_str;
+    int rc = -1;
+
+    if (!path || path[0] != '/') {
+        LOG_WARN("bootstrap: http_get rejected (path='%s')",
+                 path ? path : "(null)");
+        return -1;
+    }
+
+    (void)mtc_http_dispatch_get_capture(store, path, &inner_body,
+                                        &inner_status);
+    if (!inner_body) {
+        LOG_WARN("bootstrap: http_get '%s' produced no body", path);
+        return -1;
+    }
+
+    outer = json_object_new_object();
+    if (outer) {
+        struct json_object *inner = json_tokener_parse(inner_body);
+        json_object_object_add(outer, "status",
+                               json_object_new_int(inner_status));
+        /* Embed the inner JSON object if parseable; else pass body string */
+        if (inner)
+            json_object_object_add(outer, "body", inner);
+        else
+            json_object_object_add(outer, "body",
+                                   json_object_new_string(inner_body));
+
+        json_str = json_object_to_json_string(outer);
+        if (json_str && write_all(fd, (const unsigned char *)json_str,
+                                  (unsigned int)strlen(json_str)) == 0)
+            rc = 0;
+
+        json_object_put(outer);
+    }
+
+    free(inner_body);
+    return rc;
 }
 
 /******************************************************************************
@@ -347,13 +404,23 @@ static int handle_bootstrap_client(int fd, MtcStore *store)
         return -1;
     }
 
-    /* Handle simple ops (no DH needed) — currently only ca_pubkey fetch. */
+    /* Handle simple ops (no DH needed). */
     if (json_object_object_get_ex(req, "op", &val)) {
         const char *op = json_object_get_string(val);
         int op_rc;
         if (strcmp(op, "ca_pubkey") == 0) {
             LOG_INFO("bootstrap: ca_pubkey request");
             op_rc = send_ca_pubkey_plaintext(fd, store);
+            json_object_put(req);
+            return op_rc;
+        }
+        if (strcmp(op, "http_get") == 0) {
+            struct json_object *pval;
+            const char *path = NULL;
+            if (json_object_object_get_ex(req, "path", &pval))
+                path = json_object_get_string(pval);
+            LOG_INFO("bootstrap: http_get %s", path ? path : "(null)");
+            op_rc = send_http_get_proxy(fd, store, path);
             json_object_put(req);
             return op_rc;
         }

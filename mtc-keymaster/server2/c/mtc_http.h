@@ -80,4 +80,23 @@ int mtc_mqc_start(const char *host, int port, MtcStore *store,
                   const char *tpm_path, const char *mtc_server,
                   const unsigned char *ca_pubkey, int ca_pubkey_sz);
 
+/**
+ * @brief  In-process GET dispatcher (no sockets).
+ *
+ * @details
+ * Routes @p path through the same handler table as the network HTTP
+ * listener and captures the response.  Intended for callers (e.g. the
+ * bootstrap port) that want to proxy GET endpoints without a round-trip.
+ *
+ * @param[in]  store       MTC store.
+ * @param[in]  path        URI path (e.g. "/certificate/5").
+ * @param[out] body_out    Receives a malloc'd NUL-terminated JSON body.
+ *                         Caller frees.
+ * @param[out] status_out  Receives the HTTP-style status code.
+ *
+ * @return  0 on success, -1 if no response was produced.
+ */
+int mtc_http_dispatch_get_capture(MtcStore *store, const char *path,
+                                  char **body_out, int *status_out);
+
 #endif
