@@ -1168,6 +1168,16 @@ https://localhost:8444/revoke` with `Content-Type: application/json`.
 
 ---
 
+### 20. Kit leaf — one-shot packaging / setup tool for a new leaf identity.
+
+### 21. Kit CA — one-shot packaging / setup tool for a new CA identity.
+
+### 22. Update factsorlie.com website to reflect the current postWolf architecture.
+
+### 23. Cert renewal — review and harden the existing `/certificate/renew` + `renew-tool/` flow.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
