@@ -173,6 +173,13 @@ static char *mqc_http_post(const char *path, const char *body, int body_len,
 
     conn = mqc_connect(g_mqc_ctx, g_mqc_host, g_mqc_port);
     if (!conn) {
+        /* One-shot retry: the server drops the first handshake after
+         * refreshing its per-peer revocation cache; the next attempt
+         * runs against the warm cache. */
+        usleep(100000);  /* 100 ms */
+        conn = mqc_connect(g_mqc_ctx, g_mqc_host, g_mqc_port);
+    }
+    if (!conn) {
         fprintf(stderr, "Error: mqc_connect to %s:%d failed\n",
                 g_mqc_host, g_mqc_port);
         return NULL;

@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <math.h>
+#include <unistd.h>
 
 #include <json-c/json.h>
 #include "mqc.h"
@@ -55,6 +56,13 @@ static char *mqc_http_get(const char *path_only, long *code)
     long status = 0;
 
     conn = mqc_connect(g_mqc_ctx, g_mqc_host, g_mqc_port);
+    if (!conn) {
+        /* One-shot retry: the server drops the first handshake after
+         * refreshing its per-peer revocation cache; the next attempt
+         * runs against the warm cache. */
+        usleep(100000);  /* 100 ms */
+        conn = mqc_connect(g_mqc_ctx, g_mqc_host, g_mqc_port);
+    }
     if (!conn) return NULL;
 
     /* Send HTTP GET */
