@@ -314,8 +314,8 @@ char *mtc_db_load_config(PGconn *conn, const char *key);
  * Generates a 256-bit random nonce via wolfCrypt, inserts it into the
  * mtc_enrollment_nonces table with status 'pending', and returns the
  * hex-encoded nonce and expiration timestamp.  Stale nonces are expired
- * first.  Returns -1 if a pending nonce already exists for the given
- * domain+fp pair (prevents duplicate enrollment requests).
+ * first.  If a pending non-expired nonce already exists for the given
+ * domain+fp pair, it is returned unchanged (idempotent reissue).
  *
  * @param[in]  conn         Active PostgreSQL connection.
  * @param[in]  domain       Domain name bound to this nonce.
@@ -328,8 +328,8 @@ char *mtc_db_load_config(PGconn *conn, const char *key);
  * @param[out] expires_out  Receives the UNIX expiration timestamp.
  *
  * @return
- *   0   on success.
- *  -1   on failure (duplicate pending, RNG error, or DB error).
+ *   0   on success (new or reused nonce written to nonce_out).
+ *  -1   on failure (RNG error or DB error).
  */
 int  mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
                          int ca_index, char *nonce_out, long *expires_out);

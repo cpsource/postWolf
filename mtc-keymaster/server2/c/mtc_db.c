@@ -999,9 +999,10 @@ char *mtc_db_load_config(PGconn *conn, const char *key)
  * Description:
  *   Generates a 256-bit cryptographically random enrollment nonce using
  *   wolfCrypt WC_RNG and inserts it into the mtc_enrollment_nonces table
- *   with status 'pending'.  Stale nonces are expired first.  Rejects the
- *   request if a pending nonce already exists for the given domain+fp
- *   pair (prevents duplicate enrollment requests).
+ *   with status 'pending'.  Stale nonces are expired first.  If a pending
+ *   nonce already exists for the given domain+fp pair and has not yet
+ *   expired, that existing nonce is returned unchanged (idempotent
+ *   reissue) — no new row is inserted.
  *
  * Input Arguments:
  *   conn         - Active PostgreSQL connection.  Must not be NULL.
@@ -1014,9 +1015,8 @@ char *mtc_db_load_config(PGconn *conn, const char *key)
  *   expires_out  - Receives the UNIX expiration timestamp.
  *
  * Returns:
- *    0  on success.
- *   -1  on failure (NULL conn, duplicate pending nonce, RNG error, or
- *       DB insert error).
+ *    0  on success (new or reused nonce written to nonce_out).
+ *   -1  on failure (NULL conn, RNG error, or DB insert error).
  *
  * Side Effects:
  *   - Expires stale nonces via mtc_db_expire_nonces().
@@ -1038,18 +1038,27 @@ int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
     /* Expire stale nonces first */
     mtc_db_expire_nonces(conn);
 
-    /* Reject if a pending nonce already exists for this domain+fp */
+    /* If a pending non-expired nonce already exists for this domain+fp,
+     * return it again (idempotent reissue) instead of failing. */
     params[0] = domain;
     params[1] = fp_hex;
     res = PQexecParams(conn,
-        "SELECT nonce FROM mtc_enrollment_nonces "
+        "SELECT nonce, EXTRACT(EPOCH FROM expires_at)::bigint "
+        "FROM mtc_enrollment_nonces "
         "WHERE domain = $1 AND fp = $2 AND status = 'pending' "
         "AND expires_at > now() LIMIT 1",
         2, NULL, params, NULL, NULL, 0);
 
     if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
-        PQclear(res);
-        return -1; /* duplicate pending */
+        const char *existing = PQgetvalue(res, 0, 0);
+        const char *exp_s    = PQgetvalue(res, 0, 1);
+        if (existing && strlen(existing) == MTC_NONCE_HEX_LEN) {
+            memcpy(nonce_out, existing, MTC_NONCE_HEX_LEN);
+            nonce_out[MTC_NONCE_HEX_LEN] = '\0';
+            *expires_out = strtol(exp_s, NULL, 10);
+            PQclear(res);
+            return 0;
+        }
     }
     PQclear(res);
 

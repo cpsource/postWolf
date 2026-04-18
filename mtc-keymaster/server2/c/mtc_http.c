@@ -596,15 +596,10 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
                  domain, ca_index);
     }
 
-    /* Create nonce in DB */
+    /* Create or reissue pending nonce in DB.  If a non-expired pending
+     * nonce already exists for this domain+fp, it is returned unchanged. */
     ret = mtc_db_create_nonce(store->db, domain, fp_hex, ca_index,
                               nonce, &expires);
-    if (ret == -1) {
-        http_send_error(io, 409,
-            "pending enrollment already exists for this domain and key");
-        json_object_put(req);
-        return;
-    }
     if (ret < 0) {
         http_send_error(io, 500, "nonce generation failed");
         json_object_put(req);
