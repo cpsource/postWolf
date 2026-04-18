@@ -236,6 +236,13 @@ static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb,
     return total;
 }
 
+/* Forward declarations for bootstrap-port helpers (defined below, but
+ * referenced by fetch_certificate / check_revoked / peer pubkey lookup
+ * higher up in the file). */
+static void  extract_host(const char *server, char *out, int outsz);
+static char *bootstrap_http_get(const char *mtc_server, const char *path,
+                                long *status);
+
 /******************************************************************************
  * Function:    http_get
  *
@@ -380,15 +387,13 @@ static void normalize_server(const char *server, char *out, int outsz)
 static struct json_object *fetch_certificate(const char *mtc_server,
                                              int cert_index)
 {
-    char url[768], server[512];
+    char path[64];
     char *body;
     long code = 0;
     struct json_object *obj;
 
-    normalize_server(mtc_server, server, sizeof(server));
-    snprintf(url, sizeof(url), "%s/certificate/%d", server, cert_index);
-
-    body = http_get(url, &code);
+    snprintf(path, sizeof(path), "/certificate/%d", cert_index);
+    body = bootstrap_http_get(mtc_server, path, &code);
     if (!body || code != 200) {
         free(body);
         fprintf(stderr, "[mqc-peer] fetch cert %d failed (code=%ld)\n",
@@ -469,14 +474,13 @@ static int check_revoked(const char *mtc_server, int cert_index)
 
     /* Cache missing or stale → single-cert fetch + drop. */
     {
-        char url[768], server[512];
+        char path[64];
         char *body;
         long code = 0;
         int revoked = 0;
 
-        normalize_server(mtc_server, server, sizeof(server));
-        snprintf(url, sizeof(url), "%s/revoked/%d", server, cert_index);
-        body = http_get(url, &code);
+        snprintf(path, sizeof(path), "/revoked/%d", cert_index);
+        body = bootstrap_http_get(mtc_server, path, &code);
         if (!body || code != 200) {
             free(body);
             return -1;   /* can't refresh — drop to be safe */
@@ -688,11 +692,9 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
                  * The server exposes public keys at a search endpoint
                  * or we can try the certificate search by subject. */
                 {
-                    char pub_url[768], svr[512];
+                    char pub_url[768];
                     char *pub_body;
                     long pub_code = 0;
-
-                    normalize_server(mtc_server, svr, sizeof(svr));
 
                     /* Try fetching the public key by subject name.
                      * Convention: keys are stored with key_name = subject
@@ -760,10 +762,10 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
                     }
 
                     /* Fetch from MTC server: GET /public-key/<subject> */
-                    normalize_server(mtc_server, svr, sizeof(svr));
-                    snprintf(pub_url, sizeof(pub_url), "%s/public-key/%s",
-                             svr, subject);
-                    pub_body = http_get(pub_url, &pub_code);
+                    snprintf(pub_url, sizeof(pub_url), "/public-key/%s",
+                             subject);
+                    pub_body = bootstrap_http_get(mtc_server, pub_url,
+                                                  &pub_code);
                     if (pub_body && pub_code == 200) {
                         struct json_object *pk_obj = json_tokener_parse(pub_body);
                         struct json_object *pk_val;
@@ -866,49 +868,23 @@ static int pem_extract_ed25519_raw(const char *pem, byte *out32)
     return 0;
 }
 
-/** Default DH bootstrap port for ca_pubkey fetches. */
+/** Default DH bootstrap port for ca_pubkey and http_get proxy fetches. */
 #define MQC_BOOTSTRAP_PORT 8445
 
 /******************************************************************************
- * Function:    extract_host  (static)
+ * Function:    bootstrap_exchange  (static)
  *
  * Description:
- *   Extract a bare hostname from an "mtc_server" config string like
- *   "host:8444" or "https://host:8444" or plain "host".  Writes just the
- *   host portion into out (no scheme, no port).
+ *   Send a plaintext JSON request to the bootstrap port and read the
+ *   brace-counted JSON reply.  Shared transport for ca_pubkey and
+ *   http_get ops.  Returns a malloc'd NUL-terminated JSON string on
+ *   success, or NULL on failure.
  ******************************************************************************/
-static void extract_host(const char *server, char *out, int outsz)
-{
-    const char *p = server;
-    const char *end;
-    int len;
-
-    if (strncmp(p, "https://", 8) == 0) p += 8;
-    else if (strncmp(p, "http://", 7) == 0) p += 7;
-
-    end = strchr(p, ':');
-    if (!end) end = p + strlen(p);
-    len = (int)(end - p);
-    if (len >= outsz) len = outsz - 1;
-    memcpy(out, p, (size_t)len);
-    out[len] = '\0';
-}
-
-/******************************************************************************
- * Function:    bootstrap_fetch_ca_pubkey  (static)
- *
- * Description:
- *   Open a TCP connection to host:port (the DH bootstrap listener), send
- *   a plaintext {"op":"ca_pubkey"} request, and read the JSON response by
- *   brace-counting.  Returns a malloc'd NUL-terminated JSON string on
- *   success, or NULL on any failure.
- ******************************************************************************/
-static char *bootstrap_fetch_ca_pubkey(const char *host, int port)
+static char *bootstrap_exchange(const char *host, int port, const char *req)
 {
     struct addrinfo hints, *res = NULL, *rp;
     char port_str[8];
     int fd = -1;
-    const char *req = "{\"op\":\"ca_pubkey\"}";
     ssize_t sent;
     char *buf = NULL;
     int pos = 0, depth = 0, started = 0;
@@ -964,6 +940,104 @@ static char *bootstrap_fetch_ca_pubkey(const char *host, int port)
     if (pos == 0 || !started || depth != 0) { free(buf); return NULL; }
     buf[pos] = '\0';
     return buf;
+}
+
+/******************************************************************************
+ * Function:    bootstrap_http_get  (static)
+ *
+ * Description:
+ *   Drop-in replacement for http_get, but routed over the DH bootstrap
+ *   port's {"op":"http_get","path":"..."} proxy instead of HTTPS/8444.
+ *
+ *   Parses the outer {"status":N,"body":...} envelope, writes N into
+ *   *status, and returns a malloc'd string representation of the body
+ *   (matching http_get's contract — caller parses with json_tokener_parse).
+ *   Returns NULL on transport or protocol failure.
+ ******************************************************************************/
+static char *bootstrap_http_get(const char *mtc_server, const char *path,
+                                long *status)
+{
+    char host[256];
+    char req[1024];
+    char *outer_str = NULL;
+    struct json_object *outer = NULL, *body_val = NULL, *status_val = NULL;
+    char *out = NULL;
+
+    if (status) *status = 0;
+    extract_host(mtc_server, host, sizeof(host));
+    snprintf(req, sizeof(req), "{\"op\":\"http_get\",\"path\":\"%s\"}",
+             path);
+
+    outer_str = bootstrap_exchange(host, MQC_BOOTSTRAP_PORT, req);
+    if (!outer_str) {
+        fprintf(stderr, "[mqc] bootstrap http_get transport failed "
+                        "(%s:%d %s)\n",
+                host, MQC_BOOTSTRAP_PORT, path);
+        return NULL;
+    }
+
+    outer = json_tokener_parse(outer_str);
+    free(outer_str);
+    if (!outer) return NULL;
+
+    if (json_object_object_get_ex(outer, "status", &status_val) && status)
+        *status = (long)json_object_get_int(status_val);
+
+    if (json_object_object_get_ex(outer, "body", &body_val)) {
+        const char *s;
+        if (json_object_get_type(body_val) == json_type_string)
+            s = json_object_get_string(body_val);
+        else
+            s = json_object_to_json_string(body_val);
+        if (s) out = strdup(s);
+    }
+
+    json_object_put(outer);
+    return out;
+}
+
+/******************************************************************************
+ * Function:    extract_host  (static)
+ *
+ * Description:
+ *   Extract a bare hostname from an "mtc_server" config string like
+ *   "host:8444" or "https://host:8444" or plain "host".  Writes just the
+ *   host portion into out (no scheme, no port).
+ ******************************************************************************/
+static void extract_host(const char *server, char *out, int outsz)
+{
+    const char *p = server;
+    const char *end;
+    int len;
+
+    if (strncmp(p, "https://", 8) == 0) p += 8;
+    else if (strncmp(p, "http://", 7) == 0) p += 7;
+
+    end = strchr(p, ':');
+    if (!end) end = p + strlen(p);
+    len = (int)(end - p);
+    if (len >= outsz) len = outsz - 1;
+    memcpy(out, p, (size_t)len);
+    out[len] = '\0';
+
+    /* 0.0.0.0 is a bind address, not a connect target — remap to loopback
+     * so the server (which passes its own bind addr to its MQC client) can
+     * call itself. */
+    if (strcmp(out, "0.0.0.0") == 0 || strcmp(out, "::") == 0) {
+        snprintf(out, (size_t)outsz, "127.0.0.1");
+    }
+}
+
+/******************************************************************************
+ * Function:    bootstrap_fetch_ca_pubkey  (static)
+ *
+ * Description:
+ *   Thin wrapper over bootstrap_exchange: send {"op":"ca_pubkey"} and
+ *   return the full reply JSON.  Kept separate for readability.
+ ******************************************************************************/
+static char *bootstrap_fetch_ca_pubkey(const char *host, int port)
+{
+    return bootstrap_exchange(host, port, "{\"op\":\"ca_pubkey\"}");
 }
 
 /******************************************************************************
@@ -1100,7 +1174,7 @@ int mqc_peer_verify(const char *mtc_server,
      * response we already have.  wolfSSL's wc_MtcVerifyInclusionProof
      * walks the path per RFC 9162 Section 2.1.3. */
     {
-        char url[768], svr[512];
+        char url[768];
         char *body = NULL;
         long http_code = 0;
         struct json_object *entry_obj = NULL, *lh_val;
@@ -1144,10 +1218,8 @@ int mqc_peer_verify(const char *mtc_server,
             }
 
             if (!got) {
-                normalize_server(mtc_server, svr, sizeof(svr));
-                snprintf(url, sizeof(url), "%s/log/entry/%d",
-                         svr, cert_index);
-                body = http_get(url, &http_code);
+                snprintf(url, sizeof(url), "/log/entry/%d", cert_index);
+                body = bootstrap_http_get(mtc_server, url, &http_code);
                 if (!body || http_code != 200) {
                     MQC_SECURITY("LEAF_FETCH_FAILED: cert %d (code=%ld)",
                                  cert_index, http_code);

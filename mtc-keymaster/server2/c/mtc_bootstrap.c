@@ -351,7 +351,8 @@ static int recv_length_prefixed(int fd, unsigned char *buf, int bufsz)
  *   4. Issue certificate
  *   5. Send encrypted certificate response
  ******************************************************************************/
-static int handle_bootstrap_client(int fd, MtcStore *store)
+static int handle_bootstrap_client(int fd, MtcStore *store,
+                                    const char *ip_str)
 {
     /* Ensure DB connection is alive (may have dropped since last request) */
     if (store->use_db) {
@@ -408,6 +409,15 @@ static int handle_bootstrap_client(int fd, MtcStore *store)
     if (json_object_object_get_ex(req, "op", &val)) {
         const char *op = json_object_get_string(val);
         int op_rc;
+
+        /* Read-only lookups — use RL_READ (60/min). */
+        if (ip_str && ip_str[0] != '\0' &&
+            !mtc_ratelimit_check(ip_str, RL_READ)) {
+            LOG_WARN("bootstrap: rate limited %s (read)", ip_str);
+            json_object_put(req);
+            return -1;
+        }
+
         if (strcmp(op, "ca_pubkey") == 0) {
             LOG_INFO("bootstrap: ca_pubkey request");
             op_rc = send_ca_pubkey_plaintext(fd, store);
@@ -429,7 +439,14 @@ static int handle_bootstrap_client(int fd, MtcStore *store)
         return -1;
     }
 
-    /* DH enrollment flow — expect dh_public_key */
+    /* DH enrollment flow — expensive path, use RL_BOOTSTRAP (3/min). */
+    if (ip_str && ip_str[0] != '\0' &&
+        !mtc_ratelimit_check(ip_str, RL_BOOTSTRAP)) {
+        LOG_WARN("bootstrap: rate limited %s (enroll)", ip_str);
+        json_object_put(req);
+        return -1;
+    }
+
     if (!json_object_object_get_ex(req, "dh_public_key", &val)) {
         LOG_WARN("bootstrap: missing 'dh_public_key' in request");
         json_object_put(req);
@@ -968,12 +985,9 @@ static void *bootstrap_thread(void *arg)
 
         LOG_INFO("bootstrap: connection from %s", ip_str);
 
-        /* Rate limit first (cheap Redis check) */
-        if (ip_str[0] != '\0' && !mtc_ratelimit_check(ip_str, RL_BOOTSTRAP)) {
-            LOG_WARN("bootstrap: rate limited %s", ip_str);
-            close(client_fd);
-            _exit(0);
-        }
+        /* Rate limiting is applied inside handle_bootstrap_client, once
+         * the op type is known: read-only lookups (ca_pubkey, http_get)
+         * use RL_READ, DH enrollment uses RL_BOOTSTRAP. */
 
         /* AbuseIPDB check at enrollment threshold (25%) */
         if (ip_str[0] != '\0') {
@@ -986,7 +1000,7 @@ static void *bootstrap_thread(void *arg)
             }
         }
 
-        handle_bootstrap_client(client_fd, store);
+        handle_bootstrap_client(client_fd, store, ip_str);
         close(client_fd);
         _exit(0);
     }
