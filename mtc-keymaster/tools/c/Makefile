@@ -15,7 +15,7 @@ SERVER_DIR = ../../server2/c
 MQC_DIR = ../../../socket-level-wrapper-MQC
 MQC_LIB = $(MQC_DIR)/libmqc.a
 
-all: admin_recosign bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key attack-port-8445 attack-port-8446
+all: admin_recosign bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert attack-port-8445 attack-port-8446
 
 $(MQC_LIB):
 	$(MAKE) -C $(MQC_DIR)
@@ -57,6 +57,14 @@ revoke-key: revoke-key.c $(MQC_LIB)
 	$(CC) $(CFLAGS) -o $@ revoke-key.c $(MQC_LIB) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) -lcurl -lhiredis -lpthread -lm
 
+renew-cert: renew-cert.c $(MQC_LIB)
+	$(CC) $(CFLAGS) -o $@ renew-cert.c $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) -lcurl -lhiredis -lpthread -lm
+
+check-renewal-cert: check-renewal-cert.c $(MQC_LIB)
+	$(CC) $(CFLAGS) -o $@ check-renewal-cert.c $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) -lcurl -lhiredis -lpthread -lm
+
 # Adversarial probes — raw sockets only, no MQC/postWolf link dep.
 attack-port-8445: attack-port-8445.c
 	$(CC) -Wall -Wextra -O2 -o $@ attack-port-8445.c
@@ -74,10 +82,12 @@ install: all
 	install -m 755 show-tpm          $(DESTDIR)$(BINDIR)/show-tpm
 	install -m 755 issue_leaf_nonce  $(DESTDIR)$(BINDIR)/issue_leaf_nonce
 	install -m 755 revoke-key        $(DESTDIR)$(BINDIR)/revoke-key
+	install -m 755 renew-cert        $(DESTDIR)$(BINDIR)/renew-cert
+	install -m 755 check-renewal-cert $(DESTDIR)$(BINDIR)/check-renewal-cert
 	install -m 755 attack-port-8445  $(DESTDIR)$(BINDIR)/attack-port-8445
 	install -m 755 attack-port-8446  $(DESTDIR)$(BINDIR)/attack-port-8446
 
 clean:
-	rm -f admin_recosign bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key attack-port-8445 attack-port-8446
+	rm -f admin_recosign bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert attack-port-8445 attack-port-8446
 
 .PHONY: all install clean

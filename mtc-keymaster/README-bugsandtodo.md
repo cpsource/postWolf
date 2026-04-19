@@ -1205,9 +1205,33 @@ https://localhost:8444/revoke` with `Content-Type: application/json`.
 
 ### 22. Update factsorlie.com website to reflect the current postWolf architecture.
 
-### 23. Cert renewal — review and harden the existing `/certificate/renew` + `renew-tool/` flow.
+### 23. Cert renewal — review and harden the existing `/certificate/renew` + `renew-tool/` flow. — **DONE 2026-04-19**
 
-### 24. Leaf-side "cert about to expire" tooling + docs — ship a tool in the leaf kit (and instructions in README-leaf.md) that scans `~/.TPM/`, detects certs within N days of `not_after`, and kicks off a renewal against the CA.  `install-leaf-kit.sh` should also install a cron (or systemd-timer) entry that runs the expiration check on a schedule so the leaf user doesn't have to wire it up themselves.
+Replaced the old signature-authenticated `/certificate/renew` (TLS) +
+Python `renew-tool/renew.py` path with an MQC-authenticated
+`/renew-cert` endpoint (8446 only) and a pair of C tools.  The handshake
+itself is now the auth: server calls `mqc_get_peer_index()` and
+renews whatever cert_index that is — no nonce, no old-key signature,
+no cert_index in the body.  `renew-tool/` directory removed;
+`handle_certificate_renew` removed from `mtc_http.c`.
+
+### 24. Leaf-side "cert about to expire" tooling + docs — ship a tool in the leaf kit (and instructions in README-leaf.md) that scans `~/.TPM/`, detects certs within N days of `not_after`, and kicks off a renewal against the CA.  `install-leaf-kit.sh` should also install a cron (or systemd-timer) entry that runs the expiration check on a schedule so the leaf user doesn't have to wire it up themselves. — **DONE 2026-04-19**
+
+Ships as three binaries + one script:
+- `tools/c/check-renewal-cert.c` — walks `~/.TPM`, filters by
+  `MTC_RENEWAL_WINDOW_DAYS` (default 5, from `server2/c/config.h`,
+  runtime-overridable with `--window-days`), checks revocation over
+  MQC, invokes `create_leaf_cert.py` / `create_ca_cert.py` for new
+  keys, calls `renew-cert`, then atomically swaps new material into
+  the identity dir.
+- `tools/c/renew-cert.c` — MQC client that POSTs new pubkey to
+  `/renew-cert`.
+- `tools/sh/setup-recert-crond.sh --start/--stop/--status` — installs
+  `/etc/cron.d/mtc-recert` running at 00:00 daily as user `ubuntu`.
+  Also cleans up legacy `renew.py` user-crontab entries.
+
+Extras (`--dry-run`, `--force <dir>`) support the integration test
+harness in `tools/sh/test-renewal.sh`.
 
 ### 25. Fork children pay a gratuitous Neon reconnect on every request
 

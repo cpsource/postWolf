@@ -26,6 +26,7 @@
  *     GET  /revoked/<n>             — revocation check
  *     POST /enrollment/nonce        — issue enrollment nonce
  *     POST /certificate/request     — enroll (CA or leaf)
+ *     POST /renew-cert              — renew (MQC-authenticated, 8446 only)
  *     POST /revoke                  — revoke a certificate
  *
  * Dependencies:
@@ -677,91 +678,97 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
  * DH bootstrap port (mtc_bootstrap.c).  See README-unsure.md. */
 
 /******************************************************************************
- * Function:    handle_certificate_renew
+ * Function:    handle_renew_cert
  *
  * Description:
- *   POST /certificate/renew — renew a certificate by proving ownership
- *   of the current private key.  No nonce or CA operator involvement.
+ *   POST /renew-cert — renew a certificate, authenticated by MQC peer
+ *   identity.  MQC-only: the handshake already proved the caller owns
+ *   the cert at its peer_index, so no nonce, no old-key signature, and
+ *   no cert_index in the body.  The peer_index *is* the cert being
+ *   renewed.
  *
  *   The client sends:
- *     - cert_index:          current certificate's log index
- *     - old_public_key_pem:  current public key (server verifies hash
- *                            matches the logged entry)
  *     - new_public_key_pem:  new public key for the renewed cert
- *     - signature:           hex-encoded signature over the string
- *                            "renew:<cert_index>:<new_public_key_pem>"
- *                            made with the old private key
+ *     - validity_days:       optional, 1..3650, default 90
  *
  *   The server:
- *     1. Looks up cert_index in the tree
- *     2. Hashes old_public_key_pem, verifies it matches the logged hash
- *     3. Verifies the signature using the old public key
- *     4. Checks the old cert is not revoked
- *     5. Issues a new certificate with the new public key
+ *     1. Verifies MQC transport and reads peer_index
+ *     2. Looks up the caller's current cert in the log
+ *     3. Rejects if the cert is revoked
+ *     4. Issues a new certificate with the new public key, same subject,
+ *        and same algorithm
  *
  * Input Arguments:
- *   io        - Client I/O context.
+ *   io        - Client I/O context (must have io->mqc != NULL).
  *   store     - MTC store (tree, certs, DB).
  *   body      - HTTP request body (JSON).
  *   body_len  - Length of body in bytes.
  ******************************************************************************/
-static void handle_certificate_renew(client_io *io, MtcStore *store,
-                                     const char *body, int body_len)
+static void handle_renew_cert(client_io *io, MtcStore *store,
+                              const char *body, int body_len)
 {
     struct json_object *req, *val, *old_cert, *old_sc, *old_tbs;
-    const char *old_pub_pem, *new_pub_pem, *sig_hex;
+    const char *new_pub_pem;
     const char *old_subject, *old_algo;
     int cert_index, validity_days;
-    char computed_hash[65];
-    const char *logged_hash;
     (void)body_len;
 
-    /* Enrollment-level AbuseIPDB gate */
-    if (io->ip_str[0] != '\0') {
-        int score = mtc_checkendpoint(io->ip_str);
-        if (score >= ABUSEIPDB_ENROLL_THRESHOLD) {
-            LOG_WARN("renew rejected for %s (abuse score %d >= %d)",
-                     io->ip_str, score, ABUSEIPDB_ENROLL_THRESHOLD);
-            http_send_error(io, 403, "renewal denied");
-            return;
-        }
+    /* --- Step 1: MQC transport + peer identity required --- */
+    if (!io->mqc) {
+        LOG_WARN("renew-cert rejected: non-MQC transport from %s",
+                 io->ip_str);
+        http_send_error(io, 403, "/renew-cert requires MQC transport");
+        return;
+    }
+    cert_index = mqc_get_peer_index(io->mqc);
+    if (cert_index < 0) {
+        LOG_WARN("renew-cert rejected: no MQC peer identity from %s",
+                 io->ip_str);
+        http_send_error(io, 403, "MQC peer identity unavailable");
+        return;
     }
 
+    /* --- Step 2: look up caller's cert in the log --- */
+    if (cert_index >= store->cert_count ||
+        store->certificates[cert_index] == NULL) {
+        http_send_error(io, 404, "caller cert not found in log");
+        return;
+    }
+    old_cert = store->certificates[cert_index];
+    if (!json_object_object_get_ex(old_cert, "standalone_certificate", &old_sc) ||
+        !json_object_object_get_ex(old_sc, "tbs_entry", &old_tbs)) {
+        http_send_error(io, 500, "internal error: malformed stored cert");
+        return;
+    }
+    if (!json_object_object_get_ex(old_tbs, "subject", &val)) {
+        http_send_error(io, 500, "internal error: no subject in stored cert");
+        return;
+    }
+    old_subject = json_object_get_string(val);
+    old_algo = "EC-P256";
+    if (json_object_object_get_ex(old_tbs, "subject_public_key_algorithm", &val))
+        old_algo = json_object_get_string(val);
+
+    /* --- Step 3: refuse revoked certs --- */
+    if (mtc_store_is_revoked(store, cert_index)) {
+        LOG_WARN("renew-cert: cert %d (%s) is revoked; refusing",
+                 cert_index, old_subject);
+        http_send_error(io, 403, "certificate is revoked");
+        return;
+    }
+
+    /* --- Step 4: parse body --- */
     req = json_tokener_parse(body);
     if (!req) {
         http_send_error(io, 400, "invalid JSON");
         return;
     }
-
-    /* Parse required fields */
-    if (!json_object_object_get_ex(req, "cert_index", &val)) {
-        http_send_error(io, 400, "missing 'cert_index'");
-        json_object_put(req);
-        return;
-    }
-    cert_index = json_object_get_int(val);
-
-    if (!json_object_object_get_ex(req, "old_public_key_pem", &val)) {
-        http_send_error(io, 400, "missing 'old_public_key_pem'");
-        json_object_put(req);
-        return;
-    }
-    old_pub_pem = json_object_get_string(val);
-
     if (!json_object_object_get_ex(req, "new_public_key_pem", &val)) {
         http_send_error(io, 400, "missing 'new_public_key_pem'");
         json_object_put(req);
         return;
     }
     new_pub_pem = json_object_get_string(val);
-
-    if (!json_object_object_get_ex(req, "signature", &val)) {
-        http_send_error(io, 400, "missing 'signature'");
-        json_object_put(req);
-        return;
-    }
-    sig_hex = json_object_get_string(val);
-
     validity_days = 90;
     if (json_object_object_get_ex(req, "validity_days", &val)) {
         validity_days = json_object_get_int(val);
@@ -773,221 +780,8 @@ static void handle_certificate_renew(client_io *io, MtcStore *store,
         }
     }
 
-    /* --- Step 1: Look up existing certificate --- */
-    if (cert_index < 0 || cert_index >= store->cert_count ||
-        store->certificates[cert_index] == NULL) {
-        http_send_error(io, 404, "certificate not found");
-        json_object_put(req);
-        return;
-    }
-
-    old_cert = store->certificates[cert_index];
-    if (!json_object_object_get_ex(old_cert, "standalone_certificate", &old_sc) ||
-        !json_object_object_get_ex(old_sc, "tbs_entry", &old_tbs)) {
-        http_send_error(io, 500, "internal error: malformed stored cert");
-        json_object_put(req);
-        return;
-    }
-
-    if (!json_object_object_get_ex(old_tbs, "subject_public_key_hash", &val)) {
-        http_send_error(io, 500, "internal error: no key hash in stored cert");
-        json_object_put(req);
-        return;
-    }
-    logged_hash = json_object_get_string(val);
-
-    /* Get subject and algorithm from old cert for the renewal */
-    if (!json_object_object_get_ex(old_tbs, "subject", &val)) {
-        http_send_error(io, 500, "internal error: no subject in stored cert");
-        json_object_put(req);
-        return;
-    }
-    old_subject = json_object_get_string(val);
-
-    old_algo = "EC-P256";
-    if (json_object_object_get_ex(old_tbs, "subject_public_key_algorithm", &val))
-        old_algo = json_object_get_string(val);
-
-    /* --- Step 2: Verify old public key hash matches the log --- */
-    {
-        wc_Sha256 sha;
-        uint8_t h[32];
-        int fi;
-
-        wc_InitSha256(&sha);
-        wc_Sha256Update(&sha, (const uint8_t *)old_pub_pem,
-                        (word32)strlen(old_pub_pem));
-        wc_Sha256Final(&sha, h);
-        wc_Sha256Free(&sha);
-        for (fi = 0; fi < 32; fi++)
-            snprintf(computed_hash + fi * 2, 3, "%02x", h[fi]);
-    }
-
-    if (strcmp(computed_hash, logged_hash) != 0) {
-        LOG_WARN("renew: key hash mismatch for index %d from %s",
-                 cert_index, io->ip_str);
-        http_send_error(io, 403, "public key does not match logged certificate");
-        json_object_put(req);
-        return;
-    }
-
-    /* --- Step 3: Verify signature --- */
-    {
-        uint8_t sig_bytes[8192];  /* ML-DSA-87 sigs can be ~4627 bytes */
-        int sig_len;
-        char sign_msg[MAX_PATH_SZ];
-        uint8_t msg_hash[32];
-        int verified = 0;
-        int ret;
-        uint8_t der_buf[4096];
-        int der_sz;
-
-        /* Build the message that was signed */
-        snprintf(sign_msg, sizeof(sign_msg), "renew:%d:%s",
-                 cert_index, new_pub_pem);
-
-        /* Hash the message (used by ECC; Ed25519/ML-DSA sign raw msg) */
-        {
-            wc_Sha256 sha;
-            wc_InitSha256(&sha);
-            wc_Sha256Update(&sha, (const uint8_t *)sign_msg,
-                            (word32)strlen(sign_msg));
-            wc_Sha256Final(&sha, msg_hash);
-            wc_Sha256Free(&sha);
-        }
-
-        /* Decode hex signature */
-        sig_len = (int)strlen(sig_hex) / 2;
-        if (sig_len <= 0 || sig_len > (int)sizeof(sig_bytes)) {
-            http_send_error(io, 400, "invalid signature length");
-            json_object_put(req);
-            return;
-        }
-        {
-            int si;
-            for (si = 0; si < sig_len; si++) {
-                unsigned int b;
-                if (sscanf(sig_hex + si * 2, "%02x", &b) != 1) {
-                    http_send_error(io, 400, "invalid signature hex");
-                    json_object_put(req);
-                    return;
-                }
-                sig_bytes[si] = (uint8_t)b;
-            }
-        }
-
-        /* Decode PEM public key to DER */
-        der_sz = (int)sizeof(der_buf);
-        ret = wc_PubKeyPemToDer((const unsigned char *)old_pub_pem,
-                                (int)strlen(old_pub_pem),
-                                der_buf, der_sz);
-        if (ret < 0) {
-            LOG_WARN("renew: PEM to DER failed: %d", ret);
-            http_send_error(io, 400, "invalid old public key PEM");
-            json_object_put(req);
-            return;
-        }
-        der_sz = ret;
-
-        /* Dispatch verification based on key algorithm */
-        if (strcmp(old_algo, "EC-P256") == 0 ||
-            strcmp(old_algo, "EC-P384") == 0) {
-            /* ECDSA: verify hash */
-            ecc_key ecc;
-            word32 idx = 0;
-
-            wc_ecc_init(&ecc);
-            ret = wc_EccPublicKeyDecode(der_buf, &idx, &ecc, (word32)der_sz);
-            if (ret != 0) {
-                LOG_WARN("renew: ECC key decode failed: %d", ret);
-                wc_ecc_free(&ecc);
-                http_send_error(io, 400, "invalid ECC public key");
-                json_object_put(req);
-                return;
-            }
-            ret = wc_ecc_verify_hash(sig_bytes, (word32)sig_len,
-                                      msg_hash, 32, &verified, &ecc);
-            wc_ecc_free(&ecc);
-        }
-        else if (strcmp(old_algo, "Ed25519") == 0) {
-            /* Ed25519: verify raw message */
-            ed25519_key ed;
-            word32 idx = 0;
-
-            wc_ed25519_init(&ed);
-            ret = wc_Ed25519PublicKeyDecode(der_buf, &idx, &ed, (word32)der_sz);
-            if (ret != 0) {
-                LOG_WARN("renew: Ed25519 key decode failed: %d", ret);
-                wc_ed25519_free(&ed);
-                http_send_error(io, 400, "invalid Ed25519 public key");
-                json_object_put(req);
-                return;
-            }
-            ret = wc_ed25519_verify_msg(sig_bytes, (word32)sig_len,
-                                         (const uint8_t *)sign_msg,
-                                         (word32)strlen(sign_msg),
-                                         &verified, &ed);
-            wc_ed25519_free(&ed);
-        }
-        else if (strncmp(old_algo, "ML-DSA-", 7) == 0) {
-            /* ML-DSA (Dilithium): verify raw message */
-            dilithium_key dil;
-            byte level;
-
-            if (strcmp(old_algo, "ML-DSA-44") == 0)
-                level = WC_ML_DSA_44;
-            else if (strcmp(old_algo, "ML-DSA-65") == 0)
-                level = WC_ML_DSA_65;
-            else if (strcmp(old_algo, "ML-DSA-87") == 0)
-                level = WC_ML_DSA_87;
-            else {
-                http_send_error(io, 400, "unsupported ML-DSA variant");
-                json_object_put(req);
-                return;
-            }
-
-            wc_dilithium_init(&dil);
-            wc_dilithium_set_level(&dil, level);
-            ret = wc_dilithium_import_public(der_buf, (word32)der_sz, &dil);
-            if (ret != 0) {
-                LOG_WARN("renew: ML-DSA key import failed: %d", ret);
-                wc_dilithium_free(&dil);
-                http_send_error(io, 400, "invalid ML-DSA public key");
-                json_object_put(req);
-                return;
-            }
-            ret = wc_dilithium_verify_ctx_msg(sig_bytes, (word32)sig_len,
-                                               NULL, 0,
-                                               (const uint8_t *)sign_msg,
-                                               (word32)strlen(sign_msg),
-                                               &verified, &dil);
-            wc_dilithium_free(&dil);
-        }
-        else {
-            http_send_error(io, 400, "unsupported key algorithm for renewal");
-            json_object_put(req);
-            return;
-        }
-
-        if (ret != 0 || !verified) {
-            LOG_WARN("renew: signature verification failed for index %d (%s)",
-                     cert_index, old_algo);
-            http_send_error(io, 403, "signature verification failed");
-            json_object_put(req);
-            return;
-        }
-    }
-
-    LOG_INFO("renew: signature verified for '%s' (index %d)", old_subject,
-             cert_index);
-
-    /* --- Step 4: Check not revoked --- */
-    if (mtc_store_is_revoked(store, cert_index)) {
-        LOG_WARN("renew: cert %d is revoked", cert_index);
-        http_send_error(io, 403, "certificate is revoked");
-        json_object_put(req);
-        return;
-    }
+    LOG_INFO("renew-cert: authorized for '%s' via MQC peer_index=%d",
+             old_subject, cert_index);
 
     /* --- Step 5: Issue new certificate --- */
     {
@@ -1148,10 +942,10 @@ static void handle_certificate_renew(client_io *io, MtcStore *store,
         if (store->use_db && store->db) {
             const char *cert_str = json_object_to_json_string(result);
             if (mtc_db_save_certificate(store->db, new_index, cert_str) != 0)
-                LOG_ERROR("renew: DB save_certificate failed for index %d", new_index);
+                LOG_ERROR("renew-cert: DB save_certificate failed for index %d", new_index);
         }
 
-        LOG_INFO("renew: issued new cert for '%s' at index %d (was %d)",
+        LOG_INFO("renew-cert: issued new cert for '%s' at index %d (was %d)",
                  old_subject, new_index, cert_index);
 
         http_send_json_obj(io, 201, result);
@@ -2096,12 +1890,12 @@ static void handle_request(client_io *io, MtcStore *store)
             http_send_error(io, 410,
                 "endpoint removed — use DH bootstrap port for enrollment");
         }
-        else if (strcmp(path, "/certificate/renew") == 0) {
+        else if (strcmp(path, "/renew-cert") == 0) {
             if (!mtc_ratelimit_check(io->ip_str, RL_ENROLL)) {
                 http_send_error(io, 429, "rate limit exceeded");
                 return;
             }
-            handle_certificate_renew(io, store, body, body_len);
+            handle_renew_cert(io, store, body, body_len);
         }
         else if (strcmp(path, "/revoke") == 0) {
             if (!mtc_ratelimit_check(io->ip_str, RL_REVOKE)) {

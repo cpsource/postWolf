@@ -53,6 +53,9 @@ install: all
 	ldconfig
 	$(MAKE) -C $(MTC_DIR) install
 	$(MAKE) -C $(TOOLS_DIR) install
+	install -d $(DESTDIR)/usr/local/sbin
+	install -m 755 mtc-keymaster/tools/sh/setup-recert-crond.sh \
+		$(DESTDIR)/usr/local/sbin/setup-recert-crond.sh
 
 clean:
 	$(MAKE) -C $(SLC_DIR) clean

@@ -60,6 +60,13 @@
 #define MTC_SIG_FRESHNESS_SEC           300       /* ±5 min */
 #endif
 
+/* How many days before a cert's not_after check-renewal-cert will
+ * automatically trigger a /renew-cert. Operators can override at
+ * runtime with --window-days N. */
+#ifndef MTC_RENEWAL_WINDOW_DAYS
+#define MTC_RENEWAL_WINDOW_DAYS         5
+#endif
+
 /* -- Default listener ports ------------------------------------------ */
 #ifndef MTC_HTTP_DEFAULT_PORT
 #define MTC_HTTP_DEFAULT_PORT           8444      /* TLS debug / curl */
