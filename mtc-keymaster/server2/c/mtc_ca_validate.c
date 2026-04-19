@@ -58,24 +58,20 @@ static void ca_to_hex(const uint8_t *data, int sz, char *out)
  *
  * Description:
  *   Queries DNS for _mtc-ca.<domain> TXT records and validates against
- *   the expected fingerprint (and optionally a nonce).
+ *   the expected fingerprint.
  *
- *   Two TXT record formats are supported:
- *     v=mtc-ca1; fp=sha256:<hex>                   — legacy (fp-only)
- *     v=mtc-ca2; fp=sha256:<hex>; n=<nonce>        — nonce-bound
+ *   TXT record format:
+ *     v=mtc-ca1; fp=sha256:<hex>
  *
  * Input Arguments:
- *   domain          - Domain name (e.g. "example.com").
- *   fp_hex          - Expected SHA-256 fingerprint (64 hex chars).
- *   expected_nonce  - If non-NULL, require v=mtc-ca2 with matching nonce.
- *                     If NULL, accept legacy v=mtc-ca1 (fp-only).
+ *   domain  - Domain name (e.g. "example.com").
+ *   fp_hex  - Expected SHA-256 fingerprint (64 hex chars).
  *
  * Returns:
  *   1  if a matching TXT record is found.
  *   0  if no match, DNS query failed, or parse error.
  ******************************************************************************/
-int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex,
-                            const char *expected_nonce)
+int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex)
 {
     char qname[256];
     unsigned char answer[4096];
@@ -86,11 +82,7 @@ int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex,
     snprintf(qname, sizeof(qname), "_mtc-ca.%s", domain);
 
     LOG_INFO("DNS lookup: %s", qname);
-    if (expected_nonce)
-        LOG_INFO("  expecting: v=mtc-ca2; fp=sha256:%s; n=%s",
-                 fp_hex, expected_nonce);
-    else
-        LOG_INFO("  expecting: v=mtc-ca1; fp=sha256:%s", fp_hex);
+    LOG_INFO("  expecting: v=mtc-ca1; fp=sha256:%s", fp_hex);
 
     ans_len = res_query(qname, ns_c_in, ns_t_txt, answer, sizeof(answer));
     if (ans_len < 0) {
@@ -139,7 +131,6 @@ int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex,
                             char tmp[512];
                             char *field, *saveptr;
                             const char *v_val = NULL, *fp_val = NULL;
-                            const char *n_val = NULL;
 
                             snprintf(tmp, sizeof(tmp), "%s", txt);
                             for (field = strtok_r(tmp, ";", &saveptr);
@@ -150,38 +141,23 @@ int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex,
                                     v_val = field + 2;
                                 else if (strncmp(field, "fp=sha256:", 10) == 0)
                                     fp_val = field + 10;
-                                else if (strncmp(field, "n=", 2) == 0)
-                                    n_val = field + 2;
                             }
 
                             /* Log what we parsed vs what we need */
                             if (v_val)
-                                LOG_DEBUG("    parsed: v=%s fp=%s n=%s",
-                                          v_val, fp_val ? fp_val : "(none)",
-                                          n_val ? n_val : "(none)");
+                                LOG_DEBUG("    parsed: v=%s fp=%s",
+                                          v_val, fp_val ? fp_val : "(none)");
 
-                            if (expected_nonce) {
-                                if (v_val && strcmp(v_val, "mtc-ca2") == 0 &&
-                                    fp_val && strcmp(fp_val, fp_hex) == 0 &&
-                                    n_val && strcmp(n_val, expected_nonce) == 0) {
-                                    LOG_INFO("  MATCH: v=mtc-ca2 for %s", qname);
-                                    return 1;
-                                }
-                            }
-                            else {
-                                if (v_val && strcmp(v_val, "mtc-ca1") == 0 &&
-                                    fp_val && strcmp(fp_val, fp_hex) == 0) {
-                                    LOG_INFO("  MATCH: v=mtc-ca1 for %s", qname);
-                                    return 1;
-                                }
+                            if (v_val && strcmp(v_val, "mtc-ca1") == 0 &&
+                                fp_val && strcmp(fp_val, fp_hex) == 0) {
+                                LOG_INFO("  MATCH: v=mtc-ca1 for %s", qname);
+                                return 1;
                             }
 
                             /* Log mismatch details */
                             if (v_val && fp_val) {
                                 if (strcmp(fp_val, fp_hex) != 0)
                                     LOG_WARN("  mismatch: fingerprint differs");
-                                if (expected_nonce && (!n_val || strcmp(n_val, expected_nonce) != 0))
-                                    LOG_WARN("  mismatch: nonce differs");
                             }
                         }
                     }
@@ -206,21 +182,20 @@ int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex,
  *   If extensions contain ca_certificate_pem, parses the X.509 cert,
  *   verifies CA:TRUE in Basic Constraints, extracts the SAN DNS name
  *   and SPKI SHA-256 fingerprint, and validates domain ownership via
- *   DNS TXT record.
+ *   DNS TXT record (v=mtc-ca1; fp=sha256:<hex>).
  *
  *   All CAs require DNS validation (no root CA bypass).
+ *   CA enrollment does not use a nonce — only leaf enrollment does.
  *   If no ca_certificate_pem is present, returns 1 (not a CA request).
  *
  * Input Arguments:
- *   extensions       - Request extensions json_object (may be NULL).
- *   enrollment_nonce - Nonce for v=mtc-ca2 validation (NULL = legacy).
+ *   extensions - Request extensions json_object (may be NULL).
  *
  * Returns:
  *   1  if not a CA request, or CA validated successfully.
  *   0  if CA validation failed (rejected).
  ******************************************************************************/
-int mtc_validate_ca_cert(struct json_object *extensions,
-                         const char *enrollment_nonce)
+int mtc_validate_ca_cert(struct json_object *extensions)
 {
     struct json_object *ca_cert_val;
     const char *ca_cert_pem;
@@ -327,7 +302,6 @@ int mtc_validate_ca_cert(struct json_object *extensions,
 
         wc_FreeDecodedCert(&decoded);
 
-        /* Check DNS — pass nonce for v=mtc-ca2, or NULL for legacy */
-        return mtc_validate_ca_dns_txt(domain, fp_hex, enrollment_nonce);
+        return mtc_validate_ca_dns_txt(domain, fp_hex);
     }
 }

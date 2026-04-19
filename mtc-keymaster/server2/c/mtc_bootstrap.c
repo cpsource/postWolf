@@ -633,7 +633,8 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
         }
     }
 
-    /* Nonce is required for leaf, optional for CA */
+    /* Nonce is required for leaf enrollment; CA enrollment uses DNS
+     * TXT for proof of domain control and doesn't consume a nonce. */
     if (json_object_object_get_ex(req, "enrollment_nonce", &val))
         enrollment_nonce = json_object_get_string(val);
     else
@@ -656,7 +657,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
         if (is_ca_enrollment) {
             /* CA enrollment: validate X.509 cert + DNS TXT record */
             LOG_INFO("bootstrap: CA enrollment request for '%s'", subject);
-            if (!mtc_validate_ca_cert(extensions, enrollment_nonce)) {
+            if (!mtc_validate_ca_cert(extensions)) {
                 LOG_WARN("bootstrap: CA validation failed for '%s'", subject);
                 {
                     const char *err_json = "{\"status\":\"error\","

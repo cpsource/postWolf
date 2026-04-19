@@ -21,26 +21,23 @@
  * If extensions contain ca_certificate_pem, parses the X.509 cert,
  * verifies CA:TRUE, extracts SAN DNS name and SPKI fingerprint, and
  * validates domain ownership via DNS TXT record.  All CAs require
- * DNS validation (no root CA bypass).
+ * DNS validation (no root CA bypass).  CA enrollment does not use
+ * an enrollment nonce — only leaf enrollment does.
  *
- * @param[in] extensions       JSON extensions object (may be NULL).
- * @param[in] enrollment_nonce Nonce for v=mtc-ca2 (NULL = legacy v=mtc-ca1).
+ * @param[in] extensions  JSON extensions object (may be NULL).
  *
  * @return  1 if not a CA request or validation succeeds.  0 if rejected.
  */
-int mtc_validate_ca_cert(struct json_object *extensions,
-                         const char *enrollment_nonce);
+int mtc_validate_ca_cert(struct json_object *extensions);
 
 /**
  * @brief  Validate DNS TXT record at _mtc-ca.<domain>.
  *
- * @param[in] domain         Domain name to query.
- * @param[in] fp_hex         Expected SHA-256 fingerprint (64 hex chars).
- * @param[in] expected_nonce Nonce for v=mtc-ca2 (NULL = legacy v=mtc-ca1).
+ * @param[in] domain  Domain name to query.
+ * @param[in] fp_hex  Expected SHA-256 fingerprint (64 hex chars).
  *
  * @return  1 if matching TXT record found.  0 if no match.
  */
-int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex,
-                            const char *expected_nonce);
+int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex);
 
 #endif /* MTC_CA_VALIDATE_H */

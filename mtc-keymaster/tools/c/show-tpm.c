@@ -185,6 +185,7 @@ typedef struct {
     double not_before;
     double not_after;
     int  has_cert;
+    int  is_default;       /* 1 if ~/.TPM/default resolves to this dir */
     /* Verification results */
     int  v_server_found;   /* 1=ok, 0=fail, -1=not checked */
     int  v_revoked;        /* 1=revoked, 0=not, -1=not checked */
@@ -411,7 +412,8 @@ static void print_entry(const tpm_entry_t *e, int verbose, int verify)
 
     expired = (strcmp(status, "EXPIRED") == 0);
 
-    printf("  [%c] %s\n", expired ? 'X' : '+', e->name);
+    printf("  [%c] %s%s\n", expired ? 'X' : '+', e->name,
+           e->is_default ? "  (default)" : "");
     if (e->subject[0] && strcmp(e->subject, e->name) != 0)
         printf("      Subject:    %s\n", e->subject);
     printf("      Type:       %s\n", e->entry_type);
@@ -651,6 +653,29 @@ int main(int argc, char *argv[])
     if (num_entries == 0) {
         printf("No entries found in %s\n", tpm_dir);
         return 0;
+    }
+
+    /* Resolve ~/.TPM/default → identity name and flag it in the entries. */
+    {
+        char default_path[1024];
+        char link_target[1024];
+        ssize_t rl;
+        snprintf(default_path, sizeof(default_path), "%s/default", tpm_dir);
+        rl = readlink(default_path, link_target, sizeof(link_target) - 1);
+        if (rl > 0) {
+            const char *base;
+            link_target[rl] = '\0';
+            /* Handle both relative ("foo.com") and absolute
+             * ("/home/u/.TPM/foo.com") symlink targets. */
+            base = strrchr(link_target, '/');
+            base = base ? base + 1 : link_target;
+            for (i = 0; i < num_entries; i++) {
+                if (strcmp(entries[i].name, base) == 0) {
+                    entries[i].is_default = 1;
+                    break;
+                }
+            }
+        }
     }
 
     /* Sort by name */

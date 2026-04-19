@@ -14,7 +14,7 @@
  *   Usage:
  *     bootstrap_ca --server HOST:PORT --domain DOMAIN \
  *                  --public-key FILE --private-key FILE \
- *                  --ca-cert FILE --nonce NONCE [--tpm-dir DIR] [--dry-run]
+ *                  --ca-cert FILE [--tpm-dir DIR] [--dry-run]
  *
  * Dependencies:
  *   mtc_crypt.h / mtc_crypt.c       (AES encryption)
@@ -428,7 +428,6 @@ static void usage(const char *prog)
     printf("  --public-key FILE    Path to CA public key PEM\n");
     printf("  --private-key FILE   Path to CA private key PEM\n");
     printf("  --ca-cert FILE       Path to X.509 CA certificate PEM\n");
-    printf("  --nonce NONCE        Optional nonce for v=mtc-ca2 DNS validation\n");
     printf("  --key-algorithm ALG  Key algorithm (default: ML-DSA-87)\n");
     printf("  --validity-days N    Certificate validity (default: 365)\n");
     printf("  --tpm-dir DIR        TPM storage directory (default: ~/.TPM)\n");
@@ -444,7 +443,7 @@ static void usage(const char *prog)
     printf("  -h, --help           Show this help\n");
     printf("\nNote: Intermediate CAs require a DNS TXT record at\n");
     printf("  _mtc-ca.<domain> with format:\n");
-    printf("  v=mtc-ca2; fp=sha256:<fingerprint>; n=<nonce>\n");
+    printf("  v=mtc-ca1; fp=sha256:<fingerprint>\n");
 }
 
 /******************************************************************************
@@ -458,7 +457,6 @@ int main(int argc, char *argv[])
     const char *pub_key_path = NULL;
     const char *priv_key_path = NULL;
     const char *ca_cert_path = NULL;
-    const char *nonce = NULL;
     const char *key_algo = "ML-DSA-87";
     int validity_days = 365;
     const char *tpm_dir_arg = NULL;
@@ -511,8 +509,6 @@ int main(int argc, char *argv[])
             priv_key_path = argv[++i];
         else if (strcmp(argv[i], "--ca-cert") == 0 && i + 1 < argc)
             ca_cert_path = argv[++i];
-        else if (strcmp(argv[i], "--nonce") == 0 && i + 1 < argc)
-            nonce = argv[++i];
         else if (strcmp(argv[i], "--key-algorithm") == 0 && i + 1 < argc)
             key_algo = argv[++i];
         else if (strcmp(argv[i], "--validity-days") == 0 && i + 1 < argc)
@@ -620,7 +616,6 @@ int main(int argc, char *argv[])
     LOG("subject:     %s", subject);
     LOG("public key:  %s", pub_key_path);
     LOG("CA cert:     %s", ca_cert_path);
-    LOG("nonce:       %.16s...", nonce);
     LOG("algorithm:   %s", key_algo);
     LOG("validity:    %d days", validity_days);
     LOG("TPM dir:     %s", tpm_dir);
@@ -802,9 +797,8 @@ int main(int argc, char *argv[])
             json_object_new_string(key_algo));
         json_object_object_add(enroll, "validity_days",
             json_object_new_int(validity_days));
-        if (nonce)
-            json_object_object_add(enroll, "enrollment_nonce",
-                json_object_new_string(nonce));
+        /* CA enrollment does not use an enrollment nonce — DNS TXT
+         * is the proof of domain control. */
 
         /* CA-specific: add ca_certificate_pem in extensions */
         {

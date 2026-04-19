@@ -1468,11 +1468,24 @@ into `mtc-renew.sh` or a dedicated systemd timer.
 
 ---
 
-### 29. Drop backwards compatibility for nonce — require the two-step enrollment flow on all clients and remove the legacy no-nonce code path.
+### 29. Drop backwards compatibility for nonce — require the two-step enrollment flow on all clients and remove the legacy no-nonce code path. — **DONE 2026-04-19**
 
-### 30. `show-tpm` — flag the `~/.TPM/default` target when listing identities (e.g. mark the active one with `*` or `(default)`).
+Scope clarified during implementation: CA enrollment never uses a
+nonce (DNS TXT at `_mtc-ca.<domain>` is the proof of domain control);
+leaf enrollment already required a nonce with no fallback path. The
+cruft to remove was the aspirational `v=mtc-ca2` DNS format (nonce +
+fingerprint) and the matching `bootstrap_ca --nonce` flag. After
+this change:
+- `mtc_validate_ca_dns_txt` accepts only `v=mtc-ca1; fp=sha256:<hex>`.
+- `mtc_validate_ca_cert` signature dropped its `enrollment_nonce` parameter.
+- `bootstrap_ca` no longer exposes `--nonce`; never sends
+  `enrollment_nonce` in the CA enrollment body.
 
-### 31. `bootstrap_leaf` — if the caller already has a CA identity, refuse to use port 8445 (DH bootstrap is for first-enrollment only; CA holders should use the MQC-authenticated path).
+### 30. `show-tpm` — flag the `~/.TPM/default` target when listing identities (e.g. mark the active one with `*` or `(default)`). — **DONE 2026-04-19**
+
+`show-tpm` now reads the `~/.TPM/default` symlink target (handling
+both relative and absolute targets) and appends `  (default)` after
+the identity name that matches.
 
 ---
 
