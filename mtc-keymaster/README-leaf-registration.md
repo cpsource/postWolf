@@ -234,6 +234,7 @@ the CA operator's machine, not the leaf's.
 | `ERROR: no --nonce given, no local CA, and stdin is not a tty` | cross-machine batch mode without a nonce | re-run interactively, or obtain the nonce out-of-band and pass `--nonce HEX` |
 | Paste-prompt rejects nonce as "must be 64 hex chars" | stray whitespace, wrong copy, or truncated | verify length with `wc -c`, re-paste; trimming is already applied |
 | `A leaf identity for <domain> already exists` warning | re-enrolling over a live identity | answer `n` (default) to abort; to rotate keys, use `check-renewal-cert --force <domain>` instead |
+| `existing leaf identity at <dir> is REVOKED.` + exit 1 | CA has revoked this cert | register-leaf.sh refuses and the server enforces the same policy. To rotate keys, use `check-renewal-cert` (MQC bypasses the gate). To unrevoke, open an issue at https://github.com/cpsource/postWolf/issues. |
 
 ---
 
@@ -263,12 +264,33 @@ To revoke a leaf identity, the CA operator runs:
 revoke-key --target-index <N> --reason "key compromise"
 ```
 
-After revocation, `show-tpm --verify` on the leaf box will fail
-revocation checks. The MQC handshake will also reject the revoked
-identity at connect time.
+After revocation:
+- `show-tpm --verify` on the leaf box fails the revocation check.
+- The MQC handshake rejects the revoked identity at connect time.
+- `register-leaf.sh` refuses re-enrollment (client-side guard).
+- `mtc_bootstrap.c` refuses too (server-side gate): if the most-recent
+  log entry for `<domain>` is revoked, the DH-bootstrap endpoint
+  rejects the request even when the nonce validates.
 
-To replace a revoked leaf with a fresh one, the CA operator simply
-issues a new nonce for a new keypair — there's no
-operator-intervention requirement equivalent to the CA-level
-"unrevoke" needed for CA re-enrollment. The leaf nonce flow itself
-is the authorization primitive.
+**Re-enrollment of a revoked leaf is therefore not routine.** Two
+supported paths for getting a revoked domain back in service:
+
+1. **Routine key rotation (preferred).** If the goal is just to
+   rotate the key (e.g. suspected compromise), use
+   `check-renewal-cert --force <domain>` instead of re-running
+   `bootstrap_leaf`. Renewal runs over MQC (`/renew-cert`) using
+   the still-valid identity and **bypasses the bootstrap revocation
+   gate** by design. Automate it with
+   `sudo /usr/local/sbin/setup-recert-crond.sh --start`.
+
+2. **Unrevoke (rare).** If the revocation was issued in error and
+   you genuinely want the old cert "alive" again, the CA operator
+   has to request an unrevoke from the server operator — MTC's
+   append-only log has no native unrevoke, so the `mtc_revocations`
+   table needs a DB-level edit. Open an issue at
+   <https://github.com/cpsource/postWolf/issues> with the domain and
+   cert_index. Future work (TODO #34) adds a self-service
+   revocation-management page.
+
+Matches the CA-side policy: revocation is an explicit operator veto,
+not a hiccup the system auto-recovers from.

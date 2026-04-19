@@ -775,6 +775,52 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                 goto cleanup;
             }
 
+            /* Revocation gate: if the most-recent leaf entry for this
+             * subject is revoked, the CA operator decided this cert
+             * should not be in service.  Refuse re-enrollment even
+             * though the nonce validates — mirrors the CA-subject
+             * gate earlier in this function. */
+            {
+                int latest_idx = -1;
+                int k;
+                for (k = 0; k < store->cert_count; k++) {
+                    struct json_object *entry = store->certificates[k];
+                    struct json_object *sc_j, *tbs_j, *subj_j;
+                    const char *entry_subj;
+                    if (!entry) continue;
+                    if (!json_object_object_get_ex(entry, "standalone_certificate", &sc_j)) continue;
+                    if (!json_object_object_get_ex(sc_j, "tbs_entry", &tbs_j)) continue;
+                    if (!json_object_object_get_ex(tbs_j, "subject", &subj_j)) continue;
+                    entry_subj = json_object_get_string(subj_j);
+                    if (entry_subj && strcmp(entry_subj, subject) == 0) {
+                        latest_idx = k;
+                    }
+                }
+                if (latest_idx >= 0 && mtc_store_is_revoked(store, latest_idx)) {
+                    LOG_WARN("bootstrap: leaf enrollment refused — most "
+                             "recent leaf for '%s' (index %d) is revoked",
+                             subject, latest_idx);
+                    {
+                        const char *err_json = "{\"status\":\"error\","
+                            "\"message\":\"leaf enrollment refused: this "
+                            "subject's most recent certificate has been "
+                            "revoked.  For routine key rotation, use "
+                            "check-renewal-cert (MQC, bypasses this gate). "
+                            "If the revocation was in error, open an issue "
+                            "at https://github.com/cpsource/postWolf/issues "
+                            "to request it be lifted.\"}";
+                        unsigned int err_enc_len = sizeof(enc_buf);
+                        if (mtc_crypt_encode(crypt_ctx,
+                                (unsigned char *)err_json,
+                                (unsigned int)strlen(err_json),
+                                enc_buf, &err_enc_len) == 0) {
+                            send_length_prefixed(fd, enc_buf, err_enc_len);
+                        }
+                    }
+                    goto cleanup;
+                }
+            }
+
             LOG_INFO("bootstrap: leaf enrollment for '%s' authorized by nonce %.16s...",
                      subject, enrollment_nonce);
         }

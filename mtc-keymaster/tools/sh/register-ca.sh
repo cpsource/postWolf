@@ -89,6 +89,28 @@ prompt_ynq() {
     esac
 }
 
+# is_index_revoked: GET /revoked/<idx> over TLS 8444 (public read,
+# self-signed cert, no MQC identity needed).  Exits 0 if the server
+# says revoked, 1 if not, 2 on network/parse error.
+is_index_revoked() {
+    local idx="$1"
+    local host="${SERVER%:*}"
+    python3 - "$host" "$idx" <<'PY' 2>/dev/null
+import json, ssl, sys, urllib.request
+host, idx = sys.argv[1], sys.argv[2]
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+try:
+    r = urllib.request.urlopen(
+        f"https://{host}:8444/revoked/{idx}", context=ctx, timeout=5)
+    d = json.loads(r.read())
+    sys.exit(0 if d.get("revoked") else 1)
+except Exception:
+    sys.exit(2)
+PY
+}
+
 draw_bar() {
     # $1 = filled (0..POLL_ROUNDS), $2 = total, $3 = suffix text
     if [ "$NO_PROMPT" -eq 1 ] || [ ! -t 1 ]; then return 0; fi
@@ -122,8 +144,7 @@ print(int(d['standalone_certificate']['tbs_entry']['not_after']))
 
     if [ "$not_after" -lt "$now" ]; then
         echo "==> existing CA identity at $TPM_DIR is EXPIRED; re-enrollment is appropriate. Proceeding."
-    elif revoke-key --list "$DOMAIN" -s "$SERVER" 2>/dev/null \
-         | grep -Fq "index $cert_idx "; then
+    elif is_index_revoked "$cert_idx"; then
         cat >&2 <<REVOKED
 
 ERROR: existing CA identity at $TPM_DIR is REVOKED.

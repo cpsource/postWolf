@@ -97,6 +97,27 @@ has_local_ca() {
     return 1
 }
 
+# is_index_revoked: GET /revoked/<idx> over TLS 8444.  0=revoked,
+# 1=not, 2=error.  See register-ca.sh for the same helper.
+is_index_revoked() {
+    local idx="$1"
+    local host="${SERVER%:*}"
+    python3 - "$host" "$idx" <<'PY' 2>/dev/null
+import json, ssl, sys, urllib.request
+host, idx = sys.argv[1], sys.argv[2]
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+try:
+    r = urllib.request.urlopen(
+        f"https://{host}:8444/revoked/{idx}", context=ctx, timeout=5)
+    d = json.loads(r.read())
+    sys.exit(0 if d.get("revoked") else 1)
+except Exception:
+    sys.exit(2)
+PY
+}
+
 # --- 0. existing-identity guard ---
 TPM_DIR="$HOME/.TPM/${DOMAIN}${LABEL:+-${LABEL}}"
 if [ -d "$TPM_DIR" ] \
@@ -112,6 +133,28 @@ print(int(d['standalone_certificate']['tbs_entry']['not_after']))
 
     if [ "$not_after" -lt "$now" ]; then
         echo "==> existing leaf identity at $TPM_DIR is EXPIRED; re-enrollment is appropriate. Proceeding."
+    elif is_index_revoked "$cert_idx"; then
+        cat >&2 <<REVOKED
+
+ERROR: existing leaf identity at $TPM_DIR is REVOKED.
+
+cert_index $cert_idx was revoked by your CA.  A revoked leaf means
+the CA has decided this cert should not be in service.  Re-enrollment
+is **refused**.  The server (mtc_bootstrap.c) enforces this policy
+too — even if you bypass this check, the bootstrap will be rejected.
+
+To resolve:
+  - For routine key rotation: use check-renewal-cert (or
+    /usr/local/sbin/setup-recert-crond.sh --start for auto-renewal).
+    Renewal bypasses this check because it goes over MQC with the
+    still-valid identity, not bootstrap.
+  - If the revocation was in error: contact your CA operator.
+    Lifting a revocation requires server-operator intervention via
+    https://github.com/cpsource/postWolf/issues (MTC's append-only
+    log has no built-in "unrevoke" primitive).
+
+REVOKED
+        exit 1
     else
         expires_str="$(date -u -d "@$not_after" 2>/dev/null || echo "$not_after")"
         cat >&2 <<WARN
