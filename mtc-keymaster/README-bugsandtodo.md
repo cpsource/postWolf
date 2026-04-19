@@ -1264,9 +1264,21 @@ Flow:
    two live nonces can't race into the same local dir.
 3. `bootstrap_leaf --domain factsorlie.com --nonce <hex>` — label
    comes back in the bootstrap response JSON.
-4. Leaf tool writes to `~/.TPM/<label>/` instead of `~/.TPM/<subject>/`.
+4. Leaf tool writes to `~/.TPM/<domain>-<label>/` instead of
+   `~/.TPM/<subject>/`.  (`bootstrap_ca` gains its own `--label` too
+   and writes to `~/.TPM/<domain>-<label>-ca/`.)
 5. Omit `--label` at issue time → default to `<subject>` → today's
    behavior byte-for-byte.
+6. On successful enrollment, `~/.TPM/default` is created as a
+   relative symlink to the just-written dir — but only if it
+   doesn't already exist.  `--make-default` forces an atomic
+   re-point.  Resolver (`show-tpm`, `issue_leaf_nonce`,
+   `revoke-key`) honors the symlink when no `--tpm-path` is given.
+
+**DONE 2026-04-19** — server schema, HTTP handler, bootstrap response,
+all three client tools, and the resolver updated.  Label is never
+embedded in the issued certificate; sanitization is strictly
+client-side in the bootstrap tools (charset `[A-Za-z0-9._-]{1..64}`).
 
 **Nice properties:**
 - Zero leaf-side config — leaf doesn't invent or know the name.

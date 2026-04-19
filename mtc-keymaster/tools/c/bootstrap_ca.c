@@ -232,7 +232,30 @@ static int recv_length_prefixed(int fd, unsigned char *buf, int bufsz)
  *   Creates the directory if needed.  Writes certificate.json,
  *   index, public_key.pem, and copies private_key.pem.
  ******************************************************************************/
+#define MTC_LABEL_MAX 64
+/* Client-side label validator; see plan TODO #26.  Charset
+ * [A-Za-z0-9._-], 1..64 chars.  Empty and NULL are invalid. */
+static int sanitize_label(const char *in)
+{
+    size_t len, i;
+    if (!in) return -1;
+    len = strlen(in);
+    if (len < 1 || len > MTC_LABEL_MAX) return -1;
+    for (i = 0; i < len; i++) {
+        char c = in[i];
+        if (!((c >= 'A' && c <= 'Z') ||
+              (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') ||
+              c == '.' || c == '_' || c == '-')) return -1;
+    }
+    return 0;
+}
+
+/* CA subject is always "<domain>-ca" (established by the server).  The
+ * optional label slots in BEFORE "-ca", giving "<domain>-<label>-ca"
+ * on disk — mirrors the leaf convention of "<domain>-<label>". */
 static int save_to_tpm(const char *tpm_dir, const char *subject,
+                       const char *label, int make_default,
                        const char *cert_json, int cert_index,
                        const char *pub_key_path, const char *priv_key_path,
                        const char *ca_cert_path_arg)
@@ -240,10 +263,12 @@ static int save_to_tpm(const char *tpm_dir, const char *subject,
     char dir_path[256];
     char file_path[256 + 32];  /* dir_path + longest filename */
     char *subj_safe;
+    char leaf_part[256];       /* subject minus trailing "-ca", if any */
     FILE *fp;
     char *key_data;
     int key_len, n;
     unsigned int i;
+    size_t sl;
 
     /* Convert subject to filesystem-safe name: replace ':' with '_' */
     subj_safe = strdup(subject);
@@ -252,7 +277,27 @@ static int save_to_tpm(const char *tpm_dir, const char *subject,
             subj_safe[i] = '_';
     }
 
-    n = snprintf(dir_path, sizeof(dir_path), "%s/%s", tpm_dir, subj_safe);
+    /* If a label is set, interleave it before the "-ca" suffix:
+     *     foo.com-ca  +  label=prod   →   foo.com-prod-ca
+     * Falls back to the legacy subject-only path when label is NULL. */
+    if (label && label[0]) {
+        sl = strlen(subj_safe);
+        if (sl > 3 && strcmp(subj_safe + sl - 3, "-ca") == 0) {
+            int ll = (int)(sl - 3);
+            if (ll >= (int)sizeof(leaf_part)) ll = (int)sizeof(leaf_part) - 1;
+            memcpy(leaf_part, subj_safe, (size_t)ll);
+            leaf_part[ll] = '\0';
+            n = snprintf(dir_path, sizeof(dir_path), "%s/%s-%s-ca",
+                         tpm_dir, leaf_part, label);
+        } else {
+            /* Subject doesn't end in -ca — keep the label as a plain
+             * suffix (shouldn't happen in practice but safe fallback). */
+            n = snprintf(dir_path, sizeof(dir_path), "%s/%s-%s",
+                         tpm_dir, subj_safe, label);
+        }
+    } else {
+        n = snprintf(dir_path, sizeof(dir_path), "%s/%s", tpm_dir, subj_safe);
+    }
     if (n < 0 || n >= (int)sizeof(dir_path)) {
         LOG("ERROR: TPM path too long");
         free(subj_safe);
@@ -330,6 +375,43 @@ static int save_to_tpm(const char *tpm_dir, const char *subject,
         }
     }
 
+    /* ~/.TPM/default symlink policy (plan TODO #26 Phases D + G):
+     * mirrors the bootstrap_leaf logic exactly.  See comments there. */
+    {
+        char default_path[512];
+        char rel_target[256];
+        struct stat st;
+        int default_exists;
+        const char *base = strrchr(dir_path, '/');
+        base = base ? base + 1 : dir_path;
+        snprintf(rel_target, sizeof(rel_target), "%s", base);
+        snprintf(default_path, sizeof(default_path), "%s/default", tpm_dir);
+        default_exists = (lstat(default_path, &st) == 0);
+
+        if (!default_exists) {
+            if (symlink(rel_target, default_path) != 0)
+                LOG("WARN: could not create %s: %s",
+                    default_path, strerror(errno));
+            else
+                LOG("  set default -> %s", rel_target);
+        } else if (make_default) {
+            char tmp_path[600];
+            snprintf(tmp_path, sizeof(tmp_path), "%s/.default.tmp.%d",
+                     tpm_dir, (int)getpid());
+            unlink(tmp_path);
+            if (symlink(rel_target, tmp_path) != 0) {
+                LOG("WARN: could not stage new default: %s",
+                    strerror(errno));
+            } else if (rename(tmp_path, default_path) != 0) {
+                LOG("WARN: could not atomically re-point default: %s",
+                    strerror(errno));
+                unlink(tmp_path);
+            } else {
+                LOG("  re-pointed default -> %s (was pinned)", rel_target);
+            }
+        }
+    }
+
     free(subj_safe);
     return 0;
 }
@@ -350,6 +432,13 @@ static void usage(const char *prog)
     printf("  --key-algorithm ALG  Key algorithm (default: ML-DSA-87)\n");
     printf("  --validity-days N    Certificate validity (default: 365)\n");
     printf("  --tpm-dir DIR        TPM storage directory (default: ~/.TPM)\n");
+    printf("  --label LABEL        Optional local disambiguator: CA identity\n");
+    printf("                       is stored under ~/.TPM/<domain>-<label>-ca/\n");
+    printf("                       Charset [A-Za-z0-9._-], length 1..64.\n");
+    printf("                       Never embedded in the cert.\n");
+    printf("  --make-default       Re-point ~/.TPM/default at this identity\n");
+    printf("                       even if it already exists (default: create\n");
+    printf("                       only if missing).\n");
     printf("  --dry-run            Do everything but don't save to TPM\n");
     printf("  -v, --verbose        Verbose output\n");
     printf("  -h, --help           Show this help\n");
@@ -373,6 +462,8 @@ int main(int argc, char *argv[])
     const char *key_algo = "ML-DSA-87";
     int validity_days = 365;
     const char *tpm_dir_arg = NULL;
+    const char *label_arg = NULL;
+    int make_default = 0;
 
     /* Parsed server host:port */
     char server_host[256];
@@ -428,6 +519,10 @@ int main(int argc, char *argv[])
             validity_days = atoi(argv[++i]);
         else if (strcmp(argv[i], "--tpm-dir") == 0 && i + 1 < argc)
             tpm_dir_arg = argv[++i];
+        else if (strcmp(argv[i], "--label") == 0 && i + 1 < argc)
+            label_arg = argv[++i];
+        else if (strcmp(argv[i], "--make-default") == 0)
+            make_default = 1;
         else if (strcmp(argv[i], "--dry-run") == 0)
             g_trial_run = 1;
         else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0)
@@ -441,6 +536,13 @@ int main(int argc, char *argv[])
     if (!subject) {
         fprintf(stderr, "Error: --domain is required\n\n");
         usage(argv[0]);
+        return 1;
+    }
+
+    if (label_arg && sanitize_label(label_arg) != 0) {
+        fprintf(stderr,
+            "Error: --label must be 1..%d chars, [A-Za-z0-9._-] only\n",
+            MTC_LABEL_MAX);
         return 1;
     }
 
@@ -789,7 +891,8 @@ int main(int argc, char *argv[])
             } else {
                 char ca_subj_save[512];
                 snprintf(ca_subj_save, sizeof(ca_subj_save), "%s-ca", subject);
-                if (save_to_tpm(tpm_dir, ca_subj_save,
+                if (save_to_tpm(tpm_dir, ca_subj_save, label_arg,
+                        make_default,
                         json_object_to_json_string_ext(resp,
                             JSON_C_TO_STRING_PRETTY),
                         cert_index, pub_key_path, priv_key_path,

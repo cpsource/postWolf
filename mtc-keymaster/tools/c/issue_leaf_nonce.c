@@ -69,6 +69,34 @@ static void to_hex(const uint8_t *data, int sz, char *out)
 }
 
 /******************************************************************************
+ * Function:    sanitize_label  (static)
+ *
+ * Description:
+ *   Client-side validator for operator-assigned labels.  The label ends
+ *   up as the suffix of an on-disk directory name (~/.TPM/<domain>-<label>)
+ *   so we're strict about what can appear.  Charset [A-Za-z0-9._-] only,
+ *   length 1..MTC_LABEL_MAX.  Empty and NULL are both invalid.
+ *
+ *   Returns 0 on success, -1 on any violation.
+ ******************************************************************************/
+#define MTC_LABEL_MAX 64
+static int sanitize_label(const char *in)
+{
+    size_t len, i;
+    if (!in) return -1;
+    len = strlen(in);
+    if (len < 1 || len > MTC_LABEL_MAX) return -1;
+    for (i = 0; i < len; i++) {
+        char c = in[i];
+        if (!((c >= 'A' && c <= 'Z') ||
+              (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') ||
+              c == '.' || c == '_' || c == '-')) return -1;
+    }
+    return 0;
+}
+
+/******************************************************************************
  * Function:    read_file  (static)
  *
  * Description:
@@ -269,16 +297,31 @@ static const char *auto_detect_tpm(const char *tpm_dir)
     static char auto_path[1024];
     DIR *d;
     struct dirent *de;
+    struct stat st;
+
+    /* Prefer ~/.TPM/default if it exists and resolves to a live dir.
+     * stat() follows the symlink, so a dangling one reports ENOENT
+     * and we fall through to the first-dir heuristic. */
+    {
+        char default_path[1024];
+        snprintf(default_path, sizeof(default_path), "%s/default", tpm_dir);
+        if (stat(default_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            snprintf(auto_path, sizeof(auto_path), "%s", default_path);
+            return auto_path;
+        }
+    }
 
     d = opendir(tpm_dir);
     if (!d) return NULL;
 
     while ((de = readdir(d)) != NULL) {
-        struct stat st;
         char full[1024];
         if (de->d_name[0] == '.') continue;
         if (strcmp(de->d_name, "peers") == 0) continue;
         if (strcmp(de->d_name, "ech") == 0) continue;
+        /* Skip the default symlink during enumeration — it's a pointer,
+         * not its own identity (the pre-loop block already honors it). */
+        if (strcmp(de->d_name, "default") == 0) continue;
         snprintf(full, sizeof(full), "%s/%s", tpm_dir, de->d_name);
         if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode))
             continue;
@@ -305,6 +348,11 @@ static void usage(const char *prog)
     printf("  -s, --server H:P      MQC server (default: %s)\n", DEFAULT_SERVER);
     printf("  --tpm-path PATH       CA operator's TPM identity dir\n");
     printf("                        (default: first directory in ~/.TPM)\n");
+    printf("  --label LABEL         Optional local label for the leaf:\n");
+    printf("                        leaf identity lands in\n");
+    printf("                        ~/.TPM/<domain>-<label>/.\n");
+    printf("                        Charset [A-Za-z0-9._-], length 1..64.\n");
+    printf("                        Never embedded in the cert.\n");
     printf("  --out DIR             Save nonce under DIR/<domain>/nonce.txt\n");
     printf("                        (default: ~/%s)\n", DEFAULT_OUT_DIR);
     printf("  --dry-run             Print the request without sending\n");
@@ -320,6 +368,7 @@ int main(int argc, char *argv[])
     const char *server      = DEFAULT_SERVER;
     const char *tpm_path    = NULL;
     const char *out_arg     = NULL;
+    const char *label_arg   = NULL;
     int dry_run = 0, trace = 0;
     int i;
 
@@ -343,6 +392,8 @@ int main(int argc, char *argv[])
             tpm_path = argv[++i];
         else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc)
             out_arg = argv[++i];
+        else if (strcmp(argv[i], "--label") == 0 && i + 1 < argc)
+            label_arg = argv[++i];
         else if (strcmp(argv[i], "--dry-run") == 0)
             dry_run = 1;
         else if (strcmp(argv[i], "--trace") == 0)
@@ -366,6 +417,12 @@ int main(int argc, char *argv[])
     if (!key_file && !fingerprint) {
         fprintf(stderr, "Error: one of --key-file or --fingerprint is required\n");
         usage(argv[0]);
+        return 1;
+    }
+    if (label_arg && sanitize_label(label_arg) != 0) {
+        fprintf(stderr,
+            "Error: --label must be 1..%d chars, [A-Za-z0-9._-] only\n",
+            MTC_LABEL_MAX);
         return 1;
     }
 
@@ -425,6 +482,9 @@ int main(int argc, char *argv[])
         }
         json_object_object_add(req, "type",
                                json_object_new_string("leaf"));
+        if (label_arg)
+            json_object_object_add(req, "label",
+                                   json_object_new_string(label_arg));
 
         req_str = json_object_to_json_string_ext(req,
                       JSON_C_TO_STRING_PLAIN);
@@ -518,12 +578,18 @@ int main(int argc, char *argv[])
                 return 1;
             }
 
+            const char *server_label = NULL;
+
             if (json_object_object_get_ex(resp, "nonce", &jn_val))
                 nonce_str = json_object_get_string(jn_val);
             if (json_object_object_get_ex(resp, "expires", &jn_val))
                 expires = json_object_get_int64(jn_val);
             if (json_object_object_get_ex(resp, "ca_index", &jn_val))
                 ca_index = json_object_get_int(jn_val);
+            /* Canonical label from the server — may differ from
+             * --label on idempotent reissue (first call wins). */
+            if (json_object_object_get_ex(resp, "label", &jn_val))
+                server_label = json_object_get_string(jn_val);
 
             if (!nonce_str || strlen(nonce_str) != 64) {
                 fprintf(stderr, "Error: malformed nonce in response:\n%s\n",
@@ -539,6 +605,18 @@ int main(int argc, char *argv[])
             printf("  Nonce:     %s\n", nonce_str);
             printf("  Expires:   %ld (15 minutes)\n", expires);
             printf("  CA index:  %d\n", ca_index);
+            if (server_label && server_label[0]) {
+                printf("  Label:     %s\n", server_label);
+                printf("  TPM dir:   ~/.TPM/%s-%s/ (on the leaf's side)\n",
+                       domain, server_label);
+                if (label_arg && strcmp(label_arg, server_label) != 0)
+                    printf("  Note:      server returned a different label\n"
+                           "             ('%s') than --label ('%s') — a\n"
+                           "             pending nonce already existed\n"
+                           "             for this key; label is immutable\n"
+                           "             until expiry.\n",
+                           server_label, label_arg);
+            }
 
             /* --- Save to <out_base>/<domain>/nonce.txt --- */
             {
@@ -557,6 +635,8 @@ int main(int argc, char *argv[])
                     nf = fopen(out_file, "w");
                     if (nf) {
                         fprintf(nf, "%s\n", nonce_str);
+                        if (server_label && server_label[0])
+                            fprintf(nf, "label=%s\n", server_label);
                         fclose(nf);
                         chmod(out_file, 0600);
                         printf("\n  Saved to:  %s\n", out_file);

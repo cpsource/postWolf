@@ -228,7 +228,27 @@ static int recv_length_prefixed(int fd, unsigned char *buf, int bufsz)
  *   Creates the directory if needed.  Writes certificate.json,
  *   index, public_key.pem, and copies private_key.pem.
  ******************************************************************************/
+#define MTC_LABEL_MAX 64
+/* Client-side label validator; see plan TODO #26.  Charset
+ * [A-Za-z0-9._-], 1..64 chars.  Empty and NULL are invalid. */
+static int sanitize_label(const char *in)
+{
+    size_t len, i;
+    if (!in) return -1;
+    len = strlen(in);
+    if (len < 1 || len > MTC_LABEL_MAX) return -1;
+    for (i = 0; i < len; i++) {
+        char c = in[i];
+        if (!((c >= 'A' && c <= 'Z') ||
+              (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') ||
+              c == '.' || c == '_' || c == '-')) return -1;
+    }
+    return 0;
+}
+
 static int save_to_tpm(const char *tpm_dir, const char *subject,
+                       const char *label, int make_default,
                        const char *cert_json, int cert_index,
                        const char *pub_key_path, const char *priv_key_path)
 {
@@ -247,7 +267,15 @@ static int save_to_tpm(const char *tpm_dir, const char *subject,
             subj_safe[i] = '_';
     }
 
-    n = snprintf(dir_path, sizeof(dir_path), "%s/%s", tpm_dir, subj_safe);
+    /* Label is already sanitized by the caller (see handle_cert_resp).
+     * Format the dir as <subject>-<label> when label is set, else just
+     * <subject> (legacy behavior). */
+    if (label && label[0])
+        n = snprintf(dir_path, sizeof(dir_path), "%s/%s-%s",
+                     tpm_dir, subj_safe, label);
+    else
+        n = snprintf(dir_path, sizeof(dir_path), "%s/%s",
+                     tpm_dir, subj_safe);
     if (n < 0 || n >= (int)sizeof(dir_path)) {
         LOG("ERROR: TPM path too long");
         free(subj_safe);
@@ -310,6 +338,50 @@ static int save_to_tpm(const char *tpm_dir, const char *subject,
         free(key_data);
     }
 
+    /* ~/.TPM/default symlink policy (plan TODO #26 Phases D + G):
+     *   default missing → always create it pointing at this identity
+     *   default present + !make_default → leave alone (operator's pin)
+     *   default present +  make_default → atomic re-point via
+     *     rename-over-symlink so concurrent readers never see a torn
+     *     state.  Relative target so the whole ~/.TPM tree is movable.
+     *   Failure is a warning, not fatal. */
+    {
+        char default_path[512];
+        char rel_target[256];
+        struct stat st;
+        int default_exists;
+        if (label && label[0])
+            snprintf(rel_target, sizeof(rel_target), "%s-%s",
+                     subj_safe, label);
+        else
+            snprintf(rel_target, sizeof(rel_target), "%s", subj_safe);
+        snprintf(default_path, sizeof(default_path), "%s/default", tpm_dir);
+        default_exists = (lstat(default_path, &st) == 0);
+
+        if (!default_exists) {
+            if (symlink(rel_target, default_path) != 0)
+                LOG("WARN: could not create %s: %s",
+                    default_path, strerror(errno));
+            else
+                LOG("  set default -> %s", rel_target);
+        } else if (make_default) {
+            char tmp_path[600];
+            snprintf(tmp_path, sizeof(tmp_path), "%s/.default.tmp.%d",
+                     tpm_dir, (int)getpid());
+            unlink(tmp_path);  /* harmless if absent */
+            if (symlink(rel_target, tmp_path) != 0) {
+                LOG("WARN: could not stage new default: %s",
+                    strerror(errno));
+            } else if (rename(tmp_path, default_path) != 0) {
+                LOG("WARN: could not atomically re-point default: %s",
+                    strerror(errno));
+                unlink(tmp_path);
+            } else {
+                LOG("  re-pointed default -> %s (was pinned)", rel_target);
+            }
+        }
+    }
+
     free(subj_safe);
     return 0;
 }
@@ -329,7 +401,10 @@ static void usage(const char *prog)
     printf("  --key-algorithm ALG  Key algorithm (default: ML-DSA-87)\n");
     printf("  --validity-days N    Certificate validity (default: 90)\n");
     printf("  --tpm-dir DIR        TPM storage directory (default: ~/.TPM)\n");
-    printf("  --dry-run          Do everything but don't save to TPM\n");
+    printf("  --make-default       Re-point ~/.TPM/default at this identity\n");
+    printf("                       even if it already exists (default: create\n");
+    printf("                       only if missing, preserve existing pin).\n");
+    printf("  --dry-run            Do everything but don't save to TPM\n");
     printf("  -v, --verbose        Verbose output\n");
     printf("  -h, --help           Show this help\n");
 }
@@ -348,6 +423,7 @@ int main(int argc, char *argv[])
     const char *key_algo = "ML-DSA-87";
     int validity_days = 90;
     const char *tpm_dir_arg = NULL;
+    int make_default = 0;
 
     /* Parsed server host:port */
     char server_host[256];
@@ -400,6 +476,8 @@ int main(int argc, char *argv[])
             validity_days = atoi(argv[++i]);
         else if (strcmp(argv[i], "--tpm-dir") == 0 && i + 1 < argc)
             tpm_dir_arg = argv[++i];
+        else if (strcmp(argv[i], "--make-default") == 0)
+            make_default = 1;
         else if (strcmp(argv[i], "--dry-run") == 0)
             g_trial_run = 1;
         else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0)
@@ -744,16 +822,43 @@ int main(int argc, char *argv[])
 
         if (json_object_object_get_ex(resp, "index", &val)) {
             int cert_index = json_object_get_int(val);
+            const char *label_from_server = NULL;
+            struct json_object *lval;
+
             LOG("certificate issued at index %d", cert_index);
+
+            /* Optional label echoed by the server (present when the
+             * CA operator ran issue_leaf_nonce --label ...).  The
+             * server MUST NOT bake this into the cert; it's purely a
+             * hint for where to write on disk.  Absent field =
+             * legacy behavior (write to ~/.TPM/<subject>/). */
+            if (json_object_object_get_ex(resp, "label", &lval)) {
+                const char *s = json_object_get_string(lval);
+                if (s && s[0]) {
+                    if (sanitize_label(s) != 0) {
+                        LOG("ERROR: server-supplied label '%s' fails "
+                            "sanitization — refusing to write to disk", s);
+                        json_object_put(resp);
+                        goto done;
+                    }
+                    label_from_server = s;
+                    LOG("  server-assigned label: %s", s);
+                }
+            }
 
             /* --- Step 6: Save to TPM --- */
             if (g_trial_run) {
-                LOG("DRY RUN: would save to %s/<subject>/", tpm_dir);
+                if (label_from_server)
+                    LOG("DRY RUN: would save to %s/<subject>-%s/",
+                        tpm_dir, label_from_server);
+                else
+                    LOG("DRY RUN: would save to %s/<subject>/", tpm_dir);
                 LOG("DRY RUN: certificate JSON:\n%s",
                     json_object_to_json_string_ext(resp,
                         JSON_C_TO_STRING_PRETTY));
             } else {
-                if (save_to_tpm(tpm_dir, subject,
+                if (save_to_tpm(tpm_dir, subject, label_from_server,
+                        make_default,
                         json_object_to_json_string_ext(resp,
                             JSON_C_TO_STRING_PRETTY),
                         cert_index, pub_key_path, priv_key_path) == 0) {

@@ -321,10 +321,18 @@ int mtc_db_init_schema(PGconn *conn)
         /* Migration: add ca_index to older nonce tables that lack it */
         "ALTER TABLE mtc_enrollment_nonces ADD COLUMN IF NOT EXISTS "
         "  ca_index INTEGER NOT NULL DEFAULT -1;"
+        /* Migration: operator-assigned label for ~/.TPM/<domain>-<label>/ */
+        "ALTER TABLE mtc_enrollment_nonces ADD COLUMN IF NOT EXISTS "
+        "  label TEXT;"
         /* Partial index for efficient pending-nonce lookups by domain+fp */
         "CREATE INDEX IF NOT EXISTS idx_nonce_domain_fp "
         "  ON mtc_enrollment_nonces (domain, fp) "
-        "  WHERE status = 'pending';";
+        "  WHERE status = 'pending';"
+        /* Uniqueness: one pending label per (domain, label).  Partial so
+         * legacy no-label rows (label IS NULL) are unconstrained. */
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_nonce_domain_label_pending "
+        "  ON mtc_enrollment_nonces (domain, label) "
+        "  WHERE status = 'pending' AND label IS NOT NULL;";
 
     res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
@@ -1023,27 +1031,31 @@ char *mtc_db_load_config(PGconn *conn, const char *key)
  *   - Inserts a row into mtc_enrollment_nonces.
  ******************************************************************************/
 int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
-                        int ca_index, char *nonce_out, long *expires_out)
+                        int ca_index, const char *label,
+                        char *nonce_out, long *expires_out,
+                        char *label_out, size_t label_out_sz)
 {
     PGresult *res;
     const char *params[2];
     WC_RNG rng;
     uint8_t rand_bytes[32]; /* 256-bit nonce */
     char ttl_str[32], ca_idx_str[16];
-    const char *ins_params[5];
+    const char *ins_params[6];
     int i;
 
     if (!conn) return -1;
+    if (label_out && label_out_sz > 0) label_out[0] = '\0';
 
     /* Expire stale nonces first */
     mtc_db_expire_nonces(conn);
 
     /* If a pending non-expired nonce already exists for this domain+fp,
-     * return it again (idempotent reissue) instead of failing. */
+     * return it again (idempotent reissue) instead of failing.  Label
+     * is immutable once set — return whatever the FIRST call stored. */
     params[0] = domain;
     params[1] = fp_hex;
     res = PQexecParams(conn,
-        "SELECT nonce, EXTRACT(EPOCH FROM expires_at)::bigint "
+        "SELECT nonce, EXTRACT(EPOCH FROM expires_at)::bigint, label "
         "FROM mtc_enrollment_nonces "
         "WHERE domain = $1 AND fp = $2 AND status = 'pending' "
         "AND expires_at > now() LIMIT 1",
@@ -1056,6 +1068,10 @@ int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
             memcpy(nonce_out, existing, MTC_NONCE_HEX_LEN);
             nonce_out[MTC_NONCE_HEX_LEN] = '\0';
             *expires_out = strtol(exp_s, NULL, 10);
+            if (label_out && label_out_sz > 0 && !PQgetisnull(res, 0, 2)) {
+                snprintf(label_out, label_out_sz, "%s",
+                         PQgetvalue(res, 0, 2));
+            }
             PQclear(res);
             return 0;
         }
@@ -1076,7 +1092,8 @@ int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
 
     *expires_out = (long)time(NULL) + MTC_NONCE_TTL_SECS;
 
-    /* Insert pending nonce with TTL-based expiration */
+    /* Insert pending nonce with TTL-based expiration.  Label column
+     * is nullable: pass NULL via a NULL entry in paramValues. */
     snprintf(ttl_str, sizeof(ttl_str), "%d seconds", MTC_NONCE_TTL_SECS);
     snprintf(ca_idx_str, sizeof(ca_idx_str), "%d", ca_index);
     ins_params[0] = nonce_out;
@@ -1084,12 +1101,13 @@ int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
     ins_params[2] = fp_hex;
     ins_params[3] = ca_idx_str;
     ins_params[4] = ttl_str;
+    ins_params[5] = (label && label[0]) ? label : NULL;
 
     res = PQexecParams(conn,
         "INSERT INTO mtc_enrollment_nonces "
-        "(nonce, domain, fp, ca_index, expires_at) "
-        "VALUES ($1, $2, $3, $4, now() + $5::interval)",
-        5, NULL, ins_params, NULL, NULL, 0);
+        "(nonce, domain, fp, ca_index, expires_at, label) "
+        "VALUES ($1, $2, $3, $4, now() + $5::interval, $6)",
+        6, NULL, ins_params, NULL, NULL, 0);
 
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
         fprintf(stderr, "[db] nonce insert failed: %s\n", PQerrorMessage(conn));
@@ -1097,6 +1115,11 @@ int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
         return -1;
     }
     PQclear(res);
+
+    /* Echo the input label back via label_out when the caller asked. */
+    if (label_out && label_out_sz > 0 && label && label[0])
+        snprintf(label_out, label_out_sz, "%s", label);
+
     return 0;
 }
 
@@ -1219,30 +1242,39 @@ int mtc_db_validate_nonce(PGconn *conn, const char *nonce_hex,
  *   between separate validate and consume steps.
  *
  * Input Arguments:
- *   conn       - Active PostgreSQL connection.
- *   nonce_hex  - Hex-encoded nonce to validate and consume.
- *   domain     - Domain to match (NULL or "" to skip domain check).
- *   fp_hex     - Fingerprint to match (NULL or "" to skip fp check).
+ *   conn          - Active PostgreSQL connection.
+ *   nonce_hex     - Hex-encoded nonce to validate and consume.
+ *   domain        - Domain to match (NULL or "" to skip domain check).
+ *   fp_hex        - Fingerprint to match (NULL or "" to skip fp check).
+ *   label_out     - May be NULL.  On success, receives the stored label
+ *                   (empty string if the row's label is NULL).  Buffer
+ *                   must be at least MTC_LABEL_MAX + 1 bytes.
+ *   label_out_sz  - Size of label_out (ignored if NULL).
  *
  * Returns:
  *   1  if the nonce was valid and is now consumed.
  *   0  if invalid, expired, already consumed, or no connection.
  ******************************************************************************/
 int mtc_db_validate_and_consume_nonce(PGconn *conn, const char *nonce_hex,
-                                      const char *domain, const char *fp_hex)
+                                      const char *domain, const char *fp_hex,
+                                      char *label_out, size_t label_out_sz)
 {
     PGresult *res;
     int consumed;
 
     if (!conn) return 0;
+    if (label_out && label_out_sz > 0) label_out[0] = '\0';
 
-    /* Atomic: UPDATE only if pending+unexpired+matching, consume in one shot */
+    /* Atomic: UPDATE only if pending+unexpired+matching, consume in one
+     * shot.  RETURNING label so the caller can echo it in the bootstrap
+     * response JSON. */
     if (domain && domain[0] && fp_hex && fp_hex[0]) {
         const char *params[3] = { nonce_hex, domain, fp_hex };
         res = PQexecParams(conn,
             "UPDATE mtc_enrollment_nonces SET status = 'consumed' "
             "WHERE nonce = $1 AND domain = $2 AND fp = $3 "
-            "AND status = 'pending' AND expires_at > now()",
+            "AND status = 'pending' AND expires_at > now() "
+            "RETURNING label",
             3, NULL, params, NULL, NULL, 0);
     }
     else if (domain && domain[0]) {
@@ -1250,7 +1282,8 @@ int mtc_db_validate_and_consume_nonce(PGconn *conn, const char *nonce_hex,
         res = PQexecParams(conn,
             "UPDATE mtc_enrollment_nonces SET status = 'consumed' "
             "WHERE nonce = $1 AND domain = $2 "
-            "AND status = 'pending' AND expires_at > now()",
+            "AND status = 'pending' AND expires_at > now() "
+            "RETURNING label",
             2, NULL, params, NULL, NULL, 0);
     }
     else {
@@ -1258,12 +1291,16 @@ int mtc_db_validate_and_consume_nonce(PGconn *conn, const char *nonce_hex,
         res = PQexecParams(conn,
             "UPDATE mtc_enrollment_nonces SET status = 'consumed' "
             "WHERE nonce = $1 "
-            "AND status = 'pending' AND expires_at > now()",
+            "AND status = 'pending' AND expires_at > now() "
+            "RETURNING label",
             1, NULL, params, NULL, NULL, 0);
     }
 
-    consumed = (PQresultStatus(res) == PGRES_COMMAND_OK &&
-                atoi(PQcmdTuples(res)) > 0);
+    consumed = (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0);
+    if (consumed && label_out && label_out_sz > 0 &&
+        !PQgetisnull(res, 0, 0)) {
+        snprintf(label_out, label_out_sz, "%s", PQgetvalue(res, 0, 0));
+    }
     PQclear(res);
     return consumed;
 }

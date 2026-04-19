@@ -408,6 +408,11 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
     int validity_days;
     struct json_object *extensions = NULL;
 
+    /* Operator-assigned label (from the consumed nonce row, leaf-only).
+     * Empty for CA enrollment.  Echoed back in the cert-issue response
+     * so bootstrap_leaf can pick the right ~/.TPM/<domain>-<label>/ dir. */
+    char bootstrap_label[MTC_LABEL_MAX + 1] = {0};
+
     MtcCryptCtx *crypt_ctx = NULL;
     int ret, rng_ok = 0, server_key_ok = 0, client_key_ok = 0;
 
@@ -701,7 +706,8 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
 
             if (!store->db ||
                 !mtc_db_validate_and_consume_nonce(store->db,
-                    enrollment_nonce, subject, leaf_fp)) {
+                    enrollment_nonce, subject, leaf_fp,
+                    bootstrap_label, sizeof(bootstrap_label))) {
                 LOG_WARN("bootstrap: invalid, expired, or used nonce for '%s'",
                          subject);
                 {
@@ -862,7 +868,11 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
         json_object_object_add(sc, "trust_anchor_id",
             json_object_new_string(store->log_id));
 
-        /* Build result */
+        /* Build result — this is both the wire payload and what gets
+         * persisted to store->certificates[index] / the DB.  The label
+         * is purely in-flight (bootstrap_leaf uses it for local dir
+         * naming) and must NOT be persisted alongside the cert, so we
+         * add it to the wire copy only, below, after the persist. */
         result = json_object_new_object();
         json_object_object_add(result, "status",
             json_object_new_string("ok"));
@@ -891,14 +901,33 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                 fprintf(stderr, "[bootstrap] WARNING: DB save_certificate failed for index %d\n", index);
         }
 
-        /* --- Step 3: Send encrypted certificate response --- */
+        /* --- Step 3: Send encrypted certificate response ---
+         * The wire payload wraps `result` plus an optional `label` field.
+         * Done as a shallow copy (json_object_get refcounts the shared
+         * children) so the in-memory / DB-persisted `result` stays
+         * label-free.  Constraint: label is purely in-flight. */
+        struct json_object *wire_resp = json_object_new_object();
         {
-            const char *result_str = json_object_to_json_string(result);
+            struct json_object_iterator it = json_object_iter_begin(result);
+            struct json_object_iterator end = json_object_iter_end(result);
+            while (!json_object_iter_equal(&it, &end)) {
+                json_object_object_add(wire_resp,
+                    json_object_iter_peek_name(&it),
+                    json_object_get(json_object_iter_peek_value(&it)));
+                json_object_iter_next(&it);
+            }
+            if (bootstrap_label[0])
+                json_object_object_add(wire_resp, "label",
+                    json_object_new_string(bootstrap_label));
+        }
+        {
+            const char *result_str = json_object_to_json_string(wire_resp);
             enc_len = sizeof(enc_buf);
             if (mtc_crypt_encode(crypt_ctx, (unsigned char *)result_str,
                     (unsigned int)strlen(result_str),
                     enc_buf, &enc_len) != 0) {
                 LOG_ERROR("bootstrap: failed to encrypt certificate response");
+                json_object_put(wire_resp);
                 json_object_put(result);
                 json_object_put(tbs);
                 json_object_put(checkpoint);
@@ -909,10 +938,14 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
             if (send_length_prefixed(fd, enc_buf, enc_len) != 0) {
                 LOG_WARN("bootstrap: failed to send certificate response");
             } else {
-                LOG_INFO("bootstrap: enrolled '%s' at index %d", subject, index);
+                LOG_INFO("bootstrap: enrolled '%s' at index %d%s%s",
+                         subject, index,
+                         bootstrap_label[0] ? ", label=" : "",
+                         bootstrap_label[0] ? bootstrap_label : "");
             }
         }
 
+        json_object_put(wire_resp);
         json_object_put(result);
         json_object_put(tbs);
         json_object_put(checkpoint);

@@ -110,12 +110,36 @@ static char *auto_detect_ca_tpm(const char *tpm_dir)
     struct dirent *de;
     char *found = NULL;
     int count = 0;
+    struct stat st;
+    char default_path[1024];
+    char resolved[1024];
+
+    /* If ~/.TPM/default resolves to a CA identity (dir name ending in
+     * "-ca"), prefer it.  This makes `revoke-key` consistent with the
+     * operator's chosen default on boxes that enrolled multiple CAs. */
+    snprintf(default_path, sizeof(default_path), "%s/default", tpm_dir);
+    if (stat(default_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+        ssize_t rl = readlink(default_path, resolved, sizeof(resolved) - 1);
+        if (rl > 0) {
+            resolved[rl] = '\0';
+            size_t rlen = strlen(resolved);
+            if (rlen >= 3 && strcmp(resolved + rlen - 3, "-ca") == 0) {
+                size_t plen = strlen(tpm_dir) + 1 + rlen + 1;
+                found = (char *)malloc(plen);
+                if (found) {
+                    snprintf(found, plen, "%s/%s", tpm_dir, resolved);
+                    return found;
+                }
+            }
+        }
+    }
 
     d = opendir(tpm_dir);
     if (!d) return NULL;
     while ((de = readdir(d)) != NULL) {
         size_t nlen;
         if (de->d_name[0] == '.') continue;
+        if (strcmp(de->d_name, "default") == 0) continue;  /* symlink pointer */
         nlen = strlen(de->d_name);
         if (nlen < 3 || strcmp(de->d_name + nlen - 3, "-ca") != 0) continue;
         count++;
@@ -130,7 +154,9 @@ static char *auto_detect_ca_tpm(const char *tpm_dir)
     if (count > 1) {
         fprintf(stderr,
                 "Error: multiple CA identities found under %s — "
-                "pass --ca-tpm-path to choose one\n", tpm_dir);
+                "pass --ca-tpm-path to choose one, or set a default "
+                "symlink with `ln -sfn <dir> %s/default`\n",
+                tpm_dir, tpm_dir);
         if (found) { free(found); found = NULL; }
     }
     return found;

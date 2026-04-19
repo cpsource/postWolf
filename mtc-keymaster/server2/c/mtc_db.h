@@ -308,6 +308,9 @@ char *mtc_db_load_config(PGconn *conn, const char *key);
 /** Hex string length for a 256-bit nonce (32 bytes = 64 hex chars). */
 #define MTC_NONCE_HEX_LEN  64
 
+/** Max length of an operator-assigned label (~/.TPM/<domain>-<label>/). */
+#define MTC_LABEL_MAX      64
+
 /**
  * @brief    Create a cryptographically random enrollment nonce.
  *
@@ -316,7 +319,9 @@ char *mtc_db_load_config(PGconn *conn, const char *key);
  * mtc_enrollment_nonces table with status 'pending', and returns the
  * hex-encoded nonce and expiration timestamp.  Stale nonces are expired
  * first.  If a pending non-expired nonce already exists for the given
- * domain+fp pair, it is returned unchanged (idempotent reissue).
+ * domain+fp pair, it is returned unchanged (idempotent reissue) — its
+ * label is returned verbatim even if the reissuing caller passes a
+ * different label, so labels are effectively immutable until expiry.
  *
  * @param[in]  conn         Active PostgreSQL connection.
  * @param[in]  domain       Domain name bound to this nonce.
@@ -324,16 +329,30 @@ char *mtc_db_load_config(PGconn *conn, const char *key);
  *                           this nonce.
  * @param[in]  ca_index     Log index of the issuing CA (-1 for CA
  *                           self-enrollment via DNS).
- * @param[out] nonce_out    Buffer for the hex nonce.  Must be at least
- *                           MTC_NONCE_HEX_LEN + 1 bytes.
- * @param[out] expires_out  Receives the UNIX expiration timestamp.
+ * @param[in]  label         Optional operator-assigned label
+ *                            (NULL = none).  Persisted verbatim; the
+ *                            server does not sanitize — client tools
+ *                            (bootstrap_leaf, bootstrap_ca) are
+ *                            authoritative.
+ * @param[out] nonce_out     Buffer for the hex nonce.  Must be at least
+ *                            MTC_NONCE_HEX_LEN + 1 bytes.
+ * @param[out] expires_out   Receives the UNIX expiration timestamp.
+ * @param[out] label_out     May be NULL.  If non-NULL, receives the
+ *                            canonical stored label (empty string if
+ *                            none).  On idempotent reissue this is the
+ *                            label from the FIRST call, not @p label.
+ *                            Buffer must be at least MTC_LABEL_MAX + 1
+ *                            bytes when non-NULL.
+ * @param[in]  label_out_sz  Size of @p label_out (ignored if NULL).
  *
  * @return
  *   0   on success (new or reused nonce written to nonce_out).
  *  -1   on failure (RNG error or DB error).
  */
 int  mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
-                         int ca_index, char *nonce_out, long *expires_out);
+                         int ca_index, const char *label,
+                         char *nonce_out, long *expires_out,
+                         char *label_out, size_t label_out_sz);
 
 /**
  * @brief    Find the registered CA log index for a domain.
@@ -377,16 +396,25 @@ int  mtc_db_validate_nonce(PGconn *conn, const char *nonce_hex,
  * Issues a single UPDATE ... WHERE (pending + unexpired + matching)
  * to eliminate the TOCTOU race between validate and consume.  If zero
  * rows are affected, the nonce was invalid, expired, or already consumed.
+ * On success, also returns the label column (empty string if NULL in DB)
+ * so the caller can echo it in the bootstrap response.
  *
- * @param[in] conn       Active PostgreSQL connection.
- * @param[in] nonce_hex  Hex-encoded nonce to validate and consume.
- * @param[in] domain     Domain to match (NULL or "" to skip check).
- * @param[in] fp_hex     Fingerprint to match (NULL or "" to skip check).
+ * @param[in]  conn          Active PostgreSQL connection.
+ * @param[in]  nonce_hex     Hex-encoded nonce to validate and consume.
+ * @param[in]  domain        Domain to match (NULL or "" to skip check).
+ * @param[in]  fp_hex        Fingerprint to match (NULL or "" to skip check).
+ * @param[out] label_out     Buffer for the label (may be NULL if caller
+ *                            doesn't care).  On success, written with
+ *                            the label or empty string if the row's
+ *                            label column is NULL.  Buffer must be at
+ *                            least MTC_LABEL_MAX + 1 bytes.
+ * @param[in]  label_out_sz  Size of label_out buffer.
  *
  * @return  1 if the nonce was valid and is now consumed, 0 otherwise.
  */
 int  mtc_db_validate_and_consume_nonce(PGconn *conn, const char *nonce_hex,
-                                       const char *domain, const char *fp_hex);
+                                       const char *domain, const char *fp_hex,
+                                       char *label_out, size_t label_out_sz);
 
 /**
  * @brief    Mark a nonce as consumed (unconditionally).

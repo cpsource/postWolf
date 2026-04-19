@@ -538,15 +538,30 @@ int main(int argc, char *argv[])
         /* Auto-detect TPM path: use --tpm-path or first entry in ~/.TPM */
         if (!mqc_tpm_path) {
             static char auto_path[1024];
-            DIR *d = opendir(tpm_dir);
+            struct stat def_st;
+            char default_path[1024];
+            DIR *d;
             struct dirent *de;
-            if (d) {
+
+            /* Prefer ~/.TPM/default when present — matches auto_detect_tpm
+             * in issue_leaf_nonce / revoke-key.  stat() follows the
+             * symlink; a dangling one falls through to first-dir scan. */
+            snprintf(default_path, sizeof(default_path),
+                     "%s/default", tpm_dir);
+            if (stat(default_path, &def_st) == 0 && S_ISDIR(def_st.st_mode)) {
+                snprintf(auto_path, sizeof(auto_path), "%s", default_path);
+                mqc_tpm_path = auto_path;
+            }
+
+            d = opendir(tpm_dir);
+            if (!mqc_tpm_path && d) {
                 while ((de = readdir(d)) != NULL) {
                     struct stat st;
                     char full[1024];
                     if (de->d_name[0] == '.') continue;
                     if (strcmp(de->d_name, "peers") == 0) continue;
                     if (strcmp(de->d_name, "ech") == 0) continue;
+                    if (strcmp(de->d_name, "default") == 0) continue;
                     /* Only directories qualify as TPM identities.  Skips
                      * stray files like revoked.json sitting at ~/.TPM/. */
                     snprintf(full, sizeof(full), "%s/%s",
@@ -558,6 +573,8 @@ int main(int argc, char *argv[])
                     mqc_tpm_path = auto_path;
                     break;
                 }
+                closedir(d);
+            } else if (d) {
                 closedir(d);
             }
             if (!mqc_tpm_path) {
@@ -621,6 +638,9 @@ int main(int argc, char *argv[])
             if (stat(epath, &st) == 0 && S_ISDIR(st.st_mode)) {
                 if (strcmp(de->d_name, "peers") == 0) continue;
                 if (strcmp(de->d_name, "ech") == 0) continue;
+                /* "default" is a symlink pointer to one of the other
+                 * identity dirs — don't double-list it. */
+                if (strcmp(de->d_name, "default") == 0) continue;
                 load_entry(tpm_dir, de->d_name, &entries[num_entries]);
                 num_entries++;
             }

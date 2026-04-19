@@ -533,8 +533,10 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
 {
     struct json_object *req, *val;
     const char *domain, *fp_raw, *nonce_type;
+    const char *label_in = NULL;    /* optional, leaf-only */
     char fp_hex[65];
     char nonce[MTC_NONCE_HEX_LEN + 1];
+    char label_canon[MTC_LABEL_MAX + 1] = {0};
     long expires;
     struct json_object *resp;
     int ret, ca_index = -1;
@@ -595,6 +597,14 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
         nonce_type = json_object_get_string(val);
     is_leaf = (strcmp(nonce_type, "leaf") == 0);
 
+    /* Optional operator-assigned label (leaf-only, stored verbatim).
+     * Sanitization is the client tools' job — see bootstrap_leaf /
+     * bootstrap_ca.  The server only persists and echoes. */
+    if (is_leaf && json_object_object_get_ex(req, "label", &val)) {
+        const char *s = json_object_get_string(val);
+        if (s && s[0]) label_in = s;
+    }
+
     /* Rate limit: leaf nonces (10/min, 100/hr) vs CA nonces (3/min, 10/hr) */
     if (!mtc_ratelimit_check(io->ip_str, is_leaf ? RL_NONCE_LEAF : RL_NONCE_CA)) {
         http_send_error(io, 429, "rate limit exceeded");
@@ -617,17 +627,21 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
     }
 
     /* Create or reissue pending nonce in DB.  If a non-expired pending
-     * nonce already exists for this domain+fp, it is returned unchanged. */
-    ret = mtc_db_create_nonce(store->db, domain, fp_hex, ca_index,
-                              nonce, &expires);
+     * nonce already exists for this domain+fp, it is returned unchanged
+     * — including its stored label, so reissue is idempotent. */
+    ret = mtc_db_create_nonce(store->db, domain, fp_hex, ca_index, label_in,
+                              nonce, &expires,
+                              label_canon, sizeof(label_canon));
     if (ret < 0) {
         http_send_error(io, 500, "nonce generation failed");
         json_object_put(req);
         return;
     }
 
-    LOG_INFO("%s nonce issued for %s (fp=%.16s..., expires=%ld)",
-             is_leaf ? "leaf" : "CA", domain, fp_hex, expires);
+    LOG_INFO("%s nonce issued for %s (fp=%.16s..., expires=%ld%s%s)",
+             is_leaf ? "leaf" : "CA", domain, fp_hex, expires,
+             label_canon[0] ? ", label=" : "",
+             label_canon[0] ? label_canon : "");
 
     resp = json_object_new_object();
     json_object_object_add(resp, "nonce", json_object_new_string(nonce));
@@ -637,6 +651,9 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
     if (ca_index >= 0)
         json_object_object_add(resp, "ca_index",
                                json_object_new_int(ca_index));
+    if (label_canon[0])
+        json_object_object_add(resp, "label",
+                               json_object_new_string(label_canon));
 
     if (!is_leaf) {
         /* CA nonce: include DNS record to create */
