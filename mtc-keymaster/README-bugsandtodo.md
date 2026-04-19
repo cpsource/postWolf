@@ -1533,6 +1533,32 @@ the DNS TXT for re-publication, and `public_key.pem` for audit.
 `mtc-keymaster/tools/c/check-renewal-cert.c` (renew_one, after
 commit_swap).
 
+### 34. Add a revocation-management page to factsorlie.com
+
+Today a CA whose most-recent log entry is revoked is blocked from
+re-enrolling (enforced in `mtc_bootstrap.c` and surfaced by
+`register-ca.sh`).  Lifting a revocation is a manual server-operator
+action with no UI: the operator must edit the `mtc_revocations`
+table (or run an `admin_recosign` flow — today there isn't one).
+Operators of revoked domains are told to "contact the server
+operator" via a GitHub issue, which is low-throughput and friction-heavy.
+
+**Proposed behavior:** add a page at (e.g.) `factsorlie.com/revocations`
+that lists:
+- Currently revoked cert indices, their subject, revocation reason,
+  `revoked_at`, who revoked (ca_cert_index).
+- Per-row "request unrevoke" action with a simple workflow (file
+  issue → operator approves → DB update).
+- Self-service visibility for domain owners to confirm *why* their
+  re-enrollment is blocked.
+
+Scope also covers: read-only audit view of the Merkle log, cosigner
+freshness, checkpoint history.
+
+**Files:** `factsorlie.com` site (out of repo), plus possibly a new
+`GET /revocations/detail` server endpoint returning per-index
+metadata (reason, timestamp, revoker) that the site can render.
+
 ---
 
 ## Appendix: Server Directory Layout

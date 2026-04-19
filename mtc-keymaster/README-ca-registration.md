@@ -188,7 +188,7 @@ with fresh keys).
 | Server rejects with `CA certificate rejected: DNS validation failed` | client-side poll saw the record but server's resolver still sees old/cached data | wait a minute and re-run; keys are reused |
 | `WARNING: An active CA identity for <domain> already exists` | you're re-registering an existing healthy CA — this creates a ghost log entry | default answer aborts; to rotate keys, use `check-renewal-cert --force <domain>-ca` instead |
 | `existing CA identity at <dir> is EXPIRED; … Proceeding` | no action required | register-ca.sh proceeds automatically — the old identity is dead, a fresh one is appropriate |
-| `existing CA identity at <dir> is REVOKED.` + exit 1 | the server operator revoked this CA | register-ca.sh refuses; even if bypassed, the server's `mtc_bootstrap.c` blocks re-enrollment for any domain whose most-recent CA entry is revoked. Contact the server operator. |
+| `existing CA identity at <dir> is REVOKED.` + exit 1 | the server operator revoked this CA | register-ca.sh refuses; even if bypassed, the server's `mtc_bootstrap.c` blocks re-enrollment for any domain whose most-recent CA entry is revoked. To request the revocation be lifted, open an issue at https://github.com/cpsource/postWolf/issues with your domain and cert_index. |
 
 ---
 
@@ -237,6 +237,17 @@ the revocation list needs to be edited server-side (today: by
 admin_recosign flow or direct DB surgery). This is intentional — the
 policy is "revoke = permanent operator decision unless explicitly
 reversed by the operator."
+
+**How to request an unrevoke:** open an issue at
+<https://github.com/cpsource/postWolf/issues> and include:
+
+- the domain (e.g. `ops.widget-corp.example`)
+- the revoked cert_index (shown by `register-ca.sh` when it aborts)
+- why you believe the revocation should be lifted
+
+A future revocation-management page on the factsorlie.com server
+(TODO #34) will replace the GitHub-issue workflow with something
+more self-service.
 
 There's no formal "deregister" step — the Merkle log is append-only.
 Revocation is how you invalidate.

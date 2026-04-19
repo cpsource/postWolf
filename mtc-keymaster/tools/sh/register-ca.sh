@@ -134,11 +134,13 @@ cert here.  Re-enrollment is **refused**.  The server (mtc_bootstrap.c)
 enforces this policy too — even if you bypass this check, the
 bootstrap will be rejected.
 
-To resolve:
-  - If the revocation was in error, contact the server operator to
-    have the revocation lifted.
-  - If the key was compromised and you need a fresh identity, the
-    server operator must lift the revocation before you can re-enroll.
+To resolve, contact the server operator by opening an issue at:
+
+    https://github.com/cpsource/postWolf/issues
+
+Include your domain ("$DOMAIN"), cert_index ($cert_idx), and why
+you believe the revocation should be lifted.  Once the operator
+lifts the revocation, re-run this command.
 
 REVOKED
         exit 1

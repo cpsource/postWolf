@@ -707,8 +707,10 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                             "\"message\":\"CA enrollment refused: this "
                             "domain's most recent CA certificate has "
                             "been revoked by the server operator. "
-                            "Contact the server operator to lift the "
-                            "revocation before re-enrolling.\"}";
+                            "Open an issue at "
+                            "https://github.com/cpsource/postWolf/issues "
+                            "to request the revocation be lifted before "
+                            "re-enrolling.\"}";
                         unsigned int err_enc_len = sizeof(enc_buf);
                         if (mtc_crypt_encode(crypt_ctx,
                                 (unsigned char *)err_json,
