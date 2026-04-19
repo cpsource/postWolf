@@ -1176,6 +1176,8 @@ https://localhost:8444/revoke` with `Content-Type: application/json`.
 
 ### 23. Cert renewal — review and harden the existing `/certificate/renew` + `renew-tool/` flow.
 
+### 24. Leaf-side "cert about to expire" tooling + docs — ship a tool in the leaf kit (and instructions in README-leaf.md) that scans `~/.TPM/`, detects certs within N days of `not_after`, and kicks off a renewal against the CA.  `install-leaf-kit.sh` should also install a cron (or systemd-timer) entry that runs the expiration check on a schedule so the leaf user doesn't have to wire it up themselves.
+
 ---
 
 ## Appendix: Server Directory Layout
