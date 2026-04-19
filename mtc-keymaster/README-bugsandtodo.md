@@ -1409,6 +1409,29 @@ it, which is what created this dual-install mess.
 
 ---
 
+### 28. Garbage-collect revocations past the revoked cert's expiration
+
+Once a leaf cert is past its `not_after`, it's already invalid on
+its own terms — no client will accept it regardless of revocation
+status — so keeping its row in the revocation list is pure noise.
+Every `/revoked` response, every per-peer
+`~/.TPM/peers/<n>/revoked.json`, and every `mqc_peer_verify` pass
+does a little extra work for nothing.
+
+**Scope of change:** a periodic sweep (daily is plenty) that reads
+each entry in the revocation list, looks up the cert's
+`not_after`, and drops the row if expired.  The Merkle-log record of
+the original revocation stays — this is a garbage collection on the
+*live* revocation table, not a history edit.  Bonus: shrinks the
+`/revoked` response payload and the `--refresh` round-trip in
+`revoke-key`.
+
+**Files likely involved:** `mtc-keymaster/server2/c/mtc_store.c`
+(revocation list management) and possibly a new periodic job hooked
+into `mtc-renew.sh` or a dedicated systemd timer.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
