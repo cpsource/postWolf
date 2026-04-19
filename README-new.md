@@ -110,7 +110,7 @@ and exposes three TCP ports:
 
 | Port | Purpose | Transport |
 |------|---------|-----------|
-| **8444** | HTTP API — kept for ad-hoc `curl` testing. | TLS 1.3 + ECH |
+| **8444** | HTTP API — kept for ad-hoc `curl` testing. Bound to localhost only on the server. | TLS 1.3 + ECH |
 | **8445** | Enrollment bootstrap **and** generic pre-authentication lookup proxy (`ca_pubkey`, `http_get`). The only channel a peer without an MTC identity can use. | Plaintext JSON over raw TCP, optional X25519-DH for enrollment |
 | **8446** | Post-quantum authenticated channel for peers that already have an MTC identity. Same HTTP dispatcher as 8444 runs over MQC framing. | MQC (ML-KEM-768 + ML-DSA-87 + AES-256-GCM) |
 
@@ -199,6 +199,14 @@ under `POST /revoke`.
 The server daemon `mtc_server` lives in `mtc-keymaster/server2/c/`
 (fork-after-accept, one child per connection). `mtc-keymaster/server/c/` is
 the pre-fork legacy tree, retained as history but not deployed.
+
+## Source
+
+The source kit is on GitHub, and can be obtained by a `git clone https://github.com/cpsource/postWolf.git`.
+
+```
+git clone https://github.com/cpsource/postWolf.git
+```
 
 ## Build
 
@@ -337,7 +345,15 @@ enroll a leaf identity, run `show-tpm --verify` against a live log — you
 need the build above and nothing else. No database, no Redis, no
 `~/.mtc-ca-data/`, no systemd unit.
 
-**1. Build and install the library + tools** as in the Build section above.
+**1. Install the code.** You have three choices:
+
+   - **Full build.** Build the entire kit from source as described in the
+     Build section above. This gives you everything — library, tools,
+     CA server, leaf utilities.
+   - **CA only.** If you own a domain, use `kit-CA/` to install just the
+     Certificate Authority code. CAs control access to their domain's leaves.
+   - **Leaf only.** If you are a member of someone else's domain, use
+     `kit-leaf/` to install just the client/leaf code.
 
 **2. Get your leaf identity enrolled.** Two steps, one of which is
 performed by the CA operator:
@@ -414,5 +430,7 @@ postWolf/
 
 ## License
 
-postWolf is a derivative of wolfSSL. See [LICENSING](LICENSING) and
-[COPYING](COPYING) for full terms.
+postWolf is a derivative of wolfSSL, released under the **GNU GPL v3**.
+See [LICENSING](https://github.com/cpsource/postWolf/blob/master/LICENSING)
+and [COPYING](https://github.com/cpsource/postWolf/blob/master/COPYING)
+for full terms.
