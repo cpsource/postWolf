@@ -15,7 +15,7 @@ ExecStart=/usr/local/bin/mtc_server \
     --tls-cert /home/ubuntu/.mtc-ca-data/server-cert.pem \
     --tls-key /home/ubuntu/.mtc-ca-data/server-key.pem \
     --ech-name factsorlie.com \
-    --log-level 4 \
+    --log-level 2 \
     --dh-port 8445 \
     --mqc-port 8446 \
     --tpm-path /home/ubuntu/.TPM/factsorlie.com-ca
