@@ -64,4 +64,19 @@
 #define MQC_SIG_FRESHNESS_SEC       300              /* 5 min */
 #endif
 
+/* -- MQC handshake slow-client budgets (server-side accept path) ------ */
+/* Per-read SO_RCVTIMEO on an accepted MQC socket.  Kills outright-
+ * hung peers.  The whole handshake is small, so a tight value is fine. */
+#ifndef MQC_HANDSHAKE_STALL_SEC
+#define MQC_HANDSHAKE_STALL_SEC     3
+#endif
+
+/* Total wall-clock budget for completing the MQC handshake.  Kills
+ * slow-loris drip attacks where each individual read is under the
+ * per-read cap but the overall exchange crawls.  Legit handshakes
+ * complete in milliseconds even over slow links. */
+#ifndef MQC_HANDSHAKE_TOTAL_SEC
+#define MQC_HANDSHAKE_TOTAL_SEC     5
+#endif
+
 #endif /* MQC_CONFIG_H */

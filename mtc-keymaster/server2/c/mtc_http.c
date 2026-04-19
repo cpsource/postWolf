@@ -2282,7 +2282,9 @@ static void *mqc_listener_thread(void *arg)
         /* Accept MQC connection (auto-detects clear/encrypted) */
         cio.mqc = mqc_accept_auto(mqc_ctx, listen_fd);
         if (cio.mqc == NULL) {
-            LOG_WARN("MQC accept failed");
+            const char *peer = mqc_last_accept_peer_ip();
+            LOG_WARN("MQC accept failed from %s",
+                     peer && peer[0] ? peer : "unknown");
             continue;
         }
 

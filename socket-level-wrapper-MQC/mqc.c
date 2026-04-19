@@ -54,7 +54,59 @@
 #define MQC_GCM_TAG_SZ      16
 #define MQC_MAX_MSG          (1024 * 1024)  /* 1MB max message */
 #define MQC_MAX_HANDSHAKE    (128 * 1024)   /* 128KB max handshake JSON */
-#define MQC_HANDSHAKE_TIMEOUT 10            /* seconds to complete handshake */
+#include "config.h"
+/* MQC_HANDSHAKE_STALL_SEC and MQC_HANDSHAKE_TOTAL_SEC live in config.h. */
+/* Kept as a back-compat alias for existing call sites. */
+#define MQC_HANDSHAKE_TIMEOUT  MQC_HANDSHAKE_STALL_SEC
+
+/* Wall-clock deadline for the current accept-side handshake.  Set by
+ * each mqc_accept* function at entry, consulted inside read_all /
+ * read_json_block to kill slow-loris drip attacks that stay under
+ * SO_RCVTIMEO per read.  0 means "no deadline" (client side / any
+ * path that isn't the accept handshake).  Safe as a file-static
+ * because mqc.c is used in single-connection-per-process contexts
+ * — server forks per accept, clients run one mqc_connect at a time. */
+static time_t s_handshake_deadline = 0;
+
+/* Stashed peer IP from the most recent accept-side handshake.  Lets
+ * callers log meaningful diagnostics when mqc_accept* returns NULL
+ * (the fd has already been closed by then, so getpeername is too late). */
+static char s_last_accept_peer_ip[64] = "";
+
+const char *mqc_last_accept_peer_ip(void)
+{
+    return s_last_accept_peer_ip;
+}
+
+static int handshake_deadline_exceeded(void)
+{
+    return s_handshake_deadline != 0 && time(NULL) > s_handshake_deadline;
+}
+
+static void handshake_deadline_set(void)
+{
+    s_handshake_deadline = time(NULL) + MQC_HANDSHAKE_TOTAL_SEC;
+}
+
+static void handshake_deadline_clear(void)
+{
+    s_handshake_deadline = 0;
+}
+
+/* Scope-based cleanup: drop an HANDSHAKE_DEADLINE_ACTIVE(); at the
+ * top of each accept-side function and the deadline is automatically
+ * set-on-entry and cleared on every return path.  Keeps us from
+ * leaking the deadline into post-handshake data-plane reads. */
+static void handshake_deadline_cleanup(int *unused)
+{
+    (void)unused;
+    handshake_deadline_clear();
+}
+
+#define HANDSHAKE_DEADLINE_ACTIVE()                                      \
+    int _hs_dl __attribute__((cleanup(handshake_deadline_cleanup))) =    \
+        (handshake_deadline_set(), 0);                                   \
+    (void)_hs_dl
 
 #define MQC_ABUSE_THRESHOLD  25  /* reject if abuse score >= 25% */
 #define MQC_RL_CONNECT_MIN   100   /* max connections per minute per IP */
@@ -147,7 +199,13 @@ static int read_all(int fd, unsigned char *buf, unsigned int len)
 {
     unsigned int got = 0;
     while (got < len) {
-        ssize_t n = read(fd, buf + got, len - got);
+        ssize_t n;
+        if (handshake_deadline_exceeded()) {
+            MQC_LOG("read_all: handshake deadline exceeded "
+                    "(got=%u/%u) — slow-loris?", got, len);
+            return -1;
+        }
+        n = read(fd, buf + got, len - got);
         if (n <= 0) return -1;
         got += (unsigned int)n;
     }
@@ -158,7 +216,13 @@ static int read_json_block(int fd, char *buf, int bufsz)
 {
     int pos = 0, depth = 0, started = 0;
     while (pos < bufsz - 1) {
-        ssize_t n = read(fd, buf + pos, 1);
+        ssize_t n;
+        if (handshake_deadline_exceeded()) {
+            MQC_LOG("read_json_block: handshake deadline exceeded "
+                    "(pos=%d depth=%d) — slow-loris?", pos, depth);
+            return -1;
+        }
+        n = read(fd, buf + pos, 1);
         if (n <= 0) return -1;
         if (buf[pos] == '{') { depth++; started = 1; }
         else if (buf[pos] == '}') { depth--; }
@@ -808,6 +872,7 @@ fail:
 
 mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
 {
+    HANDSHAKE_DEADLINE_ACTIVE();
     int fd;
     struct sockaddr_in cli_addr;
     socklen_t cli_len = sizeof(cli_addr);
@@ -1317,6 +1382,7 @@ fail:
 
 mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
 {
+    HANDSHAKE_DEADLINE_ACTIVE();
     int fd;
     struct sockaddr_in cli_addr;
     socklen_t cli_len = sizeof(cli_addr);
@@ -1553,6 +1619,10 @@ static int auto_accept_detect(int listen_fd, char *json_buf, int json_bufsz,
     {
         char ip[64] = "unknown";
         inet_ntop(AF_INET, &cli_addr.sin_addr, ip, sizeof(ip));
+        /* Stash so callers can log the peer IP even if the handshake
+         * fails and we have to close(fd) below. */
+        snprintf(s_last_accept_peer_ip, sizeof(s_last_accept_peer_ip),
+                 "%s", ip);
         MQC_LOG("auto-accept from %s:%d", ip, ntohs(cli_addr.sin_port));
         if (mqc_abuse_check(ip) != 0) { close(fd); return -1; }
         if (mqc_ratelimit_check(ip) != 0) { close(fd); return -1; }
@@ -1578,6 +1648,7 @@ static int auto_accept_detect(int listen_fd, char *json_buf, int json_bufsz,
 
 mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
 {
+    HANDSHAKE_DEADLINE_ACTIVE();
     char json_buf[64000];
     int is_encrypted = 0;
     int fd;

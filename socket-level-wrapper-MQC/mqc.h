@@ -92,6 +92,13 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd);
  * Otherwise  = encrypted  → mqc_accept_encrypted */
 mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd);
 
+/* After mqc_accept_auto (or the other accept variants) returns NULL,
+ * the fd has already been closed so getpeername() is useless.  This
+ * returns the peer IP captured at the raw-accept() moment, letting
+ * callers log which client triggered the failure.  Valid until the
+ * next call to any mqc_accept* in the same process. */
+const char *mqc_last_accept_peer_ip(void);
+
 /* --- I/O --- */
 
 /* Read and decrypt data. Returns bytes read, 0 on close, -1 on error. */
