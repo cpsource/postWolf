@@ -188,7 +188,7 @@ with fresh keys).
 | Server rejects with `CA certificate rejected: DNS validation failed` | client-side poll saw the record but server's resolver still sees old/cached data | wait a minute and re-run; keys are reused |
 | `WARNING: An active CA identity for <domain> already exists` | you're re-registering an existing healthy CA — this creates a ghost log entry | default answer aborts; to rotate keys, use `check-renewal-cert --force <domain>-ca` instead |
 | `existing CA identity at <dir> is EXPIRED; … Proceeding` | no action required | register-ca.sh proceeds automatically — the old identity is dead, a fresh one is appropriate |
-| `existing CA identity at <dir> is REVOKED; … Proceeding` | no action required | same — re-enrollment is the right move |
+| `existing CA identity at <dir> is REVOKED.` + exit 1 | the server operator revoked this CA | register-ca.sh refuses; even if bypassed, the server's `mtc_bootstrap.c` blocks re-enrollment for any domain whose most-recent CA entry is revoked. Contact the server operator. |
 
 ---
 
@@ -217,12 +217,26 @@ To retire a CA identity for good:
 revoke-key --target-index <N> --reason "key compromise"
 ```
 
-To replace with a fresh key on the same domain:
+**Important:** revoking a CA cert is the server operator's way of
+saying "this domain may not hold a CA cert here." After revocation:
 
-1. `revoke-key --target-index <N>` — mark the old one revoked.
-2. `register-ca.sh --domain <domain> --server …` — re-runs; the
-   existing-identity guard detects the revocation and proceeds
-   without prompting.
+- `register-ca.sh` refuses re-enrollment for that domain (client-side
+  guard).
+- `mtc_bootstrap.c` also refuses, independently (server-side gate):
+  if the most recent entry for `<domain>-ca` in the Merkle log is
+  revoked, the DH-bootstrap endpoint rejects the enrollment request
+  even when the DNS TXT check passes.
+
+To rotate keys on a *healthy* CA (no operator revocation), use
+`check-renewal-cert --force <domain>-ca` — that's the path designed
+for routine key rotation.
+
+To restore a CA on a previously-revoked domain, the server operator
+must intervene: MTC's append-only log has no "unrevoke" primitive, so
+the revocation list needs to be edited server-side (today: by
+admin_recosign flow or direct DB surgery). This is intentional — the
+policy is "revoke = permanent operator decision unless explicitly
+reversed by the operator."
 
 There's no formal "deregister" step — the Merkle log is append-only.
 Revocation is how you invalidate.

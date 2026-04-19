@@ -124,7 +124,24 @@ print(int(d['standalone_certificate']['tbs_entry']['not_after']))
         echo "==> existing CA identity at $TPM_DIR is EXPIRED; re-enrollment is appropriate. Proceeding."
     elif revoke-key --list "$DOMAIN" -s "$SERVER" 2>/dev/null \
          | grep -Fq "index $cert_idx "; then
-        echo "==> existing CA identity at $TPM_DIR is REVOKED (cert_index $cert_idx); re-enrollment is appropriate. Proceeding."
+        cat >&2 <<REVOKED
+
+ERROR: existing CA identity at $TPM_DIR is REVOKED.
+
+cert_index $cert_idx was revoked by the server operator.  A revoked
+CA means the operator has decided this domain should not hold a CA
+cert here.  Re-enrollment is **refused**.  The server (mtc_bootstrap.c)
+enforces this policy too — even if you bypass this check, the
+bootstrap will be rejected.
+
+To resolve:
+  - If the revocation was in error, contact the server operator to
+    have the revocation lifted.
+  - If the key was compromised and you need a fresh identity, the
+    server operator must lift the revocation before you can re-enroll.
+
+REVOKED
+        exit 1
     else
         expires_str="$(date -u -d "@$not_after" 2>/dev/null || echo "$not_after")"
         cat >&2 <<WARN

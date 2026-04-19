@@ -672,6 +672,55 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                 }
                 goto cleanup;
             }
+
+            /* Revocation gate: if the most-recent CA entry for this
+             * subject is revoked, the server operator has explicitly
+             * said "no" to this domain.  Refuse re-enrollment.  The
+             * CA subject is "<domain>-ca" (per bootstrap_ca.c's
+             * convention). */
+            {
+                char ca_subject[520];
+                int latest_idx = -1;
+                int k;
+
+                snprintf(ca_subject, sizeof(ca_subject), "%s-ca", subject);
+                for (k = 0; k < store->cert_count; k++) {
+                    struct json_object *entry = store->certificates[k];
+                    struct json_object *sc_j, *tbs_j, *subj_j;
+                    const char *entry_subj;
+                    if (!entry) continue;
+                    if (!json_object_object_get_ex(entry, "standalone_certificate", &sc_j)) continue;
+                    if (!json_object_object_get_ex(sc_j, "tbs_entry", &tbs_j)) continue;
+                    if (!json_object_object_get_ex(tbs_j, "subject", &subj_j)) continue;
+                    entry_subj = json_object_get_string(subj_j);
+                    if (entry_subj && strcmp(entry_subj, ca_subject) == 0) {
+                        latest_idx = k;  /* keep overwriting; highest wins */
+                    }
+                }
+                if (latest_idx >= 0 && mtc_store_is_revoked(store, latest_idx)) {
+                    LOG_WARN("bootstrap: CA enrollment refused — most "
+                             "recent CA for '%s' (index %d) is revoked "
+                             "by server operator",
+                             ca_subject, latest_idx);
+                    {
+                        const char *err_json = "{\"status\":\"error\","
+                            "\"message\":\"CA enrollment refused: this "
+                            "domain's most recent CA certificate has "
+                            "been revoked by the server operator. "
+                            "Contact the server operator to lift the "
+                            "revocation before re-enrolling.\"}";
+                        unsigned int err_enc_len = sizeof(enc_buf);
+                        if (mtc_crypt_encode(crypt_ctx,
+                                (unsigned char *)err_json,
+                                (unsigned int)strlen(err_json),
+                                enc_buf, &err_enc_len) == 0) {
+                            send_length_prefixed(fd, enc_buf, err_enc_len);
+                        }
+                    }
+                    goto cleanup;
+                }
+            }
+
             LOG_INFO("bootstrap: CA enrollment for '%s' authorized",
                      subject);
         } else {
