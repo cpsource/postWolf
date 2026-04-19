@@ -1178,6 +1178,41 @@ https://localhost:8444/revoke` with `Content-Type: application/json`.
 
 ### 24. Leaf-side "cert about to expire" tooling + docs — ship a tool in the leaf kit (and instructions in README-leaf.md) that scans `~/.TPM/`, detects certs within N days of `not_after`, and kicks off a renewal against the CA.  `install-leaf-kit.sh` should also install a cron (or systemd-timer) entry that runs the expiration check on a schedule so the leaf user doesn't have to wire it up themselves.
 
+### 25. Fork children pay a gratuitous Neon reconnect on every request
+
+**Priority:** Low (cosmetic + minor latency), observed after lowering
+the log level to INFO on 2026-04-19.  Every forked child prints
+
+```
+[db] connection lost, attempting reconnect...
+[db] connected to Neon PostgreSQL
+[db] reconnected successfully
+```
+
+on its first DB call.  Root cause: the parent holds a live `PGconn`
+when `accept()` returns; fork inherits the file descriptor, but libpq's
+TCP socket can't be shared between processes — the child's first
+`PQ*` call fails, `mtc_db_ensure_connected` sees the dead connection,
+opens a fresh one, and logs the churn.
+
+**Fix options (cheapest first):**
+
+1. **Open the DB connection lazily, post-fork.**  Have the parent
+   pre-resolve env/config but not call `PQconnectdb` until a handler
+   first asks for `store->db`.  Simplest; no inter-process surprises.
+2. **`PQfinish` + `PQconnectdb` immediately after `fork()` in the
+   child** — explicit hand-off instead of letting the first call
+   trip and recover.  Still three messages, but now under the child's
+   own control at a well-defined moment.
+3. **Connection pool** at the parent level + short-lived child
+   connections — more invasive, only worth it if the reconnect
+   latency becomes a throughput bottleneck.
+
+**Files involved:**
+- `mtc-keymaster/server2/c/mtc_db.c` — `mtc_db_ensure_connected`.
+- `mtc-keymaster/server2/c/mtc_http.c`, `mtc_bootstrap.c` — the three
+  fork-after-accept sites.
+
 ---
 
 ## Appendix: Server Directory Layout
