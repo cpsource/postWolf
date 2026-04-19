@@ -1084,6 +1084,37 @@ belt-and-suspenders, not a correctness requirement.
 - interacts poorly with TODO #17's more principled retry/backoff
   policy (both will be trying to paper over the same server quirk).
 
+**2026-04-19 update — the one-shot retry isn't always enough.**
+Observed on this date after `systemctl restart mtc-ca` followed
+immediately by `show-tpm --verify`: the retry fired but still failed
+on the very first post-restart invocation; the second run succeeded.
+Contributing factors that made 100 ms / single-retry insufficient:
+
+1. `show-tpm --verify` makes ~5 distinct MQC connections per run (CA
+   cert, leaf cert, log entry, revocation list, peer pubkey).  Each
+   one can hit a different cold-cache slot server-side, so the retry
+   has to cover *multiple independent* drop events, not just one.
+2. Each forked child on the server pays a Neon reconnect cost on its
+   first DB call (TODO #25).  That can easily exceed the client's
+   100 ms retry window, turning "drop-then-retry" into "drop-then-
+   retry-also-fails".
+3. The per-tool retry lives in the HTTP helper (`mqc_http_get`), so
+   retries are per-request, not per-verify-session.  If the first
+   request's second attempt lands during the same server-side
+   stabilisation window, the whole verify fails visibly to the user.
+
+**Interim mitigation options (cheapest first):**
+
+- Bump the retry to e.g. 250 ms base with up to 3 attempts
+  (exponential backoff) inside `mqc_http_get`.  Still a shim, but
+  covers the observed window.  Low risk, ~5 lines per tool.
+- Make the retry a library-level helper (TODO #17's
+  `mqc_connect_retry`) so tools don't each re-roll the logic.
+- Actually fix the server drop (preferred; see Fix sketch below).
+
+The second invocation always works — that is, the retry isn't
+*wrong*, it's just tuned too tightly for the post-restart worst case.
+
 **Fix sketch:**
 
 1. **Investigate the "safety measure" comment.** `git log -p` on

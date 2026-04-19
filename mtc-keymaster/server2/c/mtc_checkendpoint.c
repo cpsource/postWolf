@@ -47,13 +47,13 @@
 /* Module state                                                        */
 /* ------------------------------------------------------------------ */
 
-/* String version of TTL for SQL INTERVAL clause */
-#define ABUSEIPDB_CACHE_TTL_INTERVAL  "5 days"
+/* ABUSEIPDB_CACHE_TTL_INTERVAL + default threshold live in config.h
+ * (pulled in via mtc_checkendpoint.h). */
 
 static char    s_api_key[256]    = {0};   /**< AbuseIPDB API key           */
 static PGconn *s_conn           = NULL;   /**< DB connection (NULL = off)  */
 static int     s_verbose        = 0;      /**< Verbose logging flag        */
-static int     s_abuse_threshold = 75;    /**< Rejection threshold (0-100) */
+static int     s_abuse_threshold = MTC_ABUSE_DEFAULT_THRESHOLD;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */

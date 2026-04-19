@@ -16,6 +16,7 @@ configure
 config.*
 !cmake/config.in
 !socket-level-wrapper-MQC/config.h
+!mtc-keymaster/server2/c/config.h
 *Debug/
 *Release/
 *.ncb

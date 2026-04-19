@@ -17,13 +17,7 @@
 #ifndef MTC_CHECKENDPOINT_H
 #define MTC_CHECKENDPOINT_H
 
-/** Cached AbuseIPDB records older than this many days are refreshed. */
-#define ABUSEIPDB_CACHE_TTL_DAYS  5
-
-/** Stricter abuse-score threshold for enrollment endpoints (CA and leaf).
- *  General access uses mtc_get_abuse_threshold() (default 75).
- *  Enrollment is a privileged operation — reject at 25%. */
-#define ABUSEIPDB_ENROLL_THRESHOLD  25
+#include "config.h"   /* ABUSEIPDB_CACHE_TTL_DAYS, ABUSEIPDB_ENROLL_THRESHOLD */
 
 /**
  * @brief    Initialise the AbuseIPDB module.

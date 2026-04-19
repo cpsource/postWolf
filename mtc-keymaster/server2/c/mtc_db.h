@@ -302,7 +302,8 @@ char *mtc_db_load_config(PGconn *conn, const char *key);
 /* ------------------------------------------------------------------ */
 
 /** Nonce time-to-live in seconds (15 minutes). */
-#define MTC_NONCE_TTL_SECS  900
+/* MTC_NONCE_TTL_SECS now defined in config.h (defaults to 900). */
+#include "config.h"
 
 /** Hex string length for a 256-bit nonce (32 bytes = 64 hex chars). */
 #define MTC_NONCE_HEX_LEN  64

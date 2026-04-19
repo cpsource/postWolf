@@ -1526,11 +1526,12 @@ static void handle_revoke(client_io *io, MtcStore *store,
 
     /* --- Freshness --- */
     now = (long)time(NULL);
-    if (timestamp < now - 300 || timestamp > now + 300) {
+    if (timestamp < now - MTC_SIG_FRESHNESS_SEC ||
+        timestamp > now + MTC_SIG_FRESHNESS_SEC) {
         LOG_WARN("revoke: stale/future timestamp %ld (server now=%ld)",
                  timestamp, now);
         http_send_error(io, 400,
-            "timestamp outside ±5 min freshness window");
+            "timestamp outside freshness window");
         json_object_put(req);
         return;
     }
