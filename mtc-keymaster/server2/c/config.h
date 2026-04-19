@@ -67,6 +67,13 @@
 #define MTC_RENEWAL_WINDOW_DAYS         5
 #endif
 
+/* Default validity window for certificates issued via /renew-cert.
+ * Clients can override per-request with the validity_days field;
+ * this is the fallback when the field is absent. */
+#ifndef MTC_RECERT_VALIDITY_DAYS
+#define MTC_RECERT_VALIDITY_DAYS        45
+#endif
+
 /* -- Default listener ports ------------------------------------------ */
 #ifndef MTC_HTTP_DEFAULT_PORT
 #define MTC_HTTP_DEFAULT_PORT           8444      /* TLS debug / curl */
