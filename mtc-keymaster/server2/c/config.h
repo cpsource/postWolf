@@ -78,4 +78,18 @@
 #define MTC_LOG_DEFAULT_PATH            "/var/log/mtc/mtc_server.log"
 #endif
 
+/* -- Bootstrap-port slow-client budgets ------------------------------ */
+/* Per-read (SO_RCVTIMEO): a single read call stalling longer than this
+ * drops the connection.  Kills outright-hung peers. */
+#ifndef MTC_BOOTSTRAP_READ_STALL_SEC
+#define MTC_BOOTSTRAP_READ_STALL_SEC    2
+#endif
+
+/* Total wall-clock budget for reading one plaintext-JSON request.
+ * Kills slow-loris drip attacks where each individual read stays
+ * under the per-read timeout but the overall exchange crawls. */
+#ifndef MTC_BOOTSTRAP_READ_TOTAL_SEC
+#define MTC_BOOTSTRAP_READ_TOTAL_SEC    3
+#endif
+
 #endif /* MTC_SERVER_CONFIG_H */

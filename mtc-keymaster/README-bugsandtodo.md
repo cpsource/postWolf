@@ -1360,6 +1360,55 @@ Only the local operator flips the symlink.
 
 ---
 
+### 27. Decide: Dockerized Redis vs. native `redis-server.service`
+
+Observed on factsorlie.com on 2026-04-19: the box has both a Docker
+container `redis` (image `redis:7-alpine`, `-p 6379:6379`) and the
+Ubuntu-native `redis-server.service`.  The Docker container wins the
+port bind; the native service loops through its `Restart=on-failure`
+policy and lands in `failed` state with `Address already in use`.
+The MTC server transparently talks to whichever is up on
+`127.0.0.1:6379` — which is the Docker one — and hasn't cared.
+
+This works but it's untidy: one broken service unit in `systemctl
+status`, two Redis installs in the package tree, and confusion when
+someone runs `systemctl stop redis-server` expecting it to stop
+"Redis" (it stops the native service, which was never serving).
+
+**Constraint to remember:** the Docker `flask-app` container has
+`REDIS_HOST=redis` pointing at the Docker Redis via Docker's
+internal DNS.  Tearing out the Docker Redis means rewiring
+flask-app.
+
+**Options, in order of invasiveness:**
+
+1. **Disable the native service, keep Docker Redis** (cheapest).
+   `sudo systemctl disable --now redis-server.service` +
+   `sudo systemctl reset-failed redis-server.service`.  Nothing else
+   changes.  Picks a winner and stops the noise.
+2. **Remove Docker Redis, use native Redis for everything.** Requires
+   rebuilding `flask-app` with `REDIS_HOST=172.17.0.1` (docker bridge
+   gateway) or switching flask-app to host networking.  Native Redis
+   is simpler to manage via systemd but adds Docker-side work.
+3. **Two Redis instances on different ports.** Native on 6380, Docker
+   on 6379.  MTC gets a `--redis-port` flag.  Overkill — no real
+   benefit over option 1 or 2.
+
+Recommendation: option 1 unless we specifically want Docker out of
+the rate-limiter trust boundary.  Either way, the `install-*-kit.sh`
+scripts should NOT apt-install `redis-server` on a host that already
+has a Docker Redis serving 6379 — today they blindly try to install
+it, which is what created this dual-install mess.
+
+**Files potentially involved:**
+- `kit-leaf/install-leaf-kit.sh`, `kit-CA/install-ca-kit.sh` — the
+  apt-install list currently includes `redis-server` indirectly via
+  `libhiredis*`; confirm it doesn't also pull the server package.
+  Add a pre-check that refuses to install a second Redis if
+  `127.0.0.1:6379` is already responsive.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the

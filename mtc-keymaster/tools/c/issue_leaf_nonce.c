@@ -45,8 +45,10 @@
 #include "mqc.h"
 #include "mqc_peer.h"
 
-#include "config.h"
-#define DEFAULT_SERVER    MQC_DEFAULT_SERVER   /* MQC endpoint (config.h) */
+/* Explicit path — there's also a server-side config.h on the include
+ * search path that would shadow this one. */
+#include "../../../socket-level-wrapper-MQC/config.h"
+#define DEFAULT_SERVER    MQC_DEFAULT_SERVER
 #define DEFAULT_TPM_DIR   ".TPM"
 #define DEFAULT_OUT_DIR   ".mtc-ca-data"
 

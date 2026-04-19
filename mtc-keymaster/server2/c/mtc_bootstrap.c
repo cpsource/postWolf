@@ -282,9 +282,17 @@ static int read_plaintext_json(int fd, char *buf, int bufsz)
     int pos = 0;
     int depth = 0;
     int started = 0;
+    time_t deadline = time(NULL) + MTC_BOOTSTRAP_READ_TOTAL_SEC;
 
     while (pos < bufsz - 1) {
-        ssize_t n = read(fd, buf + pos, 1);
+        ssize_t n;
+        if (time(NULL) > deadline) {
+            LOG_WARN("bootstrap: read_plaintext_json wall-clock deadline "
+                     "exceeded (pos=%d, depth=%d) — dropping (slow-loris?)",
+                     pos, depth);
+            return -1;
+        }
+        n = read(fd, buf + pos, 1);
         if (n <= 0)
             return -1;
         if (buf[pos] == '{') {
@@ -354,6 +362,18 @@ static int recv_length_prefixed(int fd, unsigned char *buf, int bufsz)
 static int handle_bootstrap_client(int fd, MtcStore *store,
                                     const char *ip_str)
 {
+    /* Per-read stall timeout: a single read() blocked longer than this
+     * drops the connection.  Applies to every subsequent read — both
+     * the plaintext JSON and the encrypted enrollment payload.  The
+     * per-read cap plus the wall-clock budget inside read_plaintext_json
+     * between them kill slow-loris drips. */
+    {
+        struct timeval tv;
+        tv.tv_sec  = MTC_BOOTSTRAP_READ_STALL_SEC;
+        tv.tv_usec = 0;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    }
+
     /* Ensure DB connection is alive (may have dropped since last request) */
     if (store->use_db) {
         if (mtc_db_ensure_connected(&store->db) != 0) {

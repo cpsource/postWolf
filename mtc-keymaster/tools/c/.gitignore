@@ -5,3 +5,4 @@ bootstrap_leaf
 show-tpm
 issue_leaf_nonce
 revoke-key
+attack-port-8445

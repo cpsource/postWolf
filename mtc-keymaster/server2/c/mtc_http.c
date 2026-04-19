@@ -272,7 +272,12 @@ static void http_send_error(client_io *io, int status, const char *msg)
  *
  * Description:
  *   Safe integer parse with bounds check.  Accepts digits terminated by
- *   NUL, '?', '&', or ' ' (to handle URL path/query string contexts).
+ *   NUL, '?', '&', '\r', or '\n'.  ' ' (space) is deliberately NOT
+ *   accepted: URL path components never contain unescaped spaces (per
+ *   RFC 3986 they're %20-encoded), and Content-Length's leading
+ *   whitespace is stripped by the caller before this function runs.
+ *   Historically space was allowed, which let `/certificate/5 OR 1=1`
+ *   parse as cert index 5 rather than rejecting outright.
  *
  * Input Arguments:
  *   s        - String to parse.  NULL or empty returns -1.
@@ -288,7 +293,7 @@ static int safe_atoi(const char *s, int max_val)
     char *end;
     if (!s || !*s) return -1;
     v = strtol(s, &end, 10);
-    if (*end != '\0' && *end != '?' && *end != '&' && *end != ' ' &&
+    if (*end != '\0' && *end != '?' && *end != '&' &&
         *end != '\r' && *end != '\n')
         return -1;
     if (v < 0 || v > max_val)
