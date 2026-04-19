@@ -9,8 +9,8 @@ database, no Redis, no server daemon.
 | Path | Purpose |
 |------|---------|
 | `bin/bootstrap_leaf` | First-time leaf enrollment (needs a CA-issued nonce). |
-| `bin/show-tpm`       | Inspect the local identity; `--verify` walks the full trust chain against the CA's log. |
-| `bin/revoke-key`     | `--list <domain>` / `--refresh` — read-only queries against the CA's revocation state. (Full `--target-index` revocation is a CA-operator action and won't work here without a CA identity.) |
+| `bin/show-tpm`       | Inspect the local identity; `--verify` walks the full trust chain (including revocation) against the CA's log. |
+| `bin/create_leaf_cert.py` | Generate a post-quantum keypair (default ML-DSA-87; EC-P256 / Ed25519 also supported) via `openssl35`. |
 | `lib/libpostWolf.so*` | wolfSSL-derived shared library used by the tools. |
 | `socket-level-wrapper-MQC.tar.gz` | Source + prebuilt `libmqc.a` for the MQC wrapper. The installer extracts headers (`/usr/local/include/mqc/`) and the static library (`/usr/local/lib/libmqc.a`). |
 | `mqc.pc`             | pkg-config file installed to `/usr/local/lib/pkgconfig/mqc.pc` so downstream C code can `pkg-config --cflags --libs mqc`. |
@@ -51,12 +51,13 @@ authorise your public key by issuing you a 15-minute-TTL nonce.
 **1. Generate a leaf key pair** (if you don't already have one):
 
 ```bash
-# Any of these algorithms work; match what the CA supports.
-openssl35 genpkey -algorithm ML-DSA-87 -out leaf-priv.pem
-openssl35 pkey -in leaf-priv.pem -pubout -out leaf-pub.pem
+create_leaf_cert.py --domain <DOMAIN>
+# → writes ~/.mtc-ca-data/<DOMAIN>/private_key.pem + public_key.pem
+# Pass --algorithm EC-P256 or Ed25519 if you want something else than
+# the default ML-DSA-87.
 ```
 
-Send `leaf-pub.pem` to your CA operator out of band.
+Send `~/.mtc-ca-data/<DOMAIN>/public_key.pem` to your CA operator out of band.
 
 **2. CA operator issues a nonce** (runs on their side):
 
@@ -101,17 +102,20 @@ revocation. On first run it TOFU-pins the CA's cosigner public key
 into `~/.TPM/ca-cosigner.pem`; any future fingerprint change is a
 signal worth investigating, not silently accepting.
 
-## Revocation awareness
+## Revocation
 
-```bash
-revoke-key --list <DOMAIN>    # who's been revoked under this CA
-revoke-key --refresh          # re-pull /revoked and reset the 24h TTL
-                              # on every cached ~/.TPM/peers/<n>/revoked.json
-```
+Leaves don't have revocation authority — only a CA can revoke leaves
+under its domain. That's deliberate, and it's why `revoke-key` is not
+shipped in this kit.
 
-`--refresh` is worth running before any long-lived session so the
-server's "cache-miss → drop → retry" handshake pattern doesn't hit you
-on your first outbound MQC connection.
+If your own cert gets revoked by your CA, `show-tpm --verify` will
+fail on the revocation check, which is how you find out. No action is
+required on your side; rotating your identity means running
+`bootstrap_leaf` again with a fresh nonce from the CA.
+
+To actively revoke a leaf (including your own), you need the
+postWolf **CA** kit (`postWolf-ca-kit-*.tar.gz`) installed alongside a
+registered CA identity in `~/.TPM/<domain>-ca/`.
 
 ## Building your own MQC client
 
@@ -138,7 +142,7 @@ resolved plus the dynamic library under it.
 ## Uninstall
 
 ```bash
-sudo rm -f /usr/local/bin/{bootstrap_leaf,show-tpm,revoke-key}
+sudo rm -f /usr/local/bin/{bootstrap_leaf,show-tpm,create_leaf_cert.py}
 sudo rm -f /usr/local/lib/libpostWolf.so*
 sudo rm -f /usr/local/lib/libmqc.a
 sudo rm -f /usr/local/lib/pkgconfig/mqc.pc

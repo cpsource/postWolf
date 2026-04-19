@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
 #
-# install-leaf-kit.sh — install the extracted postWolf leaf kit into
-# /usr/local.  Must run as root.
+# install-ca-kit.sh — install the extracted postWolf CA-operator kit.
+# Must run as root.
 #
-# Layout expected (relative to this script):
-#   ./bin/{bootstrap_leaf, show-tpm, revoke-key}
-#   ./lib/libpostWolf.so*
-#   ./doc/README.md
-#   ./VERSION
+# Installs six CA-side tools (bootstrap_ca, bootstrap_leaf, show-tpm,
+# issue_leaf_nonce, admin_recosign, revoke-key), libpostWolf, the MQC
+# library + headers + pkg-config, and OpenSSL 3.5 (for ML-DSA keygen).
 #
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
-    echo "Error: install-leaf-kit.sh must be run with sudo." >&2
-    echo "Usage: sudo bash install-leaf-kit.sh" >&2
+    echo "Error: install-ca-kit.sh must be run with sudo." >&2
+    echo "Usage: sudo bash install-ca-kit.sh" >&2
     exit 1
 fi
 
@@ -22,7 +20,7 @@ for d in bin lib doc; do
     if [[ ! -d "$HERE/$d" ]]; then
         echo "Error: expected $HERE/$d not found." >&2
         echo "Run this script from the extracted kit directory "\
-             "(tar xzf postWolf-leaf-kit-*.tar.gz && cd payload)." >&2
+             "(tar xzf postWolf-ca-kit-*.tar.gz && cd payload)." >&2
         exit 1
     fi
 done
@@ -38,20 +36,17 @@ VERSION="$(cat "$HERE/VERSION" 2>/dev/null || echo unknown)"
 # --- 1. Runtime library dependencies ----------------------------------
 echo ">>> Ensuring runtime apt prerequisites are present ..."
 apt-get update -q >/dev/null 2>&1 || true
-# Package names vary across Ubuntu/Debian releases; try a liberal set and
-# warn (not fail) on any miss.  Final runtime check is the ldd pass below.
 apt-get install -y --no-install-recommends \
-    libjson-c5 libcurl4 libpq5 python3 \
+    libjson-c5 libcurl4 libpq5 \
     libhiredis1.1.0 libhiredis1.0.0 libhiredis0.14 \
+    python3 python3-cryptography \
     2>/dev/null || {
     echo "Warning: apt-get could not install every runtime lib; check ldd output below." >&2
 }
 
 # --- 1a. OpenSSL 3.5 (openssl35) --------------------------------------
-# Leaf key generation (ML-DSA-44/65/87) requires OpenSSL 3.5+, which
-# Ubuntu 24.04 doesn't ship.  buildopenssl3.5.sh handles the build +
-# wrapper install and is itself idempotent (no-op if openssl35 is
-# already 3.5+).
+# CA + leaf key generation (ML-DSA-44/65/87) requires OpenSSL 3.5+.
+# buildopenssl3.5.sh is idempotent (no-op if already installed).
 echo ">>> Running buildopenssl3.5.sh (first-time build takes ~5–10 min) ..."
 bash "$HERE/buildopenssl3.5.sh"
 
@@ -77,21 +72,26 @@ install -m 644 "$mqc_src/libmqc.a"    /usr/local/lib/libmqc.a
 install -d /usr/local/lib/pkgconfig
 install -m 644 "$HERE/mqc.pc"         /usr/local/lib/pkgconfig/mqc.pc
 
-# --- 3. Leaf tools ----------------------------------------------------
-echo ">>> Installing leaf tools → /usr/local/bin/ ..."
+# --- 3. CA operator tools ---------------------------------------------
+echo ">>> Installing CA tools → /usr/local/bin/ ..."
 install -d /usr/local/bin
-install -m 755 "$HERE/bin/bootstrap_leaf"        /usr/local/bin/bootstrap_leaf
-install -m 755 "$HERE/bin/show-tpm"              /usr/local/bin/show-tpm
-install -m 755 "$HERE/bin/create_leaf_cert.py"   /usr/local/bin/create_leaf_cert.py
+for t in bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce \
+         admin_recosign revoke-key; do
+    install -m 755 "$HERE/bin/$t" "/usr/local/bin/$t"
+done
+for p in create_ca_cert.py create_leaf_cert.py ca_dns_txt.py; do
+    install -m 755 "$HERE/bin/$p" "/usr/local/bin/$p"
+done
 
 # --- 4. Docs ----------------------------------------------------------
-install -d /usr/local/share/doc/postWolf-leaf
+install -d /usr/local/share/doc/postWolf-ca
 install -m 644 "$HERE/doc/README.md" \
-    /usr/local/share/doc/postWolf-leaf/README.md
+    /usr/local/share/doc/postWolf-ca/README.md
 
 # --- 5. Verify ldd -----------------------------------------------------
 missing_libs=0
-for t in bootstrap_leaf show-tpm; do
+for t in bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce \
+         admin_recosign revoke-key; do
     if ldd "/usr/local/bin/$t" 2>/dev/null | grep -q "not found"; then
         echo "Warning: /usr/local/bin/$t has unresolved shared libs:" >&2
         ldd "/usr/local/bin/$t" | grep "not found" >&2
@@ -100,7 +100,7 @@ for t in bootstrap_leaf show-tpm; do
 done
 
 echo
-echo "postWolf leaf kit $VERSION installed."
+echo "postWolf CA-operator kit $VERSION installed."
 echo
 if (( missing_libs )); then
     echo "Install the missing libraries via apt then re-run:" >&2
@@ -109,23 +109,28 @@ if (( missing_libs )); then
 fi
 
 cat <<'EOF'
-Next steps (ask your CA operator for a nonce, then):
+Next steps for a fresh CA operator:
 
-    # Generate a keypair for your leaf (ML-DSA-87 by default):
-    create_leaf_cert.py --domain <DOMAIN>
+  1. Generate your CA's keypair + self-signed cert:
+       create_ca_cert.py --domain <DOMAIN>
+       # → ~/.mtc-ca-data/<DOMAIN>/{private_key,public_key,ca_cert}.pem
 
-    # Send the generated public_key.pem to your CA operator out of band;
-    # they run issue_leaf_nonce and return a 64-hex-char nonce.
+  2. Compute and publish the DNS TXT record at _mtc-ca.<DOMAIN>:
+       ca_dns_txt.py ~/.mtc-ca-data/<DOMAIN>/ca_cert.pem
 
-    bootstrap_leaf --domain <DOMAIN> \
-                   --server <CA-HOST>:8445 \
-                   --nonce  <64-hex-char nonce>
+  3. Enrol your CA against an MTC server (e.g. factsorlie.com):
+       bootstrap_ca --domain <DOMAIN> --server <CA-HOST>:8445 \
+                    --key-file ca-priv.pem
 
-    show-tpm --verify
+  4. Once you have a registered CA, issue a leaf nonce to authorise
+     an enrollment:
+       issue_leaf_nonce --domain <DOMAIN> --key-file <leaf-pub.pem>
 
-`show-tpm --verify` checks revocation as part of the chain — if your
-cert gets revoked it will fail there.  To actively revoke a leaf, you
-need CA credentials; that's the postWolf-ca-kit, not this one.
+  5. Revoke a leaf under your domain (authenticated, CA-signed):
+       revoke-key --target-index N --reason "key compromise"
 
-Full docs: /usr/local/share/doc/postWolf-leaf/README.md
+  6. Inspect your own identity, verify the log:
+       show-tpm --verify
+
+Full docs: /usr/local/share/doc/postWolf-ca/README.md
 EOF
