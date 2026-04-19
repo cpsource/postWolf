@@ -24,6 +24,7 @@ required=(
     "mtc-keymaster/tools/c/check-renewal-cert"
     "mtc-keymaster/tools/python/create_leaf_keypair.py"
     "mtc-keymaster/tools/sh/setup-recert-crond.sh"
+    "mtc-keymaster/tools/sh/register-leaf.sh"
     "src/.libs/libpostWolf.so"
     "socket-level-wrapper-MQC/libmqc.a"
     "socket-level-wrapper-MQC/mqc.h"
@@ -66,6 +67,9 @@ install -m 755 "$REPO_ROOT/mtc-keymaster/tools/python/create_leaf_keypair.py" "$
 # Cron helper (goes to /usr/local/sbin on target — see install-leaf-kit.sh)
 install -d "$STAGE/sbin"
 install -m 755 "$REPO_ROOT/mtc-keymaster/tools/sh/setup-recert-crond.sh" "$STAGE/sbin/"
+
+# Registration orchestrator (goes to /usr/local/bin on target)
+install -m 755 "$REPO_ROOT/mtc-keymaster/tools/sh/register-leaf.sh" "$STAGE/bin/"
 
 # libpostWolf.so, libpostWolf.so.N (soname), libpostWolf.so.N.M.P (real file).
 # Preserve symlinks with `cp -a`.

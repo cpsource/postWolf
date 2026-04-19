@@ -58,6 +58,8 @@ install: all
 		$(DESTDIR)/usr/local/sbin/setup-recert-crond.sh
 	install -m 755 mtc-keymaster/tools/sh/register-ca.sh \
 		$(DESTDIR)/usr/local/bin/register-ca.sh
+	install -m 755 mtc-keymaster/tools/sh/register-leaf.sh \
+		$(DESTDIR)/usr/local/bin/register-leaf.sh
 
 clean:
 	$(MAKE) -C $(SLC_DIR) clean

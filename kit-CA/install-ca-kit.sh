@@ -83,7 +83,8 @@ done
 for p in create_ca_cert.py create_leaf_keypair.py ca_dns_txt.py; do
     install -m 755 "$HERE/bin/$p" "/usr/local/bin/$p"
 done
-install -m 755 "$HERE/bin/register-ca.sh" /usr/local/bin/register-ca.sh
+install -m 755 "$HERE/bin/register-ca.sh"   /usr/local/bin/register-ca.sh
+install -m 755 "$HERE/bin/register-leaf.sh" /usr/local/bin/register-leaf.sh
 
 # --- 3a. Cron-setup helper → /usr/local/sbin -------------------------
 install -d /usr/local/sbin
@@ -138,6 +139,9 @@ Next steps for a fresh CA operator:
 
     4. Issue a leaf nonce to authorise an enrollment:
          issue_leaf_nonce --domain <DOMAIN> --key-file <leaf-pub.pem>
+       Or, if the leaf lives on this same box:
+         register-leaf.sh --domain <LEAF-DOMAIN> --server <CA-HOST>:8445
+       (detects the local CA, issues the nonce, and bootstraps in one go)
 
     5. Revoke a leaf under your domain (authenticated, CA-signed):
          revoke-key --target-index N --reason "key compromise"

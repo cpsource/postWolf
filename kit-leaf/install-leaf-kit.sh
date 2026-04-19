@@ -86,6 +86,7 @@ install -m 755 "$HERE/bin/show-tpm"              /usr/local/bin/show-tpm
 install -m 755 "$HERE/bin/renew-cert"            /usr/local/bin/renew-cert
 install -m 755 "$HERE/bin/check-renewal-cert"    /usr/local/bin/check-renewal-cert
 install -m 755 "$HERE/bin/create_leaf_keypair.py"   /usr/local/bin/create_leaf_keypair.py
+install -m 755 "$HERE/bin/register-leaf.sh"         /usr/local/bin/register-leaf.sh
 
 # --- 3a. Cron-setup helper → /usr/local/sbin -------------------------
 install -d /usr/local/sbin
@@ -117,17 +118,23 @@ if (( missing_libs )); then
 fi
 
 cat <<'EOF'
-Next steps (ask your CA operator for a nonce, then):
+Next steps:
 
-    # Generate a keypair for your leaf (ML-DSA-87 by default):
-    create_leaf_keypair.py --domain <DOMAIN>
+    Fast path (one command, interactive — prompts you to paste the
+    nonce your CA operator sends back):
+        register-leaf.sh --domain <DOMAIN> --server <CA-HOST>:8445
 
-    # Send the generated public_key.pem to your CA operator out of band;
-    # they run issue_leaf_nonce and return a 64-hex-char nonce.
+    If you already have a nonce:
+        register-leaf.sh --domain <DOMAIN> --server <CA-HOST>:8445 \
+                         --nonce <64-hex-char nonce>
 
-    bootstrap_leaf --domain <DOMAIN> \
-                   --server <CA-HOST>:8445 \
-                   --nonce  <64-hex-char nonce>
+    Manual three-step path (when you want to watch each phase):
+        1. create_leaf_keypair.py --domain <DOMAIN>
+        2. Send public_key.pem to your CA operator; they run
+           issue_leaf_nonce --domain <DOMAIN> --key-file <pub.pem>
+           and return a 64-hex-char nonce.
+        3. bootstrap_leaf --domain <DOMAIN> --server <CA-HOST>:8445 \
+                          --nonce <hex>
 
     show-tpm --verify
 
