@@ -10,7 +10,7 @@ database, no Redis, no server daemon.
 |------|---------|
 | `bin/bootstrap_leaf` | First-time leaf enrollment (needs a CA-issued nonce). |
 | `bin/show-tpm`       | Inspect the local identity; `--verify` walks the full trust chain (including revocation) against the CA's log. |
-| `bin/create_leaf_cert.py` | Generate a post-quantum keypair (default ML-DSA-87; EC-P256 / Ed25519 also supported) via `openssl35`. |
+| `bin/create_leaf_keypair.py` | Generate a post-quantum keypair (default ML-DSA-87; EC-P256 / Ed25519 also supported) via `openssl35`. |
 | `lib/libpostWolf.so*` | wolfSSL-derived shared library used by the tools. |
 | `socket-level-wrapper-MQC.tar.gz` | Source + prebuilt `libmqc.a` for the MQC wrapper. The installer extracts headers (`/usr/local/include/mqc/`) and the static library (`/usr/local/lib/libmqc.a`). |
 | `mqc.pc`             | pkg-config file installed to `/usr/local/lib/pkgconfig/mqc.pc` so downstream C code can `pkg-config --cflags --libs mqc`. |
@@ -51,7 +51,7 @@ authorise your public key by issuing you a 15-minute-TTL nonce.
 **1. Generate a leaf key pair** (if you don't already have one):
 
 ```bash
-create_leaf_cert.py --domain <DOMAIN>
+create_leaf_keypair.py --domain <DOMAIN>
 # → writes ~/.mtc-ca-data/<DOMAIN>/private_key.pem + public_key.pem
 # Pass --algorithm EC-P256 or Ed25519 if you want something else than
 # the default ML-DSA-87.
@@ -142,7 +142,7 @@ resolved plus the dynamic library under it.
 ## Uninstall
 
 ```bash
-sudo rm -f /usr/local/bin/{bootstrap_leaf,show-tpm,create_leaf_cert.py}
+sudo rm -f /usr/local/bin/{bootstrap_leaf,show-tpm,create_leaf_keypair.py}
 sudo rm -f /usr/local/lib/libpostWolf.so*
 sudo rm -f /usr/local/lib/libmqc.a
 sudo rm -f /usr/local/lib/pkgconfig/mqc.pc

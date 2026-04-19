@@ -411,7 +411,7 @@ Client tools are in `mtc-keymaster/tools/python/`:
 | `main.py enroll <domain>` | Create leaf key + enroll |
 | `main.py enroll-ca <cert.pem>` | Register CA cert (two-phase nonce) |
 | `main.py verify <index>` | Verify a certificate |
-| `create_leaf_cert.py <domain>` | Generate leaf key pair |
+| `create_leaf_keypair.py <domain>` | Generate leaf key pair |
 | `create_server_cert.py <domain>` | Generate ML-DSA-87 server TLS cert |
 | `ca_dns_txt.py <cert.pem>` | Generate/verify DNS TXT for CA validation |
 

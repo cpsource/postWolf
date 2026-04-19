@@ -73,7 +73,7 @@ extensions so the server can match the domain and confirm it is not a CA.
 **Resolution:** Implemented in item #4 — two-step enrollment protocol with
 server-issued nonces, DNS TXT validation, single-use 15-minute TTL.
 
-Currently, anyone can create a leaf cert (`create_leaf_cert.py`), send it to
+Currently, anyone can create a leaf cert (`create_leaf_keypair.py`), send it to
 the server, and get it enrolled without any proof of domain ownership. The
 enrollment endpoint is an open door.
 
@@ -147,7 +147,7 @@ server-side: the server verifies the nonce against its own stored state
   a validation gate
 - `mtc-keymaster/tools/python/ca_dns_txt.py` — generates and verifies key-bound
   DNS TXT tokens (updated to v=mtc-ca2 format)
-- `mtc-keymaster/tools/python/create_leaf_cert.py` — leaf creation tool
+- `mtc-keymaster/tools/python/create_leaf_keypair.py` — leaf creation tool
 - `mtc-keymaster/tools/python/main.py` — `enroll` command
 
 ### 4. Two-step enrollment protocol with registration authority — DONE
@@ -1221,7 +1221,7 @@ Ships as three binaries + one script:
 - `tools/c/check-renewal-cert.c` — walks `~/.TPM`, filters by
   `MTC_RENEWAL_WINDOW_DAYS` (default 5, from `server2/c/config.h`,
   runtime-overridable with `--window-days`), checks revocation over
-  MQC, invokes `create_leaf_cert.py` / `create_ca_cert.py` for new
+  MQC, invokes `create_leaf_keypair.py` / `create_ca_cert.py` for new
   keys, calls `renew-cert`, then atomically swaps new material into
   the identity dir.
 - `tools/c/renew-cert.c` — MQC client that POSTs new pubkey to
@@ -1326,7 +1326,7 @@ client-side in the bootstrap tools (charset `[A-Za-z0-9._-]{1..64}`).
 - `mtc-keymaster/tools/c/issue_leaf_nonce.c` — new `--label` flag.
 - `mtc-keymaster/tools/c/bootstrap_leaf.c` — read label from response,
   default TPM dir to `~/.TPM/<label>/` when present.
-- `tools/python/create_leaf_cert.py` — stay as-is; keygen is pre-
+- `tools/python/create_leaf_keypair.py` — stay as-is; keygen is pre-
   nonce-issue and doesn't care about the label.
 
 **Open question:** does the label also get embedded in the certificate

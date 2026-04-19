@@ -20,7 +20,7 @@ or of your own.
 | `bin/bootstrap_leaf`    | Leaf enrollment (included for completeness — run it if this host also has leaf identities). |
 | `bin/show-tpm`          | Inspect local identities (CA or leaf); `--verify` walks the full trust chain against the log. |
 | `bin/create_ca_cert.py` | Generate the CA's ML-DSA-87 keypair + self-signed X.509 cert (uses `openssl35`). |
-| `bin/create_leaf_cert.py` | Generate an ML-DSA-87 (or EC-P256 / Ed25519) keypair for a leaf under your domain. |
+| `bin/create_leaf_keypair.py` | Generate an ML-DSA-87 (or EC-P256 / Ed25519) keypair for a leaf under your domain. |
 | `bin/ca_dns_txt.py`     | Compute the DNS TXT record value that proves domain ownership during `bootstrap_ca`. |
 | `lib/libpostWolf.so*`   | wolfSSL-derived shared library. |
 | `socket-level-wrapper-MQC.tar.gz` | Source + prebuilt `libmqc.a` for the MQC wrapper. |
@@ -136,7 +136,7 @@ admin_recosign <subtree-start> <end>  # operational: re-cosign a subtree
 ## Uninstall
 
 ```bash
-sudo rm -f /usr/local/bin/{bootstrap_ca,bootstrap_leaf,show-tpm,issue_leaf_nonce,admin_recosign,revoke-key,create_ca_cert.py,create_leaf_cert.py,ca_dns_txt.py}
+sudo rm -f /usr/local/bin/{bootstrap_ca,bootstrap_leaf,show-tpm,issue_leaf_nonce,admin_recosign,revoke-key,create_ca_cert.py,create_leaf_keypair.py,ca_dns_txt.py}
 sudo rm -f /usr/local/lib/libpostWolf.so*
 sudo rm -f /usr/local/lib/libmqc.a
 sudo rm -f /usr/local/lib/pkgconfig/mqc.pc

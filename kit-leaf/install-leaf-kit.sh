@@ -83,7 +83,7 @@ echo ">>> Installing leaf tools → /usr/local/bin/ ..."
 install -d /usr/local/bin
 install -m 755 "$HERE/bin/bootstrap_leaf"        /usr/local/bin/bootstrap_leaf
 install -m 755 "$HERE/bin/show-tpm"              /usr/local/bin/show-tpm
-install -m 755 "$HERE/bin/create_leaf_cert.py"   /usr/local/bin/create_leaf_cert.py
+install -m 755 "$HERE/bin/create_leaf_keypair.py"   /usr/local/bin/create_leaf_keypair.py
 
 # --- 4. Docs ----------------------------------------------------------
 install -d /usr/local/share/doc/postWolf-leaf
@@ -113,7 +113,7 @@ cat <<'EOF'
 Next steps (ask your CA operator for a nonce, then):
 
     # Generate a keypair for your leaf (ML-DSA-87 by default):
-    create_leaf_cert.py --domain <DOMAIN>
+    create_leaf_keypair.py --domain <DOMAIN>
 
     # Send the generated public_key.pem to your CA operator out of band;
     # they run issue_leaf_nonce and return a 64-hex-char nonce.

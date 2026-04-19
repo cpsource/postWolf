@@ -80,7 +80,7 @@ for t in bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce \
          admin_recosign revoke-key; do
     install -m 755 "$HERE/bin/$t" "/usr/local/bin/$t"
 done
-for p in create_ca_cert.py create_leaf_cert.py ca_dns_txt.py; do
+for p in create_ca_cert.py create_leaf_keypair.py ca_dns_txt.py; do
     install -m 755 "$HERE/bin/$p" "/usr/local/bin/$p"
 done
 

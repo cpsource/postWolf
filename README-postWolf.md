@@ -96,7 +96,7 @@ that acts as both Certificate Authority and transparency log:
 - `mtc_client.py` — client library for MTC server interaction
 - `verify.py` — standalone certificate verification
 - `ca_dns_txt.py` — DNS TXT record generation for CA enrollment
-- `create_leaf_cert.py` / `create_server_cert.py` — certificate creation
+- `create_leaf_keypair.py` / `create_server_cert.py` — certificate creation
 - `trust_store.py` — local trust anchor management
 
 **Socket Level Wrapper** (`socket-level-wrapper/`) — thin C library (`libslc`)

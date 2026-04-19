@@ -11,7 +11,7 @@
  *     3. Open MQC to the server as this identity, GET /revoked/<index>.
  *        If revoked, log a warning and skip — operator must re-enroll.
  *     4. Classify CA vs leaf (dir name ending in -ca).
- *     5. Invoke create_leaf_cert.py or create_ca_cert.py to produce a new
+ *     5. Invoke create_leaf_keypair.py or create_ca_cert.py to produce a new
  *        keypair in ~/.mtc-ca-data/<subject>/.
  *     6. Invoke renew-cert to fetch a fresh standalone_certificate bound
  *        to the new public key.
@@ -56,7 +56,7 @@
 
 #define DEFAULT_SERVER   MQC_DEFAULT_SERVER
 #define DEFAULT_TPM_DIR  ".TPM"
-#define PYTHON_LEAF      "/usr/local/bin/create_leaf_cert.py"
+#define PYTHON_LEAF      "/usr/local/bin/create_leaf_keypair.py"
 #define PYTHON_CA        "/usr/local/bin/create_ca_cert.py"
 #define RENEW_CERT_BIN   "/usr/local/bin/renew-cert"
 

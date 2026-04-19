@@ -217,7 +217,7 @@ for its domain.
 **Step 1 — Generate the leaf key pair:**
 
 ```bash
-python3 create_leaf_cert.py --algorithm ML-DSA-87 factsorlie.com
+python3 create_leaf_keypair.py --algorithm ML-DSA-87 factsorlie.com
 ```
 
 **Step 2 — CA operator issues a nonce** for the leaf's public key:
@@ -362,7 +362,7 @@ tables. The server will generate a fresh CA key on next startup.
 | `./mtc_server --port 8444 ...` | Start CA server |
 | `python3 main.py bootstrap` | Trust the CA (one-time) |
 | `python3 main.py enroll-ca <cert.pem>` | Register CA cert (DNS TXT validation) |
-| `python3 create_leaf_cert.py --algorithm ML-DSA-87 <domain>` | Generate leaf key |
+| `python3 create_leaf_keypair.py --algorithm ML-DSA-87 <domain>` | Generate leaf key |
 | `python3 issue_leaf_nonce.py --server <url> <domain> --key-file <pub.pem>` | CA operator: issue leaf nonce |
 | `python3 main.py enroll <domain> --nonce <nonce>` | Enroll leaf with CA-issued nonce |
 | `python3 main.py verify <index>` | Verify a certificate |

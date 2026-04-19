@@ -55,7 +55,7 @@ For a Merkle tree with 1 million enrolled leaves:
 
 ### Enrollment (one-time)
 
-1. Generate ML-DSA-87 key pair locally (`create_leaf_cert.py`)
+1. Generate ML-DSA-87 key pair locally (`create_leaf_keypair.py`)
 2. Enroll the public key with the MTC CA server
 3. CA adds SHA-256(public key) to the Merkle tree as a leaf
 4. CA signs the tree root with Ed25519 (one signature covers all leaves)
@@ -104,7 +104,7 @@ deeper chains (intermediates, cross-signs).
 
 ```
 1. Generate ML-DSA-87 key pair
-   python3 create_leaf_cert.py --algorithm ML-DSA-87 example.com
+   python3 create_leaf_keypair.py --algorithm ML-DSA-87 example.com
 
 2. Enroll with MTC CA
    python3 main.py enroll example.com
@@ -188,5 +188,5 @@ disk and re-stores to DB.
 
 - `README.md` — MTC system overview
 - `README-bugsandtodo.md` — Appendix: Post-Quantum Readiness
-- `tools/python/create_leaf_cert.py` — key generation
+- `tools/python/create_leaf_keypair.py` — key generation
 - `tools/python/main.py` — enrollment

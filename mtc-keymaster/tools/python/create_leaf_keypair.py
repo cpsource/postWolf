@@ -10,9 +10,9 @@ Creates the key files needed by bootstrap_leaf:
     ~/.mtc-ca-data/<domain>/public_key.txt
 
 Usage:
-    python3 create_leaf_cert.py --domain my-device.example.com
-    python3 create_leaf_cert.py --domain my-device.example.com --algorithm EC-P256
-    python3 create_leaf_cert.py --domain my-device.example.com --algorithm Ed25519
+    python3 create_leaf_keypair.py --domain my-device.example.com
+    python3 create_leaf_keypair.py --domain my-device.example.com --algorithm EC-P256
+    python3 create_leaf_keypair.py --domain my-device.example.com --algorithm Ed25519
 """
 
 import argparse
