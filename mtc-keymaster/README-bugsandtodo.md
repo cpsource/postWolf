@@ -1444,6 +1444,14 @@ into `mtc-renew.sh` or a dedicated systemd timer.
 
 ---
 
+### 29. Drop backwards compatibility for nonce — require the two-step enrollment flow on all clients and remove the legacy no-nonce code path.
+
+### 30. `show-tpm` — flag the `~/.TPM/default` target when listing identities (e.g. mark the active one with `*` or `(default)`).
+
+### 31. `bootstrap_leaf` — if the caller already has a CA identity, refuse to use port 8445 (DH bootstrap is for first-enrollment only; CA holders should use the MQC-authenticated path).
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
