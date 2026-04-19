@@ -775,40 +775,49 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                 goto cleanup;
             }
 
-            /* Revocation gate: if the most-recent leaf entry for this
-             * subject is revoked, the CA operator decided this cert
-             * should not be in service.  Refuse re-enrollment even
-             * though the nonce validates — mirrors the CA-subject
-             * gate earlier in this function. */
+            /* Revocation gate: if a prior leaf with MATCHING (subject,
+             * SPKI fingerprint) was revoked, refuse re-enrollment of
+             * the same key.  Unlike the CA-subject gate above, leaves
+             * match by *key*, not by subject alone — the "Jane" and
+             * "John" labels per TODO #26 live only in local TPM dir
+             * names, and all labeled leaves for a domain share the
+             * same cert subject.  Blocking by subject would revoke
+             * Jane's cert and lock John out; blocking by (subject,
+             * fp) only blocks re-use of the specific compromised
+             * key.  Defense-in-depth — the CA-issued nonce is still
+             * the primary enrollment authorization. */
             {
                 int latest_idx = -1;
                 int k;
                 for (k = 0; k < store->cert_count; k++) {
                     struct json_object *entry = store->certificates[k];
-                    struct json_object *sc_j, *tbs_j, *subj_j;
-                    const char *entry_subj;
+                    struct json_object *sc_j, *tbs_j, *subj_j, *fp_j;
+                    const char *entry_subj, *entry_fp;
                     if (!entry) continue;
                     if (!json_object_object_get_ex(entry, "standalone_certificate", &sc_j)) continue;
                     if (!json_object_object_get_ex(sc_j, "tbs_entry", &tbs_j)) continue;
                     if (!json_object_object_get_ex(tbs_j, "subject", &subj_j)) continue;
+                    if (!json_object_object_get_ex(tbs_j, "subject_public_key_hash", &fp_j)) continue;
                     entry_subj = json_object_get_string(subj_j);
-                    if (entry_subj && strcmp(entry_subj, subject) == 0) {
-                        latest_idx = k;
+                    entry_fp = json_object_get_string(fp_j);
+                    if (entry_subj && strcmp(entry_subj, subject) == 0 &&
+                        entry_fp && strcmp(entry_fp, leaf_fp) == 0) {
+                        latest_idx = k;  /* keep overwriting; highest wins */
                     }
                 }
                 if (latest_idx >= 0 && mtc_store_is_revoked(store, latest_idx)) {
-                    LOG_WARN("bootstrap: leaf enrollment refused — most "
-                             "recent leaf for '%s' (index %d) is revoked",
+                    LOG_WARN("bootstrap: leaf enrollment refused — prior "
+                             "cert for '%s' with same key fp (index %d) "
+                             "is revoked",
                              subject, latest_idx);
                     {
                         const char *err_json = "{\"status\":\"error\","
                             "\"message\":\"leaf enrollment refused: this "
-                            "subject's most recent certificate has been "
-                            "revoked.  For routine key rotation, use "
-                            "check-renewal-cert (MQC, bypasses this gate). "
-                            "If the revocation was in error, open an issue "
-                            "at https://github.com/cpsource/postWolf/issues "
-                            "to request it be lifted.\"}";
+                            "exact public key was previously issued a "
+                            "certificate that has since been revoked. "
+                            "Generate a fresh keypair (register-leaf.sh "
+                            "--force-keygen) and have your CA issue a "
+                            "new nonce.\"}";
                         unsigned int err_enc_len = sizeof(enc_buf);
                         if (mtc_crypt_encode(crypt_ctx,
                                 (unsigned char *)err_json,

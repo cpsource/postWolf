@@ -267,13 +267,25 @@ revoke-key --target-index <N> --reason "key compromise"
 After revocation:
 - `show-tpm --verify` on the leaf box fails the revocation check.
 - The MQC handshake rejects the revoked identity at connect time.
-- `register-leaf.sh` refuses re-enrollment (client-side guard).
-- `mtc_bootstrap.c` refuses too (server-side gate): if the most-recent
-  log entry for `<domain>` is revoked, the DH-bootstrap endpoint
-  rejects the request even when the nonce validates.
+- `register-leaf.sh` refuses re-enrollment for that specific
+  identity directory (client-side guard keyed on the local
+  `certificate.json`'s cert_index).
+- `mtc_bootstrap.c` refuses too (server-side gate): if a prior log
+  entry with the **same subject AND same public-key fingerprint**
+  is revoked, the DH-bootstrap endpoint rejects the request even
+  when the nonce validates.
 
-**Re-enrollment of a revoked leaf is therefore not routine.** Two
-supported paths for getting a revoked domain back in service:
+**Label-aware design.** Labels (`~/.TPM/<domain>-Jane/` vs
+`~/.TPM/<domain>-John/`) are local-only — the cert subject is just
+`<domain>` for all of them. So the server-side gate matches on the
+**public-key fingerprint** as well as the subject: revoking Jane's
+cert blocks re-enrollment of *her specific key*, not John's
+(different key, different fingerprint) or a fresh Jane keypair
+(`--force-keygen` → new fingerprint). The CA-issued nonce remains
+the primary authorization; this gate is defense-in-depth against
+resurrecting a known-revoked key.
+
+**Recovery paths:**
 
 1. **Routine key rotation (preferred).** If the goal is just to
    rotate the key (e.g. suspected compromise), use
@@ -283,7 +295,14 @@ supported paths for getting a revoked domain back in service:
    gate** by design. Automate it with
    `sudo /usr/local/sbin/setup-recert-crond.sh --start`.
 
-2. **Unrevoke (rare).** If the revocation was issued in error and
+2. **Fresh key re-enrollment.** The CA operator revokes the
+   compromised key, you run
+   `register-leaf.sh --force-keygen ...` to generate a brand new
+   keypair. New fingerprint → server's revocation gate doesn't
+   match → enrollment proceeds normally after the CA issues a new
+   nonce.
+
+3. **Unrevoke (rare).** If the revocation was issued in error and
    you genuinely want the old cert "alive" again, the CA operator
    has to request an unrevoke from the server operator — MTC's
    append-only log has no native unrevoke, so the `mtc_revocations`
@@ -292,5 +311,7 @@ supported paths for getting a revoked domain back in service:
    cert_index. Future work (TODO #34) adds a self-service
    revocation-management page.
 
-Matches the CA-side policy: revocation is an explicit operator veto,
-not a hiccup the system auto-recovers from.
+Unlike the CA-side policy (which bans the whole subject after
+revocation), the leaf policy only bans the specific compromised
+key. Different CAs manage the domain, so multi-label coexistence
+must keep working.
