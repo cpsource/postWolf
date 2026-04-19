@@ -49,9 +49,16 @@
 #endif
 
 /* -- Nonce / signature freshness ------------------------------------- */
-/* How long an issued enrollment nonce stays valid. */
+/* How long an issued enrollment nonce stays valid (default). */
 #ifndef MTC_NONCE_TTL_SECS
 #define MTC_NONCE_TTL_SECS              900       /* 15 min */
+#endif
+
+/* Upper bound for operator-requested long-lived reservation nonces
+ * (issue_leaf_nonce --ttl-days N).  Requests exceeding this are
+ * clamped server-side. */
+#ifndef MTC_NONCE_MAX_TTL_DAYS
+#define MTC_NONCE_MAX_TTL_DAYS          30
 #endif
 
 /* Max skew between a signed-payload timestamp and server clock.

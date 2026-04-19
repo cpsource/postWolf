@@ -535,10 +535,13 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
     struct json_object *req, *val;
     const char *domain, *fp_raw, *nonce_type;
     const char *label_in = NULL;    /* optional, leaf-only */
+    const char *fp_hex_for_db = NULL;  /* NULL = long-lived reservation */
     char fp_hex[65];
     char nonce[MTC_NONCE_HEX_LEN + 1];
     char label_canon[MTC_LABEL_MAX + 1] = {0};
     long expires;
+    long ttl_secs = 0;              /* 0 = server default */
+    long max_ttl = (long)MTC_NONCE_MAX_TTL_DAYS * 86400L;
     struct json_object *resp;
     int ret, ca_index = -1;
 
@@ -563,40 +566,45 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
     }
     domain = json_object_get_string(val);
 
-    if (!json_object_object_get_ex(req, "public_key_fingerprint", &val)) {
-        http_send_error(io, 400, "missing 'public_key_fingerprint'");
-        json_object_put(req);
-        return;
-    }
-    fp_raw = json_object_get_string(val);
-
-    /* Strip "sha256:" prefix and validate hex format */
-    if (strncmp(fp_raw, "sha256:", 7) == 0)
-        fp_raw += 7;
-    if (strlen(fp_raw) != 64) {
-        http_send_error(io, 400, "fingerprint must be exactly 64 hex chars");
-        json_object_put(req);
-        return;
-    }
-    {
-        int fi;
-        for (fi = 0; fi < 64; fi++) {
-            char c = fp_raw[fi];
-            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
-                  (c >= 'A' && c <= 'F'))) {
-                http_send_error(io, 400, "fingerprint contains non-hex chars");
-                json_object_put(req);
-                return;
-            }
-        }
-    }
-    snprintf(fp_hex, sizeof(fp_hex), "%s", fp_raw);
-
-    /* Check nonce type */
+    /* Check nonce type (needed before fp validation since leaf nonces
+     * may omit fp for long-lived reservation mode). */
     nonce_type = "ca";
     if (json_object_object_get_ex(req, "type", &val))
         nonce_type = json_object_get_string(val);
     is_leaf = (strcmp(nonce_type, "leaf") == 0);
+
+    /* Optional fingerprint.  Required for CA nonces and short-lived
+     * leaf nonces; may be omitted for long-lived leaf reservations
+     * (fp late-binds at consume). */
+    if (json_object_object_get_ex(req, "public_key_fingerprint", &val)) {
+        fp_raw = json_object_get_string(val);
+        if (strncmp(fp_raw, "sha256:", 7) == 0)
+            fp_raw += 7;
+        if (strlen(fp_raw) != 64) {
+            http_send_error(io, 400, "fingerprint must be exactly 64 hex chars");
+            json_object_put(req);
+            return;
+        }
+        {
+            int fi;
+            for (fi = 0; fi < 64; fi++) {
+                char c = fp_raw[fi];
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                      (c >= 'A' && c <= 'F'))) {
+                    http_send_error(io, 400, "fingerprint contains non-hex chars");
+                    json_object_put(req);
+                    return;
+                }
+            }
+        }
+        snprintf(fp_hex, sizeof(fp_hex), "%s", fp_raw);
+        fp_hex_for_db = fp_hex;
+    } else if (!is_leaf) {
+        http_send_error(io, 400,
+            "missing 'public_key_fingerprint' (CA nonces require fp)");
+        json_object_put(req);
+        return;
+    }
 
     /* Optional operator-assigned label (leaf-only, stored verbatim).
      * Sanitization is the client tools' job — see bootstrap_leaf /
@@ -604,6 +612,32 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
     if (is_leaf && json_object_object_get_ex(req, "label", &val)) {
         const char *s = json_object_get_string(val);
         if (s && s[0]) label_in = s;
+    }
+
+    /* Long-lived reservation mode requires a label to pin the slot. */
+    if (is_leaf && !fp_hex_for_db && !label_in) {
+        http_send_error(io, 400,
+            "long-lived reservation nonces require 'label' "
+            "to pin the slot");
+        json_object_put(req);
+        return;
+    }
+
+    /* Optional TTL override.  Accept ttl_seconds OR ttl_days; clamp
+     * to [MTC_NONCE_TTL_SECS, MTC_NONCE_MAX_TTL_DAYS*86400].  Absence
+     * leaves ttl_secs=0 which the DB layer translates into the
+     * 15-minute default. */
+    if (json_object_object_get_ex(req, "ttl_seconds", &val)) {
+        ttl_secs = json_object_get_int64(val);
+    } else if (json_object_object_get_ex(req, "ttl_days", &val)) {
+        ttl_secs = (long)json_object_get_int(val) * 86400L;
+    }
+    if (ttl_secs > 0 && ttl_secs < MTC_NONCE_TTL_SECS)
+        ttl_secs = MTC_NONCE_TTL_SECS;
+    if (ttl_secs > max_ttl) {
+        LOG_INFO("nonce TTL clamped from %ld to %ld (MTC_NONCE_MAX_TTL_DAYS=%d)",
+                 ttl_secs, max_ttl, MTC_NONCE_MAX_TTL_DAYS);
+        ttl_secs = max_ttl;
     }
 
     /* Rate limit: leaf nonces (10/min, 100/hr) vs CA nonces (3/min, 10/hr) */
@@ -623,14 +657,16 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
             json_object_put(req);
             return;
         }
-        LOG_INFO("leaf nonce requested for %s (authorized by CA index %d)",
-                 domain, ca_index);
+        LOG_INFO("leaf nonce requested for %s (authorized by CA index %d%s%s)",
+                 domain, ca_index,
+                 fp_hex_for_db ? ", fp=" : ", RESERVATION for label=",
+                 fp_hex_for_db ? fp_hex_for_db : (label_in ? label_in : "?"));
     }
 
-    /* Create or reissue pending nonce in DB.  If a non-expired pending
-     * nonce already exists for this domain+fp, it is returned unchanged
-     * — including its stored label, so reissue is idempotent. */
-    ret = mtc_db_create_nonce(store->db, domain, fp_hex, ca_index, label_in,
+    /* Create or reissue pending nonce in DB.  Idempotent on either
+     * (domain, fp) or (domain, label) match depending on fp_hex. */
+    ret = mtc_db_create_nonce(store->db, domain, fp_hex_for_db, ca_index,
+                              label_in, ttl_secs,
                               nonce, &expires,
                               label_canon, sizeof(label_canon));
     if (ret < 0) {
@@ -639,8 +675,9 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
         return;
     }
 
-    LOG_INFO("%s nonce issued for %s (fp=%.16s..., expires=%ld%s%s)",
-             is_leaf ? "leaf" : "CA", domain, fp_hex, expires,
+    LOG_INFO("%s nonce issued for %s (fp=%s, expires=%ld%s%s)",
+             is_leaf ? "leaf" : "CA", domain,
+             fp_hex_for_db ? fp_hex : "<late-bind>", expires,
              label_canon[0] ? ", label=" : "",
              label_canon[0] ? label_canon : "");
 

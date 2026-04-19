@@ -339,18 +339,24 @@ static const char *auto_detect_tpm(const char *tpm_dir)
 static void usage(const char *prog)
 {
     printf("Issue a leaf enrollment nonce over MQC/8446.\n\n");
-    printf("Usage: %s --domain DOMAIN --key-file FILE [options]\n\n", prog);
+    printf("Usage: %s --domain DOMAIN (--key-file FILE | --label LABEL --ttl-days N)\n", prog);
+    printf("       [options]\n\n");
     printf("  --domain DOMAIN       Subject/domain the leaf will enroll under\n");
     printf("  --key-file FILE       Leaf public key PEM (SHA-256 of text =\n");
-    printf("                        fingerprint submitted to the server)\n");
-    printf("  --fingerprint FP      Override fingerprint (hex, sha256: prefix OK);\n");
-    printf("                        only one of --key-file / --fingerprint required\n");
+    printf("                        fingerprint submitted to the server).  Omit for\n");
+    printf("                        long-lived reservation mode (--label + --ttl-days).\n");
+    printf("  --fingerprint FP      Override fingerprint (hex, sha256: prefix OK).\n");
+    printf("                        Alternative to --key-file.\n");
+    printf("  --ttl-days N          Issue a long-lived reservation nonce (up to 30\n");
+    printf("                        days) bound to (domain, label) with fp\n");
+    printf("                        late-bound at consume.  Requires --label.\n");
+    printf("                        Omit for the default 15-minute TTL.\n");
     printf("  -s, --server H:P      MQC server (default: %s)\n", DEFAULT_SERVER);
     printf("  --tpm-path PATH       CA operator's TPM identity dir\n");
     printf("                        (default: first directory in ~/.TPM)\n");
-    printf("  --label LABEL         Optional local label for the leaf:\n");
-    printf("                        leaf identity lands in\n");
-    printf("                        ~/.TPM/<domain>-<label>/.\n");
+    printf("  --label LABEL         Optional local label for the leaf.  Leaf identity\n");
+    printf("                        lands in ~/.TPM/<domain>-<label>/.  Required when\n");
+    printf("                        --ttl-days is set (reservation mode).\n");
     printf("                        Charset [A-Za-z0-9._-], length 1..64.\n");
     printf("                        Never embedded in the cert.\n");
     printf("  --out DIR             Save nonce under DIR/<domain>/nonce.txt\n");
@@ -370,6 +376,7 @@ int main(int argc, char *argv[])
     const char *out_arg     = NULL;
     const char *label_arg   = NULL;
     int dry_run = 0, trace = 0;
+    int ttl_days = 0;               /* 0 = default short-lived 15-min */
     int i;
 
     char fp_hex[WC_SHA256_DIGEST_SIZE * 2 + 1];
@@ -394,6 +401,13 @@ int main(int argc, char *argv[])
             out_arg = argv[++i];
         else if (strcmp(argv[i], "--label") == 0 && i + 1 < argc)
             label_arg = argv[++i];
+        else if (strcmp(argv[i], "--ttl-days") == 0 && i + 1 < argc) {
+            ttl_days = atoi(argv[++i]);
+            if (ttl_days < 1) {
+                fprintf(stderr, "Error: --ttl-days must be >= 1\n");
+                return 1;
+            }
+        }
         else if (strcmp(argv[i], "--dry-run") == 0)
             dry_run = 1;
         else if (strcmp(argv[i], "--trace") == 0)
@@ -414,9 +428,20 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
-    if (!key_file && !fingerprint) {
-        fprintf(stderr, "Error: one of --key-file or --fingerprint is required\n");
+    /* Two modes:
+     *   - immediate:    --key-file or --fingerprint (fp-bound, 15-min TTL)
+     *   - reservation:  --label + --ttl-days (fp late-bound at consume)
+     */
+    if (!key_file && !fingerprint && ttl_days == 0) {
+        fprintf(stderr, "Error: provide --key-file / --fingerprint "
+                "(immediate mode) OR --label and --ttl-days "
+                "(long-lived reservation)\n");
         usage(argv[0]);
+        return 1;
+    }
+    if (ttl_days > 0 && !label_arg) {
+        fprintf(stderr, "Error: --ttl-days requires --label to pin the "
+                "reservation slot\n");
         return 1;
     }
     if (label_arg && sanitize_label(label_arg) != 0) {
@@ -435,7 +460,8 @@ int main(int argc, char *argv[])
     else
         snprintf(out_base, sizeof(out_base), "%s/%s", home, DEFAULT_OUT_DIR);
 
-    /* --- Compute fingerprint --- */
+    /* --- Compute fingerprint (skipped in reservation mode) --- */
+    fp_hex[0] = '\0';
     if (fingerprint) {
         /* Accept "sha256:<hex>" or plain hex */
         if (strncmp(fingerprint, "sha256:", 7) == 0)
@@ -445,11 +471,12 @@ int main(int argc, char *argv[])
             return 1;
         }
         snprintf(fp_hex, sizeof(fp_hex), "%s", fingerprint);
-    } else {
+    } else if (key_file) {
         if (fingerprint_from_pem(key_file, fp_hex) != 0)
             return 1;
         printf("Leaf public key fingerprint: sha256:%s\n", fp_hex);
     }
+    /* else: reservation mode — no fp to submit; server will late-bind. */
 
     /* --- Parse server host:port --- */
     {
@@ -474,7 +501,7 @@ int main(int argc, char *argv[])
         req = json_object_new_object();
         json_object_object_add(req, "domain",
                                json_object_new_string(domain));
-        {
+        if (fp_hex[0]) {
             char sha_field[80];
             snprintf(sha_field, sizeof(sha_field), "sha256:%s", fp_hex);
             json_object_object_add(req, "public_key_fingerprint",
@@ -485,6 +512,9 @@ int main(int argc, char *argv[])
         if (label_arg)
             json_object_object_add(req, "label",
                                    json_object_new_string(label_arg));
+        if (ttl_days > 0)
+            json_object_object_add(req, "ttl_days",
+                                   json_object_new_int(ttl_days));
 
         req_str = json_object_to_json_string_ext(req,
                       JSON_C_TO_STRING_PLAIN);
@@ -603,7 +633,16 @@ int main(int argc, char *argv[])
             printf("\nLeaf enrollment nonce issued:\n");
             printf("  Domain:    %s\n", domain);
             printf("  Nonce:     %s\n", nonce_str);
-            printf("  Expires:   %ld (15 minutes)\n", expires);
+            {
+                long now_ts = (long)time(NULL);
+                long secs = expires - now_ts;
+                if (secs < 3600)
+                    printf("  Expires:   %ld (%ld min)\n", expires, secs / 60);
+                else if (secs < 86400)
+                    printf("  Expires:   %ld (%ld hours)\n", expires, secs / 3600);
+                else
+                    printf("  Expires:   %ld (%ld days)\n", expires, secs / 86400);
+            }
             printf("  CA index:  %d\n", ca_index);
             if (server_label && server_label[0]) {
                 printf("  Label:     %s\n", server_label);
@@ -648,8 +687,23 @@ int main(int argc, char *argv[])
             }
 
             printf("\nSend this nonce to the leaf user. They enroll with:\n");
-            printf("  bootstrap_leaf --domain \"%s\" --nonce %s\n",
-                   domain, nonce_str);
+            if (ttl_days > 0) {
+                /* Reservation-mode: recipient generates their own keys
+                 * locally.  register-leaf.sh cross-machine flow does
+                 * exactly that. */
+                printf("  register-leaf.sh --domain \"%s\" %s%s%s \\\n"
+                       "                   --server %s:8445 --nonce %s\n",
+                       domain,
+                       label_arg ? "--label \"" : "",
+                       label_arg ? label_arg : "",
+                       label_arg ? "\"" : "",
+                       g_mqc_host, nonce_str);
+                printf("  (long-lived %dd reservation; fp will bind at "
+                       "enrollment)\n", ttl_days);
+            } else {
+                printf("  bootstrap_leaf --domain \"%s\" --nonce %s\n",
+                       domain, nonce_str);
+            }
 
             json_object_put(resp);
             free(resp_body);

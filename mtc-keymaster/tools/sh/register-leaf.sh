@@ -33,6 +33,9 @@ Options:
   --algorithm ALG     Key algorithm (default: ML-DSA-87)
   --nonce HEX         Pre-obtained enrollment nonce (64 hex chars).
                       Skips issue_leaf_nonce and the interactive prompt.
+                      Also accepts long-lived reservation nonces issued
+                      by the CA via `issue_leaf_nonce --ttl-days N`; no
+                      local CA identity needed in that case.
   --make-default      Atomically re-point ~/.TPM/default at this new
                       identity even if one already exists
   --force-keygen      Regenerate keypair even if ~/.mtc-ca-data/<dom>/

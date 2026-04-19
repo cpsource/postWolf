@@ -324,6 +324,10 @@ int mtc_db_init_schema(PGconn *conn)
         /* Migration: operator-assigned label for ~/.TPM/<domain>-<label>/ */
         "ALTER TABLE mtc_enrollment_nonces ADD COLUMN IF NOT EXISTS "
         "  label TEXT;"
+        /* Migration: make fp nullable so the CA can issue long-lived
+         * reservation nonces (fp late-bound at consume).  Running this
+         * on a schema where fp is already nullable is a no-op. */
+        "ALTER TABLE mtc_enrollment_nonces ALTER COLUMN fp DROP NOT NULL;"
         /* Partial index for efficient pending-nonce lookups by domain+fp */
         "CREATE INDEX IF NOT EXISTS idx_nonce_domain_fp "
         "  ON mtc_enrollment_nonces (domain, fp) "
@@ -1032,11 +1036,11 @@ char *mtc_db_load_config(PGconn *conn, const char *key)
  ******************************************************************************/
 int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
                         int ca_index, const char *label,
+                        long ttl_secs,
                         char *nonce_out, long *expires_out,
                         char *label_out, size_t label_out_sz)
 {
     PGresult *res;
-    const char *params[2];
     WC_RNG rng;
     uint8_t rand_bytes[32]; /* 256-bit nonce */
     char ttl_str[32], ca_idx_str[16];
@@ -1045,21 +1049,43 @@ int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
 
     if (!conn) return -1;
     if (label_out && label_out_sz > 0) label_out[0] = '\0';
+    if (ttl_secs <= 0) ttl_secs = MTC_NONCE_TTL_SECS;
 
     /* Expire stale nonces first */
     mtc_db_expire_nonces(conn);
 
-    /* If a pending non-expired nonce already exists for this domain+fp,
-     * return it again (idempotent reissue) instead of failing.  Label
-     * is immutable once set — return whatever the FIRST call stored. */
-    params[0] = domain;
-    params[1] = fp_hex;
-    res = PQexecParams(conn,
-        "SELECT nonce, EXTRACT(EPOCH FROM expires_at)::bigint, label "
-        "FROM mtc_enrollment_nonces "
-        "WHERE domain = $1 AND fp = $2 AND status = 'pending' "
-        "AND expires_at > now() LIMIT 1",
-        2, NULL, params, NULL, NULL, 0);
+    /* If a pending non-expired nonce already exists matching the
+     * incoming constraints, return it again (idempotent reissue).
+     * Match key depends on which fields the caller pinned:
+     *   - fp_hex given:  (domain, fp)
+     *   - fp_hex NULL:   (domain, label) for long-lived reservation
+     *                    mode; label must also be non-NULL.
+     * Label is immutable once set — return whatever the FIRST call
+     * stored. */
+    if (fp_hex) {
+        const char *params[2] = { domain, fp_hex };
+        res = PQexecParams(conn,
+            "SELECT nonce, EXTRACT(EPOCH FROM expires_at)::bigint, label "
+            "FROM mtc_enrollment_nonces "
+            "WHERE domain = $1 AND fp = $2 AND status = 'pending' "
+            "AND expires_at > now() LIMIT 1",
+            2, NULL, params, NULL, NULL, 0);
+    } else if (label && label[0]) {
+        const char *params[2] = { domain, label };
+        res = PQexecParams(conn,
+            "SELECT nonce, EXTRACT(EPOCH FROM expires_at)::bigint, label "
+            "FROM mtc_enrollment_nonces "
+            "WHERE domain = $1 AND label = $2 AND fp IS NULL "
+            "AND status = 'pending' AND expires_at > now() LIMIT 1",
+            2, NULL, params, NULL, NULL, 0);
+    } else {
+        /* No fp AND no label — fail.  A fingerprint-less nonce must
+         * at least pin the label so a leaked nonce can't be used for
+         * an arbitrary identity within the domain. */
+        fprintf(stderr, "[db] refusing to issue nonce with neither "
+                "fp nor label\n");
+        return -1;
+    }
 
     if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {
         const char *existing = PQgetvalue(res, 0, 0);
@@ -1090,15 +1116,16 @@ int mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
         snprintf(nonce_out + i * 2, 3, "%02x", rand_bytes[i]);
     nonce_out[64] = '\0';
 
-    *expires_out = (long)time(NULL) + MTC_NONCE_TTL_SECS;
+    *expires_out = (long)time(NULL) + ttl_secs;
 
-    /* Insert pending nonce with TTL-based expiration.  Label column
-     * is nullable: pass NULL via a NULL entry in paramValues. */
-    snprintf(ttl_str, sizeof(ttl_str), "%d seconds", MTC_NONCE_TTL_SECS);
+    /* Insert pending nonce with TTL-based expiration.  fp and label
+     * columns are both nullable: pass NULL via a NULL entry in
+     * paramValues. */
+    snprintf(ttl_str, sizeof(ttl_str), "%ld seconds", ttl_secs);
     snprintf(ca_idx_str, sizeof(ca_idx_str), "%d", ca_index);
     ins_params[0] = nonce_out;
     ins_params[1] = domain;
-    ins_params[2] = fp_hex;
+    ins_params[2] = fp_hex;      /* NULL OK */
     ins_params[3] = ca_idx_str;
     ins_params[4] = ttl_str;
     ins_params[5] = (label && label[0]) ? label : NULL;
@@ -1267,12 +1294,19 @@ int mtc_db_validate_and_consume_nonce(PGconn *conn, const char *nonce_hex,
 
     /* Atomic: UPDATE only if pending+unexpired+matching, consume in one
      * shot.  RETURNING label so the caller can echo it in the bootstrap
-     * response JSON. */
+     * response JSON.
+     *
+     * Late-bind semantics: the stored fp may be NULL (long-lived
+     * reservation nonce).  The fp predicate accepts (fp = $3 OR fp IS
+     * NULL), and the SET clause writes the actual consumer fp into
+     * the row via COALESCE. */
     if (domain && domain[0] && fp_hex && fp_hex[0]) {
         const char *params[3] = { nonce_hex, domain, fp_hex };
         res = PQexecParams(conn,
-            "UPDATE mtc_enrollment_nonces SET status = 'consumed' "
-            "WHERE nonce = $1 AND domain = $2 AND fp = $3 "
+            "UPDATE mtc_enrollment_nonces "
+            "SET status = 'consumed', fp = COALESCE(fp, $3) "
+            "WHERE nonce = $1 AND domain = $2 "
+            "AND (fp = $3 OR fp IS NULL) "
             "AND status = 'pending' AND expires_at > now() "
             "RETURNING label",
             3, NULL, params, NULL, NULL, 0);

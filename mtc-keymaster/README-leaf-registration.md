@@ -27,6 +27,79 @@ parent domain. No nonce = no enrollment.
 
 ---
 
+## Pre-provisioning a team (long-lived reservation nonces)
+
+When a CA operator needs to pre-authorize a batch of team members
+(Alice, Bob, Charlie) without knowing their fingerprints yet, there's
+a dedicated mode: a **reservation nonce** bound to `(domain, label)`
+with an operator-chosen TTL up to 30 days. The recipient generates
+their own keypair locally on their own box — no private key ever
+travels, no encrypted tarball round-trip.
+
+### CA operator loop
+
+```sh
+for name in Alice Bob Charlie; do
+    issue_leaf_nonce --domain corp.example \
+                     --label "$name" \
+                     --ttl-days 7 \
+                     --server ca.corp.example:8446
+done
+```
+
+Each invocation:
+- Reserves the `corp.example-<name>` slot (partial unique index
+  blocks a second pending reservation for the same label).
+- Prints a 64-hex-char nonce — this is a **high-value secret**,
+  single-use, and burns the `<name>` slot until consumed or expired.
+- Saves a copy to `~/.mtc-ca-data/corp.example/nonce.txt` (for the
+  operator's own records — NOT the recipient's machine).
+
+Operator transmits each nonce to the corresponding team member via
+a **secure out-of-band channel** (Signal DM, 1Password share, etc.).
+The nonce alone is sufficient — there's no archive to move around.
+
+### Recipient side
+
+On Alice's own box (no local CA, no special setup):
+
+```sh
+register-leaf.sh --domain corp.example \
+                 --label Alice \
+                 --server ca.corp.example:8445 \
+                 --nonce <64-hex-char nonce from CA operator>
+```
+
+The wrapper:
+1. Generates an ML-DSA-87 keypair locally (private key stays on
+   Alice's box).
+2. Writes the provided nonce to `~/.mtc-ca-data/corp.example/nonce.txt`.
+3. Runs `bootstrap_leaf`, which submits the nonce + her newly-generated
+   public key.
+4. Server validates the reservation, binds Alice's fingerprint at
+   consume time, and issues the MTC cert.
+
+After enrollment the nonce is marked `consumed` — it can't be used
+again.
+
+### Security notes
+
+- **Nonce is a secret.** Anyone with the nonce can claim the slot.
+  Transmit via a channel you'd transmit a password through.
+- **Slot is locked.** While the reservation is pending, no one else
+  can issue a second nonce for the same `(domain, label)` — the
+  partial unique index prevents accidental double-issuance.
+- **TTL cap.** The server clamps `--ttl-days` at
+  `MTC_NONCE_MAX_TTL_DAYS` (default 30). Longer reservations increase
+  the window during which a leaked nonce is usable.
+- **Single channel is the whole point.** Unlike the earlier pack/
+  unpack proposal (which needed an encrypted archive + decryption
+  token via different channels), reservation nonces replace a
+  2-channel key-distribution dance with a 1-channel secret. The
+  private key never leaves the recipient's machine.
+
+---
+
 ## Fast path (recommended)
 
 After installing `kit-leaf` (or `kit-CA`), one command walks you

@@ -326,7 +326,9 @@ char *mtc_db_load_config(PGconn *conn, const char *key);
  * @param[in]  conn         Active PostgreSQL connection.
  * @param[in]  domain       Domain name bound to this nonce.
  * @param[in]  fp_hex       Public key fingerprint (hex string) bound to
- *                           this nonce.
+ *                           this nonce, or NULL to issue a
+ *                           fingerprint-less reservation nonce whose
+ *                           fp is late-bound at consume time.
  * @param[in]  ca_index     Log index of the issuing CA (-1 for CA
  *                           self-enrollment via DNS).
  * @param[in]  label         Optional operator-assigned label
@@ -334,6 +336,10 @@ char *mtc_db_load_config(PGconn *conn, const char *key);
  *                            server does not sanitize — client tools
  *                            (bootstrap_leaf, bootstrap_ca) are
  *                            authoritative.
+ * @param[in]  ttl_secs     TTL in seconds.  Pass 0 to use the default
+ *                            MTC_NONCE_TTL_SECS (15 min).  Caller is
+ *                            responsible for clamping to
+ *                            MTC_NONCE_MAX_TTL_DAYS.
  * @param[out] nonce_out     Buffer for the hex nonce.  Must be at least
  *                            MTC_NONCE_HEX_LEN + 1 bytes.
  * @param[out] expires_out   Receives the UNIX expiration timestamp.
@@ -351,6 +357,7 @@ char *mtc_db_load_config(PGconn *conn, const char *key);
  */
 int  mtc_db_create_nonce(PGconn *conn, const char *domain, const char *fp_hex,
                          int ca_index, const char *label,
+                         long ttl_secs,
                          char *nonce_out, long *expires_out,
                          char *label_out, size_t label_out_sz);
 
