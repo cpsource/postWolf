@@ -1246,6 +1246,120 @@ opens a fresh one, and logs the churn.
 
 ---
 
+### 26. CA-assigned leaf labels to disambiguate multiple identities per subject
+
+**Problem:** `~/.TPM/<subject>/` holds exactly one leaf identity per
+subject, so a host that legitimately has multiple leaves for the same
+domain (e.g., `prod` + `staging` both serving `factsorlie.com`) can't
+coexist — the second enrollment overwrites the first.
+
+**Proposal:** let the CA operator attach a human-readable label to the
+nonce at issue time; the leaf uses that label for its local dir.
+
+Flow:
+
+1. `issue_leaf_nonce --domain factsorlie.com --label prod-ws1 --key-file leaf.pub`
+2. Server stores the label in a new `mtc_enrollment_nonces.label`
+   column, enforces uniqueness per `(domain, label)` at issue time so
+   two live nonces can't race into the same local dir.
+3. `bootstrap_leaf --domain factsorlie.com --nonce <hex>` — label
+   comes back in the bootstrap response JSON.
+4. Leaf tool writes to `~/.TPM/<label>/` instead of `~/.TPM/<subject>/`.
+5. Omit `--label` at issue time → default to `<subject>` → today's
+   behavior byte-for-byte.
+
+**Nice properties:**
+- Zero leaf-side config — leaf doesn't invent or know the name.
+- CA is authoritative on the namespace, so no drift across hosts.
+- Label lives in the nonce row (auditable: "who enrolled under this
+  CA in Q2?").
+- Purely local to the leaf's disk — cert subject unchanged, no
+  protocol-level impact, peer verification untouched.
+- Server can reject duplicate labels at nonce-issue time, heading off
+  collisions before they happen.
+
+**Files to change:**
+- `mtc-keymaster/server2/c/mtc_db.c` / `.h` — schema migration
+  (`ALTER TABLE mtc_enrollment_nonces ADD COLUMN label TEXT`),
+  `mtc_db_create_nonce` grows a `label` parameter.
+- `mtc-keymaster/server2/c/mtc_http.c` — `handle_enrollment_nonce`
+  accepts `label` in the POST body and echoes it back; uniqueness
+  check per `(domain, label)`.
+- `mtc-keymaster/server2/c/mtc_bootstrap.c` — include label in the
+  certificate-issued response.
+- `mtc-keymaster/tools/c/issue_leaf_nonce.c` — new `--label` flag.
+- `mtc-keymaster/tools/c/bootstrap_leaf.c` — read label from response,
+  default TPM dir to `~/.TPM/<label>/` when present.
+- `tools/python/create_leaf_cert.py` — stay as-is; keygen is pre-
+  nonce-issue and doesn't care about the label.
+
+**Open question:** does the label also get embedded in the certificate
+(e.g., a subject-alt-name extension) so peers can see it, or is it
+strictly administrative?  Default answer: administrative only — purely
+for the enrolling operator's bookkeeping.  Revisit if a use case for
+peer-visible labels emerges.
+
+#### Companion design: a "default" identity on disk
+
+Once `~/.TPM/` can hold more than one identity per subject, every tool
+that currently auto-detects the sole `~/.TPM/<subject>/` dir has to
+pick — `show-tpm --verify`, `issue_leaf_nonce` (CA-operator side),
+`revoke-key`, any future MQC client.  Arbitrarily taking the first
+entry (as today's `auto_detect_tpm()` does) becomes unpredictable.
+
+**Proposal: `~/.TPM/default` symlink.**
+
+- Points to whichever `~/.TPM/<label>/` the operator has chosen as
+  active.  Example: `~/.TPM/default -> prod-ws1`.
+- Every tool resolves `~/.TPM/<subject>/` → `~/.TPM/<label>/` →
+  `~/.TPM/default/` in that fallback order.  Explicit `--tpm-path`
+  always wins.  Explicit `--label` points at a specific sibling.
+  No args → whatever `default` resolves to.
+- First enrollment on a fresh box: `bootstrap_leaf` creates the
+  identity dir AND points `default` at it (nothing else existed).
+  Subsequent enrollments leave `default` alone unless the user
+  passes `--make-default`.
+- Rotation: a tiny helper — `set-tpm-default --label prod-ws1` —
+  or honestly just `ln -sfn prod-ws1 ~/.TPM/default` from the shell.
+  One-line change.
+
+**Why symlink rather than a config file:**
+
+- UNIX-idiomatic — `readlink ~/.TPM/default` tells you instantly
+  what's active.
+- No config parser to write or maintain.
+- Atomic swap via `ln -sfn` (rename-over-symlink is atomic on every
+  sane filesystem).
+- Plays nice with directory-completion in shells; `cd ~/.TPM/default/`
+  and `ls ~/.TPM/default/` just work.
+
+**Who decides?**
+
+The CA controls the *label* (via the nonce) because naming consistency
+across hosts is a CA-scope concern.  But which identity is *currently
+active* on a given machine is strictly a leaf-operator decision — so
+`default` is never touched by the enrollment protocol or the server.
+Only the local operator flips the symlink.
+
+**Corner cases:**
+
+- Broken symlink (`default` → deleted dir): treat as "no default set",
+  fall back to today's first-directory heuristic and warn.
+- Multiple CAs, each with their own label: works cleanly — the operator
+  can point `default` at whichever one they're using right now.
+- Nested sub-trees (e.g. `~/.TPM/prod/ws1/`): out of scope; one level of
+  label is enough.  If anyone ever needs nesting, add it then.
+
+**Files involved** (on top of #26's main proposal):
+
+- `socket-level-wrapper-MQC/mqc_peer.c` — `auto_detect_tpm()` picks
+  up the fallback order.
+- `mtc-keymaster/tools/c/show-tpm.c`, `issue_leaf_nonce.c`,
+  `revoke-key.c`, `bootstrap_leaf.c` — honour the same resolution
+  rules; add `--make-default` where enrollment happens.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
