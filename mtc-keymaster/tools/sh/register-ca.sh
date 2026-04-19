@@ -161,7 +161,9 @@ To resolve, contact the server operator by opening an issue at:
 
 Include your domain ("$DOMAIN"), cert_index ($cert_idx), and why
 you believe the revocation should be lifted.  Once the operator
-lifts the revocation, re-run this command.
+lifts the revocation, your existing CA identity at $TPM_DIR
+becomes valid again — no re-enrollment or new nonce required.
+Only re-run register-ca.sh if you also want to rotate keys.
 
 REVOKED
         exit 1

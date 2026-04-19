@@ -303,13 +303,16 @@ resurrecting a known-revoked key.
    nonce.
 
 3. **Unrevoke (rare).** If the revocation was issued in error and
-   you genuinely want the old cert "alive" again, the CA operator
-   has to request an unrevoke from the server operator — MTC's
-   append-only log has no native unrevoke, so the `mtc_revocations`
-   table needs a DB-level edit. Open an issue at
+   you want the original cert alive again, the CA operator requests
+   an unrevoke from the server operator (open an issue at
    <https://github.com/cpsource/postWolf/issues> with the domain and
-   cert_index. Future work (TODO #34) adds a self-service
-   revocation-management page.
+   cert_index; MTC's append-only log has no native unrevoke, so the
+   `mtc_revocations` table needs a DB-level edit). **No bootstrap,
+   no nonce, no register-leaf.sh required** — once the revocation is
+   lifted, the existing cert in `~/.TPM/<domain>/` is valid again
+   and MQC connections start succeeding as if nothing happened.
+   Future work (TODO #34) adds a self-service revocation-management
+   page.
 
 Unlike the CA-side policy (which bans the whole subject after
 revocation), the leaf policy only bans the specific compromised

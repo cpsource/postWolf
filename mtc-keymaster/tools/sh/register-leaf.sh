@@ -144,14 +144,21 @@ is **refused**.  The server (mtc_bootstrap.c) enforces this policy
 too — even if you bypass this check, the bootstrap will be rejected.
 
 To resolve:
+  - For a fresh key on the same domain: run
+        register-leaf.sh --force-keygen ...
+    Your CA issues a new nonce, the new keypair has a different
+    fingerprint, and the server's revocation gate (which matches
+    on subject+fp) lets the new enrollment through.
   - For routine key rotation: use check-renewal-cert (or
     /usr/local/sbin/setup-recert-crond.sh --start for auto-renewal).
-    Renewal bypasses this check because it goes over MQC with the
+    Renewal bypasses this gate because it goes over MQC with the
     still-valid identity, not bootstrap.
-  - If the revocation was in error: contact your CA operator.
-    Lifting a revocation requires server-operator intervention via
-    https://github.com/cpsource/postWolf/issues (MTC's append-only
-    log has no built-in "unrevoke" primitive).
+  - If the revocation was in error: open an issue at
+        https://github.com/cpsource/postWolf/issues
+    with domain $DOMAIN and cert_index $cert_idx.  Once the server
+    operator lifts the revocation, your existing identity at
+    $TPM_DIR becomes valid again — no bootstrap, no new nonce, no
+    re-running this command.
 
 REVOKED
         exit 1

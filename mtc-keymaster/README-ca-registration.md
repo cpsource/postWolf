@@ -245,6 +245,12 @@ reversed by the operator."
 - the revoked cert_index (shown by `register-ca.sh` when it aborts)
 - why you believe the revocation should be lifted
 
+**After unrevoke:** no re-enrollment required — the existing CA
+identity in `~/.TPM/<domain>-ca/` is valid again and MQC connections
+start succeeding. You only need to re-run `register-ca.sh` if you
+also want to rotate keys (in which case the fresh fingerprint makes
+it a brand-new enrollment anyway).
+
 A future revocation-management page on the factsorlie.com server
 (TODO #34) will replace the GitHub-issue workflow with something
 more self-service.

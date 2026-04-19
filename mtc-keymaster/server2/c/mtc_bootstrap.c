@@ -775,41 +775,57 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                 goto cleanup;
             }
 
-            /* Revocation gate: if a prior leaf with MATCHING (subject,
-             * SPKI fingerprint) was revoked, refuse re-enrollment of
-             * the same key.  Unlike the CA-subject gate above, leaves
-             * match by *key*, not by subject alone — the "Jane" and
-             * "John" labels per TODO #26 live only in local TPM dir
-             * names, and all labeled leaves for a domain share the
-             * same cert subject.  Blocking by subject would revoke
-             * Jane's cert and lock John out; blocking by (subject,
-             * fp) only blocks re-use of the specific compromised
-             * key.  Defense-in-depth — the CA-issued nonce is still
-             * the primary enrollment authorization. */
+            /* Duplicate + revocation gate on (subject, SPKI fp):
+             *   active match   → LOG_WARN, allow (ghost entry per
+             *                    TODO #32; visible in syslog so
+             *                    operators can spot duplicates)
+             *   revoked match  → reject (revocation veto)
+             *   expired-only   → allow silently (old cert is dead)
+             *   no match       → allow silently (first enrollment)
+             *
+             * Matching by (subject, fp) not subject alone because
+             * labels (~/.TPM/<domain>-Jane/ vs -John/) are local-only
+             * (TODO #26) and share the same cert subject.  Blocking
+             * on subject alone would revoke Jane and lock John out.
+             * The CA-issued nonce remains the primary authorization;
+             * the revocation branch is defense-in-depth against
+             * resurrecting a known-revoked key. */
             {
-                int latest_idx = -1;
+                int latest_active_idx = -1;
+                int latest_revoked_idx = -1;
+                double now_ts = (double)time(NULL);
                 int k;
                 for (k = 0; k < store->cert_count; k++) {
                     struct json_object *entry = store->certificates[k];
-                    struct json_object *sc_j, *tbs_j, *subj_j, *fp_j;
+                    struct json_object *sc_j, *tbs_j, *subj_j, *fp_j, *na_j;
                     const char *entry_subj, *entry_fp;
+                    double entry_not_after;
                     if (!entry) continue;
                     if (!json_object_object_get_ex(entry, "standalone_certificate", &sc_j)) continue;
                     if (!json_object_object_get_ex(sc_j, "tbs_entry", &tbs_j)) continue;
                     if (!json_object_object_get_ex(tbs_j, "subject", &subj_j)) continue;
                     if (!json_object_object_get_ex(tbs_j, "subject_public_key_hash", &fp_j)) continue;
+                    if (!json_object_object_get_ex(tbs_j, "not_after", &na_j)) continue;
                     entry_subj = json_object_get_string(subj_j);
                     entry_fp = json_object_get_string(fp_j);
-                    if (entry_subj && strcmp(entry_subj, subject) == 0 &&
-                        entry_fp && strcmp(entry_fp, leaf_fp) == 0) {
-                        latest_idx = k;  /* keep overwriting; highest wins */
+                    entry_not_after = json_object_get_double(na_j);
+                    if (!entry_subj || !entry_fp) continue;
+                    if (strcmp(entry_subj, subject) != 0) continue;
+                    if (strcmp(entry_fp, leaf_fp) != 0) continue;
+
+                    if (mtc_store_is_revoked(store, k)) {
+                        latest_revoked_idx = k;
+                    } else if (entry_not_after > now_ts) {
+                        latest_active_idx = k;
                     }
+                    /* else: expired and not revoked — silently ignore */
                 }
-                if (latest_idx >= 0 && mtc_store_is_revoked(store, latest_idx)) {
+
+                if (latest_revoked_idx >= 0) {
                     LOG_WARN("bootstrap: leaf enrollment refused — prior "
                              "cert for '%s' with same key fp (index %d) "
                              "is revoked",
-                             subject, latest_idx);
+                             subject, latest_revoked_idx);
                     {
                         const char *err_json = "{\"status\":\"error\","
                             "\"message\":\"leaf enrollment refused: this "
@@ -828,6 +844,16 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                     }
                     goto cleanup;
                 }
+
+                if (latest_active_idx >= 0) {
+                    LOG_WARN("bootstrap: leaf '%s' already has an active "
+                             "cert with the same key fp at index %d — "
+                             "proceeding, but this creates a ghost log "
+                             "entry (TODO #32)",
+                             subject, latest_active_idx);
+                }
+
+                /* allow through */
             }
 
             LOG_INFO("bootstrap: leaf enrollment for '%s' authorized by nonce %.16s...",
