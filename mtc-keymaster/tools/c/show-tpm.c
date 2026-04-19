@@ -31,7 +31,8 @@
 #include "mqc_peer.h"
 
 #define DEFAULT_TPM_DIR   ".TPM"
-#define DEFAULT_SERVER    "factsorlie.com:8446"   /* MQC endpoint */
+#include "config.h"
+#define DEFAULT_SERVER    MQC_DEFAULT_SERVER   /* MQC endpoint (config.h) */
 #define MAX_ENTRIES       256
 
 /* Global state */

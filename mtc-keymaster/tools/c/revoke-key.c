@@ -59,7 +59,8 @@
 #include "mqc.h"
 #include "mqc_peer.h"
 
-#define DEFAULT_SERVER    "factsorlie.com:8446"
+#include "config.h"
+#define DEFAULT_SERVER    MQC_DEFAULT_SERVER   /* config.h */
 #define DEFAULT_TPM_DIR   ".TPM"
 
 static mqc_ctx_t  *g_mqc_ctx  = NULL;

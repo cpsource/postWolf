@@ -25,6 +25,7 @@ required=(
     "socket-level-wrapper-MQC/libmqc.a"
     "socket-level-wrapper-MQC/mqc.h"
     "socket-level-wrapper-MQC/mqc_peer.h"
+    "socket-level-wrapper-MQC/config.h"
 )
 missing=0
 for f in "${required[@]}"; do

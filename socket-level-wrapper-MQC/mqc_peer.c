@@ -212,7 +212,8 @@ static int mqc_hex_to_bytes(const char *hex, byte *out, int out_cap)
 #define PEER_CACHE_DIR   "peers"
 #define CHECKPOINT_CACHE "checkpoint_cache.json"
 #define CHECKPOINT_TTL   300  /* 5 minutes */
-#define REVOKED_TTL      86400 /* seconds — 24 hour per-peer TTL */
+#include "config.h"
+#define REVOKED_TTL      MQC_REVOKED_CACHE_TTL_SEC
 
 /******************************************************************************
  * libcurl write callback — accumulates response body in a malloc'd buffer.
@@ -868,8 +869,8 @@ static int pem_extract_ed25519_raw(const char *pem, byte *out32)
     return 0;
 }
 
-/** Default DH bootstrap port for ca_pubkey and http_get proxy fetches. */
-#define MQC_BOOTSTRAP_PORT 8445
+/* MQC_BOOTSTRAP_PORT — port the DH bootstrap listener / generic
+ * http_get proxy runs on (defined in config.h, default 8445). */
 
 /******************************************************************************
  * Function:    bootstrap_exchange  (static)

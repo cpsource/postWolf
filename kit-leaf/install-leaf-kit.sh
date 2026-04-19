@@ -71,6 +71,7 @@ mqc_src="$mqc_tmp/socket-level-wrapper-MQC"
 install -d /usr/local/include/mqc
 install -m 644 "$mqc_src/mqc.h"       /usr/local/include/mqc/mqc.h
 install -m 644 "$mqc_src/mqc_peer.h"  /usr/local/include/mqc/mqc_peer.h
+install -m 644 "$mqc_src/config.h"    /usr/local/include/mqc/config.h
 
 install -m 644 "$mqc_src/libmqc.a"    /usr/local/lib/libmqc.a
 
