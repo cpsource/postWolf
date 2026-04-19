@@ -1559,6 +1559,28 @@ freshness, checkpoint history.
 `GET /revocations/detail` server endpoint returning per-index
 metadata (reason, timestamp, revoker) that the site can render.
 
+### 35. Explicit reservation-nonce invalidation tool
+
+Long-lived reservation nonces (`issue_leaf_nonce --ttl-days N`,
+bound to `(domain, label)` with `fp` late-bound) can live up to 30
+days per `MTC_NONCE_MAX_TTL_DAYS`.  If an operator needs to retract
+one early — e.g. the recipient lost the nonce, left the team, or was
+issued the wrong label — the only current option is to wait for the
+TTL to expire.  The partial unique index on
+`(domain, label) WHERE status='pending'` also blocks reissuing a
+fresh reservation for the same label while the old one is still
+pending.
+
+**Proposed behavior:** a `revoke-nonce` (or `cancel-nonce`) tool
+that, given `(domain, label)` or a nonce hex, marks the row as
+`status='expired'` server-side (or deletes it).  Gated by the CA
+identity (MQC-authenticated, same pattern as `/renew-cert`).  Allows
+the operator to reissue cleanly.
+
+**Files:** new `tools/c/revoke-nonce.c` + a new MQC-authenticated
+endpoint in `mtc_http.c` (`POST /revoke-nonce`).  DB helper in
+`mtc_db.c` (`mtc_db_cancel_nonce(domain, label, caller_ca_index)`).
+
 ---
 
 ## Appendix: Server Directory Layout

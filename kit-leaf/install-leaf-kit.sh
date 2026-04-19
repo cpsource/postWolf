@@ -126,8 +126,10 @@ Next steps:
     nonce your CA operator sends back):
         register-leaf.sh --domain <DOMAIN> --server <CA-HOST>:8445
 
-    If you already have a nonce:
-        register-leaf.sh --domain <DOMAIN> --server <CA-HOST>:8445 \
+    If you already have a nonce (short-lived 15-min nonce OR long-lived
+    pre-provisioned reservation nonce from your CA operator):
+        register-leaf.sh --domain <DOMAIN> --label <NAME> \
+                         --server <CA-HOST>:8445 \
                          --nonce <64-hex-char nonce>
 
     Manual three-step path (when you want to watch each phase):

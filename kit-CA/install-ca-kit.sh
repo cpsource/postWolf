@@ -146,6 +146,10 @@ Next steps for a fresh CA operator:
        Or, if the leaf lives on this same box:
          register-leaf.sh --domain <LEAF-DOMAIN> --server <CA-HOST>:8445
        (detects the local CA, issues the nonce, and bootstraps in one go)
+       Or pre-provision a team (recipient keeps private key local):
+         issue_leaf_nonce --domain <DOMAIN> --label Alice --ttl-days 7
+         # Send the printed 64-hex nonce to Alice over a secure channel.
+         # See /usr/local/share/doc/postWolf-ca/README-leaf-registration.md
 
     5. Revoke a leaf under your domain (authenticated, CA-signed):
          revoke-key --target-index N --reason "key compromise"
