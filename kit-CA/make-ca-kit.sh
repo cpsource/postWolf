@@ -34,6 +34,7 @@ required=(
     "mtc-keymaster/tools/python/create_leaf_keypair.py"
     "mtc-keymaster/tools/python/ca_dns_txt.py"
     "mtc-keymaster/tools/sh/setup-recert-crond.sh"
+    "mtc-keymaster/tools/sh/register-ca.sh"
     "src/.libs/libpostWolf.so"
     "socket-level-wrapper-MQC/libmqc.a"
     "socket-level-wrapper-MQC/mqc.h"
@@ -78,6 +79,9 @@ done
 # Cron helper (goes to /usr/local/sbin on target — see install-ca-kit.sh)
 install -d "$STAGE/sbin"
 install -m 755 "$REPO_ROOT/mtc-keymaster/tools/sh/setup-recert-crond.sh" "$STAGE/sbin/"
+
+# Registration orchestrator (goes to /usr/local/bin on target)
+install -m 755 "$REPO_ROOT/mtc-keymaster/tools/sh/register-ca.sh" "$STAGE/bin/"
 
 cp -a "$REPO_ROOT/src/.libs/"libpostWolf.so*  "$STAGE/lib/"
 

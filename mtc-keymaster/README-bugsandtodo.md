@@ -1489,6 +1489,52 @@ the identity name that matches.
 
 ---
 
+### 32. Server-side de-duplication for bootstrap re-runs
+
+`bootstrap_ca` (and `bootstrap_leaf`) re-runs blindly append a fresh
+Merkle log entry even when the incoming `(subject, SPKI fingerprint)`
+already matches the most-recent non-revoked, non-expired entry in
+the log. Operators who retry bootstrap — now more common with
+`register-ca.sh` — leave behind ghost entries (e.g. old log index
+73 after a successful retry at 74) that inflate the tree, the
+revocation table, and every inclusion-proof path. Client is fine;
+server-side only.
+
+**Proposed behavior:** before appending, check whether the last
+non-revoked, non-expired entry with `subject == request.subject &&
+spki_fp == sha256(request.public_key_pem)` exists; if so, return
+that existing index instead of appending a new one. Idempotent
+bootstrap.
+
+**Files:** `mtc-keymaster/server2/c/mtc_bootstrap.c` (CA branch
+around L656-675, leaf branch immediately after), possibly a helper
+in `mtc_store.c`.
+
+### 33. Move (don't copy) private keys out of `~/.mtc-ca-data/` after enrollment
+
+`create_ca_cert.py` / `create_leaf_keypair.py` write the private
+key to `~/.mtc-ca-data/<domain>/private_key.pem`; `bootstrap_ca` /
+`bootstrap_leaf` (and later `check-renewal-cert`) *copy* it into
+`~/.TPM/<domain>-ca/` or `~/.TPM/<domain>/`. After enrollment
+succeeds the same private key lives in two places — doubling the
+compromise surface for the most sensitive material in the system.
+`~/.mtc-ca-data/` then goes unread until the next renewal, which
+rewrites it.
+
+**Proposed behavior:** after bootstrap (and after the renewal
+commit-swap) succeed, delete
+`~/.mtc-ca-data/<domain>/private_key.pem`. Leave `ca_cert.pem` and
+`public_key.pem` in place so `ca_dns_txt.py` can still regenerate
+the DNS TXT for re-publication, and `public_key.pem` for audit.
+`~/.TPM/` remains the single canonical holder of the private key.
+
+**Files:** `mtc-keymaster/tools/c/bootstrap_ca.c` (save_to_tpm),
+`mtc-keymaster/tools/c/bootstrap_leaf.c` (save_to_tpm),
+`mtc-keymaster/tools/c/check-renewal-cert.c` (renew_one, after
+commit_swap).
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the

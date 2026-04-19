@@ -39,7 +39,7 @@ apt-get update -q >/dev/null 2>&1 || true
 apt-get install -y --no-install-recommends \
     libjson-c5 libcurl4 libpq5 \
     libhiredis1.1.0 libhiredis1.0.0 libhiredis0.14 \
-    python3 python3-cryptography \
+    python3 python3-cryptography dnsutils \
     2>/dev/null || {
     echo "Warning: apt-get could not install every runtime lib; check ldd output below." >&2
 }
@@ -83,6 +83,7 @@ done
 for p in create_ca_cert.py create_leaf_keypair.py ca_dns_txt.py; do
     install -m 755 "$HERE/bin/$p" "/usr/local/bin/$p"
 done
+install -m 755 "$HERE/bin/register-ca.sh" /usr/local/bin/register-ca.sh
 
 # --- 3a. Cron-setup helper → /usr/local/sbin -------------------------
 install -d /usr/local/sbin
@@ -117,33 +118,41 @@ fi
 cat <<'EOF'
 Next steps for a fresh CA operator:
 
-  1. Generate your CA's keypair + self-signed cert:
-       create_ca_cert.py --domain <DOMAIN>
-       # → ~/.mtc-ca-data/<DOMAIN>/{private_key,public_key,ca_cert}.pem
+  Fast path — one command (recommended):
+       register-ca.sh --domain <DOMAIN> --server <CA-HOST>:8445
+       # walks you through keygen → publish DNS TXT → poll → bootstrap
 
-  2. Compute and publish the DNS TXT record at _mtc-ca.<DOMAIN>:
-       ca_dns_txt.py ~/.mtc-ca-data/<DOMAIN>/ca_cert.pem
+  Manual path (when you want to watch each phase separately):
 
-  3. Enrol your CA against an MTC server (e.g. factsorlie.com):
-       bootstrap_ca --domain <DOMAIN> --server <CA-HOST>:8445 \
-                    --key-file ca-priv.pem
+    1. Generate your CA's keypair + self-signed cert:
+         create_ca_cert.py --domain <DOMAIN>
+         # → ~/.mtc-ca-data/<DOMAIN>/{private_key,public_key,ca_cert}.pem
 
-  4. Once you have a registered CA, issue a leaf nonce to authorise
-     an enrollment:
-       issue_leaf_nonce --domain <DOMAIN> --key-file <leaf-pub.pem>
+    2. Compute and publish the DNS TXT record at _mtc-ca.<DOMAIN>:
+         ca_dns_txt.py ~/.mtc-ca-data/<DOMAIN>/ca_cert.pem
 
-  5. Revoke a leaf under your domain (authenticated, CA-signed):
-       revoke-key --target-index N --reason "key compromise"
+    3. Enrol your CA against an MTC server (e.g. factsorlie.com):
+         bootstrap_ca --domain <DOMAIN> --server <CA-HOST>:8445
 
-  6. Inspect your own identity, verify the log:
-       show-tpm --verify
+  Post-enrollment operations:
 
-  7. Optional: enable the daily auto-renewal cron (00:00, as user
-     `ubuntu`, renews any identity in ~/.TPM/* that's within 5 days
-     of expiry via the MQC /renew-cert endpoint):
-       sudo /usr/local/sbin/setup-recert-crond.sh --start
-     Disable again with:
-       sudo /usr/local/sbin/setup-recert-crond.sh --stop
+    4. Issue a leaf nonce to authorise an enrollment:
+         issue_leaf_nonce --domain <DOMAIN> --key-file <leaf-pub.pem>
 
-Full docs: /usr/local/share/doc/postWolf-ca/README.md
+    5. Revoke a leaf under your domain (authenticated, CA-signed):
+         revoke-key --target-index N --reason "key compromise"
+
+    6. Inspect your own identity, verify the log:
+         show-tpm --verify
+
+    7. Optional: enable the daily auto-renewal cron (00:00, as user
+       `ubuntu`, renews any identity in ~/.TPM/* that's within 5 days
+       of expiry via the MQC /renew-cert endpoint):
+         sudo /usr/local/sbin/setup-recert-crond.sh --start
+       Disable again with:
+         sudo /usr/local/sbin/setup-recert-crond.sh --stop
+
+Full docs:
+  /usr/local/share/doc/postWolf-ca/README.md
+  /usr/local/share/doc/postWolf-ca/README-ca-registration.md
 EOF
