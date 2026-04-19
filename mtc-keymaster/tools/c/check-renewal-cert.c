@@ -409,12 +409,16 @@ static int run_renew_cert(const identity_t *e, const char *server,
                           const char *out_cert_path)
 {
     char *server_arg = (char *)server;
+    char validity_buf[16];
+    snprintf(validity_buf, sizeof(validity_buf), "%d",
+             MTC_RECERT_VALIDITY_DAYS);
     char *const argv[] = {
         (char *)RENEW_CERT_BIN,
-        "--tpm-path",    (char *)e->dir_path,
-        "--new-pubkey",  (char *)new_pubkey_path,
-        "--server",      server_arg,
-        "--out",         (char *)out_cert_path,
+        "--tpm-path",      (char *)e->dir_path,
+        "--new-pubkey",    (char *)new_pubkey_path,
+        "--server",        server_arg,
+        "--validity-days", validity_buf,
+        "--out",           (char *)out_cert_path,
         g_trace ? "--trace" : NULL,
         NULL
     };

@@ -769,7 +769,7 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
         return;
     }
     new_pub_pem = json_object_get_string(val);
-    validity_days = MTC_RECERT_VALIDITY_DAYS;
+    validity_days = 90;
     if (json_object_object_get_ex(req, "validity_days", &val)) {
         validity_days = json_object_get_int(val);
         if (validity_days < 1 || validity_days > 3650) {

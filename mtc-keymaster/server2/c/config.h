@@ -67,9 +67,10 @@
 #define MTC_RENEWAL_WINDOW_DAYS         5
 #endif
 
-/* Default validity window for certificates issued via /renew-cert.
- * Clients can override per-request with the validity_days field;
- * this is the fallback when the field is absent. */
+/* Client-side policy: validity window check-renewal-cert requests
+ * when calling /renew-cert.  Server accepts anything in 1..3650; this
+ * is the driver's preferred value.  Lives in the shared config.h so
+ * the client tool sees the same value server operators see. */
 #ifndef MTC_RECERT_VALIDITY_DAYS
 #define MTC_RECERT_VALIDITY_DAYS        45
 #endif
