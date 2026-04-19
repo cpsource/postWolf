@@ -13,10 +13,12 @@ ctaocrypt/src/src/
 *.user
 !*-VS2022.vcxproj.user
 configure
-config.*
+# Anchored to root — autotools emits config.{h,log,status,in,in~} only at
+# the repo root.  The unanchored pattern used to over-match into every
+# subdirectory and silently hide hand-written config.h files in the
+# wrappers/server tree.
+/config.*
 !cmake/config.in
-!socket-level-wrapper-MQC/config.h
-!mtc-keymaster/server2/c/config.h
 *Debug/
 *Release/
 *.ncb
