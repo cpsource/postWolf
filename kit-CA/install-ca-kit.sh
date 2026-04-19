@@ -95,6 +95,10 @@ install -m 755 "$HERE/sbin/setup-recert-crond.sh" \
 install -d /usr/local/share/doc/postWolf-ca
 install -m 644 "$HERE/doc/README.md" \
     /usr/local/share/doc/postWolf-ca/README.md
+install -m 644 "$HERE/doc/README-ca-registration.md" \
+    /usr/local/share/doc/postWolf-ca/README-ca-registration.md
+install -m 644 "$HERE/doc/README-leaf-registration.md" \
+    /usr/local/share/doc/postWolf-ca/README-leaf-registration.md
 
 # --- 5. Verify ldd -----------------------------------------------------
 missing_libs=0

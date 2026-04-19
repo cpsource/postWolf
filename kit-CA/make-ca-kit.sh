@@ -111,7 +111,11 @@ Cflags: -I\${includedir}/mqc
 Libs: -L\${libdir} -lmqc
 EOF
 
-install -m 644 "$SELF_DIR/README-ca.md"         "$STAGE/doc/README.md"
+install -m 644 "$SELF_DIR/README-ca.md"                         "$STAGE/doc/README.md"
+install -m 644 "$REPO_ROOT/mtc-keymaster/README-ca-registration.md" \
+                                                                "$STAGE/doc/README-ca-registration.md"
+install -m 644 "$REPO_ROOT/mtc-keymaster/README-leaf-registration.md" \
+                                                                "$STAGE/doc/README-leaf-registration.md"
 install -m 755 "$SELF_DIR/install-ca-kit.sh"    "$STAGE/install-ca-kit.sh"
 install -m 755 "$SELF_DIR/buildopenssl3.5.sh"   "$STAGE/buildopenssl3.5.sh"
 echo "$VERSION" > "$STAGE/VERSION"

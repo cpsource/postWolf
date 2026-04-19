@@ -75,7 +75,9 @@ install -m 755 "$REPO_ROOT/mtc-keymaster/tools/sh/register-leaf.sh" "$STAGE/bin/
 # Preserve symlinks with `cp -a`.
 cp -a "$REPO_ROOT/src/.libs/"libpostWolf.so*  "$STAGE/lib/"
 
-install -m 644 "$SELF_DIR/README-leaf.md"       "$STAGE/doc/README.md"
+install -m 644 "$SELF_DIR/README-leaf.md"                       "$STAGE/doc/README.md"
+install -m 644 "$REPO_ROOT/mtc-keymaster/README-leaf-registration.md" \
+                                                                "$STAGE/doc/README-leaf-registration.md"
 install -m 755 "$SELF_DIR/install-leaf-kit.sh"  "$STAGE/install-leaf-kit.sh"
 install -m 755 "$SELF_DIR/buildopenssl3.5.sh"   "$STAGE/buildopenssl3.5.sh"
 echo "$VERSION" > "$STAGE/VERSION"
