@@ -25,7 +25,8 @@
  *   4. Check revocation (server-side only) + validity
  *   5. Return peer's public key DER
  *
- * mtc_server:     MTC server URL (e.g., "localhost:8444")
+ * mtc_server:     MTC server host[:port] (e.g., "factsorlie.com:8446").
+ *                 Only the host is used; lookups go via port 8445.
  * ca_pubkey:      CA Ed25519 cosigner public key
  * ca_pubkey_sz:   Size of ca_pubkey
  * cert_index:     Peer's certificate log index

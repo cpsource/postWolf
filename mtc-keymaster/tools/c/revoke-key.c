@@ -27,7 +27,7 @@
  * Usage:
  *   revoke-key --target-index N [--reason "text"]
  *              [--ca-tpm-path PATH]          (default: auto-detect under ~/.TPM/)
- *              [-s, --server HOST:PORT]      (default: localhost:8446)
+ *              [-s, --server HOST:PORT]      (default: factsorlie.com:8446)
  *              [--dry-run]                   (show request, don't send)
  *              [--trace]                     (MQC protocol trace)
  *              [-h, --help]
@@ -59,8 +59,7 @@
 #include "mqc.h"
 #include "mqc_peer.h"
 
-#define DEFAULT_SERVER    "localhost:8446"
-#define MTC_TLS_SERVER    "localhost:8444"   /* host only — port is stripped */
+#define DEFAULT_SERVER    "factsorlie.com:8446"
 #define DEFAULT_TPM_DIR   ".TPM"
 
 static mqc_ctx_t  *g_mqc_ctx  = NULL;
@@ -343,7 +342,7 @@ static void usage(const char *prog)
         "  --reason TEXT         Human-readable revocation reason (default: empty)\n"
         "  --ca-tpm-path PATH    Override CA identity dir for revoke mode\n"
         "                         (default: auto-detect *-ca under ~/.TPM/)\n"
-        "  -s, --server H:P      Server (default: localhost:8446).  --list and\n"
+        "  -s, --server H:P      Server (default: factsorlie.com:8446).  --list and\n"
         "                         --refresh use the bootstrap port (8445) on the\n"
         "                         same host — no CA identity needed.\n"
         "  --dry-run             Print the revoke request without sending\n"
@@ -797,7 +796,7 @@ int main(int argc, char **argv)
         mqc_cfg_t cfg;
         static unsigned char ca_pubkey[32];
 
-        if (mqc_load_ca_pubkey(MTC_TLS_SERVER, ca_pubkey) != 0) {
+        if (mqc_load_ca_pubkey(server, ca_pubkey) != 0) {
             fprintf(stderr, "Error: could not load CA cosigner pubkey\n");
             free(body_copy);
             json_object_put(cert_json);
@@ -808,7 +807,7 @@ int main(int argc, char **argv)
         memset(&cfg, 0, sizeof(cfg));
         cfg.role         = MQC_CLIENT;
         cfg.tpm_path     = ca_tpm_path;
-        cfg.mtc_server   = MTC_TLS_SERVER;
+        cfg.mtc_server   = server;
         cfg.ca_pubkey    = ca_pubkey;
         cfg.ca_pubkey_sz = 32;
 

@@ -38,8 +38,13 @@ typedef struct {
     const char *tpm_path;        /* ~/.TPM/<domain> — our identity.
                                   * Must contain certificate.json and
                                   * private_key.pem (ML-DSA-87). */
-    const char *mtc_server;      /* MTC CA server for peer key resolution
-                                  * (e.g., "localhost:8444"). */
+    const char *mtc_server;      /* MTC CA server for peer key resolution.
+                                  * Typically the MQC endpoint the caller
+                                  * already knows (e.g.,
+                                  * "factsorlie.com:8446").  Only the host
+                                  * portion is used here — bootstrap-port
+                                  * lookups always hit :8445 on the same
+                                  * host. */
     const unsigned char *ca_pubkey;  /* CA Ed25519 cosigner public key
                                       * (32 bytes) for Merkle proof
                                       * verification. */

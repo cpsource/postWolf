@@ -31,8 +31,7 @@
 #include "mqc_peer.h"
 
 #define DEFAULT_TPM_DIR   ".TPM"
-#define DEFAULT_SERVER    "localhost:8446"   /* MQC endpoint (this tool) */
-#define MTC_TLS_SERVER    "localhost:8444"   /* TLS endpoint (library TOFU) */
+#define DEFAULT_SERVER    "factsorlie.com:8446"   /* MQC endpoint */
 #define MAX_ENTRIES       256
 
 /* Global state */
@@ -581,13 +580,13 @@ int main(int argc, char *argv[])
         memset(&cfg, 0, sizeof(cfg));
         cfg.role       = MQC_CLIENT;
         cfg.tpm_path   = mqc_tpm_path;
-        cfg.mtc_server = MTC_TLS_SERVER;  /* TLS server for peer key resolution */
+        cfg.mtc_server = server;          /* host reused for bootstrap lookups (port 8445) */
 
-        /* Load the CA cosigner's raw 32-byte Ed25519 pubkey.  First
-         * fetch is TOFU over HTTPS to the TLS MTC server; subsequent
-         * runs hit the on-disk cache. */
+        /* Load the CA cosigner's raw 32-byte Ed25519 pubkey via the
+         * bootstrap port (8445) on the same host; subsequent runs hit
+         * the on-disk cache at ~/.TPM/ca-cosigner.pem. */
         static unsigned char ca_pubkey[32];
-        if (mqc_load_ca_pubkey(MTC_TLS_SERVER, ca_pubkey) != 0) {
+        if (mqc_load_ca_pubkey(server, ca_pubkey) != 0) {
             fprintf(stderr,
                 "Error: could not load CA cosigner pubkey (required "
                 "for MQC cosignature verification)\n");

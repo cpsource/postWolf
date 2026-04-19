@@ -16,7 +16,7 @@
  * Usage:
  *   issue_leaf_nonce --domain DOMAIN --key-file FILE
  *                    [--fingerprint sha256:HEX]
- *                    [-s, --server HOST:PORT]       (default: localhost:8446)
+ *                    [-s, --server HOST:PORT]       (default: factsorlie.com:8446)
  *                    [--tpm-path PATH]              (default: first in ~/.TPM)
  *                    [--out DIR]                    (default: ~/.mtc-ca-data)
  *                    [--dry-run]                    (show request, don't send)
@@ -45,8 +45,7 @@
 #include "mqc.h"
 #include "mqc_peer.h"
 
-#define DEFAULT_SERVER    "localhost:8446"   /* MQC endpoint (this tool) */
-#define MTC_TLS_SERVER    "localhost:8444"   /* TLS endpoint (CA pubkey TOFU) */
+#define DEFAULT_SERVER    "factsorlie.com:8446"   /* MQC endpoint */
 #define DEFAULT_TPM_DIR   ".TPM"
 #define DEFAULT_OUT_DIR   ".mtc-ca-data"
 
@@ -459,10 +458,10 @@ int main(int argc, char *argv[])
             mqc_cfg_t cfg;
             static unsigned char ca_pubkey[32];
 
-            if (mqc_load_ca_pubkey(MTC_TLS_SERVER, ca_pubkey) != 0) {
+            if (mqc_load_ca_pubkey(server, ca_pubkey) != 0) {
                 fprintf(stderr,
                     "Error: could not load CA cosigner pubkey (first-run "
-                    "TOFU from %s failed)\n", MTC_TLS_SERVER);
+                    "TOFU via %s:8445 failed)\n", g_mqc_host);
                 free(body_copy);
                 return 1;
             }
@@ -470,7 +469,7 @@ int main(int argc, char *argv[])
             memset(&cfg, 0, sizeof(cfg));
             cfg.role         = MQC_CLIENT;
             cfg.tpm_path     = tpm_path;
-            cfg.mtc_server   = MTC_TLS_SERVER;
+            cfg.mtc_server   = server;
             cfg.ca_pubkey    = ca_pubkey;
             cfg.ca_pubkey_sz = 32;
 
