@@ -83,7 +83,14 @@ echo ">>> Installing leaf tools → /usr/local/bin/ ..."
 install -d /usr/local/bin
 install -m 755 "$HERE/bin/bootstrap_leaf"        /usr/local/bin/bootstrap_leaf
 install -m 755 "$HERE/bin/show-tpm"              /usr/local/bin/show-tpm
+install -m 755 "$HERE/bin/renew-cert"            /usr/local/bin/renew-cert
+install -m 755 "$HERE/bin/check-renewal-cert"    /usr/local/bin/check-renewal-cert
 install -m 755 "$HERE/bin/create_leaf_keypair.py"   /usr/local/bin/create_leaf_keypair.py
+
+# --- 3a. Cron-setup helper → /usr/local/sbin -------------------------
+install -d /usr/local/sbin
+install -m 755 "$HERE/sbin/setup-recert-crond.sh" \
+    /usr/local/sbin/setup-recert-crond.sh
 
 # --- 4. Docs ----------------------------------------------------------
 install -d /usr/local/share/doc/postWolf-leaf
@@ -92,7 +99,7 @@ install -m 644 "$HERE/doc/README.md" \
 
 # --- 5. Verify ldd -----------------------------------------------------
 missing_libs=0
-for t in bootstrap_leaf show-tpm; do
+for t in bootstrap_leaf show-tpm renew-cert check-renewal-cert; do
     if ldd "/usr/local/bin/$t" 2>/dev/null | grep -q "not found"; then
         echo "Warning: /usr/local/bin/$t has unresolved shared libs:" >&2
         ldd "/usr/local/bin/$t" | grep "not found" >&2
@@ -127,6 +134,12 @@ Next steps (ask your CA operator for a nonce, then):
 `show-tpm --verify` checks revocation as part of the chain — if your
 cert gets revoked it will fail there.  To actively revoke a leaf, you
 need CA credentials; that's the postWolf-ca-kit, not this one.
+
+    # Optional: enable the daily auto-renewal cron (00:00, as user
+    # `ubuntu`, runs check-renewal-cert on ~/.TPM/*):
+    sudo /usr/local/sbin/setup-recert-crond.sh --start
+    # Disable again any time with:
+    sudo /usr/local/sbin/setup-recert-crond.sh --stop
 
 Full docs: /usr/local/share/doc/postWolf-leaf/README.md
 EOF

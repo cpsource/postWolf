@@ -77,12 +77,17 @@ install -m 644 "$HERE/mqc.pc"         /usr/local/lib/pkgconfig/mqc.pc
 echo ">>> Installing CA tools → /usr/local/bin/ ..."
 install -d /usr/local/bin
 for t in bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce \
-         admin_recosign revoke-key; do
+         admin_recosign revoke-key renew-cert check-renewal-cert; do
     install -m 755 "$HERE/bin/$t" "/usr/local/bin/$t"
 done
 for p in create_ca_cert.py create_leaf_keypair.py ca_dns_txt.py; do
     install -m 755 "$HERE/bin/$p" "/usr/local/bin/$p"
 done
+
+# --- 3a. Cron-setup helper → /usr/local/sbin -------------------------
+install -d /usr/local/sbin
+install -m 755 "$HERE/sbin/setup-recert-crond.sh" \
+    /usr/local/sbin/setup-recert-crond.sh
 
 # --- 4. Docs ----------------------------------------------------------
 install -d /usr/local/share/doc/postWolf-ca
@@ -92,7 +97,7 @@ install -m 644 "$HERE/doc/README.md" \
 # --- 5. Verify ldd -----------------------------------------------------
 missing_libs=0
 for t in bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce \
-         admin_recosign revoke-key; do
+         admin_recosign revoke-key renew-cert check-renewal-cert; do
     if ldd "/usr/local/bin/$t" 2>/dev/null | grep -q "not found"; then
         echo "Warning: /usr/local/bin/$t has unresolved shared libs:" >&2
         ldd "/usr/local/bin/$t" | grep "not found" >&2
@@ -132,6 +137,13 @@ Next steps for a fresh CA operator:
 
   6. Inspect your own identity, verify the log:
        show-tpm --verify
+
+  7. Optional: enable the daily auto-renewal cron (00:00, as user
+     `ubuntu`, renews any identity in ~/.TPM/* that's within 5 days
+     of expiry via the MQC /renew-cert endpoint):
+       sudo /usr/local/sbin/setup-recert-crond.sh --start
+     Disable again with:
+       sudo /usr/local/sbin/setup-recert-crond.sh --stop
 
 Full docs: /usr/local/share/doc/postWolf-ca/README.md
 EOF

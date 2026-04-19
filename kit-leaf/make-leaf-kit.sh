@@ -20,7 +20,10 @@ TARBALL="$SELF_DIR/postWolf-leaf-kit-${VERSION}.tar.gz"
 required=(
     "mtc-keymaster/tools/c/bootstrap_leaf"
     "mtc-keymaster/tools/c/show-tpm"
+    "mtc-keymaster/tools/c/renew-cert"
+    "mtc-keymaster/tools/c/check-renewal-cert"
     "mtc-keymaster/tools/python/create_leaf_keypair.py"
+    "mtc-keymaster/tools/sh/setup-recert-crond.sh"
     "src/.libs/libpostWolf.so"
     "socket-level-wrapper-MQC/libmqc.a"
     "socket-level-wrapper-MQC/mqc.h"
@@ -56,7 +59,13 @@ mkdir -p "$STAGE/bin" "$STAGE/lib" "$STAGE/doc"
 
 install -m 755 "$REPO_ROOT/mtc-keymaster/tools/c/bootstrap_leaf"        "$STAGE/bin/"
 install -m 755 "$REPO_ROOT/mtc-keymaster/tools/c/show-tpm"              "$STAGE/bin/"
+install -m 755 "$REPO_ROOT/mtc-keymaster/tools/c/renew-cert"            "$STAGE/bin/"
+install -m 755 "$REPO_ROOT/mtc-keymaster/tools/c/check-renewal-cert"    "$STAGE/bin/"
 install -m 755 "$REPO_ROOT/mtc-keymaster/tools/python/create_leaf_keypair.py" "$STAGE/bin/"
+
+# Cron helper (goes to /usr/local/sbin on target — see install-leaf-kit.sh)
+install -d "$STAGE/sbin"
+install -m 755 "$REPO_ROOT/mtc-keymaster/tools/sh/setup-recert-crond.sh" "$STAGE/sbin/"
 
 # libpostWolf.so, libpostWolf.so.N (soname), libpostWolf.so.N.M.P (real file).
 # Preserve symlinks with `cp -a`.
