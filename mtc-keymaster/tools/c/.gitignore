@@ -5,5 +5,7 @@ bootstrap_leaf
 show-tpm
 issue_leaf_nonce
 revoke-key
+renew-cert
+check-renewal-cert
 attack-port-8445
 attack-port-8446
