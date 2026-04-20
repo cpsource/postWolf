@@ -188,6 +188,41 @@ Every message is length-prefixed + AES-256-GCM encrypted:
 The GCM nonce is derived from a per-connection sequence number
 (incremented per message) to ensure uniqueness without transmitting it.
 
+## Symmetric Cipher Choice: AES-256-GCM
+
+MQC uses **AES-256-GCM** with a 256-bit key
+(`MQC_AES_KEY_SZ = 32`, see `mqc.c:52`). The key is derived from the
+ML-KEM-768 shared secret via HKDF-SHA256. Contrast with the separate
+DH bootstrap port (8445) which uses AES-128-CBC:
+
+| | Bootstrap port (8445) | MQC port (8446) |
+|---|---|---|
+| **Key exchange** | X25519 (classical) | ML-KEM-768 (post-quantum) |
+| **Identity auth** | none (nonce-based) | ML-DSA-87 signed handshake |
+| **KDF** | HKDF-SHA256 | HKDF-SHA256 |
+| **Cipher** | AES-128-CBC (unauthenticated) | **AES-256-GCM** (authenticated) |
+| **Key size** | 16 bytes | 32 bytes |
+
+Three reasons MQC picks GCM-256 over CBC-128:
+
+1. **AEAD.** GCM provides confidentiality *and* integrity in one
+   primitive — no separate MAC step, no padding-oracle surface.
+   The bootstrap port's CBC-128 leans on ad-hoc obfuscation;
+   MQC gets formal authenticated encryption for free.
+2. **256-bit key against quantum.** ML-KEM-768 is already
+   post-quantum, so AES-256 keeps the whole stack balanced: ~128
+   bits of security against Grover's quantum search, matching
+   ML-KEM-768's security category. AES-128 would halve to ~64 bits
+   under Grover, becoming the weakest link.
+3. **Standard IETF practice.** TLS 1.3 and most modern protocols
+   converge on AES-256-GCM with a 256-bit key HKDF-expanded from
+   the shared secret — same shape MQC uses, just with an ML-KEM
+   shared secret feeding the HKDF extract step instead of ECDHE.
+
+HKDF's role is identical on both ports (mix the messy shared secret
+into a uniformly-random key); MQC just asks for 32 bytes of output
+and hands them to AES-GCM, which gets built-in authentication.
+
 ## Security Properties
 
 | Attack | Status | Rationale |
