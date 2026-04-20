@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>postWolf mqc</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        margin: 0;
+        padding: 12px 14px;
+        width: 320px;
+        color: #202124;
+        font-size: 13px;
+      }
+      h1 { font-size: 14px; margin: 0 0 6px 0; }
+      p.subtitle { margin: 0 0 10px 0; color: #5f6368; }
+      button {
+        padding: 6px 12px;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+        background: #fff;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      button:hover { background: #f1f3f4; }
+      #status {
+        margin-top: 10px;
+        padding: 8px;
+        background: #f6f6f6;
+        border: 1px solid #e0e0e0;
+        border-radius: 4px;
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        font-size: 11px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        min-height: 40px;
+        max-height: 180px;
+        overflow: auto;
+      }
+      .ok { color: #137333; }
+      .err { color: #c5221f; }
+      hr { border: 0; border-top: 1px solid #eee; margin: 10px 0; }
+      .tip { color: #5f6368; font-size: 12px; line-height: 1.4; }
+    </style>
+  </head>
+  <body>
+    <h1>postWolf mqc</h1>
+    <p class="subtitle">Bridge to <code>wsl mqc</code></p>
+
+    <button id="pingBtn">Ping native host</button>
+    <div id="status">(click ping to test)</div>
+
+    <hr />
+    <div class="tip">
+      Usage: right-click selected text in Gmail →
+      <b>Encode with mqc</b> / <b>Decode with mqc</b>.
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

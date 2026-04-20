@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "postWolf mqc for Gmail",
+  "version": "0.1.0",
+  "description": "Encode/decode selected text in Gmail via the postWolf mqc CLI (runs in WSL2). Right-click a selection to seal or open it with AES-256-GCM + scrypt.",
+
+  "permissions": [
+    "nativeMessaging",
+    "contextMenus",
+    "scripting",
+    "notifications",
+    "clipboardWrite"
+  ],
+
+  "host_permissions": [
+    "https://mail.google.com/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["content_script.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_title": "postWolf mqc",
+    "default_popup": "popup.html"
+  },
+
+  "minimum_chrome_version": "116"
+}
