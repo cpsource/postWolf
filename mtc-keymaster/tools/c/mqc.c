@@ -442,8 +442,7 @@ static int resolve_domain(const char *arg, char *out, size_t sz)
         out[blen] = '\0';
         return 0;
     }
-    fprintf(stderr, "mqc: no --domain passed and ~/.TPM/default does not "
-            "resolve; pass --domain explicitly\n");
+    /* No message here — callers decide whether this is fatal. */
     return -1;
 }
 
@@ -901,7 +900,15 @@ int main(int argc, char **argv)
         }
     }
 
-    /* --- Resolve domain --- */
+    /* --- Resolve domain ---
+     *
+     * Priority: --domain > envelope's "domain" field (decode only) >
+     * ~/.TPM/default symlink > --env fallback ("env") > fatal.
+     *
+     * --env is a hard override: when the password lives in ~/.env,
+     * the per-domain cache path is never touched, so a missing
+     * ~/.TPM/default is not an error — we just need *some* label
+     * for the envelope's "domain" field. */
     char domain[256];
     const char *dom_src = NULL;
     if (domain_arg) {
@@ -910,11 +917,16 @@ int main(int argc, char **argv)
     } else if (mode_decode && embedded_domain[0]) {
         snprintf(domain, sizeof(domain), "%s", embedded_domain);
         dom_src = "envelope 'domain' field";
-    } else if (resolve_domain(NULL, domain, sizeof(domain)) != 0) {
+    } else if (resolve_domain(NULL, domain, sizeof(domain)) == 0) {
+        dom_src = "~/.TPM/default symlink";
+    } else if (use_env) {
+        snprintf(domain, sizeof(domain), "%s", "env");
+        dom_src = "--env fallback (no ~/.TPM/default)";
+    } else {
+        fprintf(stderr, "mqc: no --domain passed and ~/.TPM/default does "
+                "not resolve; pass --domain explicitly\n");
         if (env) json_object_put(env);
         free(input_buf); return 1;
-    } else {
-        dom_src = "~/.TPM/default symlink";
     }
     dlog(dry_run, "domain: '%s' (source: %s)", domain, dom_src);
 

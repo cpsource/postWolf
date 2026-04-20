@@ -140,6 +140,14 @@ When `--env` is used, `mqc` does not consult or write the per-domain
 cache file — `~/.env` is the authority for that invocation.  Keep
 `~/.env` `chmod 600` just like you'd keep the cache file.
 
+**Fresh-box note:** because `--env` skips the cache path entirely,
+it also skips the normal "you must resolve a TPM domain" check.
+On a box with no `~/.TPM/default` symlink (typical right after
+`install-mqc-kit.sh`), `mqc --encode --env` still works — the
+envelope is stamped with `"domain": "env"` as a fallback label.
+Without `--env`, a missing `~/.TPM/default` remains a hard error
+and you'll be asked to pass `--domain D` explicitly.
+
 ## `--complex-password` alphabet
 
 The 68-character alphabet is deliberately narrow:
