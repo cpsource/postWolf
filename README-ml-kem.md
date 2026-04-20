@@ -127,3 +127,83 @@ time a client connects.
   (AES-256-GCM) that consumes the ML-KEM shared secret.
 - `mtc-keymaster/README-ml-dsa-87.md` — the sibling document for
   ML-DSA-87 (the signature algorithm from the same CRYSTALS suite).
+
+
+---
+
+## Appendix: Does MQC use CRYSTALS-Kyber / ML-KEM?
+
+**Yes.** MQC uses **ML-KEM-768** (CRYSTALS-Kyber at the category-3
+parameter set) as its key-exchange primitive.
+
+Evidence, all in `socket-level-wrapper-MQC/mqc.c`:
+
+| Line | Call | Role |
+|---|---|---|
+| 701 | `wc_MlKemKey_Init(&mlkem, WC_ML_KEM_768, ...)` | pick the 768 parameter set |
+| 705 | `wc_MlKemKey_MakeKey(&mlkem, &rng)` | server's ephemeral keypair |
+| 713 | `wc_MlKemKey_EncodePublicKey(&mlkem, ...)` | server serializes pk for the wire |
+| 997 | `wc_MlKemKey_DecodePublicKey(&mlkem, ...)` | client parses the pk |
+| 1005 | `wc_MlKemKey_Encapsulate(&mlkem, ct, ss, &rng)` | client picks shared secret, wraps as ct |
+| 829 | `wc_MlKemKey_Decapsulate(&mlkem, ss, ct, ct_sz)` | server unwraps to get ss |
+
+And from the file's own module header (`mqc.c` lines 7-13):
+
+> *"ML-KEM-768 key exchange, ML-DSA-87 signed authentication, and
+> AES-256-GCM… Both derive AES-256-GCM key from ML-KEM shared secret."*
+
+So every live MQC handshake on `factsorlie.com:8446` runs ML-KEM-768
+— the shared secret goes through HKDF-SHA256 to produce the 32-byte
+AES-256-GCM session key.  The DH bootstrap port (8445) is the only
+place postWolf still uses classical X25519.
+
+
+---
+
+## Appendix: Does postWolf use HKDF?
+
+**Yes** — HKDF-SHA256 is used everywhere postWolf turns a shared
+secret into a symmetric key.  All calls go through `wc_HKDF()` from
+wolfCrypt (RFC 5869, Extract + Expand in one call).
+
+### Where it's used
+
+| Location | What it derives | Purpose |
+|---|---|---|
+| `mtc-keymaster/server2/c/mtc_bootstrap.c:538` | AES-128 key for DH bootstrap port (8445) | Info string: `"mtc-dh-bootstrap"`; IKM: X25519 shared secret; salt: random 16 bytes |
+| `socket-level-wrapper-MQC/mqc.c:837, 1047, 1250, 1465, 1735, 1817` | AES-256-GCM key for MQC port (8446) | IKM: ML-KEM-768 shared secret (32 bytes); hashed with SHA-256 |
+| `mtc-keymaster/tools/c/bootstrap_ca.c`, `bootstrap_leaf.c` | client-side mirror of the bootstrap port's AES-128 | Client runs the same HKDF so both sides derive the identical key |
+| `socket-level-wrapper-QUIC/mqcp_crypto.c` | MQCP (QUIC-inspired) session keys | Same shape, different transport |
+
+### What `wc_HKDF` looks like on the wire (example: MQC)
+
+```c
+// socket-level-wrapper-MQC/mqc.c:837 (shortened)
+uint8_t aes_key[32];                          // 32 bytes = AES-256
+ret = wc_HKDF(WC_SHA256,                      // Extract + Expand both use HMAC-SHA256
+              shared_secret, WC_ML_KEM_SS_SZ, // IKM: 32-byte ML-KEM output
+              salt, salt_sz,                  // 16-byte random salt
+              info, info_sz,                  // domain-separation string
+              aes_key, sizeof(aes_key));      // OKM: 32-byte AES-256 key
+```
+
+Both parties run this after the ML-KEM handshake.  Because they share
+the ML-KEM secret, the same salt (transmitted in the handshake), and
+agree on the info string, both compute the identical 32-byte key.
+
+### Why HKDF specifically (vs just SHA-256 of the secret)
+
+1. **Extract stage** whitens the non-uniform ML-KEM / X25519 output
+   into a uniformly-random PRK.
+2. **Expand stage** gives you any output length with the same strong
+   pseudorandomness.
+3. **Info-based domain separation** lets you derive multiple
+   independent keys from one secret by changing `info` — critical
+   once you need a session key *and* a MAC key, or when you rekey.
+4. **Formal security reduction** to HMAC's PRF property — something
+   ad-hoc SHA-256 hashing doesn't give you.
+
+postWolf uses it on every channel that derives a symmetric key from
+a shared secret.  The only places symmetric keys *aren't* HKDF-derived
+are purely-local state operations (revocation list manipulation,
+internal bookkeeping) — no exchange means no secret to mix.
