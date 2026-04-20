@@ -84,6 +84,7 @@ mqc --file PATH [--password P] [--domain D]      # autodetect mode
 | `--decode` | Decrypt (JSON → plaintext) |
 | `--file PATH` | Read input from `PATH`.  Without `--encode`/`--decode`, autodetects: JSON envelope with `"v":"mqc-1"` → decode; anything else → encode |
 | `--out PATH` | Write output to `PATH` (created mode `0600`, truncated if it exists) instead of stdout |
+| `--dry-run` | Log each resolution step to stderr, then stop before the cipher, cache write, or output write.  No files are touched, no password is prompted, and no real `--complex-password` is generated.  Useful for confirming domain / password source / input+output wiring before running for real |
 | `--password PW` | Explicit password.  Also writes the cache (unless `--no-cache`) |
 | `--complex-password` | Generate a 16-char shell-safe password from `[A-Za-z0-9_-.+=@]` (~97 bits entropy), print it to stderr once, cache, use.  Encode-only |
 | `--env` | Read `MQC_MASTER_PASSWORD` from `~/.env` and use it.  Neither reads nor writes the per-domain cache.  Mutually exclusive with `--password` and `--complex-password` |
@@ -224,7 +225,23 @@ $ mqc --file hostname.mqc.json
 my-host
 ```
 
-### 5. Interactive decrypt on a fresh machine
+### 5. `--dry-run`: watch the flow without committing
+
+```bash
+$ echo 'secret' | mqc --encode --env --out /tmp/secret.mqc.json --dry-run
+mqc[dry-run]: flags: mode=encode password=--env domain-arg=(none) file=(stdin) out=/tmp/secret.mqc.json no-cache=0
+mqc[dry-run]: input: read 7 bytes from stdin
+mqc[dry-run]: domain: 'factsorlie.com' (source: ~/.TPM/default symlink)
+mqc[dry-run]: password: 16 chars (source: --env (MQC_MASTER_PASSWORD in ~/.env))
+mqc[dry-run]: cache: no write (password source is read-only)
+mqc[dry-run]: output: would open '/tmp/secret.mqc.json' (mode 0600, truncate) and redirect stdout
+mqc[dry-run]: would encrypt 7 input byte(s) — cipher operation skipped
+```
+
+No file is created, no password is prompted, no cipher runs.  Drop
+`--dry-run` to execute for real once the flow looks right.
+
+### 6. Interactive decrypt on a fresh machine
 
 ```bash
 $ cat incoming.mqc.json | mqc --decode --no-cache

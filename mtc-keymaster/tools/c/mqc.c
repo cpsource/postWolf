@@ -78,6 +78,22 @@ static const char MQC_PW_ALPHABET[] =
 /* helpers                                                            */
 /* ------------------------------------------------------------------ */
 
+#include <stdarg.h>
+
+/* Print a dry-run flow line to stderr, prefixed "mqc[dry-run]: ".
+ * Does nothing when `on` is 0.  Emitted only in --dry-run so real
+ * pipelines stay quiet. */
+static void dlog(int on, const char *fmt, ...)
+{
+    if (!on) return;
+    va_list ap;
+    fputs("mqc[dry-run]: ", stderr);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+}
+
 static void to_hex(const uint8_t *in, int n, char *out)
 {
     static const char h[] = "0123456789abcdef";
@@ -714,6 +730,8 @@ static void usage(const char *prog)
         "  --domain D            Domain for cache path (default: resolve\n"
         "                         ~/.TPM/default symlink)\n"
         "  --no-cache            Don't read or write the cache file\n"
+        "  --dry-run             Log each step to stderr but skip all cipher\n"
+        "                         operations, cache writes, and output writes\n"
         "  -h, --help            This help\n"
         "\n"
         "Password resolution order:\n"
@@ -735,6 +753,7 @@ int main(int argc, char **argv)
     const char *file_arg = NULL;
     const char *out_arg = NULL;
     int no_cache = 0;
+    int dry_run = 0;
     int i, rc = 1;
 
     for (i = 1; i < argc; i++) {
@@ -758,6 +777,8 @@ int main(int argc, char **argv)
             out_arg = argv[++i];
         } else if (strcmp(argv[i], "--no-cache") == 0) {
             no_cache = 1;
+        } else if (strcmp(argv[i], "--dry-run") == 0) {
+            dry_run = 1;
         } else {
             fprintf(stderr, "mqc: unknown argument '%s'\n", argv[i]);
             usage(argv[0]); return 2;
@@ -783,6 +804,17 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    dlog(dry_run, "flags: mode=%s password=%s domain-arg=%s file=%s out=%s "
+         "no-cache=%d",
+         mode_encode ? "encode" : mode_decode ? "decode" : "autodetect",
+         password_arg ? "--password" :
+         complex_pw   ? "--complex-password" :
+         use_env      ? "--env" : "cache|prompt",
+         domain_arg ? domain_arg : "(none)",
+         file_arg   ? file_arg   : "(stdin)",
+         out_arg    ? out_arg    : "(stdout)",
+         no_cache);
+
     /* --- Read input --- */
     char *input_buf = NULL;
     size_t input_sz = 0;
@@ -799,13 +831,15 @@ int main(int argc, char **argv)
             fprintf(stderr, "mqc: read error on %s\n", file_arg);
             return 1;
         }
+        dlog(dry_run, "input: read %zu bytes from file '%s'", input_sz, file_arg);
         /* Autodetect mode if the operator didn't force one */
         if (!mode_encode && !mode_decode) {
-            if (buffer_is_mqc_envelope(input_buf, input_sz)) {
-                mode_decode = 1;
-            } else {
-                mode_encode = 1;
-            }
+            int is_env = buffer_is_mqc_envelope(input_buf, input_sz);
+            dlog(dry_run, "autodetect: input %s an mqc-1 envelope → mode=%s",
+                 is_env ? "is" : "is not",
+                 is_env ? "decode" : "encode");
+            if (is_env) mode_decode = 1;
+            else        mode_encode = 1;
         }
     } else {
         /* Must have explicit mode when reading stdin */
@@ -819,6 +853,7 @@ int main(int argc, char **argv)
             fprintf(stderr, "mqc: read error on stdin\n");
             return 1;
         }
+        dlog(dry_run, "input: read %zu bytes from stdin", input_sz);
     }
 
     /* --- Pre-parse envelope (decode only) to recover domain --- */
@@ -838,47 +873,92 @@ int main(int argc, char **argv)
                                 "%s", s);
             }
         }
+        if (dry_run) {
+            struct json_object *v;
+            const char *ev = NULL, *et = NULL, *ec = NULL;
+            const char *ctv = NULL;
+            int eN = 0, eR = 0, eP = 0;
+            if (json_object_object_get_ex(env, "v", &v))
+                ev = json_object_get_string(v);
+            if (json_object_object_get_ex(env, "tool", &v))
+                et = json_object_get_string(v);
+            if (json_object_object_get_ex(env, "created", &v))
+                ec = json_object_get_string(v);
+            if (json_object_object_get_ex(env, "N", &v)) eN = json_object_get_int(v);
+            if (json_object_object_get_ex(env, "r", &v)) eR = json_object_get_int(v);
+            if (json_object_object_get_ex(env, "p", &v)) eP = json_object_get_int(v);
+            if (json_object_object_get_ex(env, "ct", &v))
+                ctv = json_object_get_string(v);
+            dlog(1, "envelope: v=%s tool=%s created=%s domain=%s "
+                 "scrypt(N=%d,r=%d,p=%d) ct=%zu hex-chars (%zu cipher bytes)",
+                 ev ? ev : "(missing)",
+                 et ? et : "(missing)",
+                 ec ? ec : "(missing)",
+                 embedded_domain[0] ? embedded_domain : "(missing)",
+                 eN, eR, eP,
+                 ctv ? strlen(ctv) : 0,
+                 ctv ? strlen(ctv) / 2 : 0);
+        }
     }
 
     /* --- Resolve domain --- */
     char domain[256];
+    const char *dom_src = NULL;
     if (domain_arg) {
         snprintf(domain, sizeof(domain), "%s", domain_arg);
+        dom_src = "--domain";
     } else if (mode_decode && embedded_domain[0]) {
         snprintf(domain, sizeof(domain), "%s", embedded_domain);
+        dom_src = "envelope 'domain' field";
     } else if (resolve_domain(NULL, domain, sizeof(domain)) != 0) {
         if (env) json_object_put(env);
         free(input_buf); return 1;
+    } else {
+        dom_src = "~/.TPM/default symlink";
     }
+    dlog(dry_run, "domain: '%s' (source: %s)", domain, dom_src);
 
     /* --- Resolve password --- */
     char password[MQC_PW_MAX];
     password[0] = '\0';
     int pw_from_arg = 0;
     int pw_generated = 0;
+    const char *pw_src = NULL;
 
     if (complex_pw) {
-        if (generate_complex_password(password, MQC_COMPLEX_LEN) != 0) {
-            fprintf(stderr, "mqc: complex-password generation failed\n");
-            goto cleanup;
+        if (dry_run) {
+            snprintf(password, sizeof(password), "<dry-run-placeholder>");
+            pw_src = "--complex-password (would generate 16 chars)";
+        } else {
+            if (generate_complex_password(password, MQC_COMPLEX_LEN) != 0) {
+                fprintf(stderr, "mqc: complex-password generation failed\n");
+                goto cleanup;
+            }
+            fprintf(stderr, "Generated password: %s\n", password);
+            fprintf(stderr, "(cached at ~/.TPM/%s/mqc-password.pw; save this "
+                    "for offline backup)\n", domain);
+            pw_src = "--complex-password";
         }
-        fprintf(stderr, "Generated password: %s\n", password);
-        fprintf(stderr, "(cached at ~/.TPM/%s/mqc-password.pw; save this "
-                "for offline backup)\n", domain);
         pw_generated = 1;
     } else if (password_arg) {
         snprintf(password, sizeof(password), "%s", password_arg);
         pw_from_arg = 1;
+        pw_src = "--password";
     } else if (use_env) {
         if (read_env_password(password, sizeof(password)) != 0) {
             goto cleanup;
         }
+        pw_src = "--env (MQC_MASTER_PASSWORD in ~/.env)";
     } else if (!no_cache && read_cache(domain, password, sizeof(password)) == 0) {
-        /* cache hit */
+        pw_src = "cache (~/.TPM/<domain>/mqc-password.pw)";
+    } else if (dry_run) {
+        snprintf(password, sizeof(password), "<dry-run-placeholder>");
+        pw_src = "interactive /dev/tty prompt (skipped under --dry-run)";
     } else {
         if (prompt_password(password, sizeof(password)) != 0) {
             goto cleanup;
         }
+        pw_src = "interactive /dev/tty prompt";
     }
 
     if (password[0] == '\0') {
@@ -886,32 +966,56 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
+    dlog(dry_run, "password: %zu chars (source: %s)",
+         strlen(password), pw_src ? pw_src : "(unknown)");
+
     /* --- Cache write (encode side, or when operator supplied one) --- */
     if (!no_cache && (pw_from_arg || pw_generated)) {
-        (void)write_cache(domain, password);
+        if (dry_run) {
+            dlog(1, "cache: would write ~/.TPM/%s/mqc-password.pw (mode 0600)",
+                 domain);
+        } else {
+            (void)write_cache(domain, password);
+        }
+    } else {
+        dlog(dry_run, "cache: no write (%s)",
+             no_cache ? "--no-cache" :
+             pw_src && strstr(pw_src, "cache") ? "cache hit" :
+                                                 "password source is read-only");
     }
 
     /* --- Redirect stdout to --out file if requested --- */
     if (out_arg) {
-        int outfd = open(out_arg, O_WRONLY | O_CREAT | O_TRUNC,
-                         S_IRUSR | S_IWUSR);
-        if (outfd < 0) {
-            fprintf(stderr, "mqc: cannot open %s for writing: %s\n",
-                    out_arg, strerror(errno));
-            goto cleanup;
-        }
-        fflush(stdout);
-        if (dup2(outfd, STDOUT_FILENO) < 0) {
-            fprintf(stderr, "mqc: dup2 onto stdout failed: %s\n",
-                    strerror(errno));
+        if (dry_run) {
+            dlog(1, "output: would open '%s' (mode 0600, truncate) and "
+                 "redirect stdout", out_arg);
+        } else {
+            int outfd = open(out_arg, O_WRONLY | O_CREAT | O_TRUNC,
+                             S_IRUSR | S_IWUSR);
+            if (outfd < 0) {
+                fprintf(stderr, "mqc: cannot open %s for writing: %s\n",
+                        out_arg, strerror(errno));
+                goto cleanup;
+            }
+            fflush(stdout);
+            if (dup2(outfd, STDOUT_FILENO) < 0) {
+                fprintf(stderr, "mqc: dup2 onto stdout failed: %s\n",
+                        strerror(errno));
+                close(outfd);
+                goto cleanup;
+            }
             close(outfd);
-            goto cleanup;
         }
-        close(outfd);
+    } else {
+        dlog(dry_run, "output: stdout");
     }
 
     /* --- Dispatch --- */
-    if (mode_encode) {
+    if (dry_run) {
+        dlog(1, "would %s %zu input byte(s) — cipher operation skipped",
+             mode_encode ? "encrypt" : "decrypt", input_sz);
+        rc = 0;
+    } else if (mode_encode) {
         rc = encode_blob(domain, password,
                          (const uint8_t *)input_buf, input_sz);
     } else {
