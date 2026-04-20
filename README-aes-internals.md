@@ -58,53 +58,161 @@ poor — step 2 kills those.
 
 ### Step 2: affine transformation over GF(2)
 
-Each byte is treated as a bit-vector and transformed by:
+An **affine transformation** over GF(2)^8 has the shape:
 
 ```
-y(x) = a(x) · s(x) mod (x^8 + 1)   XOR   c
+y = A·b ⊕ c
 ```
 
-where:
+where `A` is a fixed 8×8 binary matrix, `b` is the 8-bit input,
+`c` is a fixed 8-bit constant, and both the matrix product and
+the XOR are over GF(2).  Without `c` it would just be a linear
+transformation.  AES applies this *after* the multiplicative
+inverse.
 
-| Quantity | Value | Hex |
+The same transformation has **three equivalent descriptions** —
+pick whichever is easiest for a given question.
+
+#### View 1 — matrix form
+
+Bits numbered LSB-first (`b_0` is the least-significant bit):
+
+```
+⎡y_0⎤   ⎡ 1 0 0 0 1 1 1 1 ⎤ ⎡b_0⎤   ⎡1⎤
+⎢y_1⎥   ⎢ 1 1 0 0 0 1 1 1 ⎥ ⎢b_1⎥   ⎢1⎥
+⎢y_2⎥   ⎢ 1 1 1 0 0 0 1 1 ⎥ ⎢b_2⎥   ⎢0⎥
+⎢y_3⎥ = ⎢ 1 1 1 1 0 0 0 1 ⎥·⎢b_3⎥ ⊕ ⎢0⎥
+⎢y_4⎥   ⎢ 1 1 1 1 1 0 0 0 ⎥ ⎢b_4⎥   ⎢0⎥
+⎢y_5⎥   ⎢ 0 1 1 1 1 1 0 0 ⎥ ⎢b_5⎥   ⎢1⎥
+⎢y_6⎥   ⎢ 0 0 1 1 1 1 1 0 ⎥ ⎢b_6⎥   ⎢1⎥
+⎣y_7⎦   ⎣ 0 0 0 1 1 1 1 1 ⎦ ⎣b_7⎦   ⎣0⎦
+```
+
+The constant column on the right is `0x63` read LSB-first (top
+bit is `c_0`).  `A` is **circulant**: each row is the previous
+row rotated by one position.  The generating pattern is
+`1 0 0 0 1 1 1 1` — five ones, three zeros.
+
+#### View 2 — bitwise XOR formula
+
+Reading the matrix rows directly:
+
+```
+y_i = b_i ⊕ b_{(i+4) mod 8} ⊕ b_{(i+5) mod 8}
+          ⊕ b_{(i+6) mod 8} ⊕ b_{(i+7) mod 8} ⊕ c_i
+```
+
+for `i = 0..7`, where `c_i` is bit `i` of `0x63`.  Constant-time
+implementations often compute the S-box this way instead of
+using a 256-byte lookup — no cache-timing side channel.
+
+#### View 3 — polynomial form
+
+Treat `b` as a polynomial `b(x) = b_0 + b_1 x + … + b_7 x^7`
+over GF(2):
+
+```
+y(x) = ( a(x) · b(x) )  mod (x^8 + 1)   ⊕   c(x)
+```
+
+| Quantity | Polynomial | Hex |
 |---|---|---|
 | `a(x)` | `x^4 + x^3 + x^2 + x + 1` | `0x1F` |
-| `c`    | `01100011₂` | `0x63` |
+| `c(x)` | `x^6 + x^5 + x + 1` | `0x63` |
 
 Note the reduction polynomial here is `x^8 + 1`, **different from**
-the field polynomial `x^8 + x^4 + x^3 + x + 1`:
+the field polynomial `x^8 + x^4 + x^3 + x + 1` used for the
+inverse step:
 
-- `x^8 + 1` factors as `(x + 1)^8` over GF(2) — it's **reducible**,
-  so this step is *not* in a field; it's a linear operation over
-  the vector space GF(2)^8.
-- Equivalently, multiplication by `a(x) mod (x^8 + 1)` is a fixed
-  8×8 binary matrix applied to the bit-vector.
+- `x^8 + 1` factors as `(x + 1)^8` over GF(2) — it's reducible,
+  so this step is *not* in a field.  It's a linear operation over
+  the vector space GF(2)^8 that happens to have a pretty
+  polynomial description.
+- The circulant matrix in view #1 is precisely "multiply by `a(x)`
+  modulo `x^8 + 1`" — which is why its rows rotate.
 
-The matrix form (each row is a rotation of the pattern
-`1 0 0 0 1 1 1 1`):
+#### Worked example
+
+Say multiplicative inversion produced `b = 0x53 = 01010011₂`.
+Walk through the bitwise formula (view #2):
 
 ```
-          ⎡ 1 0 0 0 1 1 1 1 ⎤
-          ⎢ 1 1 0 0 0 1 1 1 ⎥
-          ⎢ 1 1 1 0 0 0 1 1 ⎥
-A   =     ⎢ 1 1 1 1 0 0 0 1 ⎥    b = 0x63
-          ⎢ 1 1 1 1 1 0 0 0 ⎥
-          ⎢ 0 1 1 1 1 1 0 0 ⎥
-          ⎢ 0 0 1 1 1 1 1 0 ⎥
-          ⎣ 0 0 0 1 1 1 1 1 ⎦
+b_0=1, b_1=1, b_2=0, b_3=0, b_4=1, b_5=0, b_6=1, b_7=0
+c=0x63 → c_0=1, c_1=1, c_2=0, c_3=0, c_4=0, c_5=1, c_6=1, c_7=0
+
+y_0 = b_0 ⊕ b_4 ⊕ b_5 ⊕ b_6 ⊕ b_7 ⊕ c_0 = 1⊕1⊕0⊕1⊕0⊕1 = 0
+y_1 = b_1 ⊕ b_5 ⊕ b_6 ⊕ b_7 ⊕ b_0 ⊕ c_1 = 1⊕0⊕1⊕0⊕1⊕1 = 0
+y_2 = b_2 ⊕ b_6 ⊕ b_7 ⊕ b_0 ⊕ b_1 ⊕ c_2 = 0⊕1⊕0⊕1⊕1⊕0 = 1
+y_3 = b_3 ⊕ b_7 ⊕ b_0 ⊕ b_1 ⊕ b_2 ⊕ c_3 = 0⊕0⊕1⊕1⊕0⊕0 = 0
+y_4 = b_4 ⊕ b_0 ⊕ b_1 ⊕ b_2 ⊕ b_3 ⊕ c_4 = 1⊕1⊕1⊕0⊕0⊕0 = 1
+y_5 = b_5 ⊕ b_1 ⊕ b_2 ⊕ b_3 ⊕ b_4 ⊕ c_5 = 0⊕1⊕0⊕0⊕1⊕1 = 1
+y_6 = b_6 ⊕ b_2 ⊕ b_3 ⊕ b_4 ⊕ b_5 ⊕ c_6 = 1⊕0⊕0⊕1⊕0⊕1 = 1
+y_7 = b_7 ⊕ b_3 ⊕ b_4 ⊕ b_5 ⊕ b_6 ⊕ c_7 = 0⊕0⊕1⊕0⊕1⊕0 = 0
 ```
+
+Result: `y = 01110100₂ = 0xED`.
+
+#### The inverse affine (for decryption)
+
+Decryption needs to undo the S-box.  Algebraically:
+
+```
+b = A^(-1) · (y ⊕ c) = A^(-1)·y ⊕ A^(-1)·c
+```
+
+Both `A^(-1)` and `A^(-1)·c` are constants.  The inverse matrix
+is circulant on the pattern `0 0 1 0 0 1 0 1`:
+
+```
+⎡ 0 0 1 0 0 1 0 1 ⎤
+⎢ 1 0 0 1 0 0 1 0 ⎥
+⎢ 0 1 0 0 1 0 0 1 ⎥
+⎢ 1 0 1 0 0 1 0 0 ⎥
+⎢ 0 1 0 1 0 0 1 0 ⎥
+⎢ 0 0 1 0 1 0 0 1 ⎥
+⎢ 1 0 0 1 0 1 0 0 ⎥
+⎣ 0 1 0 0 1 0 1 0 ⎦
+```
+
+In polynomial form:
+
+```
+b(x) = ( a^(-1)(x) · y(x) ) mod (x^8 + 1)  ⊕  0x05
+```
+
+with `a^(-1)(x) = x^5 + x^2 + x = 0x26` and `A^(-1)·c = 0x05`.
+
+In practice nobody computes either direction on the fly — the
+forward and inverse S-boxes are precomputed 256-byte lookup
+tables.  wolfCrypt ships both; AES-NI on Intel has hardware
+instructions (`AESENC`, `AESDEC`) that do a full round including
+the S-box lookup in one cycle.
 
 ### Why the constants `0x1F` and `0x63`
 
-- **Kill fixed points.** After step 1 alone, `S(0) = 0` and
-  `S(1) = 1`. The affine step shifts every output so that no
-  byte `x` satisfies `S(x) = x` AND no byte satisfies
-  `S(x) XOR x = 0xFF` (the "opposite fixed point" property).
-- **Maximise algebraic complexity.** Expressing the S-box
-  as a polynomial over GF(2^8) requires nine nonzero terms
-  (degree 254); the affine step is what produces that
-  high-degree expression. Without it the S-box would be
-  linear-like in the field, which is crypto-fatal.
+Daemen & Rijmen had four criteria for the affine step:
+
+1. **No fixed points.** After step 1 alone, `S(0) = 0` and
+   `S(1) = 1` (two trivial fixed points of multiplicative
+   inversion).  The affine shifts every output so *no* byte `x`
+   satisfies `S(x) = x`.  Sanity check:
+     - `S(0) = affine(inv(0)) = affine(0) = 0 ⊕ 0x63 = 0x63` ≠ 0  ✓
+     - `S(1) = affine(inv(1)) = affine(1) = 0x1F ⊕ 0x63 = 0x7C` ≠ 1  ✓
+2. **No "opposite" fixed points.** No byte `x` satisfies
+   `S(x) ⊕ x = 0xFF`.
+3. **Simple circulant matrix shape.** Easy to describe, implement,
+   and analyse.  The pattern `10001111` (five 1s, three 0s) was
+   the simplest 8-bit circulant that gave an invertible `A` (i.e.,
+   `gcd(a(x), x^8 + 1) = 1`).
+4. **Maximal algebraic complexity.** With the affine layer in
+   place, the S-box's polynomial representation over GF(2^8) has
+   9 nonzero terms and degree 254 (the maximum for a byte
+   permutation).  Without it, the S-box would collapse to something
+   algebraically much simpler, opening interpolation-style attacks.
+
+The specific choice of `0x63` (rather than some other non-zero
+constant satisfying criteria 1 + 2) was picked to avoid *any*
+fixed point — not just the trivial `x = 0` and `x = 1` cases.
 
 ## The four round operations
 
