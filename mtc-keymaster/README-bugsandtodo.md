@@ -1581,6 +1581,68 @@ the operator to reissue cleanly.
 endpoint in `mtc_http.c` (`POST /revoke-nonce`).  DB helper in
 `mtc_db.c` (`mtc_db_cancel_nonce(domain, label, caller_ca_index)`).
 
+### 36. Explicit `-ca` suffix check on leaf bootstrap (defence-in-depth)
+
+Today a leaf that submits `subject=<domain>-ca` is rejected only
+**indirectly**: the leaf branch of `mtc_bootstrap.c` passes the
+request's `subject` field as the `domain` argument to
+`mtc_db_validate_and_consume_nonce`, and the nonce's stored domain
+won't match (the CA issues nonces for `<domain>`, never
+`<domain>-ca`).  So the DB lookup misses and enrollment fails with
+"invalid nonce".
+
+The safeguard is real but fragile — any future refactor that gives
+leaf enrollment a separate domain parameter distinct from subject
+would open a hole where an attacker holding a valid leaf nonce
+could mint a cert with `subject=<domain>-ca` and get it honoured
+by downstream code (e.g., `revoke-key`'s CA gate which uses the
+`-ca` suffix as the sole CA marker).
+
+**Proposed behaviour:** add an explicit check in `mtc_bootstrap.c`'s
+leaf branch (around L728-746): if `subject` ends in `-ca`, reject
+with a clear error before running nonce validation.  Cheap, belt-
+and-suspenders, documents the invariant.
+
+**Files:** `mtc-keymaster/server2/c/mtc_bootstrap.c` (leaf branch).
+
+### 37. CA bootstrap: require `subject == <SAN>-ca` from the submitted X.509
+
+`mtc_validate_ca_cert` (in `mtc_ca_validate.c`) parses the submitted
+X.509 cert, extracts the SAN DNS name, computes the SPKI fingerprint,
+and verifies via DNS TXT at `_mtc-ca.<SAN>`.  All good — domain
+ownership of the SAN is proven.
+
+But the server then mints the MTC cert with whatever `subject` the
+client submitted in the enrollment body, **without checking** that
+`subject == <SAN>-ca`.  So an attacker who controls DNS for
+`bar.com` could:
+
+  1. Generate an ML-DSA-87 keypair + self-signed X.509 cert with
+     `SAN=bar.com`.
+  2. Submit enrollment with `subject=factsorlie.com-ca` and their
+     X.509 cert (SAN=bar.com) in `extensions.ca_certificate_pem`.
+  3. Server DNS-validates `_mtc-ca.bar.com` → passes (attacker owns
+     it).
+  4. Server mints an MTC cert with `subject=factsorlie.com-ca` and
+     the attacker's key.
+  5. Attacker now holds a cert that downstream code treats as the
+     CA for `factsorlie.com`.
+
+Exploit impact is limited by `revoke-key`'s own domain-scoping check
+(the CA's domain is derived from its subject, not attacker DNS), but
+it still pollutes the log with a cert that claims to be someone
+else's CA.
+
+**Proposed behaviour:** in `mtc_bootstrap.c` CA branch (after
+`mtc_validate_ca_cert` returns success) verify that the submitted
+`subject` literally equals `<SAN>-ca` for the SAN the validator
+extracted from the cert.  Reject if not.  Requires passing the SAN
+back from `mtc_validate_ca_cert` (today the helper swallows it).
+
+**Files:** `mtc-keymaster/server2/c/mtc_bootstrap.c` (CA branch),
+`mtc-keymaster/server2/c/mtc_ca_validate.c` + `.h` (add an out
+parameter for the extracted SAN DNS name).
+
 ---
 
 ## Appendix: Server Directory Layout
