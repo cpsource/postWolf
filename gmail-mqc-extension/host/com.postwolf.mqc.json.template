@@ -1,0 +1,9 @@
+{
+  "name": "com.postwolf.mqc",
+  "description": "postWolf mqc bridge — forwards Chrome extension requests to wsl.exe mqc",
+  "path": "__HOST_PATH__",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__EXTENSION_ID__/"
+  ]
+}
