@@ -1816,6 +1816,114 @@ should propagate to peers.
 `socket-level-wrapper-MQC/mqc.c` (new peer op),
 `mtc-keymaster/README-mqc-cli.md`.
 
+### 44. Gmail extension — encode/decode button that calls `mqc` via WSL
+
+Operators reading or composing email in Gmail on Windows should be
+able to wrap sensitive content with `mqc` without leaving the
+browser.  The handshake is: compose ordinary mail, click **Encode**,
+the selected body is replaced with an `mqc-1` JSON envelope; on
+the receiving side, highlight the envelope, click **Decode**, see
+the plaintext.  Keys and passwords never leave the local box — the
+extension just orchestrates a shell-out to the existing CLI.
+
+**Constraint:** Chrome runs on Windows, but `mqc` is a Linux binary
+(uses `getpass`/`/dev/tty`, `~/.TPM/`, `~/.env`).  A Windows port is
+possible (TODO candidate) but unnecessary for operators with WSL2
+installed: Chrome's **Native Messaging** API can spawn a Windows
+helper that forwards to `wsl.exe mqc …`.
+
+**Design (three layers):**
+
+1. **Browser extension** (`gmail-mqc-extension/`):
+   - `manifest.json` — Manifest V3, permissions:
+     `"nativeMessaging"`, `"scripting"`, `"activeTab"`,
+     `"host_permissions": ["https://mail.google.com/*"]`.
+   - `content_script.js` — injects two buttons into the Gmail DOM:
+     one in the compose toolbar (**Encode**), one in the message
+     reading pane (**Decode**).  On click:
+     - Encode: `chrome.runtime.connectNative("com.postwolf.mqc")`,
+       send `{op:"encode", body:<selection-or-entire-compose>,
+       domain?: <optional>}`, replace the compose contents with the
+       returned envelope.
+     - Decode: same channel, `{op:"decode", body:<selection>}`,
+       replace or overlay with the returned plaintext.
+   - `background.js` — thin Manifest-V3 service worker that owns
+     the native-messaging port and relays messages from the content
+     script.
+
+2. **Windows native-messaging host** (`gmail-mqc-extension/host/`):
+   - `mqc_native_host.py` (or small C / Go exe) — reads
+     length-prefixed JSON from stdin per the Chrome Native Messaging
+     protocol, spawns `wsl.exe -d <distro> -u <user> mqc --<mode>
+     --env [--domain <d>]`, pipes the body bytes in/out, writes the
+     length-prefixed JSON result back.
+   - `com.postwolf.mqc.json` — host manifest pointing Chrome at the
+     launcher, listing the extension ID in `allowed_origins`.
+   - `install.bat` / `install.ps1` — writes the registry entry
+     `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.postwolf.mqc`
+     pointing at the manifest's absolute path, and optionally the
+     `Software\Microsoft\Edge\NativeMessagingHosts` one for Edge.
+
+3. **WSL side** — already in place.  The host just needs:
+   - `mqc` installed inside the WSL distro (done).
+   - `~/.env` with `MQC_MASTER_PASSWORD="…"` (done).
+   - Optional `~/.TPM/<domain>/mqc-password.pw` for per-domain
+     caching if the operator prefers that over `--env`.
+
+**Message flow on Encode:**
+```
+Gmail DOM  ─┐
+            ├─► content_script picks up body + domain
+            │
+background.js ─► Chrome Native Messaging
+            │
+mqc_native_host.py (Windows) ─► wsl.exe mqc --encode --env
+            │                              │
+            │                              ├─► reads ~/.env in WSL
+            │                              ├─► AES-256-GCM seals body
+            │                              └─► prints {"v":"mqc-1",…} JSON
+            │
+            └◄── returns JSON as length-prefixed message
+Gmail DOM  ◄── content_script replaces body with envelope
+```
+
+**Security notes:**
+- Native messaging only works to extensions listed in the host
+  manifest's `allowed_origins` — Gmail's content-script injection
+  is the only UI gate.
+- WSL2 → Windows bridge pipes bytes through `wsl.exe` stdin/stdout.
+  Set `WSL_UTF8=1` in the host's spawned environment to avoid
+  CRLF / UTF-16 surprises on older Windows builds.
+- Password material (`~/.env`, `~/.TPM/…/mqc-password.pw`) stays
+  inside WSL — the extension never sees it, and the Windows helper
+  only forwards opaque bytes.
+- Gmail's DOM is an adversarial environment: content scripts run
+  in an isolated world and can access the page DOM but not the
+  page's JS globals.  Buttons should be injected as siblings of
+  Gmail's own toolbar, not by patching page JS.
+
+**Out of scope for the initial sketch:**
+- Streaming very large attachments (TODO #41's chunked AEAD would
+  land first).
+- Automatic detection of mqc-1 envelopes inside received email
+  (decode-on-arrival).  Initial version requires explicit click.
+- Firefox support.  The Native Messaging protocol is compatible,
+  but the manifest location differs; worth a follow-up once the
+  Chrome flow works.
+
+**Files (new):**
+- `gmail-mqc-extension/manifest.json`
+- `gmail-mqc-extension/content_script.js`
+- `gmail-mqc-extension/background.js`
+- `gmail-mqc-extension/host/mqc_native_host.py`
+- `gmail-mqc-extension/host/com.postwolf.mqc.json`
+- `gmail-mqc-extension/host/install.ps1`
+- `gmail-mqc-extension/README.md`
+
+Optional follow-up once this is stable: native Windows `mqc.exe`
+build (wolfCrypt + json-c compile cleanly under MSYS2 / vcpkg) so
+operators without WSL can use the same extension unchanged.
+
 ---
 
 ## Appendix: Server Directory Layout
