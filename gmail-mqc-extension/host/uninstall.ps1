@@ -30,3 +30,11 @@ switch ($Browser) {
         Unregister-Browser 'Microsoft\Edge'
     }
 }
+
+# Clear MQC_WSL_* user env vars that install.ps1 may have set.
+foreach ($v in @('MQC_WSL_DISTRO','MQC_WSL_USER','MQC_WSL_PATH')) {
+    if ([Environment]::GetEnvironmentVariable($v, 'User')) {
+        [Environment]::SetEnvironmentVariable($v, $null, 'User')
+        Write-Host "cleared env (user): $v"
+    }
+}

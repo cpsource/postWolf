@@ -81,20 +81,49 @@ def send_message(obj) -> None:
 
 
 # --- WSL / mqc bridge -----------------------------------------------------
+#
+# Environment knobs honoured by the shim:
+#   MQC_FORCE_LOCAL   "1" → use plain `mqc` instead of `wsl.exe …`
+#                           (used by test_shim.py inside WSL).
+#   MQC_WSL_PATH      Absolute path to the mqc binary inside WSL.
+#                     Default: /usr/local/bin/mqc (kit-mqc install).
+#                     Using an absolute path bypasses $PATH issues in
+#                     wsl.exe's non-interactive shell when systemd
+#                     user-session setup or Windows PATH interop
+#                     breaks the normal default PATH.
+#   MQC_WSL_DISTRO    If set, passes `-d <distro>` to wsl.exe.
+#   MQC_WSL_USER      If set, passes `-u <user>`   to wsl.exe.
+
+def mqc_bin() -> str:
+    return os.environ.get("MQC_WSL_PATH", "/usr/local/bin/mqc")
+
+
+def wsl_prefix() -> list[str]:
+    """The fixed `wsl.exe [-d …] [-u …]` prefix before the mqc path."""
+    argv = ["wsl.exe"]
+    distro = os.environ.get("MQC_WSL_DISTRO")
+    user = os.environ.get("MQC_WSL_USER")
+    if distro:
+        argv += ["-d", distro]
+    if user:
+        argv += ["-u", user]
+    return argv
+
+
 def wsl_argv(op: str, domain: str | None) -> list[str]:
     """Build the command line for a given op.
 
-    Normally `wsl.exe mqc …` (host runs on Windows, mqc in WSL).  If
-    MQC_FORCE_LOCAL=1 is set in the environment we shell out to plain
-    `mqc` — used by test_shim.py when running the smoke suite inside
-    WSL without a Windows round-trip.
+    Normally `wsl.exe [-d …] [-u …] <mqc-abspath> …` (host runs on
+    Windows, mqc in WSL).  If MQC_FORCE_LOCAL=1 we shell out to plain
+    `mqc` on the current box instead — used by test_shim.py when
+    running the smoke suite inside WSL without a Windows round-trip.
     """
     if op not in ("encode", "decode"):
         raise ValueError(f"unsupported op: {op!r}")
     if os.environ.get("MQC_FORCE_LOCAL") == "1":
         argv = ["mqc", f"--{op}", "--env", "--no-cache"]
     else:
-        argv = ["wsl.exe", "mqc", f"--{op}", "--env", "--no-cache"]
+        argv = wsl_prefix() + [mqc_bin(), f"--{op}", "--env", "--no-cache"]
     if domain:
         argv += ["--domain", domain]
     return argv
@@ -139,14 +168,23 @@ def handle(req: dict) -> dict:
             if os.environ.get("MQC_FORCE_LOCAL") == "1":
                 argv = ["mqc", "--help"]
             else:
-                argv = ["wsl.exe", "mqc", "--help"]
+                argv = wsl_prefix() + [mqc_bin(), "--help"]
             r = subprocess.run(
                 argv,
                 capture_output=True,
                 timeout=5,
                 env={**os.environ, "WSL_UTF8": "1"},
             )
-            banner = (r.stdout or r.stderr).decode("utf-8", errors="replace")
+            stdout = r.stdout.decode("utf-8", errors="replace")
+            stderr = r.stderr.decode("utf-8", errors="replace")
+            if r.returncode != 0:
+                return {
+                    "ok": False,
+                    "error": f"ping: exit {r.returncode}\n"
+                             f"argv: {' '.join(argv)}\n"
+                             f"stderr: {stderr.strip()[:400]}",
+                }
+            banner = stdout or stderr
             return {"ok": True, "result": banner[:512]}
         except Exception as e:
             return {"ok": False, "error": f"ping failed: {e}"}

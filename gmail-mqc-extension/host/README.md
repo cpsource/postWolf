@@ -62,6 +62,52 @@ correct absolute path, then registers it under
 `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.postwolf.mqc`
 pointing at that manifest.
 
+### PowerShell execution policy
+
+On a fresh Windows box the default policy blocks unsigned scripts
+and you'll see:
+
+    File install.ps1 cannot be loaded because running scripts is
+    disabled on this system.  … UnauthorizedAccess
+
+Two ways past it:
+
+```powershell
+# one-shot bypass (no policy change):
+powershell -ExecutionPolicy Bypass -File .\install.ps1 `
+           -ExtensionId abcdefghijklmnopqrstuvwxyzabcdef
+
+# or permanent per-user (recommended):
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+Unblock-File .\install.ps1          # clears the "downloaded" MOTW flag
+Unblock-File .\uninstall.ps1
+.\install.ps1 -ExtensionId abcdefghijklmnopqrstuvwxyzabcdef
+```
+
+### Telling the shim which WSL distro/user has mqc
+
+If `wsl whoami` returns a user that doesn't have mqc on PATH — or
+`wsl mqc --help` says *command not found* even though
+`/usr/local/bin/mqc` exists — it's usually because the default WSL
+user's shell starts with a truncated `$PATH` (systemd-user-session
+failure, Windows-PATH interop noise, etc.).  The shim side-steps
+this by using an absolute path to `mqc` inside WSL
+(`/usr/local/bin/mqc` by default) and lets you pin the distro/user
+via install-time switches:
+
+```powershell
+.\install.ps1 -ExtensionId <id> -WslDistro Ubuntu -WslUser ubuntu
+```
+
+These persist as `MQC_WSL_DISTRO` / `MQC_WSL_USER` in your user
+environment; the shim reads them on every invocation.  Override the
+binary location with `-MqcPath /some/other/path` if you installed
+mqc outside `/usr/local/bin/`.
+
+**Important:** environment variables only affect *new* processes.
+After running install.ps1, close and re-open Chrome so its
+extension host picks up the updated vars.
+
 ## Test without the extension
 
 **Inside WSL** (uses local `mqc`, no Windows round-trip):
