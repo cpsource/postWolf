@@ -85,6 +85,7 @@ install -m 755 "$HERE/bin/bootstrap_leaf"        /usr/local/bin/bootstrap_leaf
 install -m 755 "$HERE/bin/show-tpm"              /usr/local/bin/show-tpm
 install -m 755 "$HERE/bin/renew-cert"            /usr/local/bin/renew-cert
 install -m 755 "$HERE/bin/check-renewal-cert"    /usr/local/bin/check-renewal-cert
+install -m 755 "$HERE/bin/mqc"                   /usr/local/bin/mqc
 install -m 755 "$HERE/bin/create_leaf_keypair.py"   /usr/local/bin/create_leaf_keypair.py
 install -m 755 "$HERE/bin/register-leaf.sh"         /usr/local/bin/register-leaf.sh
 
@@ -102,7 +103,7 @@ install -m 644 "$HERE/doc/README-leaf-registration.md" \
 
 # --- 5. Verify ldd -----------------------------------------------------
 missing_libs=0
-for t in bootstrap_leaf show-tpm renew-cert check-renewal-cert; do
+for t in bootstrap_leaf show-tpm renew-cert check-renewal-cert mqc; do
     if ldd "/usr/local/bin/$t" 2>/dev/null | grep -q "not found"; then
         echo "Warning: /usr/local/bin/$t has unresolved shared libs:" >&2
         ldd "/usr/local/bin/$t" | grep "not found" >&2

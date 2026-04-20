@@ -22,6 +22,7 @@ required=(
     "mtc-keymaster/tools/c/show-tpm"
     "mtc-keymaster/tools/c/renew-cert"
     "mtc-keymaster/tools/c/check-renewal-cert"
+    "mtc-keymaster/tools/c/mqc"
     "mtc-keymaster/tools/python/create_leaf_keypair.py"
     "mtc-keymaster/tools/sh/setup-recert-crond.sh"
     "mtc-keymaster/tools/sh/register-leaf.sh"
@@ -62,6 +63,7 @@ install -m 755 "$REPO_ROOT/mtc-keymaster/tools/c/bootstrap_leaf"        "$STAGE/
 install -m 755 "$REPO_ROOT/mtc-keymaster/tools/c/show-tpm"              "$STAGE/bin/"
 install -m 755 "$REPO_ROOT/mtc-keymaster/tools/c/renew-cert"            "$STAGE/bin/"
 install -m 755 "$REPO_ROOT/mtc-keymaster/tools/c/check-renewal-cert"    "$STAGE/bin/"
+install -m 755 "$REPO_ROOT/mtc-keymaster/tools/c/mqc"                   "$STAGE/bin/"
 install -m 755 "$REPO_ROOT/mtc-keymaster/tools/python/create_leaf_keypair.py" "$STAGE/bin/"
 
 # Cron helper (goes to /usr/local/sbin on target — see install-leaf-kit.sh)
