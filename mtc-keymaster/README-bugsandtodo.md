@@ -1665,6 +1665,45 @@ ca_certificate_pem SPKI — both fields must carry the same public key."*
 
 Files: `mtc_ca_validate.{c,h}`, `mtc_bootstrap.c`.
 
+### 39. Retire mtc_crypt (AES-128-CBC + byte-rotate) in favour of AES-256-GCM
+
+The DH bootstrap channel (port 8445) currently uses `mtc_crypt.c`:
+`pad → AES-128-CBC encrypt → byte-rotate` on encode (and the inverse
+on decode).  Three weaknesses:
+
+1. **CBC without a MAC.** No authentication tag; the only integrity
+   check is that decryption of a tampered ciphertext produces
+   plaintext that fails the application-level JSON parse.  This
+   leaves a padding-oracle surface.
+2. **The byte-rotate is obfuscation, not encryption.** The rotation
+   amount is derived from `sum(ctx->key[i]) % (buflen - 21) + 11` —
+   a trivial function of the key.  It prevents casual block-aligned
+   pattern analysis but adds no meaningful security margin on top
+   of CBC.
+3. **AES-128, not 256.** The rest of the stack (MQC on 8446) uses
+   AES-256-GCM — that's the quantum-balanced choice (ML-KEM-768
+   pairs with AES-256 to keep the whole pipeline at a coherent
+   category-3 level).  The bootstrap channel is still the weakest
+   symmetric-cipher link.
+
+MQC's `socket-level-wrapper-MQC/mqc.c` already demonstrates the
+replacement pattern end-to-end:
+
+    HKDF-SHA256(shared_secret, salt, info) → 32-byte AES-256-GCM key
+    wc_AesGcmEncrypt / wc_AesGcmDecrypt with per-message nonce
+
+**Proposed behaviour:** retire `mtc_crypt_encode` / `mtc_crypt_decode`
+and replace the bootstrap channel's framing with AES-256-GCM sealed
+messages (same HKDF-derived key, IV per message, 16-byte GCM tag).
+Drop the byte-rotate entirely.  Bump the HKDF output to 32 bytes.
+
+**Files:** `mtc-keymaster/server2/c/mtc_crypt.{c,h}` (replace with a
+GCM wrapper or delete), `mtc-keymaster/server2/c/mtc_bootstrap.c`
+(caller updates for AEAD IV handling), `mtc-keymaster/tools/c/bootstrap_ca.c`
+and `bootstrap_leaf.c` (client mirrors).  Wire-compat break — a
+version bump in the DH-bootstrap message envelope is needed so the
+server can tell old-from-new callers during rollout.
+
 ---
 
 ## Appendix: Server Directory Layout
