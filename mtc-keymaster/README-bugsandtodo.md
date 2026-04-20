@@ -1643,6 +1643,28 @@ back from `mtc_validate_ca_cert` (today the helper swallows it).
 `mtc-keymaster/server2/c/mtc_ca_validate.c` + `.h` (add an out
 parameter for the extracted SAN DNS name).
 
+### 38. CA bootstrap: cross-check `public_key_pem` vs X.509 SPKI — **DONE 2026-04-19**
+
+The CA bootstrap request carries the public key twice:
+- `public_key_pem` at the top level → becomes the MTC cert's
+  `subject_public_key_hash`.
+- `extensions.ca_certificate_pem` → its SPKI is what gets
+  DNS-validated.
+
+If those disagree, an attacker could submit the legitimate operator's
+public X.509 (which passes DNS) alongside their own `public_key_pem`,
+and the minted cert would bind to the attacker's key — for a CA
+subject the attacker doesn't own.  No DNS control required to
+exploit.
+
+**Fix shipped:** `mtc_validate_ca_cert` now returns the X.509's SPKI
+fingerprint via a new out-parameter (`spki_fp_out`); `mtc_bootstrap.c`'s
+CA branch hashes `public_key_pem` and refuses enrollment unless the
+two fingerprints match.  Error: *"public_key_pem does not match
+ca_certificate_pem SPKI — both fields must carry the same public key."*
+
+Files: `mtc_ca_validate.{c,h}`, `mtc_bootstrap.c`.
+
 ---
 
 ## Appendix: Server Directory Layout

@@ -195,7 +195,8 @@ int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex)
  *   1  if not a CA request, or CA validated successfully.
  *   0  if CA validation failed (rejected).
  ******************************************************************************/
-int mtc_validate_ca_cert(struct json_object *extensions)
+int mtc_validate_ca_cert(struct json_object *extensions,
+                         char *spki_fp_out, size_t spki_fp_out_sz)
 {
     struct json_object *ca_cert_val;
     const char *ca_cert_pem;
@@ -207,6 +208,7 @@ int mtc_validate_ca_cert(struct json_object *extensions)
     int pem_len;
     char fp_hex[65];
 
+    if (spki_fp_out && spki_fp_out_sz > 0) spki_fp_out[0] = '\0';
     if (!extensions)
         return 1;
 
@@ -301,6 +303,13 @@ int mtc_validate_ca_cert(struct json_object *extensions)
         LOG_DEBUG("public key fingerprint: %.16s...", fp_hex);
 
         wc_FreeDecodedCert(&decoded);
+
+        /* Export the fp so the caller can cross-check against the
+         * separately-submitted `public_key_pem` field.  See the
+         * header-file rationale for why this matters. */
+        if (spki_fp_out && spki_fp_out_sz >= sizeof(fp_hex)) {
+            memcpy(spki_fp_out, fp_hex, sizeof(fp_hex));
+        }
 
         return mtc_validate_ca_dns_txt(domain, fp_hex);
     }

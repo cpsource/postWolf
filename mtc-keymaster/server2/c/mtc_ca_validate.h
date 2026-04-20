@@ -24,11 +24,24 @@
  * DNS validation (no root CA bypass).  CA enrollment does not use
  * an enrollment nonce — only leaf enrollment does.
  *
- * @param[in] extensions  JSON extensions object (may be NULL).
+ * When @p spki_fp_out is non-NULL, writes the hex-encoded SHA-256 of
+ * the X.509's SPKI (64 chars + NUL) so the caller can cross-check
+ * that the separately-submitted `public_key_pem` field in the
+ * enrollment body has the same fingerprint.  Without this check an
+ * attacker could submit a legitimate operator's public X.509 in
+ * `ca_certificate_pem` alongside their own `public_key_pem` — the
+ * DNS check would pass (against the legit SPKI) while the minted
+ * cert would bind to the attacker's key.
+ *
+ * @param[in]  extensions      JSON extensions object (may be NULL).
+ * @param[out] spki_fp_out     Receives the 64-hex-char SPKI fingerprint.
+ *                              May be NULL (skip the capture).
+ * @param[in]  spki_fp_out_sz  Size of @p spki_fp_out (needs >= 65).
  *
  * @return  1 if not a CA request or validation succeeds.  0 if rejected.
  */
-int mtc_validate_ca_cert(struct json_object *extensions);
+int mtc_validate_ca_cert(struct json_object *extensions,
+                         char *spki_fp_out, size_t spki_fp_out_sz);
 
 /**
  * @brief  Validate DNS TXT record at _mtc-ca.<domain>.

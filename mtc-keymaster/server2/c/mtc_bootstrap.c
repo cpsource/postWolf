@@ -656,8 +656,10 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
 
         if (is_ca_enrollment) {
             /* CA enrollment: validate X.509 cert + DNS TXT record */
+            char x509_spki_fp[65] = {0};
             LOG_INFO("bootstrap: CA enrollment request for '%s'", subject);
-            if (!mtc_validate_ca_cert(extensions)) {
+            if (!mtc_validate_ca_cert(extensions,
+                                      x509_spki_fp, sizeof(x509_spki_fp))) {
                 LOG_WARN("bootstrap: CA validation failed for '%s'", subject);
                 {
                     const char *err_json = "{\"status\":\"error\","
@@ -671,6 +673,48 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                     }
                 }
                 goto cleanup;
+            }
+
+            /* Cross-check that the top-level public_key_pem hashes to the
+             * same SPKI fingerprint as the X.509 cert.  Without this an
+             * attacker could submit the legitimate operator's public X.509
+             * (which passes DNS validation) in ca_certificate_pem while
+             * planting their own public_key_pem at the top level — the
+             * minted cert would then bind to the attacker's key. */
+            if (x509_spki_fp[0]) {
+                wc_Sha256 sha_pk;
+                uint8_t pk_h[32];
+                char pk_fp[65];
+                int pi;
+                wc_InitSha256(&sha_pk);
+                wc_Sha256Update(&sha_pk, (const uint8_t *)pub_key_pem,
+                                (word32)strlen(pub_key_pem));
+                wc_Sha256Final(&sha_pk, pk_h);
+                wc_Sha256Free(&sha_pk);
+                for (pi = 0; pi < 32; pi++)
+                    snprintf(pk_fp + pi * 2, 3, "%02x", pk_h[pi]);
+                pk_fp[64] = '\0';
+
+                if (strcmp(pk_fp, x509_spki_fp) != 0) {
+                    LOG_WARN("bootstrap: CA enrollment refused — "
+                             "public_key_pem fp %.16s... does not match "
+                             "ca_certificate_pem SPKI fp %.16s...",
+                             pk_fp, x509_spki_fp);
+                    {
+                        const char *err_json = "{\"status\":\"error\","
+                            "\"message\":\"public_key_pem does not match "
+                            "ca_certificate_pem SPKI — both fields must "
+                            "carry the same public key.\"}";
+                        unsigned int err_enc_len = sizeof(enc_buf);
+                        if (mtc_crypt_encode(crypt_ctx,
+                                (unsigned char *)err_json,
+                                (unsigned int)strlen(err_json),
+                                enc_buf, &err_enc_len) == 0) {
+                            send_length_prefixed(fd, enc_buf, err_enc_len);
+                        }
+                    }
+                    goto cleanup;
+                }
             }
 
             /* Revocation gate: if the most-recent CA entry for this
