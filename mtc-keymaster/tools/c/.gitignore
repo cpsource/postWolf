@@ -7,5 +7,6 @@ issue_leaf_nonce
 revoke-key
 renew-cert
 check-renewal-cert
+cancel-nonce
 attack-port-8445
 attack-port-8446

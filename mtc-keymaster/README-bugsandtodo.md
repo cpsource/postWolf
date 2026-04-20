@@ -1559,27 +1559,29 @@ freshness, checkpoint history.
 `GET /revocations/detail` server endpoint returning per-index
 metadata (reason, timestamp, revoker) that the site can render.
 
-### 35. Explicit reservation-nonce invalidation tool
+### 35. Explicit reservation-nonce invalidation tool — **DONE 2026-04-20**
 
-Long-lived reservation nonces (`issue_leaf_nonce --ttl-days N`,
-bound to `(domain, label)` with `fp` late-bound) can live up to 30
-days per `MTC_NONCE_MAX_TTL_DAYS`.  If an operator needs to retract
-one early — e.g. the recipient lost the nonce, left the team, or was
-issued the wrong label — the only current option is to wait for the
-TTL to expire.  The partial unique index on
-`(domain, label) WHERE status='pending'` also blocks reissuing a
-fresh reservation for the same label while the old one is still
-pending.
+Ships as a `cancel-nonce` CA-operator tool + `POST /cancel-nonce`
+MQC-authenticated endpoint.  Given `(domain, label)` the server
+atomically flips the matching pending row to `status='expired'`,
+gated by the caller's MQC `peer_index` matching the nonce's
+`ca_index` (only the issuing CA can cancel).  After cancellation,
+`issue_leaf_nonce` can re-issue for the same slot because the
+partial unique index only constrains rows with `status='pending'`.
 
-**Proposed behavior:** a `revoke-nonce` (or `cancel-nonce`) tool
-that, given `(domain, label)` or a nonce hex, marks the row as
-`status='expired'` server-side (or deletes it).  Gated by the CA
-identity (MQC-authenticated, same pattern as `/renew-cert`).  Allows
-the operator to reissue cleanly.
+Files shipped:
+- `mtc-keymaster/tools/c/cancel-nonce.c` — MQC client, same shape
+  as `revoke-key`: auto-detects CA identity under `~/.TPM/*-ca/`,
+  POSTs to `/cancel-nonce`.
+- `mtc-keymaster/server2/c/mtc_db.c` — `mtc_db_cancel_nonce(domain,
+  label, caller_ca_index)` helper with an atomic UPDATE…RETURNING.
+- `mtc-keymaster/server2/c/mtc_http.c` — `handle_cancel_nonce`
+  + dispatch at `POST /cancel-nonce`.  Three gates: MQC transport,
+  caller subject ends in `-ca`, DB row's `ca_index` matches.
 
-**Files:** new `tools/c/revoke-nonce.c` + a new MQC-authenticated
-endpoint in `mtc_http.c` (`POST /revoke-nonce`).  DB helper in
-`mtc_db.c` (`mtc_db_cancel_nonce(domain, label, caller_ca_index)`).
+Usage: `cancel-nonce --domain corp.example --label Alice`.  Returns
+200 on success, 404 if no matching pending row (already consumed,
+expired, wrong CA, wrong label).
 
 ### 36. Explicit `-ca` suffix check on leaf bootstrap (defence-in-depth) — **DONE 2026-04-20**
 

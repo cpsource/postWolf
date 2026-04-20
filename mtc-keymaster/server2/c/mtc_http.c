@@ -27,6 +27,7 @@
  *     POST /enrollment/nonce        — issue enrollment nonce
  *     POST /certificate/request     — enroll (CA or leaf)
  *     POST /renew-cert              — renew (MQC-authenticated, 8446 only)
+ *     POST /cancel-nonce            — retract a pending reservation nonce (MQC-only, issuer CA only)
  *     POST /revoke                  — revoke a certificate
  *
  * Dependencies:
@@ -713,6 +714,152 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
 
 /* handle_certificate_request removed — enrollment now goes through the
  * DH bootstrap port (mtc_bootstrap.c).  See README-unsure.md. */
+
+/******************************************************************************
+ * Function:    handle_cancel_nonce
+ *
+ * Description:
+ *   POST /cancel-nonce — retract a pending reservation nonce early.
+ *   MQC-only: caller's peer cert_index is read from the transport and
+ *   used as the authorization token against the nonce row's ca_index.
+ *   Only the CA that issued the reservation can cancel it.
+ *
+ *   The client sends:
+ *     - domain:  domain the nonce was issued for
+ *     - label:   label the reservation was bound to
+ *
+ *   The server:
+ *     1. Verifies MQC transport and reads peer_index
+ *     2. Verifies the peer is a CA (subject ends in "-ca")
+ *     3. Atomically expires the matching pending nonce (DB gate
+ *        requires ca_index == peer_index)
+ *
+ *   On success returns 200 with {"cancelled": true, "domain": D,
+ *   "label": L}.  If no matching pending nonce (already consumed,
+ *   expired, wrong CA, wrong label), returns 404 — treat as
+ *   "nothing to cancel."
+ *
+ * Input Arguments:
+ *   io        - Client I/O context (must have io->mqc != NULL).
+ *   store     - MTC store (tree, certs, DB).
+ *   body      - HTTP request body (JSON).
+ *   body_len  - Length of body in bytes.
+ ******************************************************************************/
+static void handle_cancel_nonce(client_io *io, MtcStore *store,
+                                const char *body, int body_len)
+{
+    struct json_object *req, *val, *caller_cert, *sc_j, *tbs_j, *subj_j;
+    const char *domain, *label, *caller_subject;
+    int peer_idx, rc;
+    size_t subj_len;
+    (void)body_len;
+
+    /* Step 1: MQC-only */
+    if (!io->mqc) {
+        LOG_WARN("cancel-nonce rejected: non-MQC transport from %s",
+                 io->ip_str);
+        http_send_error(io, 403, "/cancel-nonce requires MQC transport");
+        return;
+    }
+    peer_idx = mqc_get_peer_index(io->mqc);
+    if (peer_idx < 0) {
+        LOG_WARN("cancel-nonce rejected: no MQC peer identity from %s",
+                 io->ip_str);
+        http_send_error(io, 403, "MQC peer identity unavailable");
+        return;
+    }
+
+    /* Step 2: verify caller is a CA (subject ends in "-ca") */
+    if (peer_idx >= store->cert_count ||
+        store->certificates[peer_idx] == NULL) {
+        http_send_error(io, 404, "caller cert not found in log");
+        return;
+    }
+    caller_cert = store->certificates[peer_idx];
+    if (!json_object_object_get_ex(caller_cert, "standalone_certificate", &sc_j) ||
+        !json_object_object_get_ex(sc_j, "tbs_entry", &tbs_j) ||
+        !json_object_object_get_ex(tbs_j, "subject", &subj_j)) {
+        http_send_error(io, 500, "internal error: malformed caller cert");
+        return;
+    }
+    caller_subject = json_object_get_string(subj_j);
+    subj_len = caller_subject ? strlen(caller_subject) : 0;
+    if (subj_len < 3 ||
+        strcmp(caller_subject + subj_len - 3, "-ca") != 0) {
+        LOG_WARN("cancel-nonce refused: caller '%s' (idx %d) is not a CA",
+                 caller_subject ? caller_subject : "(null)", peer_idx);
+        http_send_error(io, 403,
+            "only CA identities (subject ending in '-ca') may cancel "
+            "reservation nonces");
+        return;
+    }
+
+    /* Step 3: parse body */
+    if (!body) {
+        http_send_error(io, 400, "missing request body");
+        return;
+    }
+    req = json_tokener_parse(body);
+    if (!req) {
+        http_send_error(io, 400, "invalid JSON");
+        return;
+    }
+    if (!json_object_object_get_ex(req, "domain", &val)) {
+        http_send_error(io, 400, "missing 'domain'");
+        json_object_put(req);
+        return;
+    }
+    domain = json_object_get_string(val);
+    if (!json_object_object_get_ex(req, "label", &val)) {
+        http_send_error(io, 400, "missing 'label'");
+        json_object_put(req);
+        return;
+    }
+    label = json_object_get_string(val);
+    if (!domain || !domain[0] || !label || !label[0]) {
+        http_send_error(io, 400, "'domain' and 'label' must both be non-empty");
+        json_object_put(req);
+        return;
+    }
+
+    /* Step 4: DB cancel; ca_index gate happens inside the helper */
+    if (!store->db) {
+        http_send_error(io, 503, "database not available");
+        json_object_put(req);
+        return;
+    }
+    rc = mtc_db_cancel_nonce(store->db, domain, label, peer_idx);
+    if (rc < 0) {
+        http_send_error(io, 500, "cancel_nonce DB error");
+        json_object_put(req);
+        return;
+    }
+    if (rc == 0) {
+        LOG_INFO("cancel-nonce: no matching pending nonce for "
+                 "(domain=%s, label=%s, ca_index=%d)",
+                 domain, label, peer_idx);
+        http_send_error(io, 404,
+            "no pending reservation matches (domain, label, caller) "
+            "— it may have been consumed, expired, or issued by a "
+            "different CA");
+        json_object_put(req);
+        return;
+    }
+
+    LOG_INFO("cancel-nonce: cancelled reservation (domain=%s, "
+             "label=%s, ca_index=%d)",
+             domain, label, peer_idx);
+
+    {
+        struct json_object *resp = json_object_new_object();
+        json_object_object_add(resp, "cancelled", json_object_new_boolean(1));
+        json_object_object_add(resp, "domain", json_object_new_string(domain));
+        json_object_object_add(resp, "label", json_object_new_string(label));
+        http_send_json_obj(io, 200, resp);
+        json_object_put(resp);
+    }
+    json_object_put(req);
+}
 
 /******************************************************************************
  * Function:    handle_renew_cert
@@ -1933,6 +2080,13 @@ static void handle_request(client_io *io, MtcStore *store)
                 return;
             }
             handle_renew_cert(io, store, body, body_len);
+        }
+        else if (strcmp(path, "/cancel-nonce") == 0) {
+            if (!mtc_ratelimit_check(io->ip_str, RL_REVOKE)) {
+                http_send_error(io, 429, "rate limit exceeded");
+                return;
+            }
+            handle_cancel_nonce(io, store, body, body_len);
         }
         else if (strcmp(path, "/revoke") == 0) {
             if (!mtc_ratelimit_check(io->ip_str, RL_REVOKE)) {

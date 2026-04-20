@@ -443,6 +443,31 @@ void mtc_db_consume_nonce(PGconn *conn, const char *nonce_hex);
 void mtc_db_expire_nonces(PGconn *conn);
 
 /**
+ * @brief    Cancel a pending reservation nonce early.
+ *
+ * @details
+ * Atomically expires a pending nonce matching `(domain, label)`,
+ * but only if `caller_ca_index` equals the nonce's stored
+ * `ca_index` (i.e., the cancelling caller is the same CA that
+ * issued the reservation).  This lets an operator retract a
+ * long-lived reservation without waiting out the TTL —
+ * otherwise the partial unique index `(domain, label) WHERE
+ * status='pending'` would block re-issuance of a fresh
+ * reservation for the same slot.
+ *
+ * @param[in] conn              Active PostgreSQL connection.
+ * @param[in] domain            Domain the nonce was issued for.
+ * @param[in] label             Label the nonce was bound to.
+ * @param[in] caller_ca_index   MQC peer's cert_index (must match).
+ *
+ * @return  1 if exactly one row cancelled, 0 if no matching
+ *          pending nonce (wrong CA, wrong label, already consumed,
+ *          or already expired), -1 on DB error.
+ */
+int mtc_db_cancel_nonce(PGconn *conn, const char *domain,
+                        const char *label, int caller_ca_index);
+
+/**
  * @brief    Check connection and reconnect if needed.
  *
  * @param[in,out] conn_ptr  Pointer to PGconn pointer. May be replaced

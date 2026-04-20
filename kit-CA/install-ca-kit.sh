@@ -77,7 +77,8 @@ install -m 644 "$HERE/mqc.pc"         /usr/local/lib/pkgconfig/mqc.pc
 echo ">>> Installing CA tools → /usr/local/bin/ ..."
 install -d /usr/local/bin
 for t in bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce \
-         admin_recosign revoke-key renew-cert check-renewal-cert; do
+         admin_recosign revoke-key renew-cert check-renewal-cert \
+         cancel-nonce; do
     install -m 755 "$HERE/bin/$t" "/usr/local/bin/$t"
 done
 for p in create_ca_cert.py create_leaf_keypair.py ca_dns_txt.py; do
@@ -103,7 +104,8 @@ install -m 644 "$HERE/doc/README-leaf-registration.md" \
 # --- 5. Verify ldd -----------------------------------------------------
 missing_libs=0
 for t in bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce \
-         admin_recosign revoke-key renew-cert check-renewal-cert; do
+         admin_recosign revoke-key renew-cert check-renewal-cert \
+         cancel-nonce; do
     if ldd "/usr/local/bin/$t" 2>/dev/null | grep -q "not found"; then
         echo "Warning: /usr/local/bin/$t has unresolved shared libs:" >&2
         ldd "/usr/local/bin/$t" | grep "not found" >&2
@@ -149,6 +151,8 @@ Next steps for a fresh CA operator:
        Or pre-provision a team (recipient keeps private key local):
          issue_leaf_nonce --domain <DOMAIN> --label Alice --ttl-days 7
          # Send the printed 64-hex nonce to Alice over a secure channel.
+         # If you need to retract a pending reservation early:
+         cancel-nonce --domain <DOMAIN> --label Alice
          # See /usr/local/share/doc/postWolf-ca/README-leaf-registration.md
 
     5. Revoke a leaf under your domain (authenticated, CA-signed):

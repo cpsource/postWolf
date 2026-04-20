@@ -89,6 +89,11 @@ again.
 - **Slot is locked.** While the reservation is pending, no one else
   can issue a second nonce for the same `(domain, label)` — the
   partial unique index prevents accidental double-issuance.
+- **Early cancel.** If the recipient lost the nonce or doesn't need
+  it anymore, the CA operator can retract the reservation before
+  TTL expiry with `cancel-nonce --domain X --label L` (MQC-
+  authenticated; only the issuing CA can cancel).  Frees the slot
+  for a fresh `issue_leaf_nonce`.
 - **TTL cap.** The server clamps `--ttl-days` at
   `MTC_NONCE_MAX_TTL_DAYS` (default 30). Longer reservations increase
   the window during which a leaked nonce is usable.

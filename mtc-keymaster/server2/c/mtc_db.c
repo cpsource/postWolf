@@ -1390,6 +1390,62 @@ void mtc_db_expire_nonces(PGconn *conn)
 }
 
 /******************************************************************************
+ * Function:    mtc_db_cancel_nonce
+ *
+ * Description:
+ *   Early-cancel a pending reservation nonce.  Atomically expires the
+ *   row matching (domain, label, ca_index) if status = 'pending'.
+ *   Authorization: the caller's ca_index (MQC peer_index) must match
+ *   the row's stored ca_index — so only the CA that issued the
+ *   reservation can cancel it.  Idempotent: a second call against a
+ *   row that was already cancelled/consumed returns 0, not error.
+ *
+ * Input Arguments:
+ *   conn             - Active PostgreSQL connection.
+ *   domain           - Domain the nonce was issued for.
+ *   label            - Label the nonce was bound to.
+ *   caller_ca_index  - MQC caller's cert_index; must equal row's ca_index.
+ *
+ * Returns:
+ *    1  if a row was cancelled.
+ *    0  if no matching pending row was found (not an error).
+ *   -1  on DB error (bad connection, malformed query).
+ ******************************************************************************/
+int mtc_db_cancel_nonce(PGconn *conn, const char *domain,
+                        const char *label, int caller_ca_index)
+{
+    PGresult *res;
+    char ca_idx_str[16];
+    const char *params[3];
+    int rc;
+
+    if (!conn || !domain || !label) return -1;
+
+    snprintf(ca_idx_str, sizeof(ca_idx_str), "%d", caller_ca_index);
+    params[0] = domain;
+    params[1] = label;
+    params[2] = ca_idx_str;
+
+    res = PQexecParams(conn,
+        "UPDATE mtc_enrollment_nonces SET status = 'expired' "
+        "WHERE domain = $1 AND label = $2 AND ca_index = $3 "
+        "AND status = 'pending' "
+        "RETURNING nonce",
+        3, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "[db] cancel_nonce failed: %s\n",
+                PQerrorMessage(conn));
+        PQclear(res);
+        return -1;
+    }
+
+    rc = (PQntuples(res) > 0) ? 1 : 0;
+    PQclear(res);
+    return rc;
+}
+
+/******************************************************************************
  * Function:    mtc_db_get_public_key
  *
  * Description:
