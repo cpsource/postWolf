@@ -45,6 +45,15 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <time.h>
+#include <limits.h>
+
+/* Path-buffer sizes tuned so gcc's -Wformat-truncation analysis fits:
+ *   PATHBUF holds "<PATH_MAX dir>/<short-suffix>"
+ *   PATHBUF2 holds "<PATHBUF path>/<filename>" (filename ~ 32)
+ * Picking them just big enough (rather than 2×PATH_MAX) keeps gcc's
+ * implicit input-size ceiling from bubbling up in nested snprintfs. */
+#define PATHBUF  (PATH_MAX + 64)
+#define PATHBUF2 (PATH_MAX + 256)
 
 #include <json-c/json.h>
 
@@ -460,7 +469,7 @@ static int extract_index_from_cert(const char *cert_path, int *out_idx)
 /* Atomically swap the staged .renew.tmp/ contents into the identity dir,
  * preserving the old material under .renew.bak/ until the swap commits.
  * On any failure, restores from .renew.bak/ and returns -1. */
-static int commit_swap(const char *dir_path, int is_ca)
+static int commit_swap(const char *dir_path_in, int is_ca)
 {
     const char *files[] = {
         "private_key.pem", "public_key.pem", "certificate.json", "index",
@@ -470,7 +479,16 @@ static int commit_swap(const char *dir_path, int is_ca)
     if (is_ca) { files[n++] = "ca_cert.pem"; }
     files[n] = NULL;
 
-    char bak[4096], tmp[4096], live[4096];
+    /* Bound dir_path locally so subsequent path concats have a known
+     * max-input size (keeps -Wformat-truncation quiet). */
+    char dir_path[PATH_MAX];
+    if (snprintf(dir_path, sizeof(dir_path), "%s", dir_path_in)
+        >= (int)sizeof(dir_path)) {
+        fprintf(stderr, "[check-renewal-cert] dir_path too long\n");
+        return -1;
+    }
+
+    char bak[PATHBUF], tmp[PATHBUF], live[PATHBUF];
     snprintf(bak, sizeof(bak), "%s/.renew.bak", dir_path);
     snprintf(tmp, sizeof(tmp), "%s/.renew.tmp", dir_path);
 
@@ -483,7 +501,7 @@ static int commit_swap(const char *dir_path, int is_ca)
     /* Move old → bak */
     int i;
     for (i = 0; files[i]; i++) {
-        char src[4096], dst[4096];
+        char src[PATHBUF2], dst[PATHBUF2];
         snprintf(src, sizeof(src), "%s/%s", dir_path, files[i]);
         snprintf(dst, sizeof(dst), "%s/%s", bak, files[i]);
         if (access(src, F_OK) != 0) continue;  /* not present, skip */
@@ -496,7 +514,7 @@ static int commit_swap(const char *dir_path, int is_ca)
 
     /* Move tmp → live */
     for (i = 0; files[i]; i++) {
-        char src[4096];
+        char src[PATHBUF2];
         snprintf(src, sizeof(src), "%s/%s", tmp, files[i]);
         snprintf(live, sizeof(live), "%s/%s", dir_path, files[i]);
         if (access(src, F_OK) != 0) {
@@ -512,7 +530,7 @@ static int commit_swap(const char *dir_path, int is_ca)
 
     /* Success — purge bak */
     for (i = 0; files[i]; i++) {
-        char b[1300];
+        char b[PATHBUF2];
         snprintf(b, sizeof(b), "%s/%s", bak, files[i]);
         unlink(b);  /* ignore errors */
     }
@@ -523,7 +541,7 @@ static int commit_swap(const char *dir_path, int is_ca)
 rollback:
     fprintf(stderr, "[check-renewal-cert] rolling back from %s\n", bak);
     for (i = 0; files[i]; i++) {
-        char src[4096], dst[4096];
+        char src[PATHBUF2], dst[PATHBUF2];
         snprintf(src, sizeof(src), "%s/%s", bak, files[i]);
         snprintf(dst, sizeof(dst), "%s/%s", dir_path, files[i]);
         if (access(src, F_OK) != 0) continue;
@@ -537,17 +555,23 @@ rollback:
 
 static int renew_one(identity_t *e, const char *server)
 {
-    char tmp_dir[4096];
-    char new_pubkey_path[4096];
-    char src[4096], dst[4096];
+    char tmp_dir[PATHBUF];
+    char new_pubkey_path[PATHBUF];
+    char src[PATHBUF2], dst[PATHBUF2];
     char index_txt[32];
-    char cert_out[4096];
-    const char *home;
+    char cert_out[PATHBUF2];
+    char home[512];
     int new_idx = -1;
     struct stat st;
 
-    home = getenv("HOME");
-    if (!home) home = "/tmp";
+    {
+        const char *h = getenv("HOME");
+        if (!h) h = "/tmp";
+        if (snprintf(home, sizeof(home), "%s", h) >= (int)sizeof(home)) {
+            fprintf(stderr, "[check-renewal-cert] HOME too long\n");
+            return -1;
+        }
+    }
 
     /* Step 1: generate new keypair */
     if (generate_new_keypair(e, new_pubkey_path,
@@ -559,7 +583,7 @@ static int renew_one(identity_t *e, const char *server)
     snprintf(tmp_dir, sizeof(tmp_dir), "%s/.renew.tmp", e->dir_path);
     if (stat(tmp_dir, &st) == 0) {
         /* Leftover from a previous failed run — clear it. */
-        char p[4096];
+        char p[PATHBUF2];
         const char *stale[] = {
             "private_key.pem", "public_key.pem", "certificate.json",
             "index", "ca_cert.pem", NULL

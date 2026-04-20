@@ -9,7 +9,6 @@
  *   status, and validity period. Caches verified certs for reuse.
  *
  * Dependencies:
- *   libcurl         (HTTP GET)
  *   json-c          (JSON parsing)
  *   wolfSSL crypto  (SHA-256, Merkle verify, cosignature verify)
  *
@@ -29,7 +28,6 @@
 #include <time.h>
 #include <errno.h>
 
-#include <curl/curl.h>
 #include <json-c/json.h>
 
 #define MQC_LOG(fmt, ...) \
@@ -215,72 +213,12 @@ static int mqc_hex_to_bytes(const char *hex, byte *out, int out_cap)
 #include "config.h"
 #define REVOKED_TTL      MQC_REVOKED_CACHE_TTL_SEC
 
-/******************************************************************************
- * libcurl write callback — accumulates response body in a malloc'd buffer.
- ******************************************************************************/
-struct curl_buf {
-    char  *data;
-    size_t sz;
-};
-
-static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb,
-                            void *userdata)
-{
-    struct curl_buf *b = (struct curl_buf *)userdata;
-    size_t total = size * nmemb;
-    char *tmp = realloc(b->data, b->sz + total + 1);
-    if (!tmp) return 0;
-    b->data = tmp;
-    memcpy(b->data + b->sz, ptr, total);
-    b->sz += total;
-    b->data[b->sz] = '\0';
-    return total;
-}
-
 /* Forward declarations for bootstrap-port helpers (defined below, but
  * referenced by fetch_certificate / check_revoked / peer pubkey lookup
  * higher up in the file). */
 static void  extract_host(const char *server, char *out, int outsz);
 static char *bootstrap_http_get(const char *mtc_server, const char *path,
                                 long *status);
-
-/******************************************************************************
- * Function:    http_get
- *
- * Description:
- *   Perform an HTTP(S) GET and return the response body.
- *   Caller frees the returned buffer.
- ******************************************************************************/
-static char *http_get(const char *url, long *http_code)
-{
-    CURL *curl;
-    CURLcode res;
-    struct curl_buf buf = {NULL, 0};
-
-    curl = curl_easy_init();
-    if (!curl) return NULL;
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-
-    res = curl_easy_perform(curl);
-
-    if (http_code)
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, http_code);
-
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
-        free(buf.data);
-        return NULL;
-    }
-
-    return buf.data;
-}
 
 /******************************************************************************
  * Function:    ensure_dir
@@ -361,22 +299,6 @@ static int write_file_str(const char *path, const char *data)
     fputs(data, f);
     fclose(f);
     return 0;
-}
-
-/******************************************************************************
- * Function:    normalize_server
- *
- * Description:
- *   Ensure server URL has https:// prefix.
- ******************************************************************************/
-static void normalize_server(const char *server, char *out, int outsz)
-{
-    if (strncmp(server, "http://", 7) == 0 ||
-        strncmp(server, "https://", 8) == 0) {
-        snprintf(out, (size_t)outsz, "%s", server);
-    } else {
-        snprintf(out, (size_t)outsz, "https://%s", server);
-    }
 }
 
 /******************************************************************************

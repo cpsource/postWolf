@@ -25,6 +25,7 @@
 #include <time.h>
 #include <math.h>
 #include <unistd.h>
+#include <limits.h>
 
 #include <json-c/json.h>
 #include "mqc.h"
@@ -270,9 +271,18 @@ static int load_entry(const char *tpm_dir, const char *name, tpm_entry_t *e)
 
 static void verify_entry(tpm_entry_t *e)
 {
-    char path[512];
+    char path[PATH_MAX];
     char *body;
     long code = 0;
+
+    /* Bound HOME once so subsequent snprintf calls have a known
+     * input size (keeps -Wformat-truncation quiet). */
+    char home_buf[512];
+    {
+        const char *h = getenv("HOME");
+        if (!h) h = "/tmp";
+        snprintf(home_buf, sizeof(home_buf), "%s", h);
+    }
 
     if (e->cert_index < 0) {
         strcat(e->v_errors, "no certificate index; ");
@@ -298,16 +308,12 @@ static void verify_entry(tpm_entry_t *e)
         if (srv_obj) {
             struct json_object *srv_sc, *srv_tbs, *srv_val;
             struct json_object *loc_obj, *loc_sc, *loc_tbs, *loc_val;
-            char loc_path[1024];
+            char loc_path[PATH_MAX];
             char *loc_json;
 
             /* Read local cert for comparison */
-            {
-                const char *home = getenv("HOME");
-                if (!home) home = "/tmp";
-                snprintf(loc_path, sizeof(loc_path), "%s/.TPM/%s/certificate.json",
-                         home, e->name);
-            }
+            snprintf(loc_path, sizeof(loc_path), "%s/.TPM/%s/certificate.json",
+                     home_buf, e->name);
             loc_json = read_file(loc_path);
             if (loc_json) {
                 loc_obj = json_tokener_parse(loc_json);
@@ -367,11 +373,9 @@ static void verify_entry(tpm_entry_t *e)
         strcat(e->v_errors, "public key not in Neon; ");
     } else {
         /* Compare with local key */
-        char loc_key_path[1024];
-        const char *home = getenv("HOME");
-        if (!home) home = "/tmp";
+        char loc_key_path[PATH_MAX];
         snprintf(loc_key_path, sizeof(loc_key_path),
-                 "%s/.TPM/%s/public_key.pem", home, e->name);
+                 "%s/.TPM/%s/public_key.pem", home_buf, e->name);
         {
             char *local_key = read_file(loc_key_path);
             struct json_object *pk_obj = json_tokener_parse(body);
