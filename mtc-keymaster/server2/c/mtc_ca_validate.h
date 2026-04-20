@@ -37,11 +37,18 @@
  * @param[out] spki_fp_out     Receives the 64-hex-char SPKI fingerprint.
  *                              May be NULL (skip the capture).
  * @param[in]  spki_fp_out_sz  Size of @p spki_fp_out (needs >= 65).
+ * @param[out] san_out         Receives the first SAN DNS name extracted
+ *                              from the X.509 cert (NUL-terminated).
+ *                              Caller uses this to verify the enrollment
+ *                              body's `subject` field equals
+ *                              `<san_out>-ca`.  May be NULL.
+ * @param[in]  san_out_sz      Size of @p san_out.
  *
  * @return  1 if not a CA request or validation succeeds.  0 if rejected.
  */
 int mtc_validate_ca_cert(struct json_object *extensions,
-                         char *spki_fp_out, size_t spki_fp_out_sz);
+                         char *spki_fp_out, size_t spki_fp_out_sz,
+                         char *san_out, size_t san_out_sz);
 
 /**
  * @brief  Validate DNS TXT record at _mtc-ca.<domain>.

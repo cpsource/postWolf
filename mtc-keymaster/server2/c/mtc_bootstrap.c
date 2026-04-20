@@ -657,9 +657,11 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
         if (is_ca_enrollment) {
             /* CA enrollment: validate X.509 cert + DNS TXT record */
             char x509_spki_fp[65] = {0};
+            char x509_san[256] = {0};
             LOG_INFO("bootstrap: CA enrollment request for '%s'", subject);
             if (!mtc_validate_ca_cert(extensions,
-                                      x509_spki_fp, sizeof(x509_spki_fp))) {
+                                      x509_spki_fp, sizeof(x509_spki_fp),
+                                      x509_san, sizeof(x509_san))) {
                 LOG_WARN("bootstrap: CA validation failed for '%s'", subject);
                 {
                     const char *err_json = "{\"status\":\"error\","
@@ -673,6 +675,37 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                     }
                 }
                 goto cleanup;
+            }
+
+            /* Subject must equal "<SAN>-ca" (TODO #37).  Without this an
+             * attacker who owns DNS for bar.com could submit an X.509
+             * with SAN=bar.com alongside subject=factsorlie.com-ca and
+             * claim a CA slot for a domain they don't own. */
+            if (x509_san[0]) {
+                char expected_subject[260];
+                snprintf(expected_subject, sizeof(expected_subject),
+                         "%s-ca", x509_san);
+                if (strcmp(subject, expected_subject) != 0) {
+                    LOG_WARN("bootstrap: CA enrollment refused — subject "
+                             "'%s' does not match SAN-derived expected "
+                             "subject '%s'",
+                             subject, expected_subject);
+                    {
+                        const char *err_json = "{\"status\":\"error\","
+                            "\"message\":\"subject must equal "
+                            "<X.509 SAN DNS name>-ca — the enrollment "
+                            "subject and the CA cert's SAN must "
+                            "describe the same domain.\"}";
+                        unsigned int err_enc_len = sizeof(enc_buf);
+                        if (mtc_crypt_encode(crypt_ctx,
+                                (unsigned char *)err_json,
+                                (unsigned int)strlen(err_json),
+                                enc_buf, &err_enc_len) == 0) {
+                            send_length_prefixed(fd, enc_buf, err_enc_len);
+                        }
+                    }
+                    goto cleanup;
+                }
             }
 
             /* Cross-check that the top-level public_key_pem hashes to the
@@ -772,6 +805,38 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
         } else {
             /* Leaf enrollment: nonce required */
             wc_Sha256 sha;
+
+            /* Explicit "-ca" suffix reject (defence-in-depth, TODO #36).
+             * The nonce-validation path already blocks this implicitly
+             * because validate_and_consume_nonce receives the submitted
+             * subject as its domain arg and a CA wouldn't issue a nonce
+             * for "<domain>-ca".  But an explicit reject makes the
+             * invariant resilient to refactors that decouple subject
+             * from domain. */
+            {
+                size_t slen = strlen(subject);
+                if (slen >= 3 && strcmp(subject + slen - 3, "-ca") == 0) {
+                    LOG_WARN("bootstrap: leaf enrollment refused — "
+                             "subject '%s' ends in '-ca'; CA subjects "
+                             "go through the CA bootstrap path with "
+                             "an X.509 + DNS proof, not a leaf nonce",
+                             subject);
+                    {
+                        const char *err_json = "{\"status\":\"error\","
+                            "\"message\":\"leaf subject must not end in "
+                            "'-ca' — use CA bootstrap (ca_certificate_pem "
+                            "in extensions) for CA enrollments.\"}";
+                        unsigned int err_enc_len = sizeof(enc_buf);
+                        if (mtc_crypt_encode(crypt_ctx,
+                                (unsigned char *)err_json,
+                                (unsigned int)strlen(err_json),
+                                enc_buf, &err_enc_len) == 0) {
+                            send_length_prefixed(fd, enc_buf, err_enc_len);
+                        }
+                    }
+                    goto cleanup;
+                }
+            }
 
             if (!enrollment_nonce) {
                 LOG_WARN("bootstrap: missing enrollment_nonce for leaf '%s'",

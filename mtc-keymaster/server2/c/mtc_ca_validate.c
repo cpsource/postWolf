@@ -196,7 +196,8 @@ int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex)
  *   0  if CA validation failed (rejected).
  ******************************************************************************/
 int mtc_validate_ca_cert(struct json_object *extensions,
-                         char *spki_fp_out, size_t spki_fp_out_sz)
+                         char *spki_fp_out, size_t spki_fp_out_sz,
+                         char *san_out, size_t san_out_sz)
 {
     struct json_object *ca_cert_val;
     const char *ca_cert_pem;
@@ -209,6 +210,7 @@ int mtc_validate_ca_cert(struct json_object *extensions,
     char fp_hex[65];
 
     if (spki_fp_out && spki_fp_out_sz > 0) spki_fp_out[0] = '\0';
+    if (san_out && san_out_sz > 0) san_out[0] = '\0';
     if (!extensions)
         return 1;
 
@@ -277,6 +279,11 @@ int mtc_validate_ca_cert(struct json_object *extensions,
         }
 
         LOG_DEBUG("SAN DNS: %s", domain);
+
+        /* Export the SAN so the caller can verify subject == <SAN>-ca. */
+        if (san_out && san_out_sz > 0) {
+            snprintf(san_out, san_out_sz, "%s", domain);
+        }
 
         /* Compute SHA-256 fingerprint of SubjectPublicKeyInfo DER */
         {

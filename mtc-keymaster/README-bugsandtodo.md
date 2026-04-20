@@ -1581,7 +1581,7 @@ the operator to reissue cleanly.
 endpoint in `mtc_http.c` (`POST /revoke-nonce`).  DB helper in
 `mtc_db.c` (`mtc_db_cancel_nonce(domain, label, caller_ca_index)`).
 
-### 36. Explicit `-ca` suffix check on leaf bootstrap (defence-in-depth)
+### 36. Explicit `-ca` suffix check on leaf bootstrap (defence-in-depth) — **DONE 2026-04-20**
 
 Today a leaf that submits `subject=<domain>-ca` is rejected only
 **indirectly**: the leaf branch of `mtc_bootstrap.c` passes the
@@ -1605,7 +1605,7 @@ and-suspenders, documents the invariant.
 
 **Files:** `mtc-keymaster/server2/c/mtc_bootstrap.c` (leaf branch).
 
-### 37. CA bootstrap: require `subject == <SAN>-ca` from the submitted X.509
+### 37. CA bootstrap: require `subject == <SAN>-ca` from the submitted X.509 — **DONE 2026-04-20**
 
 `mtc_validate_ca_cert` (in `mtc_ca_validate.c`) parses the submitted
 X.509 cert, extracts the SAN DNS name, computes the SPKI fingerprint,
