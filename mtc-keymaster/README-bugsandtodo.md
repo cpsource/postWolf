@@ -1990,6 +1990,57 @@ flask), `/etc/systemd/system/mtc-ca.service` (add `After=`),
 `mtc-keymaster/tools/sh/redis-status.sh` (switch to native
 `redis-cli`), this README.
 
+### 46. Increase publicity — execute a round of outreach
+
+The project has enough substance now (MTC reference implementation
++ working PQC channel + Gmail extension + live factsorlie.com
+deployment) to warrant a real announcement cycle, but we've only
+bookmarked two Slashdot/Google posts as *external* pegs.  We have
+not yet made the round of announcements to communities where this
+work would land.
+
+Playbook + venue list lives at **`/README-links.md`** — don't
+duplicate it here; update that file and the plan stays coherent.
+Tiers covered there:
+
+- **Tier 1** — Hacker News, Lobste.rs.
+- **Tier 2** — IETF PLANTS mailing list (`plants@ietf.org`),
+  CA/Browser Forum public list, wolfSSL direct pitch.
+- **Tier 3** — Reddit (`/r/crypto`, `/r/netsec`, `/r/privacy`,
+  `/r/selfhosted`), each with its own lead angle.
+- **Tier 4** — dev.to / Medium long-form explainer + own blog.
+- **Tier 5** — tl;dr sec, CryptoHack, Schneier, LWN.
+- **Tier 6** — Mastodon (`infosec.exchange`, `fosstodon.org`).
+
+Suggested first-day order: canonical post → HN → IETF PLANTS →
+Mastodon + Reddits → LWN/tl;dr tips.  (See README-links.md for
+the full rationale.)
+
+**Why this matters:** the IETF PLANTS WG post in particular is the
+single action with compounding long-term value — associates the
+author with the MTC spec itself, brings in implementers, surfaces
+interoperability partners.  The general-audience posts are traffic
+spikes; the mailing list is relationship-building.
+
+**Prerequisites before pulling the trigger:**
+
+- A canonical long-form post hosted somewhere stable (not just a
+  README).  Either `dev.to` or `factsorlie.com/blog/` — if the
+  blog directory doesn't exist under the Apache vhost, stand it
+  up first (~15-minute job).
+- `factsorlie.com` has to be up and returning 200.  Obvious, but
+  worth listing because the site will get hammered briefly after
+  an HN post; make sure the kit-mqc install path and the MQC
+  rate-limit budgets (TODO #45) are in a good state before
+  linking there publicly.
+- `show-tpm --verify` against the live server has to work from a
+  fresh box (install-leaf-kit.sh → 30-second walkthrough in the
+  post).  Re-test before announcing.
+
+**Files:** `README-links.md` (the playbook — update as we learn
+what works), this README entry (close when the round is done and
+capture what moved the needle).
+
 ---
 
 ## Appendix: Server Directory Layout
