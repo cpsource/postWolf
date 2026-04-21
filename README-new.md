@@ -18,6 +18,9 @@ mints a certificate also cosigns the Merkle root that proves its
 inclusion, serves the Ed25519 trust root to first-contact clients, and
 runs the renewal timer on a schedule.
 
+Includes a handy Chrome extension for `mqc` that encrypts and
+decrypts Gmail messages.
+
 ## The stack
 
 | Layer | Directory | What it does |
