@@ -57,7 +57,7 @@
 #define MQC_REVOKED_CACHE_TTL_SEC   (24 * 60 * 60)   /* 24 h */
 #endif
 
-/* -- Signature freshness window (server-side: /revoke, /enrollment/*) - */
+/* -- Signature freshness window (server-side: /revoke, /enrollment ...) */
 /* Max allowed skew between a signed-payload timestamp and the server
  * clock.  Matches handle_revoke's ±5 min enforcement. */
 #ifndef MQC_SIG_FRESHNESS_SEC

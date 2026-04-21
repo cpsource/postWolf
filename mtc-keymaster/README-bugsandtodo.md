@@ -1706,6 +1706,224 @@ and `bootstrap_leaf.c` (client mirrors).  Wire-compat break — a
 version bump in the DH-bootstrap message envelope is needed so the
 server can tell old-from-new callers during rollout.
 
+### 40. Standalone `mqc` symmetric encrypt/decrypt pipe tool — **DONE 2026-04-20**
+
+Operators holding a postWolf TPM identity often want to stash ad-hoc
+secrets (config snippets, shared notes, occasional credentials) under
+a symmetric password without reaching for `openssl enc` / `age`.
+Shipping a small CLI in the kit gives them "one place for secrets on
+this box" via the same `~/.TPM/` tree they already use.
+
+The `mqc` tool reads plaintext from stdin (or `--file`), derives an
+AES-256 key from a password via **scrypt** (`N=32768, r=8, p=1`),
+seals with **AES-256-GCM**, and emits a single-line JSON envelope
+with hex-encoded byte fields.  `--decode` reverses the process.
+Passwords cache at `~/.TPM/<domain>/mqc-password.pw` (mode 0600),
+domain resolves via `--domain` or the `~/.TPM/default` symlink, and
+`--complex-password` generates a 16-char shell-safe password
+(`[A-Za-z0-9_-.+=@]`, ~97 bits entropy, rejection-sampled to dodge
+modulo bias).  `--file PATH` autodetects encode/decode by sniffing
+the first KB for a valid `"v":"mqc-1"` envelope.
+
+Ships in both `kit-CA` and `kit-leaf`.  Full docs at
+`mtc-keymaster/README-mqc-cli.md`.
+
+**Files:** `mtc-keymaster/tools/c/mqc.c` (NEW),
+`mtc-keymaster/tools/c/Makefile` (+target, +install, +clean),
+`mtc-keymaster/tools/c/.gitignore` (+mqc),
+`kit-CA/make-ca-kit.sh` + `install-ca-kit.sh` (+mqc),
+`kit-leaf/make-leaf-kit.sh` + `install-leaf-kit.sh` (+mqc),
+`mtc-keymaster/README-mqc-cli.md` (NEW).
+
+### 41. `mqc`: streaming/chunked AEAD for large inputs
+
+`mqc --encode` currently reads the entire input into memory before
+producing the GCM tag (GCM requires finalisation before the tag is
+known, so a naive single-shot approach is RAM-bound by input size).
+Single-digit-MB configs and secrets are fine; multi-GB inputs would
+OOM the box.
+
+**Proposed behaviour:** add a chunked AEAD framing — fixed-size
+plaintext chunks (e.g. 64 KiB) each sealed under its own AES-256-GCM
+IV derived from a base IV + counter, with a separate tag per chunk.
+The envelope becomes a stream of `{chunk_idx, ct, tag}` records
+preceded by a header (version, KDF params, base IV, salt).  End-of-
+stream is signalled by a short final chunk or an explicit `last:true`
+flag so truncation is detectable.
+
+Bump envelope version to `mqc-2` for the streaming form, keep
+`mqc-1` single-shot for small inputs (autodetect on file size).
+
+**Files:** `mtc-keymaster/tools/c/mqc.c`,
+`mtc-keymaster/README-mqc-cli.md`.
+
+### 42. `mqc`: rotate / scrub the cached password file
+
+The cached password at `~/.TPM/<domain>/mqc-password.pw` is plaintext
+mode `0600`.  There's no tooling today to rotate it (change the
+domain's password + re-encrypt any ciphertexts still around) or
+scrub it (shred-style overwrite before unlink).  Both are operator
+workflows that deserve explicit CLI support rather than "go figure
+it out with `shred` and `find`".
+
+**Proposed behaviour:** add `mqc --rotate-password [--domain D]
+[--new-password PW | --complex-password]` that:
+
+1. Reads the current cached password (or `--env`).
+2. Walks any `*.mqc.json` files under a caller-provided directory
+   (or stdin list of paths), decrypts each with the old password,
+   re-encrypts with the new one.
+3. Overwrites the cache file with the new password (writing random
+   bytes over the old one before truncating, best-effort on
+   journalled filesystems).
+
+Also add `mqc --scrub-cache [--domain D]` that does an `shred`-style
+overwrite of the cache file and removes it.
+
+**Files:** `mtc-keymaster/tools/c/mqc.c`,
+`mtc-keymaster/README-mqc-cli.md`.
+
+### 43. `mqc`: cross-host password sync
+
+Today the password cache is host-local — the `~/.TPM/` tree is
+per-host by design.  Operators running a small fleet (say,
+factsorlie's two edge boxes) end up copying the cache file around by
+hand, which is both error-prone and leaves stale `0600` files behind
+when a host is decommissioned.
+
+**Proposed behaviour:** a shippable mechanism to sync the
+`mqc-password.pw` cache across a named set of MQC peers.  Two
+plausible approaches:
+
+1. **Push via MQC session.** Add an `mqc --sync-to <peer>` subcommand
+   that opens an MQC session to the peer (using the existing
+   `~/.TPM/<subject>/` identity), sends the password over the
+   authenticated + encrypted channel, and writes it server-side to
+   the same path.  Needs a receiver endpoint in `mtc_server` (or a
+   thin `mqc-sync-daemon`) gated on a caller-authentication check.
+2. **Pull from a central CA.** Have the CA hold the per-domain
+   password for its leaves and have leaves pull it on bootstrap.
+   Simpler to operate but concentrates symmetric trust at the CA,
+   which is the opposite of the direction the rest of the stack
+   pushes.
+
+Decide between (1) and (2) before building.  Either way, key
+rotation (TODO #42) and sync need to interact — rotating on one host
+should propagate to peers.
+
+**Files:** `mtc-keymaster/tools/c/mqc.c`,
+`mtc-keymaster/server2/c/mtc_http.c` (if option 1),
+`socket-level-wrapper-MQC/mqc.c` (new peer op),
+`mtc-keymaster/README-mqc-cli.md`.
+
+### 44. Gmail extension — encode/decode button that calls `mqc` via WSL
+
+Operators reading or composing email in Gmail on Windows should be
+able to wrap sensitive content with `mqc` without leaving the
+browser.  The handshake is: compose ordinary mail, click **Encode**,
+the selected body is replaced with an `mqc-1` JSON envelope; on
+the receiving side, highlight the envelope, click **Decode**, see
+the plaintext.  Keys and passwords never leave the local box — the
+extension just orchestrates a shell-out to the existing CLI.
+
+**Constraint:** Chrome runs on Windows, but `mqc` is a Linux binary
+(uses `getpass`/`/dev/tty`, `~/.TPM/`, `~/.env`).  A Windows port is
+possible (TODO candidate) but unnecessary for operators with WSL2
+installed: Chrome's **Native Messaging** API can spawn a Windows
+helper that forwards to `wsl.exe mqc …`.
+
+**Design (three layers):**
+
+1. **Browser extension** (`gmail-mqc-extension/`):
+   - `manifest.json` — Manifest V3, permissions:
+     `"nativeMessaging"`, `"scripting"`, `"activeTab"`,
+     `"host_permissions": ["https://mail.google.com/*"]`.
+   - `content_script.js` — injects two buttons into the Gmail DOM:
+     one in the compose toolbar (**Encode**), one in the message
+     reading pane (**Decode**).  On click:
+     - Encode: `chrome.runtime.connectNative("com.postwolf.mqc")`,
+       send `{op:"encode", body:<selection-or-entire-compose>,
+       domain?: <optional>}`, replace the compose contents with the
+       returned envelope.
+     - Decode: same channel, `{op:"decode", body:<selection>}`,
+       replace or overlay with the returned plaintext.
+   - `background.js` — thin Manifest-V3 service worker that owns
+     the native-messaging port and relays messages from the content
+     script.
+
+2. **Windows native-messaging host** (`gmail-mqc-extension/host/`):
+   - `mqc_native_host.py` (or small C / Go exe) — reads
+     length-prefixed JSON from stdin per the Chrome Native Messaging
+     protocol, spawns `wsl.exe -d <distro> -u <user> mqc --<mode>
+     --env [--domain <d>]`, pipes the body bytes in/out, writes the
+     length-prefixed JSON result back.
+   - `com.postwolf.mqc.json` — host manifest pointing Chrome at the
+     launcher, listing the extension ID in `allowed_origins`.
+   - `install.bat` / `install.ps1` — writes the registry entry
+     `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.postwolf.mqc`
+     pointing at the manifest's absolute path, and optionally the
+     `Software\Microsoft\Edge\NativeMessagingHosts` one for Edge.
+
+3. **WSL side** — already in place.  The host just needs:
+   - `mqc` installed inside the WSL distro (done).
+   - `~/.env` with `MQC_MASTER_PASSWORD="…"` (done).
+   - Optional `~/.TPM/<domain>/mqc-password.pw` for per-domain
+     caching if the operator prefers that over `--env`.
+
+**Message flow on Encode:**
+```
+Gmail DOM  ─┐
+            ├─► content_script picks up body + domain
+            │
+background.js ─► Chrome Native Messaging
+            │
+mqc_native_host.py (Windows) ─► wsl.exe mqc --encode --env
+            │                              │
+            │                              ├─► reads ~/.env in WSL
+            │                              ├─► AES-256-GCM seals body
+            │                              └─► prints {"v":"mqc-1",…} JSON
+            │
+            └◄── returns JSON as length-prefixed message
+Gmail DOM  ◄── content_script replaces body with envelope
+```
+
+**Security notes:**
+- Native messaging only works to extensions listed in the host
+  manifest's `allowed_origins` — Gmail's content-script injection
+  is the only UI gate.
+- WSL2 → Windows bridge pipes bytes through `wsl.exe` stdin/stdout.
+  Set `WSL_UTF8=1` in the host's spawned environment to avoid
+  CRLF / UTF-16 surprises on older Windows builds.
+- Password material (`~/.env`, `~/.TPM/…/mqc-password.pw`) stays
+  inside WSL — the extension never sees it, and the Windows helper
+  only forwards opaque bytes.
+- Gmail's DOM is an adversarial environment: content scripts run
+  in an isolated world and can access the page DOM but not the
+  page's JS globals.  Buttons should be injected as siblings of
+  Gmail's own toolbar, not by patching page JS.
+
+**Out of scope for the initial sketch:**
+- Streaming very large attachments (TODO #41's chunked AEAD would
+  land first).
+- Automatic detection of mqc-1 envelopes inside received email
+  (decode-on-arrival).  Initial version requires explicit click.
+- Firefox support.  The Native Messaging protocol is compatible,
+  but the manifest location differs; worth a follow-up once the
+  Chrome flow works.
+
+**Files (new):**
+- `gmail-mqc-extension/manifest.json`
+- `gmail-mqc-extension/content_script.js`
+- `gmail-mqc-extension/background.js`
+- `gmail-mqc-extension/host/mqc_native_host.py`
+- `gmail-mqc-extension/host/com.postwolf.mqc.json`
+- `gmail-mqc-extension/host/install.ps1`
+- `gmail-mqc-extension/README.md`
+
+Optional follow-up once this is stable: native Windows `mqc.exe`
+build (wolfCrypt + json-c compile cleanly under MSYS2 / vcpkg) so
+operators without WSL can use the same extension unchanged.
+
 ---
 
 ## Appendix: Server Directory Layout

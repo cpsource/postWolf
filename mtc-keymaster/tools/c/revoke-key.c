@@ -40,6 +40,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <limits.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -111,8 +112,8 @@ static char *auto_detect_ca_tpm(const char *tpm_dir)
     char *found = NULL;
     int count = 0;
     struct stat st;
-    char default_path[1024];
-    char resolved[1024];
+    char default_path[PATH_MAX];
+    char resolved[PATH_MAX];
 
     /* If ~/.TPM/default resolves to a CA identity (dir name ending in
      * "-ca"), prefer it.  This makes `revoke-key` consistent with the

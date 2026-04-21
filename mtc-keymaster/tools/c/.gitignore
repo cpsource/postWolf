@@ -8,5 +8,6 @@ revoke-key
 renew-cert
 check-renewal-cert
 cancel-nonce
+mqc
 attack-port-8445
 attack-port-8446

@@ -34,6 +34,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <limits.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <netinet/in.h>
@@ -378,7 +379,7 @@ static int save_to_tpm(const char *tpm_dir, const char *subject,
     /* ~/.TPM/default symlink policy (plan TODO #26 Phases D + G):
      * mirrors the bootstrap_leaf logic exactly.  See comments there. */
     {
-        char default_path[512];
+        char default_path[PATH_MAX];
         char rel_target[256];
         struct stat st;
         int default_exists;
@@ -395,7 +396,7 @@ static int save_to_tpm(const char *tpm_dir, const char *subject,
             else
                 LOG("  set default -> %s", rel_target);
         } else if (make_default) {
-            char tmp_path[600];
+            char tmp_path[PATH_MAX];
             snprintf(tmp_path, sizeof(tmp_path), "%s/.default.tmp.%d",
                      tpm_dir, (int)getpid());
             unlink(tmp_path);

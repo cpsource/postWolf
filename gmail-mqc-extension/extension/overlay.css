@@ -1,0 +1,82 @@
+/* overlay.css — styles for the mqc result overlay.
+ * Scoped with a .postwolf-mqc- prefix so we don't clash with Gmail. */
+
+.postwolf-mqc-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 2147483647; /* above everything, including Gmail dialogs */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  color: #202124;
+}
+
+.postwolf-mqc-card {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  width: min(640px, 90vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.postwolf-mqc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid #e0e0e0;
+  font-weight: 600;
+  font-size: 14px;
+  background: #f6f6f6;
+}
+
+.postwolf-mqc-close {
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 8px;
+  color: #555;
+}
+.postwolf-mqc-close:hover { color: #000; }
+
+.postwolf-mqc-text {
+  flex: 1;
+  margin: 0;
+  padding: 12px 14px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  border: none;
+  outline: none;
+  resize: vertical;
+  min-height: 140px;
+  white-space: pre;
+  word-break: break-all;
+}
+
+.postwolf-mqc-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid #e0e0e0;
+  background: #fafafa;
+}
+
+.postwolf-mqc-btn {
+  padding: 6px 14px;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+.postwolf-mqc-btn:hover { background: #f1f3f4; }
