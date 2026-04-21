@@ -1924,6 +1924,123 @@ Optional follow-up once this is stable: native Windows `mqc.exe`
 build (wolfCrypt + json-c compile cleanly under MSYS2 / vcpkg) so
 operators without WSL can use the same extension unchanged.
 
+### 45. Retire the docker-compose redis in favour of the native daemon (reverses TODO #27)
+
+We currently run redis as a docker-compose service
+(`factsorlie/docker-compose.yml: redis`) bound to
+`127.0.0.1:6379` on the host so mtc_server (and MQC's hardcoded
+`redisConnectWithTimeout("127.0.0.1", 6379, …)` in
+`socket-level-wrapper-MQC/mqc.c:305`) can reach it from outside the
+docker network, while Flask inside the `factsorlie_default` network
+reaches the same container via hostname `redis`.
+
+That works, but it's an odd split — two clients reaching the same
+backing store through two different paths, and the operator has to
+remember which redis they're debugging.  Simplify by going native:
+one `redis-server.service` on the host, reachable via localhost
+from mtc_server directly and via `host.docker.internal` (or the
+docker bridge gateway IP) from the Flask container.  No container
+to orchestrate, no `docker compose up` dependency during host
+reboot, less cognitive overhead.
+
+**Proposed work:**
+
+1. Re-enable the native service:
+   ```bash
+   sudo systemctl enable --now redis-server
+   ```
+   (Package is already installed from the earlier TODO #27 phase;
+   we only ran `systemctl disable` on it.)
+2. Remove the `redis:` block entirely from
+   `/home/ubuntu/factsorlie/docker-compose.yml`.
+3. Update the `flask:` service in that compose file to reach the
+   host's redis.  Two reasonable options:
+   - Add `extra_hosts: ["host.docker.internal:host-gateway"]` to
+     the flask service and set `REDIS_HOST=host.docker.internal` in
+     its env (works on Linux Docker 20.10+).
+   - Or move flask to `network_mode: host` and set
+     `REDIS_HOST=127.0.0.1`.  Simpler but defeats the current
+     Apache → Flask isolation on the `factsorlie_default`
+     network — re-audit the Apache vhost proxy config before doing
+     this.
+4. `docker compose up -d flask` to recreate with the new config.
+5. Verify with `/usr/local/bin/redis-status` (already installed;
+   override `REDIS_CONTAINER` to skip the docker-exec path, or
+   rewrite the script to `redis-cli -h 127.0.0.1` — see below).
+6. Delete the dangling docker volume (`redis` volume that held the
+   RDB dump) once we're confident nothing there was load-bearing.
+
+**Tool updates needed:**
+- `mtc-keymaster/tools/sh/redis-status.sh` hardcodes
+  `docker exec "$CONTAINER" …`.  With a native daemon there is no
+  container, so switch to `redis-cli -h 127.0.0.1 -p 6379` or make
+  the shell out configurable.
+
+**Risk:**
+- Service-start ordering during reboot — `mtc-ca.service` and
+  `redis-server.service` have an implicit dependency we should
+  make explicit via `After=redis-server.service` in
+  `/etc/systemd/system/mtc-ca.service`.  MQC's current fail-open
+  behaviour (rate limiting silently disabled on redis miss) means
+  an out-of-order boot doesn't hard-fail, but we'd lose the gate
+  until something restarts the process.
+
+**Files:** `factsorlie/docker-compose.yml` (remove redis, tweak
+flask), `/etc/systemd/system/mtc-ca.service` (add `After=`),
+`mtc-keymaster/tools/sh/redis-status.sh` (switch to native
+`redis-cli`), this README.
+
+### 46. Increase publicity — execute a round of outreach
+
+The project has enough substance now (MTC reference implementation
++ working PQC channel + Gmail extension + live factsorlie.com
+deployment) to warrant a real announcement cycle, but we've only
+bookmarked two Slashdot/Google posts as *external* pegs.  We have
+not yet made the round of announcements to communities where this
+work would land.
+
+Playbook + venue list lives at **`/README-links.md`** — don't
+duplicate it here; update that file and the plan stays coherent.
+Tiers covered there:
+
+- **Tier 1** — Hacker News, Lobste.rs.
+- **Tier 2** — IETF PLANTS mailing list (`plants@ietf.org`),
+  CA/Browser Forum public list, wolfSSL direct pitch.
+- **Tier 3** — Reddit (`/r/crypto`, `/r/netsec`, `/r/privacy`,
+  `/r/selfhosted`), each with its own lead angle.
+- **Tier 4** — dev.to / Medium long-form explainer + own blog.
+- **Tier 5** — tl;dr sec, CryptoHack, Schneier, LWN.
+- **Tier 6** — Mastodon (`infosec.exchange`, `fosstodon.org`).
+
+Suggested first-day order: canonical post → HN → IETF PLANTS →
+Mastodon + Reddits → LWN/tl;dr tips.  (See README-links.md for
+the full rationale.)
+
+**Why this matters:** the IETF PLANTS WG post in particular is the
+single action with compounding long-term value — associates the
+author with the MTC spec itself, brings in implementers, surfaces
+interoperability partners.  The general-audience posts are traffic
+spikes; the mailing list is relationship-building.
+
+**Prerequisites before pulling the trigger:**
+
+- A canonical long-form post hosted somewhere stable (not just a
+  README).  Either `dev.to` or `factsorlie.com/blog/` — if the
+  blog directory doesn't exist under the Apache vhost, stand it
+  up first (~15-minute job).
+- `factsorlie.com` has to be up and returning 200.  Obvious, but
+  worth listing because the site will get hammered briefly after
+  an HN post; make sure the kit-mqc install path and the MQC
+  rate-limit budgets (TODO #45) are in a good state before
+  linking there publicly.
+- `show-tpm --verify` against the live server has to work from a
+  fresh box (install-leaf-kit.sh → 30-second walkthrough in the
+  post).  Re-test before announcing.
+
+**Files:** `README-links.md` (the playbook — update as we learn
+what works), this README entry (close when the round is done and
+capture what moved the needle).
+
 ---
 
 ## Appendix: Server Directory Layout
