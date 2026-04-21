@@ -1924,6 +1924,72 @@ Optional follow-up once this is stable: native Windows `mqc.exe`
 build (wolfCrypt + json-c compile cleanly under MSYS2 / vcpkg) so
 operators without WSL can use the same extension unchanged.
 
+### 45. Retire the docker-compose redis in favour of the native daemon (reverses TODO #27)
+
+We currently run redis as a docker-compose service
+(`factsorlie/docker-compose.yml: redis`) bound to
+`127.0.0.1:6379` on the host so mtc_server (and MQC's hardcoded
+`redisConnectWithTimeout("127.0.0.1", 6379, …)` in
+`socket-level-wrapper-MQC/mqc.c:305`) can reach it from outside the
+docker network, while Flask inside the `factsorlie_default` network
+reaches the same container via hostname `redis`.
+
+That works, but it's an odd split — two clients reaching the same
+backing store through two different paths, and the operator has to
+remember which redis they're debugging.  Simplify by going native:
+one `redis-server.service` on the host, reachable via localhost
+from mtc_server directly and via `host.docker.internal` (or the
+docker bridge gateway IP) from the Flask container.  No container
+to orchestrate, no `docker compose up` dependency during host
+reboot, less cognitive overhead.
+
+**Proposed work:**
+
+1. Re-enable the native service:
+   ```bash
+   sudo systemctl enable --now redis-server
+   ```
+   (Package is already installed from the earlier TODO #27 phase;
+   we only ran `systemctl disable` on it.)
+2. Remove the `redis:` block entirely from
+   `/home/ubuntu/factsorlie/docker-compose.yml`.
+3. Update the `flask:` service in that compose file to reach the
+   host's redis.  Two reasonable options:
+   - Add `extra_hosts: ["host.docker.internal:host-gateway"]` to
+     the flask service and set `REDIS_HOST=host.docker.internal` in
+     its env (works on Linux Docker 20.10+).
+   - Or move flask to `network_mode: host` and set
+     `REDIS_HOST=127.0.0.1`.  Simpler but defeats the current
+     Apache → Flask isolation on the `factsorlie_default`
+     network — re-audit the Apache vhost proxy config before doing
+     this.
+4. `docker compose up -d flask` to recreate with the new config.
+5. Verify with `/usr/local/bin/redis-status` (already installed;
+   override `REDIS_CONTAINER` to skip the docker-exec path, or
+   rewrite the script to `redis-cli -h 127.0.0.1` — see below).
+6. Delete the dangling docker volume (`redis` volume that held the
+   RDB dump) once we're confident nothing there was load-bearing.
+
+**Tool updates needed:**
+- `mtc-keymaster/tools/sh/redis-status.sh` hardcodes
+  `docker exec "$CONTAINER" …`.  With a native daemon there is no
+  container, so switch to `redis-cli -h 127.0.0.1 -p 6379` or make
+  the shell out configurable.
+
+**Risk:**
+- Service-start ordering during reboot — `mtc-ca.service` and
+  `redis-server.service` have an implicit dependency we should
+  make explicit via `After=redis-server.service` in
+  `/etc/systemd/system/mtc-ca.service`.  MQC's current fail-open
+  behaviour (rate limiting silently disabled on redis miss) means
+  an out-of-order boot doesn't hard-fail, but we'd lose the gate
+  until something restarts the process.
+
+**Files:** `factsorlie/docker-compose.yml` (remove redis, tweak
+flask), `/etc/systemd/system/mtc-ca.service` (add `After=`),
+`mtc-keymaster/tools/sh/redis-status.sh` (switch to native
+`redis-cli`), this README.
+
 ---
 
 ## Appendix: Server Directory Layout
