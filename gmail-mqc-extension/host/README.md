@@ -145,14 +145,29 @@ Windows side.
 
 ## Troubleshooting
 
-- **"wsl.exe not found"** — install WSL2 (`wsl --install`) and
-  restart Windows.
-- **UTF-16 / CRLF garbage in responses** — make sure the install
-  was done after a Windows 11 22H2 or later; older builds need
-  `WSL_UTF8=1` (already set by the shim).
-- **"mqc exited 1: …"** — read the inner message.  Common causes:
-  `~/.env` missing `MQC_MASTER_PASSWORD=`, or the recipient used a
-  different password on encode than decode.
-- **"Native host has exited"** in Chrome's extension logs —
-  check `host.log` for a Python traceback.  Typical culprit is
-  python not on PATH; fix `mqc_native_host.cmd`'s `PYTHON=` line.
+First step, always: read `%LOCALAPPDATA%\postwolf-mqc\host.log`.
+If the file *doesn't exist*, the shim never started — Python
+missing, .cmd not on disk, or Chrome refused to launch it
+(extension-ID mismatch).  If the file *does exist*, tail it for a
+Python traceback that names the exact line that failed.
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `install.ps1 : File … cannot be loaded because running scripts is disabled` | Default PowerShell execution policy blocks unsigned scripts. | Either one-shot `powershell -ExecutionPolicy Bypass -File .\install.ps1 -ExtensionId …`, or permanently: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` then `Unblock-File .\install.ps1`. |
+| `Python was not found; run without arguments to install from the Microsoft Store` | Python isn't installed — you're hitting Microsoft's install-redirector stub. | `winget install --id Python.Python.3.12 -e`.  **Open a fresh PowerShell** afterwards (PATH changes only apply to new shells). |
+| `mqc-native-host: python not found on PATH` (from running `mqc_native_host.cmd` by hand) | Same as above.  Python genuinely isn't reachable. | Same fix. |
+| Ping: *Error when communicating with the native messaging host* **and** `host.log` is absent | Shim never started.  Most common causes: (a) Python missing, (b) extension-ID mismatch between `com.postwolf.mqc.json` `allowed_origins` and the current `chrome://extensions` ID. | Check Python per above; compare IDs and re-run `install.ps1 -ExtensionId <current>`. Then **fully close and reopen Chrome**. |
+| Ping: *Error …* **and** `host.log` has a Python traceback | Shim ran and crashed. | The traceback names the line; paste it into an issue or fix locally. |
+| `/bin/bash: line 1: mqc: command not found` when running `wsl mqc --help` | Default WSL shell starts with a truncated `$PATH` (systemd-user-session failure or interop noise) — mqc exists at `/usr/local/bin/mqc` but the shell doesn't see it. | The shim already uses the absolute path; run `wsl /usr/local/bin/mqc --help` to confirm.  If that works, ping should work too. |
+| `/bin/bash: /usr/local/bin/mqc: No such file or directory` | `wsl.exe` is landing in a distro that doesn't have mqc installed. | `wsl -l -v` — note which distro has the asterisk.  Either `wsl --set-default <distro-with-mqc>`, or pin the shim: `.\install.ps1 -ExtensionId <id> -WslDistro <name>`. |
+| `wsl: Failed to translate 'E:\…'` warnings mixed into ping output | WSL's interop is trying to mirror your Windows `%PATH%` into `$PATH` at login, and a drive letter on `%PATH%` isn't auto-mounted. | Benign — ping still succeeds.  Silence permanently, inside WSL: append `[interop]\nappendWindowsPath = false\n` to `/etc/wsl.conf`, then `wsl --shutdown` from PowerShell. |
+| UTF-16 / CRLF garbage in responses | Older Windows build without the `WSL_UTF8=1` behaviour. | Already set by the shim; upgrade to Windows 11 22H2 or later if it still bites you. |
+| `mqc exited 1: mqc: authentication tag mismatch — wrong password or corrupted ciphertext` | Recipient's `MQC_MASTER_PASSWORD` differs from sender's, or the envelope was truncated in transit. | Check both sides' `~/.env`; re-copy the envelope. |
+| `mqc exited 1: mqc: unsupported mqc format version` | You fed a non-`mqc-1` JSON object to `--decode`. | Not an mqc envelope; nothing to decode. |
+| "Native host has exited" in Chrome's extension logs | The shim crashed mid-conversation. | Check `host.log` for the traceback. |
+
+Notes on the extension-ID dance: Chrome assigns a stable ID to a
+packed extension but a deterministic-from-disk-path ID to an
+unpacked one.  Moving the `extension/` folder → new ID.  Whenever
+you see a new ID in `chrome://extensions`, re-run
+`install.ps1 -ExtensionId <that one>` and fully restart Chrome.
