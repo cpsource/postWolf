@@ -20,7 +20,7 @@
  *     GET  /certificate/<n>         — certificate by index
  *     GET  /certificate/search?q=   — search by subject
  *     GET  /trust-anchors           — trust anchor list
- *     GET  /ca/public-key           — CA Ed25519 public key
+ *     GET  /ca/public-key           — CA ML-DSA-87 public key
  *     GET  /ech/configs             — ECH config (base64)
  *     GET  /revoked                 — revocation list
  *     GET  /revoked/<n>             — revocation check
@@ -202,6 +202,7 @@ static void http_send_json(client_io *io, int status, const char *json_str)
 {
     char hdr[512];
     int hdr_len, body_len;
+    char *combined;
 
     if (io->capture_body) {
         if (io->capture_status) *io->capture_status = status;
@@ -224,8 +225,26 @@ static void http_send_json(client_io *io, int status, const char *json_str)
         (status == 429 ? "Too Many Requests" : "Bad Request")))))),
         body_len);
 
-    cio_write(io, hdr, hdr_len);
-    cio_write(io, json_str, body_len);
+    /* Send header + body as a single write so MQC packs them into one
+     * AEAD frame.  The MQC client reads one frame per mqc_read() and
+     * cannot recover if a second frame arrives larger than the caller's
+     * remaining buffer (mqc_read consumes the length prefix before the
+     * buffer-size check).  Packing keeps the on-wire message shape
+     * single-framed regardless of body size, up to MQC_MAX_MSG (1 MiB).
+     * TLS and plain sockets behave the same either way. */
+    combined = (char *)malloc((size_t)(hdr_len + body_len));
+    if (combined) {
+        memcpy(combined, hdr, (size_t)hdr_len);
+        memcpy(combined + hdr_len, json_str, (size_t)body_len);
+        cio_write(io, combined, hdr_len + body_len);
+        free(combined);
+    } else {
+        /* malloc failure: fall back to two writes.  MQC clients reading
+         * >buffer-size bodies may still truncate here, but at least
+         * TLS/plain callers continue to work. */
+        cio_write(io, hdr, hdr_len);
+        cio_write(io, json_str, body_len);
+    }
 }
 
 /******************************************************************************
@@ -980,7 +999,7 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
         int proof_count = 0;
         uint8_t subtree_hash[MTC_HASH_SIZE];
         char hash_hex[MTC_HASH_SIZE * 2 + 1];
-        uint8_t sig[64];
+        uint8_t sig[DILITHIUM_LEVEL5_SIG_SIZE];
         int sig_sz = 0;
         int i, start, end;
 
@@ -1090,13 +1109,18 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
         json_object_object_add(cosig, "subtree_hash",
             json_object_new_string(hash_hex));
         {
-            char sig_hex_out[64 * 2 + 1];
-            to_hex(sig, sig_sz, sig_hex_out);
-            json_object_object_add(cosig, "signature",
-                json_object_new_string(sig_hex_out));
+            /* ML-DSA-87 sig is 4627 bytes → 9254 hex chars + NUL.
+             * Heap-allocate so we don't blow the per-connection stack. */
+            char *sig_hex_out = (char *)malloc((size_t)sig_sz * 2 + 1);
+            if (sig_hex_out) {
+                to_hex(sig, sig_sz, sig_hex_out);
+                json_object_object_add(cosig, "signature",
+                    json_object_new_string(sig_hex_out));
+                free(sig_hex_out);
+            }
         }
         json_object_object_add(cosig, "algorithm",
-            json_object_new_string("Ed25519"));
+            json_object_new_string("ML-DSA-87"));
         json_object_array_add(cosig_arr, cosig);
         json_object_object_add(sc, "cosignatures", cosig_arr);
         json_object_object_add(sc, "trust_anchor_id",
@@ -1319,11 +1343,12 @@ static void handle_search_certificates(client_io *io, MtcStore *store, const cha
     json_object_put(obj);
 }
 
-/* GET /ca/public-key — CA Ed25519 public key in PEM format. */
+/* GET /ca/public-key — CA ML-DSA-87 public key in PEM format. */
 static void handle_ca_public_key(client_io *io, MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();
-    char pem[1024];
+    /* ML-DSA-87 PEM-wrapped DER is ~3.5 KiB; size generously. */
+    char pem[8192];
     int pemSz;
 
     json_object_object_add(obj, "ca_name",
@@ -1331,7 +1356,7 @@ static void handle_ca_public_key(client_io *io, MtcStore *store)
     json_object_object_add(obj, "cosigner_id",
         json_object_new_string(store->cosigner_id));
     json_object_object_add(obj, "algorithm",
-        json_object_new_string("Ed25519"));
+        json_object_new_string("ML-DSA-87"));
 
     pemSz = mtc_store_get_public_key_pem(store, pem, (int)sizeof(pem));
     if (pemSz > 0) {

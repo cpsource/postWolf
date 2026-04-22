@@ -487,4 +487,21 @@ int mtc_db_ensure_connected(PGconn **conn_ptr);
  */
 char *mtc_db_get_public_key(PGconn *conn, const char *key_name);
 
+/**
+ * @brief    Upsert a public key PEM into mtc_public_keys.
+ *
+ * @details
+ * Used by the bootstrap enrollment handler to record the leaf/CA
+ * pubkey keyed by the same directory-name convention clients use
+ * under ~/.TPM/ (subject or subject-label).
+ *
+ * @param[in] conn      Active PostgreSQL connection.
+ * @param[in] key_name  Canonical name (subject or subject-label).
+ * @param[in] key_pem   Full PEM-encoded public key.
+ *
+ * @return   0 on success (INSERT or UPDATE), -1 on query failure.
+ */
+int mtc_db_save_public_key(PGconn *conn, const char *key_name,
+                           const char *key_pem);
+
 #endif

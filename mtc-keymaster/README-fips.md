@@ -6,10 +6,10 @@ Traditional FIPS source checksum systems (like OpenSSL's `fips-sources.checksums
 
 ## The Solution
 
-postWolf anchors FIPS source checksums in an **external, append-only Merkle Tree transparency log** maintained by the MTC server. At build time, a manifest of every FIPS source file's SHA256 hash is submitted to the server, which logs it into the Merkle tree and signs the tree root with Ed25519. The manifest cannot be altered after submission without detection, because:
+postWolf anchors FIPS source checksums in an **external, append-only Merkle Tree transparency log** maintained by the MTC server. At build time, a manifest of every FIPS source file's SHA256 hash is submitted to the server, which logs it into the Merkle tree and signs the tree root with ML-DSA-87. The manifest cannot be altered after submission without detection, because:
 
 1. The Merkle tree is append-only — modifying a leaf changes the root hash
-2. The tree root is signed with the server's Ed25519 private key — forging a signature requires compromising the server
+2. The tree root is signed with the server's ML-DSA-87 private key — forging a signature requires compromising the server
 3. A receipt (inclusion proof + signature) ships with the package — verification works offline
 
 ---
@@ -29,7 +29,7 @@ postWolf anchors FIPS source checksums in an **external, append-only Merkle Tree
 cd mtc-keymaster/server/c
 make
 
-# Start the server (first run generates an Ed25519 CA key automatically)
+# Start the server (first run generates an ML-DSA-87 CA key automatically)
 ./mtc_server --port 8080 --datadir /var/lib/mtc-fips
 
 # The server prints the CA public key on startup — record it:
@@ -38,7 +38,7 @@ make
 ```
 
 The server stores:
-- `ca_key.der` — Ed25519 private key (keep this secure)
+- `ca_key_mldsa.der` — ML-DSA-87 private key (keep this secure)
 - `entries.json` — all Merkle tree entries (file-based fallback)
 - `fips_manifests.json` — FIPS manifest metadata
 - PostgreSQL tables if `MERKLE_NEON` is configured
@@ -83,14 +83,14 @@ The receipt contains everything needed for offline verification:
   "subtree_hash": "7f8e9d...",
   "cosignature": {
     "signature": "b3c4d5...",
-    "algorithm": "Ed25519"
+    "algorithm": "ML-DSA-87"
   }
 }
 ```
 
 **Step 3: Ship the receipt**
 
-Include `fips-manifest-receipt.json` in the release tarball or `.deb` package. This single file contains the manifest, inclusion proof, and Ed25519 cosignature — everything needed for offline verification using only the pinned CA public key.
+Include `fips-manifest-receipt.json` in the release tarball or `.deb` package. This single file contains the manifest, inclusion proof, and ML-DSA-87 cosignature — everything needed for offline verification using only the pinned CA public key.
 
 ### Automated Build Integration
 
@@ -143,7 +143,7 @@ curl http://localhost:8080/ca/public-key
 
 ### Key Rotation
 
-If the Ed25519 CA key is compromised:
+If the ML-DSA-87 CA key is compromised:
 1. Stop the server
 2. Delete `ca_key.der` (and the `ca_private_key_hex` row in the DB)
 3. Restart the server — it generates a new key
@@ -159,12 +159,12 @@ Old receipts signed with the compromised key should be considered invalid. The a
 ### What You Need
 
 - The postWolf source code (tarball, `.deb` source package, or git clone)
-- The `fips-manifest-receipt.json` file (shipped with the release — contains manifest, inclusion proof, and Ed25519 cosignature)
+- The `fips-manifest-receipt.json` file (shipped with the release — contains manifest, inclusion proof, and ML-DSA-87 cosignature)
 - The `fips-manifest-verify` tool (built from `fips-framework/`, linked against wolfCrypt)
-- The CA Ed25519 public key (32 bytes — published on the project website, DNS TXT record, or pinned in `fips-framework/config/ca-pubkey.h`)
+- The CA ML-DSA-87 public key (2592 bytes — published on the project website, DNS TXT record, or pinned in `fips-framework/config/ca-pubkey.h`)
 
 No OpenSSL or shell dependencies (`curl`, `jq`) are required. All
-cryptographic verification (SHA-256, Ed25519 signature, Merkle proof replay)
+cryptographic verification (SHA-256, ML-DSA-87 signature, Merkle proof replay)
 uses wolfCrypt natively.
 
 ### Online Verification (Recommended)
@@ -188,7 +188,7 @@ What happens:
 6. It compares each local hash against the server's logged manifest
 7. It queries `GET /fips/manifest/<index>/proof` for a fresh inclusion proof
 8. It replays the Merkle inclusion proof (SHA-256 hash chain from leaf to root)
-9. It verifies the Ed25519 cosignature on the tree root using `wc_ed25519_verify_msg()` with the pinned CA public key
+9. It verifies the ML-DSA-87 cosignature on the tree root using `wc_dilithium_verify_ctx_msg()` with the pinned CA public key
 
 **Output on success:**
 ```
@@ -201,7 +201,7 @@ FIPS Manifest Verification: PASS
   Rollback:   OK (v5.9.0 >= last accepted v5.8.0)
   Files:      127 verified
   Proof:      inclusion proof valid (depth 7)
-  Signature:  Ed25519 cosignature valid
+  Signature:  ML-DSA-87 cosignature valid
 ```
 
 **Output on failure (tampered source):**
@@ -215,7 +215,7 @@ FIPS Manifest Verification: FAIL
 
 ### Offline Verification
 
-Offline verification uses the cached inclusion proof and cosignature from the receipt file. No network access is required — only the CA's Ed25519 public key.
+Offline verification uses the cached inclusion proof and cosignature from the receipt file. No network access is required — only the CA's ML-DSA-87 public key.
 
 ```bash
 # Set the CA public key (obtain from project website or pinned config)
@@ -232,7 +232,7 @@ What happens:
 4. It computes SHA256 of every FIPS source file on your local disk
 5. It recomputes the manifest hash from local files and compares to the receipt's manifest hash
 6. It replays the inclusion proof: walks the hash chain from the leaf hash up to the root
-7. It verifies the Ed25519 cosignature on the root using the pinned CA public key (`wc_ed25519_verify_msg()`)
+7. It verifies the ML-DSA-87 cosignature on the root using the pinned CA public key (`wc_dilithium_verify_ctx_msg()`)
 
 If any source file has been modified since the manifest was submitted, the local manifest hash will differ from the receipt's manifest hash, and verification fails.
 
@@ -245,7 +245,7 @@ If any source file has been modified since the manifest was submitted, the local
 | Version rollback check | This is not an older version than one you previously accepted |
 | Local SHA256 matches manifest | Your source files are identical to what was submitted to the server |
 | Inclusion proof is valid | The manifest was genuinely logged in the Merkle tree at the claimed index |
-| Ed25519 cosignature is valid | The Merkle tree root was signed by the CA's private key — not forged |
+| ML-DSA-87 cosignature is valid | The Merkle tree root was signed by the CA's private key — not forged |
 | Consistency proof (optional) | The tree has only grown since the manifest was logged — no entries removed or rewritten |
 
 ### Common Scenarios
@@ -292,12 +292,12 @@ The script reports exactly which files differ from the logged manifest. This is 
 | | OpenSSL | postWolf (this system) |
 |---|---------|--------------------------|
 | **Checksums stored** | In the repo (`fips-sources.checksums`) | In an external append-only Merkle tree |
-| **Signed by** | No signature (plain SHA256) | Ed25519 cosignature on tree root |
+| **Signed by** | No signature (plain SHA256) | ML-DSA-87 cosignature on tree root |
 | **Tamper detection** | Only if attacker forgets to update checksums | Always — attacker cannot forge server-side log |
 | **Offline verification** | Yes (but no signature to verify) | Yes — receipt contains proof + signature |
 | **Requires server** | No | No (offline mode); Yes for fresh proofs |
 | **Append-only audit trail** | No (checksums can be rewritten) | Yes — full history preserved in Merkle tree |
-| **Trust anchor** | CMVP certification (external process) | Ed25519 CA key + CMVP certification |
+| **Trust anchor** | CMVP certification (external process) | ML-DSA-87 CA key + CMVP certification |
 
 ---
 
@@ -316,7 +316,7 @@ Source files                           Merkle Tree (append-only)
     +-- POST /fips/manifest  ----------->  |
     |                                      +-- Append manifest hash as leaf
     |                                      +-- Compute inclusion proof
-    |                                      +-- Sign tree root (Ed25519)
+    |                                      +-- Sign tree root (ML-DSA-87)
     |                                      |
     +-- Save receipt  <------------------  +-- Return {index, proof, signature}
     |
@@ -337,11 +337,11 @@ Source files + receipt
     +-- [Online] GET /fips/manifest/<index>/proof
     |       |                              |
     |       +-- Verify inclusion proof <---+
-    |       +-- Verify Ed25519 signature
+    |       +-- Verify ML-DSA-87 signature
     |
     +-- [Offline] Verify proof from receipt
     |       +-- Verify inclusion proof (cached)
-    |       +-- Verify Ed25519 signature (cached)
+    |       +-- Verify ML-DSA-87 signature (cached)
     |
     +-- PASS or FAIL
 ```
@@ -379,7 +379,7 @@ Submit a FIPS build manifest to the transparency log.
   "subtree_hash": "7f8e9d...",
   "cosignature": {
     "signature": "b3c4d5e6f7...",
-    "algorithm": "Ed25519"
+    "algorithm": "ML-DSA-87"
   }
 }
 ```
@@ -420,7 +420,7 @@ Get a fresh inclusion proof for a manifest (proof path may change as the tree gr
   "proof": ["a1b2c3...", "d4e5f6...", "g7h8i9..."],
   "cosignature": {
     "signature": "b3c4d5e6f7...",
-    "algorithm": "Ed25519"
+    "algorithm": "ML-DSA-87"
   }
 }
 ```
@@ -449,7 +449,7 @@ There are three distinct roles in this system:
 
 | Role | What They Do | What They Hold |
 |------|-------------|----------------|
-| **CA** | Enrolls once via DNS TXT validation. Vouches for leaf identities. Does not publish kits. | Ed25519 key pair; domain control |
+| **CA** | Enrolls once via DNS TXT validation. Vouches for leaf identities. Does not publish kits. | ML-DSA-87 key pair; domain control |
 | **Leaf (Kit Publisher)** | Receives a certificate from a CA. Builds software, submits FIPS manifests, ships kits. Operates independently after enrollment. | Own key pair; leaf certificate issued by a CA |
 | **Verifier (Downstream User)** | Receives a kit. Verifies the source, the leaf's authority, and the CA's legitimacy. | CA public key (obtained out-of-band) |
 
@@ -480,7 +480,7 @@ Leaf can now publish                            - source tarball
 
 ### The Trust Problem
 
-The Merkle tree and Ed25519 cosignatures prove **consistency** — that an entry was logged and hasn't been tampered with. They do not prove **identity** — that the leaf publisher is who they claim to be. That trust comes from the chain: CA vouches for leaf, and the CA's identity is established out-of-band.
+The Merkle tree and ML-DSA-87 cosignatures prove **consistency** — that an entry was logged and hasn't been tampered with. They do not prove **identity** — that the leaf publisher is who they claim to be. That trust comes from the chain: CA vouches for leaf, and the CA's identity is established out-of-band.
 
 A downstream user must answer three questions:
 1. **Is this CA legitimate?** — Does the CA actually control the claimed domain?
@@ -489,7 +489,7 @@ A downstream user must answer three questions:
 
 ### CA Identity Verification
 
-Each legitimate CA must publish its Ed25519 public key through at least one independent channel that the CA operator controls. A verifier obtains the key through that channel and pins it locally.
+Each legitimate CA must publish its ML-DSA-87 public key through at least one independent channel that the CA operator controls. A verifier obtains the key through that channel and pins it locally.
 
 | Channel | Mechanism | Strength |
 |---------|-----------|----------|
@@ -567,7 +567,7 @@ Now that the leaf publisher is confirmed legitimate, verify the FIPS manifest th
 # The script checks:
 #   - Local file hashes match the manifest
 #   - Inclusion proof is valid (hash chain to root)
-#   - Cosignature is valid (Ed25519 verify with CA public key)
+#   - Cosignature is valid (ML-DSA-87 verify with CA public key)
 ```
 
 **Step 6: Check for revocation (optional)**
@@ -589,7 +589,7 @@ Out-of-band trust anchor
          |
          v
     CA Public Key
-    (Ed25519, 32 bytes — obtained independently)
+    (ML-DSA-87, 2592 bytes — obtained independently)
          |
          v
     CA Enrollment in Merkle Tree
@@ -616,7 +616,7 @@ Out-of-band trust anchor
 | DNS TXT validation | The CA operator controlled the domain at enrollment time | That they still control it today |
 | Leaf certificate | The CA authorized this publisher to act for this domain | That the leaf hasn't been compromised |
 | Merkle inclusion proof | The entry was logged and hasn't been modified | That the entry content is truthful |
-| Ed25519 cosignature | The tree root was signed by the CA's private key | That the CA's key hasn't been stolen |
+| ML-DSA-87 cosignature | The tree root was signed by the CA's private key | That the CA's key hasn't been stolen |
 | File SHA256 hashes | Your local files match what was submitted | That the submitted files were correct |
 | Consistency proof | The tree has only grown — no entries removed | That future entries will be honest |
 | Revocation check | The CA/leaf certificate has not been explicitly revoked | That an unrevoked cert is still trustworthy |
@@ -636,7 +636,7 @@ This separation means:
 
 ## What Gets Downloaded at Verification Time
 
-The kit ships with `fips-manifest-receipt.json`, which is self-contained — it includes the full manifest (every file path and SHA256 hash), the Merkle inclusion proof, and the Ed25519 cosignature. This means verification requires minimal or zero network traffic.
+The kit ships with `fips-manifest-receipt.json`, which is self-contained — it includes the full manifest (every file path and SHA256 hash), the Merkle inclusion proof, and the ML-DSA-87 cosignature. This means verification requires minimal or zero network traffic.
 
 ### By Verification Mode
 
@@ -662,7 +662,7 @@ fips-manifest-receipt.json
 ├── subtree_start       Proof range start (integer)
 ├── subtree_end         Proof range end (integer)
 ├── subtree_hash        Root hash of the subtree (32 bytes)
-└── cosignature         Ed25519 signature over the subtree hash (64 bytes)
+└── cosignature         ML-DSA-87 signature over the subtree hash (64 bytes)
 
 ```
 
@@ -673,7 +673,7 @@ This is everything needed to verify the kit without contacting the server. The v
 3. Computes SHA256 of each local source file
 4. Compares against the manifest in the receipt
 5. Replays the inclusion proof (hash chain from leaf to root)
-6. Verifies the Ed25519 cosignature on the root using pinned CA key
+6. Verifies the ML-DSA-87 cosignature on the root using pinned CA key
 
 All of this is local computation — no network required.
 

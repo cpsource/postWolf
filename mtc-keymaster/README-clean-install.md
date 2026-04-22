@@ -114,7 +114,7 @@ or use the MTC system itself once bootstrapped.
 
 ## 7. First Server Start
 
-On first startup the server auto-generates an Ed25519 CA key pair for
+On first startup the server auto-generates an ML-DSA-87 CA key pair for
 Merkle tree cosigning and creates all database tables.
 
 ```bash
@@ -134,7 +134,7 @@ cd ~/postWolf/mtc-keymaster/server/c
 Expected output:
 ```
 [store] MERKLE_NEON found, using PostgreSQL (Neon) for persistence
-[store] generating Ed25519 CA key ...
+[store] generating ML-DSA-87 CA key ...
 [http] listening on 0.0.0.0:8444 (TLS)
 [http] ECH enabled for factsorlie.com
 ```
@@ -170,7 +170,7 @@ the C server with TLS + ECH on port 8444.
 
 ## 9. Bootstrap the Client
 
-Fetch the CA's Ed25519 public key and store it locally. This is a
+Fetch the CA's ML-DSA-87 public key and store it locally. This is a
 one-time trust establishment step.
 
 ```bash

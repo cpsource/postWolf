@@ -12,18 +12,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <wolfssl/options.h>
+#include <wolfssl/wolfcrypt/dilithium.h>
+
 #define DEFAULT_PORT    4433
 #define DEFAULT_SERVER  "localhost:8444"
 #define BUF_SZ          4096
 
-static unsigned char ca_pubkey[32];
+static unsigned char ca_pubkey[DILITHIUM_LEVEL5_PUB_KEY_SIZE];
 static int ca_pubkey_sz = 0;
 
 static int load_ca_pubkey(const char *mtc_server)
 {
     if (mqc_load_ca_pubkey(mtc_server, ca_pubkey) != 0)
         return -1;
-    ca_pubkey_sz = 32;
+    ca_pubkey_sz = DILITHIUM_LEVEL5_PUB_KEY_SIZE;
     return 0;
 }
 

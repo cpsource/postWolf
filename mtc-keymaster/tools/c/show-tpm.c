@@ -27,6 +27,9 @@
 #include <unistd.h>
 #include <limits.h>
 
+#include <wolfssl/options.h>
+#include <wolfssl/wolfcrypt/dilithium.h>
+
 #include <json-c/json.h>
 #include "mqc.h"
 #include "mqc_peer.h"
@@ -77,8 +80,13 @@ static char *mqc_http_get(const char *path_only, long *code)
         return NULL;
     }
 
-    /* Read response into dynamically growing buffer */
-    buf_cap = 16384;
+    /* Read response into dynamically growing buffer.  Start at 64 KiB
+     * because the MQC framing is one frame per mqc_read() — if the
+     * next inbound frame is bigger than the remaining buffer,
+     * mqc_read() returns -1 non-recoverably (the length prefix is
+     * already consumed).  64 KiB covers every current endpoint,
+     * including the CA cert-with-X.509 responses (~21 KiB). */
+    buf_cap = 65536;
     buf = malloc((size_t)buf_cap);
     if (!buf) { mqc_close(conn); return NULL; }
 
@@ -611,7 +619,7 @@ int main(int argc, char *argv[])
         /* Load the CA cosigner's raw 32-byte Ed25519 pubkey via the
          * bootstrap port (8445) on the same host; subsequent runs hit
          * the on-disk cache at ~/.TPM/ca-cosigner.pem. */
-        static unsigned char ca_pubkey[32];
+        static unsigned char ca_pubkey[DILITHIUM_LEVEL5_PUB_KEY_SIZE];
         if (mqc_load_ca_pubkey(server, ca_pubkey) != 0) {
             fprintf(stderr,
                 "Error: could not load CA cosigner pubkey (required "
@@ -619,7 +627,7 @@ int main(int argc, char *argv[])
             return 1;
         }
         cfg.ca_pubkey    = ca_pubkey;
-        cfg.ca_pubkey_sz = 32;
+        cfg.ca_pubkey_sz = DILITHIUM_LEVEL5_PUB_KEY_SIZE;
 
         g_mqc_ctx = mqc_ctx_new(&cfg);
         if (!g_mqc_ctx) {

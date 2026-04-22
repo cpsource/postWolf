@@ -45,10 +45,12 @@ typedef struct {
                                   * portion is used here — bootstrap-port
                                   * lookups always hit :8445 on the same
                                   * host. */
-    const unsigned char *ca_pubkey;  /* CA Ed25519 cosigner public key
-                                      * (32 bytes) for Merkle proof
-                                      * verification. */
-    int ca_pubkey_sz;            /* Size of ca_pubkey (typically 32). */
+    const unsigned char *ca_pubkey;  /* CA ML-DSA-87 cosigner public key
+                                      * (DILITHIUM_LEVEL5_PUB_KEY_SIZE =
+                                      * 2592 bytes, raw encoding) used for
+                                      * Merkle-proof verification. */
+    int ca_pubkey_sz;            /* Size of ca_pubkey
+                                  * (DILITHIUM_LEVEL5_PUB_KEY_SIZE). */
     int encrypt_identity;        /* 1 = encrypt cert_index during handshake
                                   * (hides who is connecting from eavesdroppers).
                                   * Adds half a round trip. Default: 0 (off). */

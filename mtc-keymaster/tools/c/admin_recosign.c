@@ -7,11 +7,11 @@
  *
  * Description:
  *   During implementation of client-side Merkle inclusion-proof verification
- *   we discovered that cert 73's stored cosignature does not verify under the
- *   current CA Ed25519 key using the message format produced by
- *   mtc_store_cosign().  Ed25519 is deterministic, so this is a data-
- *   consistency issue, not a crypto bug.  This tool brings stored state
- *   back in sync.
+ *   we discovered that some stored cosignatures do not verify under the
+ *   current CA ML-DSA-87 key using the message format produced by
+ *   mtc_store_cosign().  This tool brings stored state back in sync — also
+ *   used as the second phase of the Ed25519 -> ML-DSA-87 cosigner migration
+ *   to rewrite every existing entry's cosig under the new key.
  *
  *   Default mode is --dry-run: the tool prints what it would change but
  *   does not touch certificates.json or the Neon mtc_certificates table.
@@ -32,6 +32,7 @@
 
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
+#include <wolfssl/wolfcrypt/dilithium.h>
 
 #include "mtc_store.h"
 #include "mtc_db.h"
@@ -82,7 +83,7 @@ static struct json_object *build_cosig(const char *cosigner_id,
     json_object_object_add(co, "end",          json_object_new_int(end));
     json_object_object_add(co, "subtree_hash", json_object_new_string(subtree_hash_hex));
     json_object_object_add(co, "signature",    json_object_new_string(sig_hex));
-    json_object_object_add(co, "algorithm",    json_object_new_string("Ed25519"));
+    json_object_object_add(co, "algorithm",    json_object_new_string("ML-DSA-87"));
     return co;
 }
 
@@ -141,8 +142,10 @@ int main(int argc, char *argv[])
     printf("Data dir:   %s\n", data_dir);
     printf("Tree size:  %d\n", store.tree.size);
     printf("Cert count: %d\n", store.cert_count);
+    /* Public key is ML-DSA-87 raw (2592 B); show a 16-byte prefix so
+     * the line stays readable.  Full pubkey is available over /ca/public-key. */
     printf("CA key:     loaded (pub=");
-    { char h[65]; to_hex(store.ca_pub_key, store.ca_pub_key_sz, h); printf("%s)\n", h); }
+    { char h[33]; to_hex(store.ca_pub_key, 16, h); printf("%s…  %dB raw)\n", h, store.ca_pub_key_sz); }
     printf("Neon:       %s\n\n", store.use_db ? "connected" : "file-only");
 
     /* Iterate every stored cert; recompute tree-state fields + cosig. */
@@ -161,9 +164,9 @@ int main(int argc, char *argv[])
         char    subtree_hash_hex[MTC_HASH_SIZE * 2 + 1];
         uint8_t *proof_new = NULL;
         int     proof_count_new = 0;
-        uint8_t sig_new[64];
+        uint8_t sig_new[DILITHIUM_LEVEL5_SIG_SIZE];
         int     sig_sz_new = 0;
-        char    sig_hex_new[64 * 2 + 1];
+        char    sig_hex_new[DILITHIUM_LEVEL5_SIG_SIZE * 2 + 1];
         int     changed = 0;
 
         if (!cert) continue;

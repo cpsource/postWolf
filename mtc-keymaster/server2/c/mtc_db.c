@@ -1481,3 +1481,52 @@ char *mtc_db_get_public_key(PGconn *conn, const char *key_name)
     PQclear(res);
     return val;
 }
+
+/******************************************************************************
+ * Function:    mtc_db_save_public_key
+ *
+ * Description:
+ *   Upsert a public key PEM in the mtc_public_keys table.  Called by the
+ *   bootstrap enrollment handler right after persisting the cert, so the
+ *   server's own state stays self-contained and we don't rely on clients
+ *   to push their pubkey into Neon out of band.
+ *
+ *   key_name follows the on-disk TPM directory convention:
+ *     - just <subject>              for a label-less leaf / CA
+ *     - <subject>-<label>           for a labelled leaf
+ *   That way `/public-key/<dir_name>` queries resolve straight from the
+ *   same string the client uses as its TPM directory name.
+ *
+ * Input Arguments:
+ *   conn      - Active PostgreSQL connection.
+ *   key_name  - Canonical identifier (see above).
+ *   key_pem   - Full PEM-encoded public key, newline-separated.
+ *
+ * Returns:
+ *    0  on success (INSERT or UPDATE).
+ *   -1  on query failure.
+ ******************************************************************************/
+int mtc_db_save_public_key(PGconn *conn, const char *key_name,
+                           const char *key_pem)
+{
+    PGresult *res;
+    const char *params[2];
+
+    if (!conn || !key_name || !key_pem) return -1;
+
+    params[0] = key_name;
+    params[1] = key_pem;
+    res = PQexecParams(conn,
+        "INSERT INTO mtc_public_keys (key_name, key_value) VALUES ($1, $2) "
+        "ON CONFLICT (key_name) DO UPDATE SET key_value = EXCLUDED.key_value",
+        2, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "[db] save_public_key failed: %s\n",
+                PQerrorMessage(conn));
+        PQclear(res);
+        return -1;
+    }
+    PQclear(res);
+    return 0;
+}

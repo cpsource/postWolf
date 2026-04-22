@@ -4,7 +4,7 @@
  *
  * @details
  * Manages all server-side state: the Merkle tree, issued certificates,
- * checkpoints, landmarks, revocations, and the Ed25519 CA signing key.
+ * checkpoints, landmarks, revocations, and the ML-DSA-87 CA signing key.
  * Supports two storage backends:
  *   - PostgreSQL (Neon) when MERKLE_NEON is available
  *   - File-based JSON in data_dir as fallback
@@ -51,11 +51,13 @@ typedef struct {
     char             log_id[64];       /**< Log identifier (e.g. "32473.2")    */
     char             cosigner_id[64];  /**< Cosigner ID ("<log_id>.ca")        */
 
-    /* Ed25519 CA key (DER-encoded) */
-    uint8_t          ca_priv_key[128]; /**< Private key DER bytes              */
-    int              ca_priv_key_sz;   /**< Private key size in bytes          */
-    uint8_t          ca_pub_key[32];   /**< Raw 32-byte public key             */
-    int              ca_pub_key_sz;    /**< Public key size (always 32)        */
+    /* ML-DSA-87 CA key (DER-encoded priv, raw pub).  Sized to
+     * wolfCrypt's DILITHIUM_LEVEL5_* constants with a safety margin
+     * on the DER form (raw priv = 4896 B, DER adds ~16 B header). */
+    uint8_t          ca_priv_key[8192];  /**< Private key DER bytes            */
+    int              ca_priv_key_sz;     /**< Private key size in bytes        */
+    uint8_t          ca_pub_key[2592];   /**< Raw ML-DSA-87 public key (2592 B)*/
+    int              ca_pub_key_sz;      /**< Public key size (always 2592)    */
 
     /* Merkle tree */
     MtcMerkleTree    tree;             /**< Append-only Merkle hash tree       */
@@ -157,16 +159,17 @@ int  mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz);
 struct json_object *mtc_store_checkpoint(MtcStore *store);
 
 /**
- * @brief    Cosign a subtree range [start, end) with the CA Ed25519 key.
+ * @brief    Cosign a subtree range [start, end) with the CA ML-DSA-87 key.
  *
  * @details
  * Builds the MTC subtree signature input per the MTC draft specification
- * and signs it with the CA's Ed25519 private key.
+ * and signs it with the CA's ML-DSA-87 private key.
  *
  * @param[in]  store    Store (provides CA key and tree).
  * @param[in]  start    Subtree start index (inclusive).
  * @param[in]  end      Subtree end index (exclusive).
- * @param[out] sig_out  Buffer for the signature (must be >= 64 bytes).
+ * @param[out] sig_out  Buffer for the signature (must be
+ *                      >= DILITHIUM_LEVEL5_SIG_SIZE = 4627 bytes).
  * @param[out] sig_sz   Receives the signature size in bytes.
  *
  * @return  0 on success, non-zero wolfCrypt error code on failure.
@@ -214,7 +217,7 @@ int  mtc_store_is_revoked(MtcStore *store, int cert_index);
  *
  * @details
  * Returns a JSON object containing the log_id, revoked indices array,
- * count, timestamp, and an Ed25519 signature over the indices array.
+ * count, timestamp, and an ML-DSA-87 signature over the indices array.
  *
  * @param[in] store  Store.
  *

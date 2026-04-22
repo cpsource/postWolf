@@ -824,7 +824,7 @@ int main(int argc, char **argv)
 
     {
         mqc_cfg_t cfg;
-        static unsigned char ca_pubkey[32];
+        static unsigned char ca_pubkey[DILITHIUM_LEVEL5_PUB_KEY_SIZE];
 
         if (mqc_load_ca_pubkey(server, ca_pubkey) != 0) {
             fprintf(stderr, "Error: could not load CA cosigner pubkey\n");
@@ -839,7 +839,7 @@ int main(int argc, char **argv)
         cfg.tpm_path     = ca_tpm_path;
         cfg.mtc_server   = server;
         cfg.ca_pubkey    = ca_pubkey;
-        cfg.ca_pubkey_sz = 32;
+        cfg.ca_pubkey_sz = DILITHIUM_LEVEL5_PUB_KEY_SIZE;
 
         g_mqc_ctx = mqc_ctx_new(&cfg);
         if (!g_mqc_ctx) {

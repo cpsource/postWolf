@@ -15,7 +15,7 @@ enrollment (DNS-validated), leaf enrollment (CA-authorised, nonce-based),
 certificate renewal, revocation, and public-key distribution via the
 transparency log are all first-class and in-box — the same server that
 mints a certificate also cosigns the Merkle root that proves its
-inclusion, serves the Ed25519 trust root to first-contact clients, and
+inclusion, serves the ML-DSA-87 trust root to first-contact clients, and
 runs the renewal timer on a schedule.
 
 Includes a handy Chrome extension for `mqc` that encrypts and
@@ -36,7 +36,7 @@ decrypts Gmail messages.
 A post-quantum MQC connection between two peers — say a client with an
 enrolled leaf identity and the MTC server acting as a peer — runs like this:
 
-1. **Trust root** — both peers have the CA's 32-byte Ed25519 log-cosigner
+1. **Trust root** — both peers have the CA's 2592-byte ML-DSA-87 log-cosigner
    public key pinned locally (cached in `~/.TPM/ca-cosigner.pem`). If a peer
    has never seen it, it fetches it TOFU-style over the DH bootstrap port
    (`{"op":"ca_pubkey"}` on port 8445).
@@ -45,7 +45,7 @@ enrolled leaf identity and the MTC server acting as a peer — runs like this:
    index of its certificate.
 3. **Peer verification** — the verifier fetches the opposite peer's
    certificate by log index, replays the Merkle inclusion proof against the
-   current tree root, and checks the Ed25519 cosignature over the subtree
+   current tree root, and checks the ML-DSA-87 cosignature over the subtree
    the root belongs to. Lookups ride the bootstrap port's generic
    `{"op":"http_get","path":...}` proxy (port 8445); no X.509, no classical
    TLS on the critical path.
@@ -88,7 +88,7 @@ doesn't ship its own primitives.
 | Purpose | Primitive | Notes |
 |---------|-----------|-------|
 | Transparency log | SHA-256 Merkle tree | RFC 9162-style, append-only, per-entry inclusion proofs and cross-tree consistency proofs. |
-| Log cosigning | **Ed25519** | Every published tree root is signed by the log operator's Ed25519 key; this 32-byte public key is the client's pinned trust root. |
+| Log cosigning | **ML-DSA-87** | Every published tree root is signed by the log operator's ML-DSA-87 key; this 2592-byte public key is the client's pinned trust root. |
 | Peer certificates | **ML-DSA-87** (for CA and leaf identities in this deployment) | The cert binds a subject to a public key; the inclusion proof binds the cert to a cosigned tree state. |
 
 ### Why the split
@@ -122,13 +122,13 @@ State lives in two directories:
 - `~/.mtc-ca-data/` — server state: Merkle log, certificates, CA key, server
   TLS cert.
 - `~/.TPM/` — per-identity client trust store: a leaf or CA's ML-DSA-87
-  key, its cached peer certificates, and the Ed25519 cosigner pin.
+  key, its cached peer certificates, and the ML-DSA-87 cosigner pin.
 
 ## Trust model — three keys
 
 | Role | Algorithm | Purpose |
 |------|-----------|---------|
-| **Log cosigner** | Ed25519 | Signs Merkle tree roots. Every MQC peer verifies cosignatures with it. This is the root of trust. |
+| **Log cosigner** | ML-DSA-87 | Signs Merkle tree roots. Every MQC peer verifies cosignatures with it. This is the root of trust. |
 | **Domain CA** (e.g. `factsorlie.com-ca`) | ML-DSA-87 | Signs its own handshake transcripts and authorises leaf enrollments under its domain. |
 | **Leaf** (e.g. `factsorlie.com`) | ML-DSA-87 | Signs its own handshake transcripts. |
 
@@ -298,7 +298,7 @@ sudo systemctl enable --now mtc-ca.service
 sudo systemctl status mtc-ca.service
 ```
 
-On first start the server auto-generates the Ed25519 log-cosigner key
+On first start the server auto-generates the ML-DSA-87 log-cosigner key
 into `~/.mtc-ca-data/`. That key is the trust root — every client pins
 its fingerprint.
 
@@ -315,7 +315,7 @@ purposes:
 
 1. **A working CA you can verify against.** You don't have to stand up
    your own `mtc_server` just to see the stack in motion. A fresh
-   `show-tpm --verify` against `factsorlie.com` TOFUs the Ed25519
+   `show-tpm --verify` against `factsorlie.com` TOFUs the ML-DSA-87
    cosigner key, replays all published Merkle proofs, and reports a
    pass/fail — the same trust chain a production client would exercise.
 2. **The reference CA for leaf enrollments in these docs.** Every
@@ -324,7 +324,7 @@ purposes:
    and enrollment nonces land in the same Neon-backed Merkle log that
    cosigns every client's verification attempt.
 
-**Trust root.** The CA's Ed25519 log-cosigner public key is what anchors
+**Trust root.** The CA's ML-DSA-87 log-cosigner public key is what anchors
 everything else — every certificate in the tree is only as trusted as
 that one 32-byte key. `show-tpm --verify` pins it on first contact
 (writes `~/.TPM/ca-cosigner.pem`). If the pinned fingerprint ever
@@ -388,7 +388,7 @@ performed by the CA operator:
 show-tpm --verify
 ```
 
-On first run, `show-tpm` TOFUs the CA's Ed25519 cosigner key from port
+On first run, `show-tpm` TOFUs the CA's ML-DSA-87 cosigner key from port
 8445 and caches it at `~/.TPM/ca-cosigner.pem`. Subsequent runs use the
 cached copy. If the fingerprint changes, treat it as compromise and
 revoke manually.

@@ -74,7 +74,7 @@ python3 server.py --port 8443
 ```
 
 The server initializes the database on first run (creates tables, generates
-an Ed25519 CA key pair, seeds the Merkle tree).
+an ML-DSA-87 CA key pair, seeds the Merkle tree).
 
 ### 2. Verify the Server
 
@@ -135,7 +135,7 @@ loaded directly by wolfSSL for TLS 1.3 handshakes over QUIC or TCP.
 | POST | `/certificate/request` | Issue a new certificate |
 | GET | `/certificate/<N>` | Retrieve issued certificate |
 | GET | `/trust-anchors` | List trust anchor IDs |
-| GET | `/ca/public-key` | CA's Ed25519 public key |
+| GET | `/ca/public-key` | CA's ML-DSA-87 public key |
 | POST | `/revoke` | Revoke a certificate by index |
 | GET | `/revoked` | Full revocation list (signed by CA) |
 | GET | `/revoked/<N>` | Check if specific index is revoked |
@@ -173,7 +173,7 @@ loaded directly by wolfSSL for TLS 1.3 handshakes over QUIC or TCP.
     "subtree_hash": "d03512...",
     "cosignatures": [{
       "cosigner_id": "32473.1.ca",
-      "algorithm": "Ed25519",
+      "algorithm": "ML-DSA-87",
       "signature": "82a313..."
     }],
     "trust_anchor_id": "32473.1"
@@ -220,7 +220,7 @@ The store path is configurable via `--store` flag or
 ## How It Fits Together
 
 1. **CA/Log Server** (`server/python/`) maintains the append-only Merkle
-   tree and issues certificates with inclusion proofs and Ed25519
+   tree and issues certificates with inclusion proofs and ML-DSA-87
    cosignatures.
 
 2. **Client Tools** (`tools/python/`) enroll certificates, verify proofs,
@@ -240,7 +240,7 @@ The store path is configurable via `--store` flag or
 
 Three distinct keys, easy to confuse. Only one of them cosigns anything.
 
-### Key 1 — Log operator's Ed25519 key (the "cosigner")
+### Key 1 — Log operator's ML-DSA-87 key (the "cosigner")
 
 - Lives on the MTC CA/Log server at `~/.mtc-ca-data/ca_key.der`.
 - Public half is served at `GET /ca/public-key` and cached by clients
@@ -274,14 +274,14 @@ Three distinct keys, easy to confuse. Only one of them cosigns anything.
 For client2 at cert_index N:
 
 ```
-client1 holds:  the log operator's Ed25519 pubkey (key 1), loaded
+client1 holds:  the log operator's ML-DSA-87 pubkey (key 1), loaded
                 out-of-band into ~/.TPM/ca-cosigner.pem
 
 client1 fetches: GET /certificate/N → standalone_certificate
   ├─ tbs_entry (client2's subject + spk_hash)
   ├─ inclusion_proof (sibling hashes)
   ├─ subtree_hash (claimed log root)
-  └─ cosignatures[0] (Ed25519 signature by key 1 over subtree_hash)
+  └─ cosignatures[0] (ML-DSA-87 signature by key 1 over subtree_hash)
 
 client1 checks, in order:
   1. Cosignature verifies against key 1 over (start, end, subtree_hash)
@@ -301,7 +301,7 @@ it corresponds to the real transparency log.
 
 ### Algorithm choices
 
-The log cosigner is Ed25519 per the MTC draft. Per-peer identity keys
+The log cosigner is ML-DSA-87 per the MTC draft. Per-peer identity keys
 (keys 2 and 3) are ML-DSA-87 for post-quantum resistance. Migrating
 the cosigner to a post-quantum algorithm is a known future step.
 
@@ -449,7 +449,7 @@ server startup.
 
 | What | Source | Stored at |
 |------|--------|-----------|
-| CA's Ed25519 public key | HTTP GET to MTC CA `/ca/public-key` | Local trust store (JSON) |
+| CA's ML-DSA-87 public key | HTTP GET to MTC CA `/ca/public-key` | Local trust store (JSON) |
 | Log ID, tree size, root hash | HTTP GET to MTC CA `/log` | Local trust store |
 | Landmark subtree hashes (optional) | HTTP GET to MTC CA `/log` | Local trust store |
 
@@ -495,7 +495,7 @@ curl http://localhost:8444/revoked
 curl http://localhost:8444/revoked/1
 ```
 
-The revocation list is signed by the CA's Ed25519 key to prevent
+The revocation list is signed by the CA's ML-DSA-87 key to prevent
 tampering. It is persisted to both PostgreSQL (Neon) and local files.
 
 ### Client Side (wolfSSL)

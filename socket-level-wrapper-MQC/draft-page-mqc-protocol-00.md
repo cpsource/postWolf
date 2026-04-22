@@ -22,7 +22,8 @@ and the cert itself is retrieved out of band.  The protocol uses
 binding, **HKDF-SHA256** [RFC5869] for session-key derivation, and
 **AES-256-GCM** [FIPS197] for bulk confidentiality and integrity.
 Peer certificates are verified against a log checkpoint signed with
-**Ed25519** [RFC8032].
+**ML-DSA-87** as well.  Every primitive on the wire targets NIST
+Category 3 or higher against a quantum adversary.
 
 MQC is designed as a drop-in replacement for the authenticated-
 channel role that TLS currently plays in machine-to-machine APIs,
@@ -148,7 +149,7 @@ corresponding ML-DSA-87 private key).
 
 **Log.**  The Merkle transparency log that witnesses MTC
 certificates.  Log identity consists of a `log_id` string and an
-Ed25519 public key (the log's **cosigner**).
+ML-DSA-87 public key (the log's **cosigner**).
 
 **Handshake.**  The initial bidirectional exchange that performs
 peer authentication and establishes the session key.
@@ -228,7 +229,7 @@ distinguished by inspection (Section 7.1).
 | Key derivation | HKDF-SHA256 | [RFC5869] |
 | Hash for HKDF and transcript | SHA-256 | [FIPS180] |
 | Bulk cipher | AES-256-GCM | [FIPS197] |
-| Log cosigner | Ed25519 | [RFC8032] |
+| Log cosigner | ML-DSA-87 | [FIPS204] |
 
 Implementations MUST use a cryptographically secure RNG for all
 randomness (ML-KEM key generation, ML-KEM encapsulation
@@ -550,9 +551,9 @@ tree walk when subtree sizes are not powers of two: at each
 recursion step, split at `k = largest power of 2 < n`.  Full
 pseudocode is given in [MTC] Section 2.1.3.
 
-### 10.4. Ed25519 Cosignature on the Checkpoint
+### 10.4. ML-DSA-87 Cosignature on the Checkpoint
 
-The log cosigner issues an Ed25519 signature over a structured
+The log cosigner issues an ML-DSA-87 signature over a structured
 checkpoint message of the form:
 
 ```
@@ -566,8 +567,11 @@ checkpoint message of the form:
 
 The verifier recomputes this message in exactly the bytes above,
 reconstructs the `subtree_hash` it expects from Section 10.3, and
-verifies the Ed25519 signature against the log's known Ed25519
-public key.
+verifies the ML-DSA-87 signature against the log's known ML-DSA-87
+public key (2592 bytes, raw encoding).  The signature is 4627 bytes.
+The verification uses `wc_dilithium_verify_ctx_msg` with an empty
+context (`ctx = NULL, ctxLen = 0`), matching the handshake-signature
+call in Section 6.
 
 ### 10.5. Revocation
 
@@ -635,11 +639,13 @@ Section 13).
 - **SHA-256** provides 128 bits of post-quantum collision
   resistance (Grover gives a quadratic speedup on preimage search
   but not on collision search in the birthday-attack regime).
-- **Ed25519** does *not* offer post-quantum resistance.  It is used
-  only for the log cosignature, which is independently re-issued
-  on a rolling basis ([MTC] Section 5); a future revision SHOULD
-  replace Ed25519 with an ML-DSA-87 cosignature or a
-  hash-based alternative.  See also [BEP].
+- **Every wire primitive targets at least NIST Category 3 against
+  a quantum adversary.**  The log cosigner (Section 10.4) uses
+  ML-DSA-87 — identical to peer identity — so there is no
+  pre-quantum hedge remaining in the chain of trust.  An operator
+  migrating from an earlier draft that used Ed25519 for the
+  cosigner should refer to the `migrate-cosigner` tool in the
+  reference implementation for the one-shot rotation procedure.
 
 ### 12.2. Nonce Management
 
@@ -675,7 +681,7 @@ invalidates peer caches is out of scope here.
 
 ### 12.5. Compromise of the Log Cosigner
 
-If the log cosigner's Ed25519 private key is compromised, an
+If the log cosigner's ML-DSA-87 private key is compromised, an
 adversary can forge checkpoints and thereby inject fraudulent
 certificates into the verification chain.  Defence-in-depth
 measures — HSM-backed cosigner key storage, multiple independent
@@ -727,8 +733,6 @@ such negotiation is actually introduced.
   Requirement Levels*, BCP 14, RFC 2119, March 1997.
 - **[RFC5869]**  Krawczyk and Eronen, *HMAC-based Extract-and-
   Expand Key Derivation Function (HKDF)*, RFC 5869, May 2010.
-- **[RFC8032]**  Josefsson and Liusvaara, *Edwards-Curve Digital
-  Signature Algorithm (EdDSA)*, RFC 8032, January 2017.
 - **[RFC8174]**  Leiba, *Ambiguity of Uppercase vs Lowercase in
   RFC 2119 Key Words*, BCP 14, RFC 8174, May 2017.
 
@@ -745,8 +749,6 @@ such negotiation is actually introduced.
   sibling transport that reuses MQC's crypto over a QUIC-style
   reliable UDP substrate.  See the `postWolf` source tree,
   `socket-level-wrapper-QUIC/`.
-- **[BEP]**         McGrew et al., *Bounds on the Effort to Produce
-  Collisions and Pre-images*, NIST IR, forthcoming.
 
 ---
 

@@ -19,7 +19,9 @@ Abstract
    long-term peer identity and handshake binding, HKDF-SHA256 for
    session-key derivation, and AES-256-GCM for bulk confidentiality
    and integrity.  Peer certificates are verified against a log
-   checkpoint signed with Ed25519.
+   checkpoint signed with ML-DSA-87 as well.  Every primitive on
+   the wire targets NIST Category 3 or higher against a quantum
+   adversary.
 
    MQC is designed as a drop-in replacement for the authenticated-
    channel role that TLS currently plays in machine-to-machine APIs,
@@ -176,7 +178,7 @@ Internet-Draft          Merkle Quantum Connect          April 2026
 
    Log.  The Merkle transparency log that witnesses MTC
    certificates.  Log identity consists of a log_id string and an
-   Ed25519 public key (the log's cosigner).
+   ML-DSA-87 public key (the log's cosigner).
 
    Handshake.  The initial bidirectional exchange that performs peer
    authentication and establishes the session key.
@@ -258,7 +260,7 @@ Internet-Draft          Merkle Quantum Connect          April 2026
       Key derivation                          HKDF-SHA256    [RFC5869]
       Hash for HKDF and transcript            SHA-256        [FIPS180]
       Bulk cipher                             AES-256-GCM    [FIPS197]
-      Log cosigner                            Ed25519        [RFC8032]
+      Log cosigner                            ML-DSA-87      [FIPS204]
 
    Implementations MUST use a cryptographically secure RNG for all
    randomness (ML-KEM key generation, ML-KEM encapsulation
@@ -627,9 +629,9 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    recursion step, split at k = largest power of 2 < n.  Full
    pseudocode is given in [MTC] Section 2.1.3.
 
-10.4.  Ed25519 Cosignature on the Checkpoint
+10.4.  ML-DSA-87 Cosignature on the Checkpoint
 
-   The log cosigner issues an Ed25519 signature over a structured
+   The log cosigner issues an ML-DSA-87 signature over a structured
    checkpoint message of the form:
 
           label       = "mtc-subtree/v1\n\x00"          (16 bytes)
@@ -641,8 +643,11 @@ Internet-Draft          Merkle Quantum Connect          April 2026
 
    The verifier recomputes this message in exactly the bytes above,
    reconstructs the subtree_hash it expects from Section 10.3, and
-   verifies the Ed25519 signature against the log's known Ed25519
-   public key.
+   verifies the ML-DSA-87 signature against the log's known
+   ML-DSA-87 public key (2592 bytes, raw encoding).  The signature
+   is 4627 bytes.  Verification uses wc_dilithium_verify_ctx_msg
+   with an empty context (ctx = NULL, ctxLen = 0), matching the
+   handshake-signature call in Section 6.
 
 10.5.  Revocation
 
@@ -728,11 +733,13 @@ Internet-Draft          Merkle Quantum Connect          April 2026
       (Grover gives a quadratic speedup on preimage search but not
       on collision search in the birthday-attack regime).
 
-   o  Ed25519 does NOT offer post-quantum resistance.  It is used
-      only for the log cosignature, which is independently re-issued
-      on a rolling basis ([MTC] Section 5); a future revision SHOULD
-      replace Ed25519 with an ML-DSA-87 cosignature or a hash-based
-      alternative.  See also [BEP].
+   o  Every wire primitive targets at least NIST Category 3 against
+      a quantum adversary.  The log cosigner (Section 10.4) uses
+      ML-DSA-87 — identical to peer identity — so there is no
+      pre-quantum hedge remaining in the chain of trust.  An
+      operator migrating from an earlier draft that used Ed25519
+      for the cosigner should refer to the migrate-cosigner tool
+      in the reference implementation for the one-shot rotation.
 
 12.2.  Nonce Management
 
@@ -768,7 +775,7 @@ Internet-Draft          Merkle Quantum Connect          April 2026
 
 12.5.  Compromise of the Log Cosigner
 
-   If the log cosigner's Ed25519 private key is compromised, an
+   If the log cosigner's ML-DSA-87 private key is compromised, an
    adversary can forge checkpoints and thereby inject fraudulent
    certificates into the verification chain.  Defence-in-depth
    measures -- HSM-backed cosigner key storage, multiple independent
@@ -840,10 +847,6 @@ Internet-Draft          Merkle Quantum Connect          April 2026
               Expand Key Derivation Function (HKDF)", RFC 5869,
               DOI 10.17487/RFC5869, May 2010.
 
-   [RFC8032]  Josefsson, S. and I. Liusvaara, "Edwards-Curve Digital
-              Signature Algorithm (EdDSA)", RFC 8032,
-              DOI 10.17487/RFC8032, January 2017.
-
    [RFC8174]  Leiba, B., "Ambiguity of Uppercase vs Lowercase in RFC
               2119 Key Words", BCP 14, RFC 8174,
               DOI 10.17487/RFC8174, May 2017.
@@ -867,10 +870,6 @@ Internet-Draft          Merkle Quantum Connect          April 2026
                  sibling transport that reuses MQC's crypto over a
                  QUIC-style reliable UDP substrate.  See the
                  postWolf source tree, socket-level-wrapper-QUIC/.
-
-   [BEP]         McGrew, D., et al., "Bounds on the Effort to
-                 Produce Collisions and Pre-images", NIST IR,
-                 forthcoming.
 
 15. Author's Address
 

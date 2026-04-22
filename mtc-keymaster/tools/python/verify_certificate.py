@@ -4,16 +4,13 @@ import base64
 import binascii
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
-
-try:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-    from cryptography.hazmat.primitives.serialization import load_pem_public_key
-except Exception:
-    Ed25519PublicKey = None
-    load_pem_public_key = None
 
 
 def canonical_json_bytes(obj) -> bytes:
@@ -106,6 +103,12 @@ def verify_times(tbs_entry: dict, now: float):
 
 
 def verify_cosignature(cosig: dict, pubkey_pem_path: Path | None):
+    """Verify an ML-DSA-87 MTC cosignature via `openssl35 pkeyutl -verify`.
+
+    OpenSSL 3.5+ natively supports ML-DSA; we shell out because the
+    `cryptography` package's PQ coverage is still version-dependent and
+    OpenSSL 3.5 ships with every postWolf kit's installer.
+    """
     result = {
         "checked": False,
         "valid": None,
@@ -116,17 +119,15 @@ def verify_cosignature(cosig: dict, pubkey_pem_path: Path | None):
         result["reason"] = "No log public key supplied; skipped"
         return result
 
-    if Ed25519PublicKey is None or load_pem_public_key is None:
-        result["reason"] = "cryptography package not available"
+    openssl = shutil.which("openssl35") or shutil.which("openssl")
+    if openssl is None:
+        result["reason"] = (
+            "no openssl35/openssl on PATH — run buildopenssl3.5.sh from "
+            "the postWolf kit"
+        )
         return result
 
     try:
-        pem = pubkey_pem_path.read_bytes()
-        pub = load_pem_public_key(pem)
-        if not isinstance(pub, Ed25519PublicKey):
-            result["reason"] = "Provided public key is not Ed25519"
-            return result
-
         log_id = require(cosig, "log_id")
         start = require(cosig, "start")
         end = require(cosig, "end")
@@ -135,11 +136,34 @@ def verify_cosignature(cosig: dict, pubkey_pem_path: Path | None):
 
         msg = build_cosignature_message(log_id, start, end, subtree_hash)
         sig = bytes.fromhex(sig_hex)
-        pub.verify(sig, msg)
 
-        result["checked"] = True
-        result["valid"] = True
-        return result
+        with tempfile.TemporaryDirectory() as td:
+            msg_path = os.path.join(td, "msg.bin")
+            sig_path = os.path.join(td, "sig.bin")
+            with open(msg_path, "wb") as f:
+                f.write(msg)
+            with open(sig_path, "wb") as f:
+                f.write(sig)
+
+            proc = subprocess.run(
+                [
+                    openssl, "pkeyutl", "-verify",
+                    "-pubin", "-inkey", str(pubkey_pem_path),
+                    "-rawin", "-in", msg_path,
+                    "-sigfile", sig_path,
+                ],
+                capture_output=True,
+                check=False,
+            )
+            ok = (proc.returncode == 0 and
+                  b"Signature Verified Successfully" in proc.stdout)
+            result["checked"] = True
+            result["valid"] = ok
+            if not ok:
+                result["reason"] = (proc.stderr.decode("utf-8", "replace")
+                                    or proc.stdout.decode("utf-8", "replace")
+                                    or "signature did not verify").strip()
+            return result
     except Exception as e:
         result["checked"] = True
         result["valid"] = False

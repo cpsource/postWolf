@@ -62,6 +62,7 @@
 #include <wolfssl/wolfcrypt/sha256.h>
 #include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/types.h>
+#include <wolfssl/wolfcrypt/dilithium.h>
 
 #include <json-c/json.h>
 
@@ -226,16 +227,17 @@ static int send_http_get_proxy(int fd, MtcStore *store, const char *path)
  * Function:    send_ca_pubkey_plaintext  (static)
  *
  * Description:
- *   Reply to a {"op":"ca_pubkey"} bootstrap request with the CA's Ed25519
- *   log-cosigner public key as plaintext JSON — no DH exchange.  Same
- *   payload shape as GET /ca/public-key on the HTTP port so clients can
- *   reuse parsing.  Safe in the clear: it is a public key, and clients
- *   must TOFU-pin it regardless of transport.
+ *   Reply to a {"op":"ca_pubkey"} bootstrap request with the CA's
+ *   ML-DSA-87 log-cosigner public key as plaintext JSON — no DH
+ *   exchange.  Same payload shape as GET /ca/public-key on the HTTP
+ *   port so clients can reuse parsing.  Safe in the clear: it is a
+ *   public key, and clients must TOFU-pin it regardless of transport.
  ******************************************************************************/
 static int send_ca_pubkey_plaintext(int fd, MtcStore *store)
 {
     struct json_object *obj;
-    char pem[1024];
+    /* ML-DSA-87 PEM-wrapped DER is ~3.5 KiB; size generously. */
+    char pem[8192];
     int pemSz;
     const char *json_str;
     int rc = -1;
@@ -249,7 +251,7 @@ static int send_ca_pubkey_plaintext(int fd, MtcStore *store)
     json_object_object_add(obj, "cosigner_id",
         json_object_new_string(store->cosigner_id));
     json_object_object_add(obj, "algorithm",
-        json_object_new_string("Ed25519"));
+        json_object_new_string("ML-DSA-87"));
 
     pemSz = mtc_store_get_public_key_pem(store, pem, (int)sizeof(pem));
     if (pemSz > 0) {
@@ -983,7 +985,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
         int proof_count = 0;
         uint8_t subtree_hash[MTC_HASH_SIZE];
         char hash_hex[MTC_HASH_SIZE * 2 + 1];
-        uint8_t sig[64];
+        uint8_t sig[DILITHIUM_LEVEL5_SIG_SIZE];
         int sig_sz = 0;
         int i, start, end;
 
@@ -1098,13 +1100,18 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
         json_object_object_add(cosig_obj, "subtree_hash",
             json_object_new_string(hash_hex));
         {
-            char sig_hex[64 * 2 + 1];
-            to_hex(sig, sig_sz, sig_hex);
-            json_object_object_add(cosig_obj, "signature",
-                json_object_new_string(sig_hex));
+            /* ML-DSA-87 signature = 4627 bytes → 9254 hex chars + NUL.
+             * Heap-allocate to keep the per-connection stack small. */
+            char *sig_hex = (char *)malloc((size_t)sig_sz * 2 + 1);
+            if (sig_hex) {
+                to_hex(sig, sig_sz, sig_hex);
+                json_object_object_add(cosig_obj, "signature",
+                    json_object_new_string(sig_hex));
+                free(sig_hex);
+            }
         }
         json_object_object_add(cosig_obj, "algorithm",
-            json_object_new_string("Ed25519"));
+            json_object_new_string("ML-DSA-87"));
         json_object_array_add(cosig_arr, cosig_obj);
         json_object_object_add(sc, "cosignatures", cosig_arr);
         json_object_object_add(sc, "trust_anchor_id",
@@ -1141,6 +1148,27 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
             const char *cert_str = json_object_to_json_string(result);
             if (mtc_db_save_certificate(store->db, index, cert_str) != 0)
                 fprintf(stderr, "[bootstrap] WARNING: DB save_certificate failed for index %d\n", index);
+            /* Record the pubkey under the same directory-naming
+             * convention the client uses under ~/.TPM/:
+             *     subject                for an unlabelled leaf/CA
+             *     subject-label          for a labelled leaf
+             * This keeps /public-key/<name> self-serving from the
+             * server without relying on the client to push the
+             * pubkey into Neon out of band. */
+            {
+                char key_name[256];
+                if (bootstrap_label[0])
+                    snprintf(key_name, sizeof(key_name), "%s-%s",
+                             subject, bootstrap_label);
+                else
+                    snprintf(key_name, sizeof(key_name), "%s", subject);
+                if (mtc_db_save_public_key(store->db, key_name,
+                                           pub_key_pem) != 0) {
+                    fprintf(stderr,
+                        "[bootstrap] WARNING: DB save_public_key failed "
+                        "for %s\n", key_name);
+                }
+            }
         }
 
         /* --- Step 3: Send encrypted certificate response ---
