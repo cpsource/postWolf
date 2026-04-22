@@ -55,6 +55,9 @@
 #define PATHBUF  (PATH_MAX + 64)
 #define PATHBUF2 (PATH_MAX + 256)
 
+#include <wolfssl/options.h>
+#include <wolfssl/wolfcrypt/dilithium.h>
+
 #include <json-c/json.h>
 
 #include "mqc.h"
@@ -231,7 +234,7 @@ static int server_is_revoked(const char *server, const char *tpm_path,
     char *colon;
     int port = 8446;
     mqc_cfg_t cfg;
-    static unsigned char ca_pubkey[32];
+    static unsigned char ca_pubkey[DILITHIUM_LEVEL5_PUB_KEY_SIZE];
     mqc_ctx_t *ctx;
     char path[64];
     char *body;

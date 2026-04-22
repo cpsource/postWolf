@@ -3,14 +3,14 @@
  * Purpose:     Persistence and CA operations for the MTC CA server.
  *
  * Description:
- *   Manages all server-side state: the Merkle tree, Ed25519 CA key,
+ *   Manages all server-side state: the Merkle tree, ML-DSA-87 CA key,
  *   certificates, checkpoints, landmarks, and revocations.  Supports two
  *   storage backends:
  *     - PostgreSQL (Neon) when MERKLE_NEON is available
  *     - File-based JSON (entries.json, certificates.json, landmarks.json,
  *       revocations.json) in data_dir as fallback
  *
- *   The CA Ed25519 key is loaded from DB, file (ca_key.der), or
+ *   The CA ML-DSA-87 key is loaded from file (ca_key_mldsa.der) or
  *   generated fresh on first run.
  *
  * Dependencies:
@@ -18,16 +18,16 @@
  *   stdio.h, stdlib.h, string.h, time.h
  *   sys/stat.h              (mkdir, chmod)
  *   wolfssl/options.h
- *   wolfssl/wolfcrypt/ed25519.h     (CA key operations)
+ *   wolfssl/wolfcrypt/dilithium.h   (CA key operations: ML-DSA-87)
  *   wolfssl/wolfcrypt/random.h      (key generation)
  *   wolfssl/wolfcrypt/asn_public.h  (DER/PEM conversion)
  *
  * Notes:
  *   - NOT thread-safe.  All operations must be serialised.
  *   - The store owns all json_object refs in certificates/checkpoints.
- *   - CA private key is stored as DER in ca_key.der (chmod 0600) and
- *     optionally mirrored to DB as hex (unencrypted — see warning in
- *     init_ca_key).
+ *   - CA private key is stored as DER in ca_key_mldsa.der (chmod 0600).
+ *     Migrations from the legacy Ed25519 ca_key.der layout are handled
+ *     by the `migrate-cosigner` tool, not at service startup.
  *
  * Created:     2026-04-13
  ******************************************************************************/
@@ -41,7 +41,7 @@
 #include <time.h>
 
 #include <wolfssl/options.h>
-#include <wolfssl/wolfcrypt/ed25519.h>
+#include <wolfssl/wolfcrypt/dilithium.h>
 #include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
 
@@ -135,7 +135,7 @@ static int read_file(const char *path, void *buf, int maxSz)
  * Function:    init_ca_key
  *
  * Description:
- *   Loads or generates the CA Ed25519 signing key.  Sources are tried in
+ *   Loads or generates the CA ML-DSA-87 signing key.  Sources are tried in
  *   order:
  *     1. Database (ca_private_key_hex in mtc_ca_config)
  *     2. File (data_dir/ca_key.der)
@@ -154,11 +154,11 @@ static int read_file(const char *path, void *buf, int maxSz)
 static int init_ca_key(MtcStore *store)
 {
     char path[1024];
-    ed25519_key key;
+    dilithium_key key;
     WC_RNG rng;
     int ret;
 
-    snprintf(path, sizeof(path), "%s/ca_key.der", store->data_dir);
+    snprintf(path, sizeof(path), "%s/ca_key_mldsa.der", store->data_dir);
 
     /* Load from file only — private keys are never stored in the DB */
     store->ca_priv_key_sz = read_file(path, store->ca_priv_key,
@@ -167,50 +167,54 @@ static int init_ca_key(MtcStore *store)
     if (store->ca_priv_key_sz > 0) {
         /* Extract public key from private */
         word32 idx = 0;
-        ret = wc_ed25519_init(&key);
+        ret = wc_dilithium_init(&key);
         if (ret != 0) return ret;
-        ret = wc_Ed25519PrivateKeyDecode(store->ca_priv_key, &idx, &key,
+        ret = wc_dilithium_set_level(&key, WC_ML_DSA_87);
+        if (ret != 0) { wc_dilithium_free(&key); return ret; }
+        ret = wc_Dilithium_PrivateKeyDecode(store->ca_priv_key, &idx, &key,
             (word32)store->ca_priv_key_sz);
         if (ret == 0) {
             word32 pubSz = sizeof(store->ca_pub_key);
-            ret = wc_ed25519_export_public(&key, store->ca_pub_key, &pubSz);
+            ret = wc_dilithium_export_public(&key, store->ca_pub_key, &pubSz);
             store->ca_pub_key_sz = (int)pubSz;
         }
-        wc_ed25519_free(&key);
+        wc_dilithium_free(&key);
         return ret;
     }
 
-    /* Generate new Ed25519 key */
-    printf("[store] generating Ed25519 CA key ...\n");
+    /* Generate new ML-DSA-87 key */
+    printf("[store] generating ML-DSA-87 CA key ...\n");
     ret = wc_InitRng(&rng);
     if (ret != 0) return ret;
 
-    ret = wc_ed25519_init(&key);
-    if (ret == 0)
-        ret = wc_ed25519_make_key(&rng, ED25519_KEY_SIZE, &key);
+    ret = wc_dilithium_init(&key);
+    if (ret == 0) ret = wc_dilithium_set_level(&key, WC_ML_DSA_87);
+    if (ret == 0) ret = wc_dilithium_make_key(&key, &rng);
     wc_FreeRng(&rng);
-    if (ret != 0) { wc_ed25519_free(&key); return ret; }
+    if (ret != 0) { wc_dilithium_free(&key); return ret; }
 
     /* Export private key DER */
     {
-        word32 privSz = sizeof(store->ca_priv_key);
-        ret = wc_Ed25519KeyToDer(&key, store->ca_priv_key, privSz);
-        if (ret > 0) {
-            store->ca_priv_key_sz = ret;
+        int derSz = wc_Dilithium_KeyToDer(&key, store->ca_priv_key,
+            (word32)sizeof(store->ca_priv_key));
+        if (derSz > 0) {
+            store->ca_priv_key_sz = derSz;
             write_file(path, store->ca_priv_key, store->ca_priv_key_sz);
             chmod(path, 0600);
             ret = 0;
+        } else {
+            ret = derSz;
         }
     }
 
     /* Export public key */
     {
         word32 pubSz = sizeof(store->ca_pub_key);
-        wc_ed25519_export_public(&key, store->ca_pub_key, &pubSz);
+        wc_dilithium_export_public(&key, store->ca_pub_key, &pubSz);
         store->ca_pub_key_sz = (int)pubSz;
     }
 
-    wc_ed25519_free(&key);
+    wc_dilithium_free(&key);
     return ret;
 }
 
@@ -717,7 +721,7 @@ struct json_object *mtc_store_checkpoint(MtcStore *store)
  * Function:    mtc_store_cosign
  *
  * Description:
- *   Cosigns a subtree range [start, end) with the CA's Ed25519 key.
+ *   Cosigns a subtree range [start, end) with the CA's ML-DSA-87 key.
  *   Builds the signature input per the MTC draft specification:
  *     "mtc-subtree/v1\n\0" + cosigner_id + log_id + start(8BE) +
  *     end(8BE) + subtree_hash
@@ -726,7 +730,8 @@ struct json_object *mtc_store_checkpoint(MtcStore *store)
  *   store    - Store (provides CA key and tree).
  *   start    - Subtree start (inclusive).
  *   end      - Subtree end (exclusive).
- *   sig_out  - Caller-owned buffer (>= 64 bytes).
+ *   sig_out  - Caller-owned buffer (>= DILITHIUM_LEVEL5_SIG_SIZE = 4627
+ *              bytes).
  *   sig_sz   - Receives the signature size.
  *
  * Returns:
@@ -735,12 +740,13 @@ struct json_object *mtc_store_checkpoint(MtcStore *store)
 int mtc_store_cosign(MtcStore *store, int start, int end,
                      uint8_t *sig_out, int *sig_sz)
 {
-    ed25519_key key;
+    dilithium_key key;
     uint8_t subtree_hash[MTC_HASH_SIZE];
     uint8_t msg[256];
     int msg_sz = 0;
     word32 idx_w = 0;
     word32 outSz;
+    WC_RNG rng;
     int ret, i;
 
     mtc_tree_subtree_hash(&store->tree, start, end, subtree_hash);
@@ -770,19 +776,27 @@ int mtc_store_cosign(MtcStore *store, int start, int end,
     memcpy(msg + msg_sz, subtree_hash, MTC_HASH_SIZE);
     msg_sz += MTC_HASH_SIZE;
 
-    /* Sign with Ed25519 */
-    ret = wc_ed25519_init(&key);
+    /* Sign with ML-DSA-87 */
+    ret = wc_InitRng(&rng);
     if (ret != 0) return ret;
 
-    ret = wc_Ed25519PrivateKeyDecode(store->ca_priv_key, &idx_w, &key,
-        (word32)store->ca_priv_key_sz);
-    if (ret != 0) { wc_ed25519_free(&key); return ret; }
+    ret = wc_dilithium_init(&key);
+    if (ret != 0) { wc_FreeRng(&rng); return ret; }
 
-    outSz = ED25519_SIG_SIZE;
-    ret = wc_ed25519_sign_msg(msg, (word32)msg_sz, sig_out, &outSz, &key);
+    ret = wc_dilithium_set_level(&key, WC_ML_DSA_87);
+    if (ret != 0) { wc_dilithium_free(&key); wc_FreeRng(&rng); return ret; }
+
+    ret = wc_Dilithium_PrivateKeyDecode(store->ca_priv_key, &idx_w, &key,
+        (word32)store->ca_priv_key_sz);
+    if (ret != 0) { wc_dilithium_free(&key); wc_FreeRng(&rng); return ret; }
+
+    outSz = DILITHIUM_LEVEL5_SIG_SIZE;
+    ret = wc_dilithium_sign_ctx_msg(NULL, 0, msg, (word32)msg_sz,
+        sig_out, &outSz, &key, &rng);
     *sig_sz = (int)outSz;
 
-    wc_ed25519_free(&key);
+    wc_dilithium_free(&key);
+    wc_FreeRng(&rng);
     return ret;
 }
 
@@ -790,7 +804,7 @@ int mtc_store_cosign(MtcStore *store, int start, int end,
  * Function:    mtc_store_get_public_key_pem
  *
  * Description:
- *   Exports the CA Ed25519 public key as a PEM string by decoding the
+ *   Exports the CA ML-DSA-87 public key as a PEM string by decoding the
  *   stored private key DER, extracting the public key DER, and
  *   converting to PEM.
  *
@@ -805,26 +819,31 @@ int mtc_store_cosign(MtcStore *store, int start, int end,
  ******************************************************************************/
 int mtc_store_get_public_key_pem(MtcStore *store, char *out, int maxSz)
 {
-    uint8_t der[128];
+    /* ML-DSA-87 public-key DER with AlgorithmIdentifier wrapper ~2620
+     * bytes; round up to a safe buffer. */
+    uint8_t der[4096];
     int derSz;
-    ed25519_key key;
+    dilithium_key key;
     word32 idx = 0;
     int ret;
 
-    ret = wc_ed25519_init(&key);
+    ret = wc_dilithium_init(&key);
     if (ret != 0) return ret;
 
-    ret = wc_Ed25519PrivateKeyDecode(store->ca_priv_key, &idx, &key,
-        (word32)store->ca_priv_key_sz);
-    if (ret != 0) { wc_ed25519_free(&key); return ret; }
+    ret = wc_dilithium_set_level(&key, WC_ML_DSA_87);
+    if (ret != 0) { wc_dilithium_free(&key); return ret; }
 
-    derSz = wc_Ed25519PublicKeyToDer(&key, der, sizeof(der), 1);
-    wc_ed25519_free(&key);
+    ret = wc_Dilithium_PrivateKeyDecode(store->ca_priv_key, &idx, &key,
+        (word32)store->ca_priv_key_sz);
+    if (ret != 0) { wc_dilithium_free(&key); return ret; }
+
+    derSz = wc_Dilithium_PublicKeyToDer(&key, der, sizeof(der), 1);
+    wc_dilithium_free(&key);
 
     if (derSz < 0) return derSz;
 
     ret = wc_DerToPem(der, (word32)derSz, (byte*)out, (word32)maxSz,
-        ED25519_TYPE);
+        ML_DSA_LEVEL5_TYPE);
     return ret;
 }
 
@@ -949,7 +968,7 @@ int mtc_store_is_revoked(MtcStore *store, int cert_index)
  * Description:
  *   Builds a signed revocation list as a JSON object containing:
  *   log_id, revoked (array of cert indices), count, updated_at
- *   timestamp, and an Ed25519 signature over the revoked array JSON.
+ *   timestamp, and an ML-DSA-87 signature over the revoked array JSON.
  *
  * Input Arguments:
  *   store  - Store.
@@ -962,7 +981,7 @@ struct json_object *mtc_store_get_revocation_list(MtcStore *store)
     struct json_object *obj = json_object_new_object();
     struct json_object *arr = json_object_new_array();
     int i;
-    uint8_t sig[64];
+    uint8_t sig[DILITHIUM_LEVEL5_SIG_SIZE];
     int sig_sz = 0;
 
     json_object_object_add(obj, "log_id",
@@ -978,27 +997,39 @@ struct json_object *mtc_store_get_revocation_list(MtcStore *store)
     json_object_object_add(obj, "updated_at",
         json_object_new_double((double)time(NULL)));
 
-    /* Sign the revocation list with the CA key */
+    /* Sign the revocation list with the CA key (ML-DSA-87) */
     {
         const char *payload = json_object_to_json_string(arr);
-        ed25519_key key;
+        dilithium_key key;
+        WC_RNG rng;
         word32 idx = 0;
         word32 outSz = sizeof(sig);
+        int ok = 0;
 
-        if (wc_ed25519_init(&key) == 0 &&
-            wc_Ed25519PrivateKeyDecode(store->ca_priv_key, &idx, &key,
-                (word32)store->ca_priv_key_sz) == 0) {
-            if (wc_ed25519_sign_msg((const byte*)payload,
-                    (word32)strlen(payload), sig, &outSz, &key) == 0) {
-                char sig_hex[129];
+        if (wc_InitRng(&rng) == 0) {
+            if (wc_dilithium_init(&key) == 0 &&
+                wc_dilithium_set_level(&key, WC_ML_DSA_87) == 0 &&
+                wc_Dilithium_PrivateKeyDecode(store->ca_priv_key, &idx, &key,
+                    (word32)store->ca_priv_key_sz) == 0 &&
+                wc_dilithium_sign_ctx_msg(NULL, 0,
+                    (const byte*)payload, (word32)strlen(payload),
+                    sig, &outSz, &key, &rng) == 0) {
+                char *sig_hex;
                 sig_sz = (int)outSz;
-                for (i = 0; i < sig_sz; i++)
-                    snprintf(sig_hex + i * 2, 3, "%02x", sig[i]);
-                json_object_object_add(obj, "signature",
-                    json_object_new_string(sig_hex));
+                sig_hex = (char*)malloc((size_t)sig_sz * 2 + 1);
+                if (sig_hex) {
+                    for (i = 0; i < sig_sz; i++)
+                        snprintf(sig_hex + i * 2, 3, "%02x", sig[i]);
+                    json_object_object_add(obj, "signature",
+                        json_object_new_string(sig_hex));
+                    free(sig_hex);
+                    ok = 1;
+                }
             }
-            wc_ed25519_free(&key);
+            wc_dilithium_free(&key);
+            wc_FreeRng(&rng);
         }
+        (void)ok;
     }
 
     return obj;

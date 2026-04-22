@@ -83,7 +83,7 @@ that acts as both Certificate Authority and transparency log:
 
 - Issues certificates (CA and leaf) with Merkle tree inclusion proofs
 - Provides consistency proofs between tree states
-- Ed25519 cosignatures over subtree ranges
+- ML-DSA-87 cosignatures over subtree ranges
 - CA enrollment via DNS TXT record validation (`_mtc-ca.<domain>`)
 - Leaf enrollment via nonce-based authorization (CA operator issues nonce)
 - PostgreSQL (Neon) persistence with file-based fallback
@@ -116,7 +116,7 @@ with ECH support.
 | GET | `/certificate/<n>` | Certificate by index |
 | GET | `/certificate/search?q=` | Search by subject |
 | GET | `/trust-anchors` | Trust anchor list |
-| GET | `/ca/public-key` | CA Ed25519 public key (PEM) |
+| GET | `/ca/public-key` | CA ML-DSA-87 public key (PEM) |
 | GET | `/revoked` | Signed revocation list |
 | GET | `/revoked/<n>` | Revocation check |
 | GET | `/ech/configs` | ECH config (base64) |

@@ -146,24 +146,29 @@ def verify_cosignature(
 ) -> bool:
     """
     Verify a CA cosignature over a subtree.
-    Per MTC draft Section 5.4.1.
+    Per MTC draft Section 5.4.1 (MQC §10.4).
 
     Args:
-        public_key_pem: The cosigner's Ed25519 public key in PEM format.
+        public_key_pem: The cosigner's ML-DSA-87 public key in PEM format.
         cosigner_id: The cosigner's trust anchor ID.
         log_id: The issuance log's ID.
         start: Subtree start index.
         end: Subtree end index.
         subtree_hash: The subtree's hash value.
-        signature: The Ed25519 signature bytes.
+        signature: The ML-DSA-87 signature bytes (4627).
 
     Returns:
         True if the signature is valid.
-    """
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.exceptions import InvalidSignature
 
-    public_key = serialization.load_pem_public_key(public_key_pem.encode())
+    Implementation: shells out to `openssl35` (OpenSSL 3.5+) because
+    the `cryptography` library's ML-DSA support is still
+    version-dependent.  OpenSSL 3.5 ships with every postWolf kit's
+    install step.
+    """
+    import os
+    import shutil
+    import subprocess
+    import tempfile
 
     # Reconstruct MTCSubtreeSignatureInput
     sig_input = b"mtc-subtree/v1\n\x00"
@@ -173,8 +178,33 @@ def verify_cosignature(
     sig_input += end.to_bytes(8, "big")
     sig_input += subtree_hash
 
-    try:
-        public_key.verify(signature, sig_input)
-        return True
-    except InvalidSignature:
-        return False
+    openssl = shutil.which("openssl35") or shutil.which("openssl")
+    if openssl is None:
+        raise RuntimeError(
+            "verify_cosignature: no openssl35/openssl binary on PATH "
+            "(install via buildopenssl3.5.sh from the postWolf kit)"
+        )
+
+    with tempfile.TemporaryDirectory() as td:
+        pub_path = os.path.join(td, "cosigner.pub.pem")
+        msg_path = os.path.join(td, "msg.bin")
+        sig_path = os.path.join(td, "sig.bin")
+
+        with open(pub_path, "w", encoding="utf-8") as f:
+            f.write(public_key_pem)
+        with open(msg_path, "wb") as f:
+            f.write(sig_input)
+        with open(sig_path, "wb") as f:
+            f.write(signature)
+
+        proc = subprocess.run(
+            [
+                openssl, "pkeyutl", "-verify",
+                "-pubin", "-inkey", pub_path,
+                "-rawin", "-in", msg_path,
+                "-sigfile", sig_path,
+            ],
+            capture_output=True,
+            check=False,
+        )
+        return proc.returncode == 0 and b"Signature Verified Successfully" in proc.stdout

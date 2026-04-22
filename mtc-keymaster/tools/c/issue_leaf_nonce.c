@@ -39,6 +39,7 @@
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/sha256.h>
 #include <wolfssl/wolfcrypt/types.h>
+#include <wolfssl/wolfcrypt/dilithium.h>
 
 #include <json-c/json.h>
 
@@ -549,7 +550,7 @@ int main(int argc, char *argv[])
         /* --- Initialize MQC client context --- */
         {
             mqc_cfg_t cfg;
-            static unsigned char ca_pubkey[32];
+            static unsigned char ca_pubkey[DILITHIUM_LEVEL5_PUB_KEY_SIZE];
 
             if (mqc_load_ca_pubkey(server, ca_pubkey) != 0) {
                 fprintf(stderr,

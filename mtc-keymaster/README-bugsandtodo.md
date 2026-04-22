@@ -2041,7 +2041,15 @@ spikes; the mailing list is relationship-building.
 what works), this README entry (close when the round is done and
 capture what moved the needle).
 
-### 47. Migrate the log cosigner from Ed25519 to a post-quantum signature
+### 47. Migrate the log cosigner from Ed25519 to a post-quantum signature — **DONE 2026-04-21**
+
+Shipped.  Cosigner key is now ML-DSA-87; see the migration runbook
+in the plan file (phase-14 commit).  Tools introduced:
+`migrate-cosigner` (one-shot key rotation + bulk re-cosign).  Draft
+updated in place at `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.{md,txt}`.
+
+Historical design record follows.
+
 
 Ed25519 is the only pre-quantum primitive still in the stack.  It
 signs the transparency-log checkpoint — the `cosigner_id || log_id

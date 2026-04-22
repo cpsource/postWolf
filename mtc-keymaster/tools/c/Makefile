@@ -15,7 +15,7 @@ SERVER_DIR = ../../server2/c
 MQC_DIR = ../../../socket-level-wrapper-MQC
 MQC_LIB = $(MQC_DIR)/libmqc.a
 
-all: admin_recosign bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert cancel-nonce mqc attack-port-8445 attack-port-8446
+all: admin_recosign migrate-cosigner bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert cancel-nonce mqc attack-port-8445 attack-port-8446
 
 $(MQC_LIB):
 	$(MAKE) -C $(MQC_DIR)
@@ -27,6 +27,20 @@ admin_recosign: admin_recosign.c \
                 $(SERVER_DIR)/mtc_log.c $(SERVER_DIR)/mtc_log.h
 	$(CC) $(CFLAGS) -o $@ \
 		admin_recosign.c \
+		$(SERVER_DIR)/mtc_store.c \
+		$(SERVER_DIR)/mtc_merkle.c \
+		$(SERVER_DIR)/mtc_db.c \
+		$(SERVER_DIR)/mtc_log.c \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) -lcurl
+
+# One-shot Ed25519 → ML-DSA-87 cosigner rotation; see TODO #47.
+migrate-cosigner: migrate-cosigner.c \
+                  $(SERVER_DIR)/mtc_store.c $(SERVER_DIR)/mtc_store.h \
+                  $(SERVER_DIR)/mtc_merkle.c $(SERVER_DIR)/mtc_merkle.h \
+                  $(SERVER_DIR)/mtc_db.c $(SERVER_DIR)/mtc_db.h \
+                  $(SERVER_DIR)/mtc_log.c $(SERVER_DIR)/mtc_log.h
+	$(CC) $(CFLAGS) -o $@ \
+		migrate-cosigner.c \
 		$(SERVER_DIR)/mtc_store.c \
 		$(SERVER_DIR)/mtc_merkle.c \
 		$(SERVER_DIR)/mtc_db.c \
@@ -87,6 +101,7 @@ BINDIR ?= /usr/local/bin
 install: all
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 755 admin_recosign    $(DESTDIR)$(BINDIR)/admin_recosign
+	install -m 755 migrate-cosigner  $(DESTDIR)$(BINDIR)/migrate-cosigner
 	install -m 755 bootstrap_ca      $(DESTDIR)$(BINDIR)/bootstrap_ca
 	install -m 755 bootstrap_leaf    $(DESTDIR)$(BINDIR)/bootstrap_leaf
 	install -m 755 show-tpm          $(DESTDIR)$(BINDIR)/show-tpm
@@ -100,6 +115,6 @@ install: all
 	install -m 755 attack-port-8446  $(DESTDIR)$(BINDIR)/attack-port-8446
 
 clean:
-	rm -f admin_recosign bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert cancel-nonce mqc attack-port-8445 attack-port-8446
+	rm -f admin_recosign migrate-cosigner bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert cancel-nonce mqc attack-port-8445 attack-port-8446
 
 .PHONY: all install clean

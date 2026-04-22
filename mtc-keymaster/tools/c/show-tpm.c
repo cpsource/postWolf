@@ -27,6 +27,9 @@
 #include <unistd.h>
 #include <limits.h>
 
+#include <wolfssl/options.h>
+#include <wolfssl/wolfcrypt/dilithium.h>
+
 #include <json-c/json.h>
 #include "mqc.h"
 #include "mqc_peer.h"
@@ -611,7 +614,7 @@ int main(int argc, char *argv[])
         /* Load the CA cosigner's raw 32-byte Ed25519 pubkey via the
          * bootstrap port (8445) on the same host; subsequent runs hit
          * the on-disk cache at ~/.TPM/ca-cosigner.pem. */
-        static unsigned char ca_pubkey[32];
+        static unsigned char ca_pubkey[DILITHIUM_LEVEL5_PUB_KEY_SIZE];
         if (mqc_load_ca_pubkey(server, ca_pubkey) != 0) {
             fprintf(stderr,
                 "Error: could not load CA cosigner pubkey (required "

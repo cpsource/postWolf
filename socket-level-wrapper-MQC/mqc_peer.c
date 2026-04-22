@@ -5,8 +5,9 @@
  * Description:
  *   Resolves a peer's identity by cert_index from the MTC transparency
  *   log. Checks local cache first, then fetches from the MTC server.
- *   Verifies the Merkle inclusion proof, Ed25519 cosignature, revocation
- *   status, and validity period. Caches verified certs for reuse.
+ *   Verifies the Merkle inclusion proof, ML-DSA-87 cosignature,
+ *   revocation status, and validity period. Caches verified certs for
+ *   reuse.
  *
  * Dependencies:
  *   json-c          (JSON parsing)
@@ -41,7 +42,7 @@
 #include <wolfssl/wolfcrypt/asn_public.h>
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/wolfcrypt/mtc.h>
-#include <wolfssl/wolfcrypt/ed25519.h>
+#include <wolfssl/wolfcrypt/dilithium.h>
 #include <wolfssl/wolfcrypt/coding.h>
 
 /* Verify a Merkle inclusion proof per RFC 9162 Section 2.1.3.
@@ -114,9 +115,9 @@ static int mqc_verify_inclusion_proof(int leaf_index, int start, int end,
     return (XMEMCMP(cur, expected_root, MTC_HASH_SZ) == 0) ? 0 : -1;
 }
 
-/* Verify an Ed25519 cosignature in the server's message format —
+/* Verify an ML-DSA-87 cosignature in the server's message format —
  * the exact layout produced by mtc_store_cosign() in
- * mtc-keymaster/server/c/mtc_store.c:735-780:
+ * mtc-keymaster/server2/c/mtc_store.c:
  *
  *   "mtc-subtree/v1\n\x00" (16 bytes, including the trailing NUL)
  *   || cosigner_id (strlen bytes, no terminator)
@@ -138,14 +139,16 @@ static int verify_cosignature(const byte *ca_pubkey, int ca_pubkey_sz,
     byte msg[256];
     int msg_sz = 0;
     int i;
-    ed25519_key key;
+    dilithium_key key;
     int ret, verified = 0;
     size_t co_len, lo_len;
     uint64_t s64, e64;
 
-    if (!ca_pubkey || ca_pubkey_sz != 32) return -1;
+    if (!ca_pubkey || ca_pubkey_sz != DILITHIUM_LEVEL5_PUB_KEY_SIZE)
+        return -1;
     if (!cosigner_id || !log_id) return -1;
-    if (!subtree_hash || !sig || sig_sz != 64) return -1;
+    if (!subtree_hash || !sig || sig_sz != DILITHIUM_LEVEL5_SIG_SIZE)
+        return -1;
 
     co_len = strlen(cosigner_id);
     lo_len = strlen(log_id);
@@ -169,13 +172,17 @@ static int verify_cosignature(const byte *ca_pubkey, int ca_pubkey_sz,
     msg_sz += MTC_HASH_SZ;
 
     /* Verify. */
-    if (wc_ed25519_init(&key) != 0) return -1;
-    ret = wc_ed25519_import_public(ca_pubkey, (word32)ca_pubkey_sz, &key);
-    if (ret != 0) { wc_ed25519_free(&key); return -1; }
-    ret = wc_ed25519_verify_msg(sig, (word32)sig_sz,
-                                msg, (word32)msg_sz,
-                                &verified, &key);
-    wc_ed25519_free(&key);
+    if (wc_dilithium_init(&key) != 0) return -1;
+    if (wc_dilithium_set_level(&key, WC_ML_DSA_87) != 0) {
+        wc_dilithium_free(&key); return -1;
+    }
+    ret = wc_dilithium_import_public(ca_pubkey, (word32)ca_pubkey_sz, &key);
+    if (ret != 0) { wc_dilithium_free(&key); return -1; }
+    ret = wc_dilithium_verify_ctx_msg(sig, (word32)sig_sz,
+                                      NULL, 0,
+                                      msg, (word32)msg_sz,
+                                      &verified, &key);
+    wc_dilithium_free(&key);
     return (ret == 0 && verified) ? 0 : -1;
 }
 
@@ -756,21 +763,23 @@ static void cache_peer_cert(int cert_index, const char *cert_json_str)
 }
 
 /******************************************************************************
- * Function:    pem_extract_ed25519_raw
+ * Function:    pem_extract_mldsa_raw
  *
  * Description:
- *   Pull the raw 32-byte Ed25519 public key out of an RFC 8410 SPKI PEM.
- *   Works whether the PEM header is the proper "-----BEGIN PUBLIC KEY-----"
- *   or the mislabelled "-----BEGIN EDDSA PRIVATE KEY-----" the MTC server
- *   currently emits — we base64-decode the body and take the last 32
- *   bytes of the DER.
+ *   Pull the raw 2592-byte ML-DSA-87 public key out of a PEM-wrapped
+ *   SubjectPublicKeyInfo.  We base64-decode the body and take the last
+ *   DILITHIUM_LEVEL5_PUB_KEY_SIZE bytes of the DER (the SPKI prefix is
+ *   a short AlgorithmIdentifier followed by the BIT STRING wrapper; the
+ *   raw key sits at the tail).  Matches the format emitted by
+ *   mtc_store_get_public_key_pem().
  ******************************************************************************/
-static int pem_extract_ed25519_raw(const char *pem, byte *out32)
+static int pem_extract_mldsa_raw(const char *pem, byte *out_raw)
 {
     const char *body_start, *end, *p;
-    char  b64[1024];
+    /* ML-DSA-87 PEM body is ~3500 base64 chars; round up. */
+    char  b64[6144];
     int   blen = 0;
-    byte  der[256];
+    byte  der[4096];
     word32 der_len = sizeof(der);
 
     if (!pem) return -1;
@@ -786,8 +795,9 @@ static int pem_extract_ed25519_raw(const char *pem, byte *out32)
     b64[blen] = '\0';
     if (Base64_Decode((const byte *)b64, (word32)blen, der, &der_len) != 0)
         return -1;
-    if (der_len < 32) return -1;
-    memcpy(out32, der + der_len - 32, 32);
+    if ((int)der_len < DILITHIUM_LEVEL5_PUB_KEY_SIZE) return -1;
+    memcpy(out_raw, der + der_len - DILITHIUM_LEVEL5_PUB_KEY_SIZE,
+           DILITHIUM_LEVEL5_PUB_KEY_SIZE);
     return 0;
 }
 
@@ -973,25 +983,29 @@ static char *bootstrap_fetch_ca_pubkey(const char *host, int port)
  * Function:    mqc_load_ca_pubkey
  *
  * Description:
- *   Load the CA cosigner's raw 32-byte Ed25519 public key — the trust
- *   anchor any MQC peer needs to verify log cosignatures.  Prefers a
- *   cached copy at ~/.TPM/ca-cosigner.pem; on miss, fetches the key over
- *   the DH bootstrap port (MQC_BOOTSTRAP_PORT) by sending a plaintext
- *   {"op":"ca_pubkey"} request, then populates the cache (TOFU).
+ *   Load the CA cosigner's raw ML-DSA-87 public key (2592 bytes) — the
+ *   trust anchor any MQC peer needs to verify log cosignatures.  Prefers
+ *   a cached copy at ~/.TPM/ca-cosigner.pem; on miss, fetches the key
+ *   over the DH bootstrap port (MQC_BOOTSTRAP_PORT) by sending a
+ *   plaintext {"op":"ca_pubkey"} request, then populates the cache
+ *   (TOFU).
+ *
+ *   The caller MUST supply a buffer of at least
+ *   DILITHIUM_LEVEL5_PUB_KEY_SIZE (2592) bytes.
  *
  *   This is the shared helper used by show-tpm, echo_server,
  *   echo_client, and any other MQC-capable tool.  Long-term, the CA
  *   pubkey should be distributed out-of-band to eliminate the
  *   trust-on-first-use window (tracked in README-bugsandtodo.md §9b).
  ******************************************************************************/
-int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out32)
+int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out_raw)
 {
     const char *home = getenv("HOME");
     char cache_path[512];
     char *pem = NULL;
     int rc = -1;
 
-    if (!mtc_server || !out32) return -1;
+    if (!mtc_server || !out_raw) return -1;
     if (!home) home = "/tmp";
     snprintf(cache_path, sizeof(cache_path),
              "%s/.TPM/ca-cosigner.pem", home);
@@ -999,7 +1013,7 @@ int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out32)
     /* Try local cache first. */
     pem = read_file_str(cache_path);
     if (pem) {
-        rc = pem_extract_ed25519_raw(pem, (byte *)out32);
+        rc = pem_extract_mldsa_raw(pem, (byte *)out_raw);
         free(pem);
         if (rc == 0) return 0;
         fprintf(stderr, "[mqc] cached %s malformed; refetching\n",
@@ -1034,7 +1048,7 @@ int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out32)
         json_object_put(obj);
         if (!pem) return -1;
 
-        rc = pem_extract_ed25519_raw(pem, (byte *)out32);
+        rc = pem_extract_mldsa_raw(pem, (byte *)out_raw);
         if (rc == 0)
             write_file_str(cache_path, pem);
         free(pem);
@@ -1258,10 +1272,10 @@ int mqc_peer_verify(const char *mtc_server,
                     cert_index);
     }
 
-    /* 4. Verify Ed25519 cosignature over the subtree root.
+    /* 4. Verify ML-DSA-87 cosignature over the subtree root.
      *
      * This binds the (start, end, subtree_hash) we just validated
-     * via the inclusion proof to the CA cosigner's Ed25519 key that
+     * via the inclusion proof to the CA cosigner's ML-DSA-87 key that
      * the caller loaded out-of-band.  Without this check, a
      * malicious MTC HTTP server could hand us a consistent but
      * fabricated (leafHash, proof, subtreeHash) triple. */
