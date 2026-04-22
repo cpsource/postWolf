@@ -1148,6 +1148,27 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
             const char *cert_str = json_object_to_json_string(result);
             if (mtc_db_save_certificate(store->db, index, cert_str) != 0)
                 fprintf(stderr, "[bootstrap] WARNING: DB save_certificate failed for index %d\n", index);
+            /* Record the pubkey under the same directory-naming
+             * convention the client uses under ~/.TPM/:
+             *     subject                for an unlabelled leaf/CA
+             *     subject-label          for a labelled leaf
+             * This keeps /public-key/<name> self-serving from the
+             * server without relying on the client to push the
+             * pubkey into Neon out of band. */
+            {
+                char key_name[256];
+                if (bootstrap_label[0])
+                    snprintf(key_name, sizeof(key_name), "%s-%s",
+                             subject, bootstrap_label);
+                else
+                    snprintf(key_name, sizeof(key_name), "%s", subject);
+                if (mtc_db_save_public_key(store->db, key_name,
+                                           pub_key_pem) != 0) {
+                    fprintf(stderr,
+                        "[bootstrap] WARNING: DB save_public_key failed "
+                        "for %s\n", key_name);
+                }
+            }
         }
 
         /* --- Step 3: Send encrypted certificate response ---

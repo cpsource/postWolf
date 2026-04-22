@@ -28,6 +28,7 @@ required=(
     "mtc-keymaster/tools/c/issue_leaf_nonce"
     "mtc-keymaster/tools/c/admin_recosign"
     "mtc-keymaster/tools/c/migrate-cosigner"
+    "mtc-keymaster/tools/c/backfill-pubkey"
     "mtc-keymaster/tools/c/revoke-key"
     "mtc-keymaster/tools/c/renew-cert"
     "mtc-keymaster/tools/c/check-renewal-cert"
@@ -73,8 +74,8 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/bin" "$STAGE/lib" "$STAGE/doc"
 
 for t in bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce \
-         admin_recosign migrate-cosigner revoke-key renew-cert \
-         check-renewal-cert cancel-nonce mqc; do
+         admin_recosign migrate-cosigner backfill-pubkey revoke-key \
+         renew-cert check-renewal-cert cancel-nonce mqc; do
     install -m 755 "$REPO_ROOT/mtc-keymaster/tools/c/$t" "$STAGE/bin/"
 done
 for p in create_ca_cert.py create_leaf_keypair.py ca_dns_txt.py; do

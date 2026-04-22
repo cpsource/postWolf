@@ -1,6 +1,7 @@
 # Build artifacts
 admin_recosign
 migrate-cosigner
+backfill-pubkey
 bootstrap_ca
 bootstrap_leaf
 show-tpm
