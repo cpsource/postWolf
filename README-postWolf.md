@@ -78,8 +78,8 @@ Key algorithms supported:
 
 The Merkle Tree Certificates subsystem, consisting of:
 
-**CA/Log Server** (`mtc-keymaster/server/c/`) — a single-threaded C server
-that acts as both Certificate Authority and transparency log:
+**CA/Log Server** (`mtc-keymaster/server2/c/`) — a fork-after-accept C
+server that acts as both Certificate Authority and transparency log:
 
 - Issues certificates (CA and leaf) with Merkle tree inclusion proofs
 - Provides consistency proofs between tree states
@@ -157,8 +157,8 @@ postWolf addresses both sides of the post-quantum threat:
 - `README-note-ech.md` — ECH architecture and threat model
 - `mtc-keymaster/README-bugsandtodo.md` — MTC development status and roadmap
 - `mtc-keymaster/README-clean-install.md` — Installation guide
-- `mtc-keymaster/server/c/README-using-mtc-server.md` — Server usage guide
-- `make doxygen` (in `mtc-keymaster/server/c/`) — generates HTML API docs
+- `mtc-keymaster/server2/c/README-using-mtc-server.md` — Server usage guide
+- `make doxygen` (in `mtc-keymaster/server2/c/`) — generates HTML API docs
 
 ## License
 

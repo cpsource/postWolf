@@ -87,25 +87,6 @@ CREATE TABLE mtc_landmarks (
 |--------|-------------|
 | `tree_size` | Tree size at which this landmark was created |
 
-### mtc_ca_config
-
-Server configuration key-value store.
-
-```sql
-CREATE TABLE mtc_ca_config (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-```
-
-| Column | Description |
-|--------|-------------|
-| `key` | Configuration key name |
-| `value` | Configuration value (text) |
-
-**Note:** The `ca_private_key_hex` entry has been removed. Private keys
-are now stored only in the local file `~/.mtc-ca-data/ca_key.der`.
-
 ### mtc_revocations
 
 Revoked certificate records.
@@ -204,6 +185,6 @@ CREATE UNIQUE INDEX abuseipdb_ipaddr_idx ON abuseipdb (ipaddr);
 
 ## Source Files
 
-- Schema creation: `mtc-keymaster/server/c/mtc_db.c` (lines 219-273)
-- AbuseIPDB schema: `mtc-keymaster/server/c/mtc_checkendpoint.c` (lines 187-199)
+- Schema creation: `mtc-keymaster/server2/c/mtc_db.c` (lines 219-273)
+- AbuseIPDB schema: `mtc-keymaster/server2/c/mtc_checkendpoint.c` (lines 187-199)
 - Database connection: via `MERKLE_NEON` env var in `~/.env`

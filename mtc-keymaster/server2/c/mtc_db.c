@@ -265,7 +265,7 @@ int mtc_db_ensure_connected(PGconn **conn_ptr)
  *
  * Side Effects:
  *   Creates/alters tables: mtc_log_entries, mtc_checkpoints,
- *   mtc_landmarks, mtc_certificates, mtc_ca_config, mtc_revocations,
+ *   mtc_landmarks, mtc_certificates, mtc_revocations,
  *   mtc_enrollment_nonces.
  ******************************************************************************/
 int mtc_db_init_schema(PGconn *conn)
@@ -297,10 +297,6 @@ int mtc_db_init_schema(PGconn *conn)
         "  index INTEGER PRIMARY KEY,"
         "  certificate JSONB NOT NULL,"
         "  created_at TIMESTAMPTZ DEFAULT now()"
-        ");"
-        "CREATE TABLE IF NOT EXISTS mtc_ca_config ("
-        "  key TEXT PRIMARY KEY,"
-        "  value TEXT NOT NULL"
         ");"
         "CREATE TABLE IF NOT EXISTS mtc_revocations ("
         "  id SERIAL PRIMARY KEY,"
@@ -587,6 +583,56 @@ int mtc_db_load_checkpoints(PGconn *conn, const char *log_id,
 
     PQclear(res);
     return rows;
+}
+
+/******************************************************************************
+ * Function:    mtc_db_load_latest_checkpoint
+ *
+ * Description:
+ *   Returns the most recently persisted checkpoint (highest id) for the
+ *   given log_id, or NULL if the table is empty.  Read-only; used by
+ *   GET /log/checkpoint so the response reflects the log's actual last
+ *   tree-change event rather than an on-demand fresh timestamp.
+ *
+ * Input Arguments:
+ *   conn    - Active PostgreSQL connection.
+ *   log_id  - Log identifier to filter by.
+ *
+ * Returns:
+ *   New json_object (caller owns via json_object_put) with
+ *   {log_id, tree_size, root_hash, timestamp}; NULL if no rows or on
+ *   query error.
+ ******************************************************************************/
+struct json_object *mtc_db_load_latest_checkpoint(PGconn *conn,
+                                                  const char *log_id)
+{
+    PGresult *res;
+    const char *params[1] = { log_id };
+    struct json_object *cp;
+
+    res = PQexecParams(conn,
+        "SELECT log_id, tree_size, root_hash, ts "
+        "FROM mtc_checkpoints WHERE log_id = $1 "
+        "ORDER BY id DESC LIMIT 1",
+        1, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
+        PQclear(res);
+        return NULL;
+    }
+
+    cp = json_object_new_object();
+    json_object_object_add(cp, "log_id",
+        json_object_new_string(PQgetvalue(res, 0, 0)));
+    json_object_object_add(cp, "tree_size",
+        json_object_new_int(atoi(PQgetvalue(res, 0, 1))));
+    json_object_object_add(cp, "root_hash",
+        json_object_new_string(PQgetvalue(res, 0, 2)));
+    json_object_object_add(cp, "timestamp",
+        json_object_new_double(atof(PQgetvalue(res, 0, 3))));
+
+    PQclear(res);
+    return cp;
 }
 
 /* ------------------------------------------------------------------ */
@@ -924,78 +970,6 @@ int mtc_db_is_revoked(PGconn *conn, int cert_index)
     found = (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0);
     PQclear(res);
     return found;
-}
-
-/* ------------------------------------------------------------------ */
-/* CA config                                                           */
-/* ------------------------------------------------------------------ */
-
-/******************************************************************************
- * Function:    mtc_db_save_config
- *
- * Description:
- *   Saves a CA configuration key/value pair.  Uses ON CONFLICT to upsert
- *   if the key already exists.
- *
- * Input Arguments:
- *   conn   - Active PostgreSQL connection.
- *   key    - Configuration key (primary key).
- *   value  - Configuration value string.
- *
- * Returns:
- *    0  on success.
- *   -1  on query failure.
- ******************************************************************************/
-int mtc_db_save_config(PGconn *conn, const char *key, const char *value)
-{
-    PGresult *res;
-    const char *params[2] = { key, value };
-
-    res = PQexecParams(conn,
-        "INSERT INTO mtc_ca_config (key, value) VALUES ($1, $2) "
-        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-        2, NULL, params, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        PQclear(res);
-        return -1;
-    }
-    PQclear(res);
-    return 0;
-}
-
-/******************************************************************************
- * Function:    mtc_db_load_config
- *
- * Description:
- *   Loads a CA configuration value by key.
- *
- * Input Arguments:
- *   conn  - Active PostgreSQL connection.
- *   key   - Configuration key to look up.
- *
- * Returns:
- *   strdup'd value string on success.  Caller must free().
- *   NULL if the key was not found or on query error.
- ******************************************************************************/
-char *mtc_db_load_config(PGconn *conn, const char *key)
-{
-    PGresult *res;
-    const char *params[1] = { key };
-    char *val;
-
-    res = PQexecParams(conn,
-        "SELECT value FROM mtc_ca_config WHERE key = $1",
-        1, NULL, params, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
-        PQclear(res);
-        return NULL;
-    }
-
-    val = strdup(PQgetvalue(res, 0, 0));
-    PQclear(res);
-    return val;
 }
 
 /* ------------------------------------------------------------------ */

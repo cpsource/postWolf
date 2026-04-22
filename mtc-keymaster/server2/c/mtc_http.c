@@ -1219,12 +1219,29 @@ static void handle_checkpoint(client_io *io, MtcStore *store)
 {
     struct json_object *cp;
 
+    /* Prefer the persisted latest row — its ts reflects when a real
+     * tree-change event was recorded.  In fork-after-accept, the child's
+     * in-memory checkpoint_count is stale at fork time and each new
+     * child would otherwise regenerate with ts=now, giving a bogus
+     * "freshness" reading to clients. */
+    if (store->use_db && store->db) {
+        cp = mtc_db_load_latest_checkpoint(store->db, store->log_id);
+        if (cp) {
+            http_send_json_obj(io, 200, cp);
+            json_object_put(cp);
+            return;
+        }
+    }
+
+    /* Fallback: in-memory cache (file-only mode, or DB empty). */
     if (store->checkpoint_count > 0) {
         http_send_json_obj(io, 200,
             store->checkpoints[store->checkpoint_count - 1]);
         return;
     }
 
+    /* No checkpoint exists at all — generate one now (cold-start
+     * path; mtc_store_checkpoint also persists it for next time). */
     cp = mtc_store_checkpoint(store);
     http_send_json_obj(io, 200, cp);
     json_object_put(cp);

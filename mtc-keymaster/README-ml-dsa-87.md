@@ -156,33 +156,26 @@ The **private key never leaves your machine**. It is only used during
 TLS handshakes to sign the CertificateVerify message — proving live
 possession of the key to the connecting peer. Nobody else ever sees it.
 
-## Who Sets the CA Private Key in Neon?
+## Where the CA Private Key Lives
 
-The CA server sets it itself, on first startup. You never set it manually.
+The CA server generates its key itself on first startup; you never set
+it manually.  The private key is stored **only on disk** in the data
+directory — it never touches the database.
 
-**`mtc_ca_config` table** stores the CA's Ed25519 private key in two
-formats (one per server implementation):
-
-| Key | Set By | Format |
-|-----|--------|--------|
-| `ca_private_key_pem` | Python server (`server/python/ca.py`) | PEM |
-| `ca_private_key_hex` | C server (`server/c/mtc_store.c`) | Hex-encoded DER |
+**File:** `<data-dir>/ca_key_mldsa.der` (chmod 0600)
+**Format:** ML-DSA-87 private key, DER-encoded
 
 **Flow on first startup:**
 
-1. Server checks `mtc_ca_config` in Neon for an existing key
-2. If found → loads it
-3. If not found → generates a new Ed25519 key pair
-4. Stores the private key in the config table
-5. Key persists in Neon across restarts
+1. Server looks for `ca_key_mldsa.der` in the data directory
+2. If found → loads it and derives the public key
+3. If not found → generates a new ML-DSA-87 key pair, writes the DER
+   file with mode 0600
+4. Key persists across restarts via the file
 
-Both server implementations (Python and C) follow the same pattern. If
-they share the same Neon database, they use the same CA identity — the
-keys are the same key in different encodings (PEM vs hex DER).
-
-The C server also writes `ca_key.der` to `~/.mtc-ca-data/` as a local
-backup. If the DB entry is missing but the file exists, it loads from
-disk and re-stores to DB.
+This is a deliberate change from earlier revisions that cached the key
+in the Neon `mtc_ca_config` table.  The table is gone; database
+compromise no longer exposes the signing key.
 
 ## See Also
 

@@ -135,21 +135,19 @@ static int read_file(const char *path, void *buf, int maxSz)
  * Function:    init_ca_key
  *
  * Description:
- *   Loads or generates the CA ML-DSA-87 signing key.  Sources are tried in
- *   order:
- *     1. Database (ca_private_key_hex in mtc_ca_config)
- *     2. File (data_dir/ca_key.der)
- *     3. Generate new key, save to file (chmod 0600) and DB
+ *   Loads or generates the CA ML-DSA-87 signing key.  Private keys live
+ *   only on disk at data_dir/ca_key_mldsa.der (chmod 0600); missing file
+ *   triggers a fresh keygen + write.
  *
  * Input Arguments:
- *   store  - Store with data_dir and DB connection already set.
+ *   store  - Store with data_dir already set.
  *
  * Returns:
  *   0 on success, non-zero wolfCrypt error code on failure.
  *
  * Side Effects:
  *   Populates store->ca_priv_key, ca_priv_key_sz, ca_pub_key, ca_pub_key_sz.
- *   May write ca_key.der and/or DB config row.
+ *   May write ca_key_mldsa.der.
  ******************************************************************************/
 static int init_ca_key(MtcStore *store)
 {

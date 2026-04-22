@@ -94,7 +94,6 @@ TRUNCATE TABLE mtc_log_entries    CASCADE;
 TRUNCATE TABLE mtc_checkpoints    CASCADE;
 TRUNCATE TABLE mtc_landmarks      CASCADE;
 TRUNCATE TABLE mtc_certificates   CASCADE;
-TRUNCATE TABLE mtc_ca_config      CASCADE;
 TRUNCATE TABLE mtc_revocations    CASCADE;
 
 -- Optional tables (may not exist yet)

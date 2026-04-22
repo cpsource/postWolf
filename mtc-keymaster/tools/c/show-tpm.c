@@ -29,6 +29,9 @@
 
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/dilithium.h>
+#include <wolfssl/wolfcrypt/asn_public.h>
+#include <wolfssl/wolfcrypt/sha256.h>
+#include <wolfssl/wolfcrypt/random.h>
 
 #include <json-c/json.h>
 #include "mqc.h"
@@ -190,6 +193,7 @@ typedef struct {
     char subject[256];
     char algorithm[64];
     char entry_type[16];   /* "CA" or "leaf" or "unknown" */
+    char spkh_hex[96];     /* subject_public_key_hash from cert.json */
     int  cert_index;
     double not_before;
     double not_after;
@@ -201,6 +205,8 @@ typedef struct {
     int  v_proof_match;    /* 1=ok, 0=fail, -1=not checked */
     int  v_time_valid;     /* 1=ok, 0=fail, -1=not checked */
     int  v_pubkey_db;      /* 1=ok, 0=not found, 2=mismatch, -1=not checked */
+    int  v_pair;           /* 1=ok, 0=fail, -1=not checked (no priv key) */
+    int  v_spkh;           /* 1=ok, 0=fail, -1=not checked */
     char v_errors[1024];
 } tpm_entry_t;
 
@@ -216,6 +222,7 @@ static int load_entry(const char *tpm_dir, const char *name, tpm_entry_t *e)
     e->cert_index = -1;
     e->v_server_found = e->v_revoked = e->v_proof_match = -1;
     e->v_time_valid = e->v_pubkey_db = -1;
+    e->v_pair = e->v_spkh = -1;
 
     /* Detect type */
     snprintf(path, sizeof(path), "%s/%s/ca_cert.pem", tpm_dir, name);
@@ -249,6 +256,10 @@ static int load_entry(const char *tpm_dir, const char *name, tpm_entry_t *e)
             snprintf(e->algorithm, sizeof(e->algorithm), "%s",
                      json_object_get_string(val));
 
+        if (json_object_object_get_ex(tbs, "subject_public_key_hash", &val))
+            snprintf(e->spkh_hex, sizeof(e->spkh_hex), "%s",
+                     json_object_get_string(val));
+
         if (json_object_object_get_ex(tbs, "not_before", &val))
             e->not_before = json_object_get_double(val);
         if (json_object_object_get_ex(tbs, "not_after", &val))
@@ -277,20 +288,189 @@ static int load_entry(const char *tpm_dir, const char *name, tpm_entry_t *e)
     return 1;
 }
 
-static void verify_entry(tpm_entry_t *e)
+/* Read a whole file into a malloc'd byte buffer, *len set on success. */
+static unsigned char *read_file_bytes(const char *path, int *len)
+{
+    FILE *f = fopen(path, "rb");
+    unsigned char *buf;
+    long sz;
+
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    sz = ftell(f);
+    if (sz < 0) { fclose(f); return NULL; }
+    rewind(f);
+
+    buf = (unsigned char *)malloc((size_t)sz);
+    if (!buf) { fclose(f); return NULL; }
+    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        free(buf); fclose(f); return NULL;
+    }
+    fclose(f);
+    *len = (int)sz;
+    return buf;
+}
+
+/* Local check: the private and public key files in the TPM dir form a
+ * valid keypair.  Sign a random 32-byte message with the private key and
+ * verify with the public key.  Sets e->v_pair.  Skipped (stays -1) if
+ * either file is missing — e.g. a CA entry on a client that only holds
+ * the CA's public material. */
+static void check_key_pair(tpm_entry_t *e, const char *tpm_dir)
+{
+    char priv_path[PATH_MAX], pub_path[PATH_MAX];
+    unsigned char *priv_pem = NULL, *pub_pem = NULL;
+    unsigned char *priv_der = NULL, *pub_der = NULL;
+    int priv_pem_len = 0, pub_pem_len = 0;
+    int priv_der_len = 0, pub_der_len = 0;
+    dilithium_key priv_key, pub_key;
+    int priv_init = 0, pub_init = 0;
+    WC_RNG rng;
+    int rng_init = 0;
+    unsigned char msg[32];
+    unsigned char sig[DILITHIUM_LEVEL5_SIG_SIZE];
+    word32 sig_len = (word32)sizeof(sig);
+    int verify_res = 0;
+    word32 idx;
+    int ret;
+
+    snprintf(priv_path, sizeof(priv_path), "%s/%s/private_key.pem",
+             tpm_dir, e->name);
+    snprintf(pub_path, sizeof(pub_path), "%s/%s/public_key.pem",
+             tpm_dir, e->name);
+
+    priv_pem = read_file_bytes(priv_path, &priv_pem_len);
+    pub_pem  = read_file_bytes(pub_path,  &pub_pem_len);
+    if (!priv_pem || !pub_pem) goto done;  /* leave v_pair = -1 */
+
+    priv_der = (unsigned char *)malloc((size_t)priv_pem_len);
+    pub_der  = (unsigned char *)malloc((size_t)pub_pem_len);
+    if (!priv_der || !pub_der) {
+        e->v_pair = 0;
+        strcat(e->v_errors, "pair: alloc failed; ");
+        goto done;
+    }
+
+    priv_der_len = wc_KeyPemToDer(priv_pem, priv_pem_len,
+                                  priv_der, (word32)priv_pem_len, NULL);
+    pub_der_len  = wc_PubKeyPemToDer(pub_pem, pub_pem_len,
+                                     pub_der, (word32)pub_pem_len);
+    if (priv_der_len <= 0 || pub_der_len <= 0) {
+        e->v_pair = 0;
+        strcat(e->v_errors, "pair: PEM decode failed; ");
+        goto done;
+    }
+
+    if (wc_dilithium_init(&priv_key) != 0) {
+        e->v_pair = 0; goto done;
+    }
+    priv_init = 1;
+    if (wc_dilithium_init(&pub_key) != 0) {
+        e->v_pair = 0; goto done;
+    }
+    pub_init = 1;
+
+    if (wc_dilithium_set_level(&priv_key, WC_ML_DSA_87) != 0 ||
+        wc_dilithium_set_level(&pub_key,  WC_ML_DSA_87) != 0) {
+        e->v_pair = 0;
+        strcat(e->v_errors, "pair: set_level failed; ");
+        goto done;
+    }
+
+    idx = 0;
+    if (wc_Dilithium_PrivateKeyDecode(priv_der, &idx, &priv_key,
+                                      (word32)priv_der_len) != 0) {
+        e->v_pair = 0;
+        strcat(e->v_errors, "pair: private key decode failed; ");
+        goto done;
+    }
+    idx = 0;
+    if (wc_Dilithium_PublicKeyDecode(pub_der, &idx, &pub_key,
+                                     (word32)pub_der_len) != 0) {
+        e->v_pair = 0;
+        strcat(e->v_errors, "pair: public key decode failed; ");
+        goto done;
+    }
+
+    if (wc_InitRng(&rng) != 0) {
+        e->v_pair = 0; goto done;
+    }
+    rng_init = 1;
+    if (wc_RNG_GenerateBlock(&rng, msg, (word32)sizeof(msg)) != 0) {
+        e->v_pair = 0; goto done;
+    }
+
+    ret = wc_dilithium_sign_ctx_msg(NULL, 0,
+                                    msg, (word32)sizeof(msg),
+                                    sig, &sig_len,
+                                    &priv_key, &rng);
+    if (ret != 0) {
+        e->v_pair = 0;
+        strcat(e->v_errors, "pair: sign failed; ");
+        goto done;
+    }
+
+    ret = wc_dilithium_verify_ctx_msg(sig, sig_len, NULL, 0,
+                                      msg, (word32)sizeof(msg),
+                                      &verify_res, &pub_key);
+    if (ret == 0 && verify_res == 1) {
+        e->v_pair = 1;
+    } else {
+        e->v_pair = 0;
+        strcat(e->v_errors,
+               "pair: public key does not match private key; ");
+    }
+
+done:
+    if (rng_init)  wc_FreeRng(&rng);
+    if (priv_init) wc_dilithium_free(&priv_key);
+    if (pub_init)  wc_dilithium_free(&pub_key);
+    free(priv_pem); free(pub_pem); free(priv_der); free(pub_der);
+}
+
+/* Local check: SHA-256 of public_key.pem matches the cert's
+ * subject_public_key_hash.  Catches half-completed re-enrollments where
+ * certificate.json and public_key.pem drift apart. */
+static void check_spkh(tpm_entry_t *e, const char *tpm_dir)
+{
+    char path[PATH_MAX];
+    unsigned char *pem;
+    int pem_len = 0;
+    wc_Sha256 sha;
+    unsigned char hash[32];
+    char hex[65];
+    int i;
+
+    if (e->spkh_hex[0] == '\0') return;  /* no hash in cert */
+
+    snprintf(path, sizeof(path), "%s/%s/public_key.pem",
+             tpm_dir, e->name);
+    pem = read_file_bytes(path, &pem_len);
+    if (!pem) return;
+
+    if (wc_InitSha256(&sha) != 0) { free(pem); return; }
+    wc_Sha256Update(&sha, pem, (word32)pem_len);
+    wc_Sha256Final(&sha, hash);
+    wc_Sha256Free(&sha);
+    free(pem);
+
+    for (i = 0; i < 32; i++)
+        snprintf(hex + i * 2, 3, "%02x", hash[i]);
+
+    e->v_spkh = (strcmp(hex, e->spkh_hex) == 0) ? 1 : 0;
+    if (!e->v_spkh)
+        strcat(e->v_errors, "spkh: public_key.pem hash != cert; ");
+}
+
+static void verify_entry(tpm_entry_t *e, const char *tpm_dir)
 {
     char path[PATH_MAX];
     char *body;
     long code = 0;
 
-    /* Bound HOME once so subsequent snprintf calls have a known
-     * input size (keeps -Wformat-truncation quiet). */
-    char home_buf[512];
-    {
-        const char *h = getenv("HOME");
-        if (!h) h = "/tmp";
-        snprintf(home_buf, sizeof(home_buf), "%s", h);
-    }
+    /* Local-only checks first (no server round-trip needed). */
+    check_key_pair(e, tpm_dir);
+    check_spkh(e, tpm_dir);
 
     if (e->cert_index < 0) {
         strcat(e->v_errors, "no certificate index; ");
@@ -320,8 +500,8 @@ static void verify_entry(tpm_entry_t *e)
             char *loc_json;
 
             /* Read local cert for comparison */
-            snprintf(loc_path, sizeof(loc_path), "%s/.TPM/%s/certificate.json",
-                     home_buf, e->name);
+            snprintf(loc_path, sizeof(loc_path), "%s/%s/certificate.json",
+                     tpm_dir, e->name);
             loc_json = read_file(loc_path);
             if (loc_json) {
                 loc_obj = json_tokener_parse(loc_json);
@@ -383,7 +563,7 @@ static void verify_entry(tpm_entry_t *e)
         /* Compare with local key */
         char loc_key_path[PATH_MAX];
         snprintf(loc_key_path, sizeof(loc_key_path),
-                 "%s/.TPM/%s/public_key.pem", home_buf, e->name);
+                 "%s/%s/public_key.pem", tpm_dir, e->name);
         {
             char *local_key = read_file(loc_key_path);
             struct json_object *pk_obj = json_tokener_parse(body);
@@ -452,9 +632,14 @@ static void print_entry(const tpm_entry_t *e, int verbose, int verify)
         const char *s_pdb = e->v_pubkey_db == 1 ? "OK" :
                             e->v_pubkey_db == 0 ? "FAIL" :
                             e->v_pubkey_db == 2 ? "MISMATCH" : "?";
+        const char *s_par = e->v_pair == 1 ? "OK" :
+                            e->v_pair == 0 ? "FAIL" : "-";
+        const char *s_spk = e->v_spkh == 1 ? "OK" :
+                            e->v_spkh == 0 ? "FAIL" : "-";
 
         printf("      Verify:     server=%s  revoked=%s  proof=%s  time=%s  pubkey_db=%s\n",
                s_srv, s_rev, s_prf, s_tim, s_pdb);
+        printf("      Local:      pair=%s  spkh=%s\n", s_par, s_spk);
         if (e->v_errors[0]) {
             /* Print each error on its own line */
             char *err = strdup(e->v_errors);
@@ -723,6 +908,49 @@ int main(int argc, char *argv[])
         }
 
         printf("Mode:      MQC (post-quantum)\n");
+
+        /* Checkpoint freshness — one GET, reported as a summary line.
+         * Age only; we don't flag "stale" here because a quiet CA that
+         * hasn't issued recently is not broken, just idle. */
+        {
+            long code = 0;
+            char *body = mqc_http_get("/log/checkpoint", &code);
+            if (body && code == 200) {
+                struct json_object *cp = json_tokener_parse(body);
+                if (cp) {
+                    struct json_object *ts_v, *sz_v, *rh_v;
+                    double ts = 0;
+                    int tree_size = -1;
+                    const char *root_hex = NULL;
+                    if (json_object_object_get_ex(cp, "timestamp", &ts_v))
+                        ts = json_object_get_double(ts_v);
+                    if (json_object_object_get_ex(cp, "tree_size", &sz_v))
+                        tree_size = json_object_get_int(sz_v);
+                    if (json_object_object_get_ex(cp, "root_hash", &rh_v))
+                        root_hex = json_object_get_string(rh_v);
+
+                    if (ts > 0) {
+                        double age = (double)time(NULL) - ts;
+                        long days = (long)(age / 86400.0);
+                        long hrs  = (long)((age - days * 86400.0) / 3600.0);
+                        long mins = (long)((age - days * 86400.0
+                                                - hrs * 3600.0) / 60.0);
+                        if (days > 0)
+                            printf("Checkpoint: tree_size=%d  age=%ldd %ldh "
+                                   "root=%.16s...\n",
+                                   tree_size, days, hrs,
+                                   root_hex ? root_hex : "");
+                        else
+                            printf("Checkpoint: tree_size=%d  age=%ldh %ldm "
+                                   "root=%.16s...\n",
+                                   tree_size, hrs, mins,
+                                   root_hex ? root_hex : "");
+                    }
+                    json_object_put(cp);
+                }
+            }
+            free(body);
+        }
     }
 
     /* Print header */
@@ -733,7 +961,7 @@ int main(int argc, char *argv[])
     /* Process entries */
     for (i = 0; i < num_entries; i++) {
         if (verify)
-            verify_entry(&entries[i]);
+            verify_entry(&entries[i], tpm_dir);
 
         print_entry(&entries[i], verbose, verify);
 

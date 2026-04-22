@@ -18,7 +18,7 @@ postWolf anchors FIPS source checksums in an **external, append-only Merkle Tree
 
 ### Prerequisites
 
-- The MTC C server (`mtc-keymaster/server/c/mtc_server`) built and running
+- The MTC C server (`mtc-keymaster/server2/c/mtc_server`) built and running
 - PostgreSQL (Neon) database configured, or a local data directory for file-based storage
 - `jq` and `curl` installed on the build machine
 
@@ -26,7 +26,7 @@ postWolf anchors FIPS source checksums in an **external, append-only Merkle Tree
 
 ```bash
 # Build the MTC server
-cd mtc-keymaster/server/c
+cd mtc-keymaster/server2/c
 make
 
 # Start the server (first run generates an ML-DSA-87 CA key automatically)

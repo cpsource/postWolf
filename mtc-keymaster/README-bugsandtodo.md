@@ -62,9 +62,8 @@ The leaf request should also include `CA:FALSE` and the SAN DNS name in its
 extensions so the server can match the domain and confirm it is not a CA.
 
 **Files:**
-- `mtc-keymaster/server/c/mtc_http.c` — `handle_certificate_request()`
-- `mtc-keymaster/server/c/mtc_store.c` — needs a lookup by subject function
-- `mtc-keymaster/server/python/server.py` — Python server equivalent
+- `mtc-keymaster/server2/c/mtc_http.c` — `handle_certificate_request()`
+- `mtc-keymaster/server2/c/mtc_store.c` — needs a lookup by subject function
 
 ### 3. Enrollment authorization — anyone can enroll a leaf cert — DONE
 
@@ -143,7 +142,7 @@ server-side: the server verifies the nonce against its own stored state
 (domain + fingerprint + expiry), not against anything in the DNS record.
 
 **Files:**
-- `mtc-keymaster/server/c/mtc_http.c` — `handle_certificate_request()` needs
+- `mtc-keymaster/server2/c/mtc_http.c` — `handle_certificate_request()` needs
   a validation gate
 - `mtc-keymaster/tools/python/ca_dns_txt.py` — generates and verifies key-bound
   DNS TXT tokens (updated to v=mtc-ca2 format)
@@ -272,10 +271,10 @@ POST /certificate/request   (by leaf user)
 - CA/Browser Forum Baseline Requirements (public PKI validation rules)
 
 **Files:**
-- `server/c/mtc_http.c` — new `/nonce-request` endpoint, modified
+- `server2/c/mtc_http.c` — new `/nonce-request` endpoint, modified
   `/certificate/request` to require nonce
-- `server/c/mtc_store.c` — nonce CRUD operations
-- `server/c/mtc_db.c` — `mtc_enrollment_nonces` table (Neon)
+- `server2/c/mtc_store.c` — nonce CRUD operations
+- `server2/c/mtc_db.c` — `mtc_enrollment_nonces` table (Neon)
 - `tools/python/main.py` — two-phase enrollment flow
 - `tools/python/mtc_client.py` — `request_enrollment_nonce()` method
 
@@ -303,9 +302,9 @@ AbuseIPDB listing or contact the CA operator.
    (separate from any general-access threshold)
 
 **Files:**
-- `mtc-keymaster/server/c/mtc_http.c` — add check at enrollment entry points
-- `mtc-keymaster/server/c/mtc_checkendpoint.h` — add enrollment threshold constant
-- `mtc-keymaster/server/c/mtc_checkendpoint.c` — ensure check function
+- `mtc-keymaster/server2/c/mtc_http.c` — add check at enrollment entry points
+- `mtc-keymaster/server2/c/mtc_checkendpoint.h` — add enrollment threshold constant
+- `mtc-keymaster/server2/c/mtc_checkendpoint.c` — ensure check function
   accepts a threshold parameter
 
 ### 6. AbuseIPDB cache expiry — refresh stale records after 5 days — DONE
@@ -348,9 +347,9 @@ so it can be tuned without code changes.
   fresh inserts and stale refreshes in a single query
 
 **Files:**
-- `mtc-keymaster/server/c/mtc_checkendpoint.c` — cache lookup and API query logic
-- `mtc-keymaster/server/c/mtc_checkendpoint.h` — add TTL constant
-- `mtc-keymaster/server/c/mtc_db.c` — if the cache table schema is managed here
+- `mtc-keymaster/server2/c/mtc_checkendpoint.c` — cache lookup and API query logic
+- `mtc-keymaster/server2/c/mtc_checkendpoint.h` — add TTL constant
+- `mtc-keymaster/server2/c/mtc_db.c` — if the cache table schema is managed here
 
 ### 7. Server-verified FIPS source checksums via MTC transparency log
 
@@ -406,10 +405,10 @@ and cosignature — no server contact needed.
 - `fips-manifest-verify.sh` — verification script (online + offline)
 
 **Files to modify:**
-- `mtc-keymaster/server/c/mtc_http.c` — add FIPS manifest endpoint handlers + routing
-- `mtc-keymaster/server/c/mtc_db.c` — add `mtc_fips_manifests` table + CRUD
-- `mtc-keymaster/server/c/mtc_store.c` — add type `0x02` detection + manifest persistence
-- `mtc-keymaster/server/c/mtc_store.h` — add manifest fields to `MtcStore` struct
+- `mtc-keymaster/server2/c/mtc_http.c` — add FIPS manifest endpoint handlers + routing
+- `mtc-keymaster/server2/c/mtc_db.c` — add `mtc_fips_manifests` table + CRUD
+- `mtc-keymaster/server2/c/mtc_store.c` — add type `0x02` detection + manifest persistence
+- `mtc-keymaster/server2/c/mtc_store.h` — add manifest fields to `MtcStore` struct
 - `debian/rules` — call submit script in FIPS build path
 - `Makefile.am` — add new targets
 
@@ -518,7 +517,7 @@ around it by base64-decoding the body and slicing the last 32 bytes.
 Once the label is fixed to `-----BEGIN PUBLIC KEY-----`, clients can
 use `wc_PubKeyPemToDer` + `wc_Ed25519PublicKeyDecode` cleanly.
 
-**Files:** `mtc-keymaster/server/c/mtc_store.c` (`mtc_store_get_public_key_pem`)
+**Files:** `mtc-keymaster/server2/c/mtc_store.c` (`mtc_store_get_public_key_pem`)
 
 **9b. Eliminate TOFU on first `/ca/public-key` fetch**
 
@@ -560,7 +559,7 @@ The formats disagree on label and on whether `cosigner_id` / `log_id`
 are part of the signed message.  Converging to the wolfSSL shape lets
 us drop our hand-rolled verifier in `mqc_peer.c` and call the upstream
 API directly.  Requires editing `mtc_store_cosign` in
-`mtc-keymaster/server/c/mtc_store.c` and re-running `admin_recosign
+`mtc-keymaster/server2/c/mtc_store.c` and re-running `admin_recosign
 --write` once the new format is active.
 
 ---
@@ -809,13 +808,13 @@ mutate its row on a mismatch.  That is the DoS primitive discussed
 above.  The nonce's natural 15-minute TTL is the correct bound.
 
 **Files to change:**
-- `mtc-keymaster/server/c/mtc_bootstrap.c` — expand the failure branch
+- `mtc-keymaster/server2/c/mtc_bootstrap.c` — expand the failure branch
   at line 529-545 to call the new classifier before sending the
   error response.
-- `mtc-keymaster/server/c/mtc_db.c` / `mtc_db.h` — add a
+- `mtc-keymaster/server2/c/mtc_db.c` / `mtc_db.h` — add a
   `mtc_db_classify_nonce_failure()` helper (or inline the SELECT) so
   the HTTP handler and the bootstrap handler can both call it.
-- `mtc-keymaster/server/c/mtc_ratelimit.{c,h}` — confirm `RL_ENROLL`
+- `mtc-keymaster/server2/c/mtc_ratelimit.{c,h}` — confirm `RL_ENROLL`
   already covers failed attempts, or add `RL_ENROLL_FAILED`.
 - `mtc-keymaster/README-nonce.md` — add a "Observability" section
   once implemented, so the doc matches the shipped behavior.
@@ -840,7 +839,7 @@ The delete commit did *not* update the six docs that still reference
 | `README-postWolf.md` | Project overview bullet (tools/python list) |
 | `README-clean-install.md` | Step-by-step bootstrap / CA enroll / leaf enroll / verify walkthrough (heaviest) |
 | `README-ml-dsa-87.md` | Example enrollment flow |
-| `server/c/README-using-mtc-server.md` | Command-reference table (`main.py bootstrap`, `main.py enroll`, etc.) |
+| `server2/c/README-using-mtc-server.md` | Command-reference table (`main.py bootstrap`, `main.py enroll`, etc.) |
 | `README-bugsandtodo.md` | Historical notes in #3, #4, and the DNS-cache section (safer to leave alone — they document past state) |
 
 **Cleanup sketch:**
@@ -865,7 +864,7 @@ past decisions, and rewriting them distorts the record.
 - `README-postWolf.md`
 - `mtc-keymaster/README-clean-install.md`
 - `mtc-keymaster/README-ml-dsa-87.md`
-- `mtc-keymaster/server/c/README-using-mtc-server.md`
+- `mtc-keymaster/server2/c/README-using-mtc-server.md`
 
 ### 15. Gate leaf-nonce issuance by cryptographic caller identity (MQC-only)
 
@@ -915,13 +914,13 @@ before the C tool has distribution.  Eventually: return 410 on
 `/certificate/request`).
 
 **Files to change:**
-- `mtc-keymaster/server/c/mtc_http.c` — extend
+- `mtc-keymaster/server2/c/mtc_http.c` — extend
   `handle_enrollment_nonce` with an MQC-identity check before the
   `mtc_db_create_nonce` call.
-- `mtc-keymaster/server/c/mtc_db.c` / `mtc_db.h` — add
+- `mtc-keymaster/server2/c/mtc_db.c` / `mtc_db.h` — add
   `mtc_db_get_cert_subject(conn, cert_index, out, outsz)` (or reuse
   any existing helper).
-- `mtc-keymaster/server/c/mtc_http.h` — ensure `client_io` exposes the
+- `mtc-keymaster/server2/c/mtc_http.h` — ensure `client_io` exposes the
   MQC connection pointer so we can reach `mqc_get_peer_index`.
 
 ### 16. Tighten TODO #13 observability once MQC-authenticated issuance lands
@@ -1029,8 +1028,8 @@ mid-operation aborts in tools that expect a single attempt to work.
 
 **Call-site audit (will need updating after the helper lands):**
 
-- `mtc-keymaster/server/c/show-tpm.c` — `mqc_http_get` @ line 57
-- `mtc-keymaster/server/c/issue_leaf_nonce.c` — `mqc_http_post` @ its
+- `mtc-keymaster/server2/c/show-tpm.c` — `mqc_http_get` @ line 57
+- `mtc-keymaster/server2/c/issue_leaf_nonce.c` — `mqc_http_post` @ its
   single `mqc_connect` call
 - `socket-level-wrapper-MQC/mqc_peer.c` — once TODO #11 replaces
   libcurl with MQC, every lookup path gains a connect site
@@ -2054,7 +2053,7 @@ Historical design record follows.
 Ed25519 is the only pre-quantum primitive still in the stack.  It
 signs the transparency-log checkpoint — the `cosigner_id || log_id
 || start || end || subtree_hash` message documented in the MQC
-draft §10.4 and produced by `server/c/mtc_store.c:mtc_store_cosign`.
+draft §10.4 and produced by `server2/c/mtc_store.c:mtc_store_cosign`.
 
 Why this matters: an adversary with a quantum computer and the
 log's Ed25519 private key can forge checkpoints and thereby inject
@@ -2077,7 +2076,7 @@ then follow whatever the WG picks.
 
 **Files affected when we pull the trigger:**
 
-- `server/c/mtc_store.c` — `mtc_store_cosign` signing path.
+- `server2/c/mtc_store.c` — `mtc_store_cosign` signing path.
 - `socket-level-wrapper-MQC/mqc_peer.c` — `verify_cosignature`.
 - `socket-level-wrapper-MQC/draft-page-mqc-protocol-NN.md/.txt` —
   §10.4 byte layout (algorithm swap), §4 crypto primitives table,
@@ -2388,17 +2387,17 @@ Root CAs: skip nonce (no DNS validation, unchanged).
 
 | File | Change |
 |------|--------|
-| `server/c/mtc_store.h` | `MtcPendingNonce` struct, 4 function decls |
-| `server/c/mtc_store.c` | Implement 4 nonce functions via `mtc_db.c` |
-| `server/c/mtc_db.c` | `mtc_enrollment_nonces` table DDL + CRUD queries |
-| `server/c/mtc_http.c` | New `/enrollment/nonce` handler, modify DNS validation |
+| `server2/c/mtc_store.h` | `MtcPendingNonce` struct, 4 function decls |
+| `server2/c/mtc_store.c` | Implement 4 nonce functions via `mtc_db.c` |
+| `server2/c/mtc_db.c` | `mtc_enrollment_nonces` table DDL + CRUD queries |
+| `server2/c/mtc_http.c` | New `/enrollment/nonce` handler, modify DNS validation |
 | `tools/python/ca_dns_txt.py` | Accept server-issued nonce via `--nonce`/`--server` |
 | `tools/python/mtc_client.py` | Add `request_enrollment_nonce()` method |
 | `tools/python/main.py` | Two-phase flow in `cmd_enroll_ca()` |
 
 ### Verification
 
-1. `make -C mtc-keymaster/server/c` — builds clean with `-Werror`
+1. `make -C mtc-keymaster/server2/c` — builds clean with `-Werror`
 2. Phase 1: `POST /enrollment/nonce` → returns nonce + DNS record
 3. Duplicate rejection: same request → 409
 4. Phase 2: `POST /certificate/request` with nonce → cert issued, nonce consumed
@@ -2501,12 +2500,13 @@ client code. Findings are prioritized by severity.
 - **Issue:** No check that `index >= start` and `index < end`.
 - **Fix:** Add bounds validation before proof computation.
 
-**S13. CA private key stored unencrypted in Neon — MITIGATED**
-- **Location:** `mtc_store.c` — `ca_private_key_hex` in `mtc_ca_config`
-- **Issue:** The Ed25519 CA private key is stored as plaintext hex in
-  PostgreSQL. Database compromise exposes the key.
-- **Fix:** Consider key management service, or at minimum encrypt the
-  key at rest with a passphrase.
+**S13. CA private key stored unencrypted in Neon — RESOLVED**
+- **Location:** `mtc_store.c` (historical: `ca_private_key_hex` in
+  `mtc_ca_config`).
+- **Resolution:** Private keys no longer touch the database at all.
+  `init_ca_key` writes `ca_key_mldsa.der` (chmod 0600) under the data
+  directory on disk only; the `mtc_ca_config` table itself was dropped
+  in phase-15.  Database compromise no longer exposes the key.
 
 **S14. Python urllib TLS — no cert pinning — FIXED**
 - **Location:** `mtc_client.py:43-55`

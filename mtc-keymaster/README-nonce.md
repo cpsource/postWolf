@@ -240,7 +240,7 @@ nonce) surface at `POST /certificate/request`, not here.
 - `README-bugsandtodo.md` #3 and #4 — background on why nonces exist
   (they were added to close the "anyone can enroll a leaf" hole).
 - Source:
-  - `mtc-keymaster/server/c/mtc_http.c` — `handle_enrollment_nonce` (issue)
-  - `mtc-keymaster/server/c/mtc_db.c` — `mtc_db_create_nonce` (issue), consumption logic
-  - `mtc-keymaster/server/c/bootstrap_leaf.c` — nonce consumption on the client
+  - `mtc-keymaster/server2/c/mtc_http.c` — `handle_enrollment_nonce` (issue)
+  - `mtc-keymaster/server2/c/mtc_db.c` — `mtc_db_create_nonce` (issue), consumption logic
+  - `mtc-keymaster/server2/c/bootstrap_leaf.c` — nonce consumption on the client
   - `mtc-keymaster/tools/python/issue_leaf_nonce.py` — CA operator helper

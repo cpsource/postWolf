@@ -200,8 +200,7 @@ Full endpoint spec in `mtc-keymaster/server2/c/README-using-mtc-server.md`
 under `POST /revoke`.
 
 The server daemon `mtc_server` lives in `mtc-keymaster/server2/c/`
-(fork-after-accept, one child per connection). `mtc-keymaster/server/c/` is
-the pre-fork legacy tree, retained as history but not deployed.
+(fork-after-accept, one child per connection).
 
 ## Source
 
@@ -407,8 +406,7 @@ postWolf/
   socket-level-wrapper-MQC/       MQC (post-quantum TCP)
   socket-level-wrapper-QUIC/      MQCP (post-quantum UDP)
   mtc-keymaster/
-    server/c/                     legacy mtc_server (pre-fork — historical)
-    server2/c/                    current mtc_server (fork-after-accept)
+    server2/c/                    mtc_server (fork-after-accept)
     tools/c/                      client tools (installed to /usr/local/bin)
     tools/python/                 helpers (cert generation, verify scripts)
     tools/sh/                     admin shell scripts

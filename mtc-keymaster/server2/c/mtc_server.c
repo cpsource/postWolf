@@ -8,9 +8,8 @@
  *   rate limiter, AbuseIPDB, certificate store), and starts the blocking
  *   HTTP(-over-TLS) server.
  *
- *   Equivalent to server/python/server.py but using wolfCrypt for crypto,
- *   json-c for JSON, and file-based storage with optional PostgreSQL (Neon)
- *   persistence.
+ *   Uses wolfCrypt for crypto, json-c for JSON, and PostgreSQL (Neon) for
+ *   persistence with file-based fallback.
  *
  *   Build:  make
  *   Usage:  ./mtc_server [options]   (run with -h for full option list)
