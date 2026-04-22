@@ -1,0 +1,6 @@
+# Map historical commit emails to current ones without rewriting history.
+# Format: <new-email> <old-email>   (keeps original commit names)
+# Or:     Proper Name <new-email> <old-email>
+# See gitmailmap(5).
+
+Cal Page <cal@factsorlie.com> <page.cal@gmail.com>
