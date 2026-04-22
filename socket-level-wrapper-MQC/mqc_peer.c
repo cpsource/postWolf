@@ -1283,12 +1283,12 @@ int mqc_peer_verify(const char *mtc_server,
         struct json_object *sc, *cosig_arr, *cosig, *val;
         const char *cosigner_id, *log_id;
         byte subtree_hash[MTC_HASH_SZ];
-        byte sig[64];
+        byte sig[DILITHIUM_LEVEL5_SIG_SIZE];
         long long start = 0, end = 0;
         int i, zeroed = 1;
 
-        /* Require a non-zero 32-byte CA pubkey. */
-        if (!ca_pubkey || ca_pubkey_sz != 32) {
+        /* Require a non-zero 2592-byte ML-DSA-87 CA pubkey. */
+        if (!ca_pubkey || ca_pubkey_sz != DILITHIUM_LEVEL5_PUB_KEY_SIZE) {
             MQC_SECURITY("COSIG_NO_CA_KEY: cert %d (pubkey_sz=%d)",
                          cert_index, ca_pubkey_sz);
             json_object_put(cert_json);
@@ -1349,7 +1349,8 @@ int mqc_peer_verify(const char *mtc_server,
         }
         if (!json_object_object_get_ex(cosig, "signature", &val) ||
             mqc_hex_to_bytes(json_object_get_string(val),
-                             sig, (int)sizeof(sig)) != 64) {
+                             sig, (int)sizeof(sig))
+                != DILITHIUM_LEVEL5_SIG_SIZE) {
             MQC_SECURITY("COSIG_MALFORMED: cert %d signature",
                          cert_index);
             json_object_put(cert_json);
@@ -1359,7 +1360,8 @@ int mqc_peer_verify(const char *mtc_server,
         if (verify_cosignature(ca_pubkey, ca_pubkey_sz,
                                cosigner_id, log_id,
                                start, end,
-                               subtree_hash, sig, 64) != 0) {
+                               subtree_hash, sig,
+                               DILITHIUM_LEVEL5_SIG_SIZE) != 0) {
             MQC_SECURITY("COSIG_INVALID: cert %d", cert_index);
             json_object_put(cert_json);
             return -1;

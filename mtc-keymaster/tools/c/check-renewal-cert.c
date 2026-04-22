@@ -253,7 +253,7 @@ static int server_is_revoked(const char *server, const char *tpm_path,
     cfg.tpm_path     = tpm_path;
     cfg.mtc_server   = server;
     cfg.ca_pubkey    = ca_pubkey;
-    cfg.ca_pubkey_sz = 32;
+    cfg.ca_pubkey_sz = DILITHIUM_LEVEL5_PUB_KEY_SIZE;
 
     ctx = mqc_ctx_new(&cfg);
     if (!ctx) return -1;

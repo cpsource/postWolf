@@ -269,6 +269,18 @@ int main(int argc, char *argv[])
                                 start, end, subtree_hash_hex, sig_hex_new));
                 json_object_object_add(sc, "cosignatures", cosig_arr);
             }
+
+            /* mtc_store_save() only persists to files; the running server
+             * loads from Postgres on restart.  Push each rewritten cert
+             * directly into the DB so the next startup sees ML-DSA-87. */
+            if (store.use_db && store.db) {
+                const char *cert_json_str =
+                    json_object_to_json_string(cert);
+                if (mtc_db_save_certificate(store.db, i, cert_json_str) != 0) {
+                    fprintf(stderr,
+                        "cert %d: mtc_db_save_certificate failed\n", i);
+                }
+            }
             rewritten++;
         }
 
