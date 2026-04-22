@@ -585,6 +585,56 @@ int mtc_db_load_checkpoints(PGconn *conn, const char *log_id,
     return rows;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_load_latest_checkpoint
+ *
+ * Description:
+ *   Returns the most recently persisted checkpoint (highest id) for the
+ *   given log_id, or NULL if the table is empty.  Read-only; used by
+ *   GET /log/checkpoint so the response reflects the log's actual last
+ *   tree-change event rather than an on-demand fresh timestamp.
+ *
+ * Input Arguments:
+ *   conn    - Active PostgreSQL connection.
+ *   log_id  - Log identifier to filter by.
+ *
+ * Returns:
+ *   New json_object (caller owns via json_object_put) with
+ *   {log_id, tree_size, root_hash, timestamp}; NULL if no rows or on
+ *   query error.
+ ******************************************************************************/
+struct json_object *mtc_db_load_latest_checkpoint(PGconn *conn,
+                                                  const char *log_id)
+{
+    PGresult *res;
+    const char *params[1] = { log_id };
+    struct json_object *cp;
+
+    res = PQexecParams(conn,
+        "SELECT log_id, tree_size, root_hash, ts "
+        "FROM mtc_checkpoints WHERE log_id = $1 "
+        "ORDER BY id DESC LIMIT 1",
+        1, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
+        PQclear(res);
+        return NULL;
+    }
+
+    cp = json_object_new_object();
+    json_object_object_add(cp, "log_id",
+        json_object_new_string(PQgetvalue(res, 0, 0)));
+    json_object_object_add(cp, "tree_size",
+        json_object_new_int(atoi(PQgetvalue(res, 0, 1))));
+    json_object_object_add(cp, "root_hash",
+        json_object_new_string(PQgetvalue(res, 0, 2)));
+    json_object_object_add(cp, "timestamp",
+        json_object_new_double(atof(PQgetvalue(res, 0, 3))));
+
+    PQclear(res);
+    return cp;
+}
+
 /* ------------------------------------------------------------------ */
 /* Landmarks                                                           */
 /* ------------------------------------------------------------------ */

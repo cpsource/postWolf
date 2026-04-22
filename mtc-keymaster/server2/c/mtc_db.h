@@ -158,6 +158,25 @@ int  mtc_db_save_checkpoint(PGconn *conn, const char *log_id,
 int  mtc_db_load_checkpoints(PGconn *conn, const char *log_id,
                              struct json_object **out_arr);
 
+/**
+ * @brief    Load the most recently persisted checkpoint for a log.
+ *
+ * @details
+ * Queries mtc_checkpoints for the row with the highest id (most recent
+ * INSERT) for the given log_id.  Read-only — never mutates state.
+ * Used by GET /log/checkpoint so that the response reflects the log's
+ * actual last tree-change event, not an on-demand fresh timestamp.
+ *
+ * @param[in] conn    Active PostgreSQL connection.
+ * @param[in] log_id  Log identifier to filter by.
+ *
+ * @return  New json_object (caller owns via json_object_put) on success
+ *          with fields {log_id, tree_size, root_hash, timestamp};
+ *          NULL if no rows exist or on query error.
+ */
+struct json_object *mtc_db_load_latest_checkpoint(PGconn *conn,
+                                                  const char *log_id);
+
 /* ------------------------------------------------------------------ */
 /* Landmarks                                                           */
 /* ------------------------------------------------------------------ */
