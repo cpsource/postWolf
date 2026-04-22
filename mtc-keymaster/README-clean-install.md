@@ -118,7 +118,7 @@ On first startup the server auto-generates an ML-DSA-87 CA key pair for
 Merkle tree cosigning and creates all database tables.
 
 ```bash
-cd ~/postWolf/mtc-keymaster/server/c
+cd ~/postWolf/mtc-keymaster/server2/c
 
 ./mtc_server \
     --port 8444 \
@@ -150,7 +150,7 @@ Stop the server with Ctrl+C once verified.
 ## 8. Install Server Service (systemd)
 
 ```bash
-sudo cp ~/postWolf/mtc-keymaster/server/c/mtc-ca.service \
+sudo cp ~/postWolf/mtc-keymaster/server2/c/mtc-ca.service \
     /etc/systemd/system/mtc-ca.service
 
 # Edit if your paths differ from the defaults
@@ -165,7 +165,7 @@ sudo systemctl status mtc-ca
 journalctl -u mtc-ca -f
 ```
 
-The service file is at `mtc-keymaster/server/c/mtc-ca.service`. It runs
+The service file is at `mtc-keymaster/server2/c/mtc-ca.service`. It runs
 the C server with TLS + ECH on port 8444.
 
 ## 9. Bootstrap the Client

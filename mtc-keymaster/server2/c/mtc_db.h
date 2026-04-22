@@ -73,7 +73,7 @@ PGconn *mtc_db_connect(void);
  *
  * @details
  * Executes CREATE TABLE IF NOT EXISTS for: mtc_log_entries, mtc_checkpoints,
- * mtc_landmarks, mtc_certificates, mtc_ca_config, mtc_revocations, and
+ * mtc_landmarks, mtc_certificates, mtc_revocations, and
  * mtc_enrollment_nonces.  Also applies ALTER TABLE migrations for columns
  * added after initial deployment.
  *
@@ -270,32 +270,6 @@ int  mtc_db_load_revocations(PGconn *conn, int *indices, int max_count);
  * @return  1 if revoked, 0 if not revoked or on error.
  */
 int  mtc_db_is_revoked(PGconn *conn, int cert_index);
-
-/* ------------------------------------------------------------------ */
-/* CA config (key persistence)                                         */
-/* ------------------------------------------------------------------ */
-
-/**
- * @brief    Save a CA configuration key/value pair (upsert).
- *
- * @param[in] conn   Active PostgreSQL connection.
- * @param[in] key    Configuration key (primary key; upserted on conflict).
- * @param[in] value  Configuration value string.
- *
- * @return   0 on success, -1 on failure.
- */
-int  mtc_db_save_config(PGconn *conn, const char *key, const char *value);
-
-/**
- * @brief    Load a CA configuration value by key.
- *
- * @param[in] conn  Active PostgreSQL connection.
- * @param[in] key   Configuration key to look up.
- *
- * @return  strdup'd value string on success (caller must free()),
- *          or NULL if not found.
- */
-char *mtc_db_load_config(PGconn *conn, const char *key);
 
 /* ------------------------------------------------------------------ */
 /* Enrollment nonces                                                   */

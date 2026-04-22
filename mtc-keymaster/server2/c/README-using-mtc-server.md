@@ -436,8 +436,9 @@ On first startup with an empty `--data-dir`:
 1. Creates the data directory
 2. Connects to Neon PostgreSQL (if `MERKLE_NEON` is set)
 3. Creates all database tables (if they don't exist)
-4. Generates a new Ed25519 CA key pair
-5. Saves the key to `ca_key.der` and to the `mtc_ca_config` DB table
+4. Generates a new ML-DSA-87 CA key pair
+5. Saves the key to `ca_key_mldsa.der` (chmod 0600); private keys never
+   leave disk
 6. Creates the null entry (index 0) in the Merkle tree
 7. Starts listening
 

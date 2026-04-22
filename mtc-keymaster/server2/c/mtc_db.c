@@ -265,7 +265,7 @@ int mtc_db_ensure_connected(PGconn **conn_ptr)
  *
  * Side Effects:
  *   Creates/alters tables: mtc_log_entries, mtc_checkpoints,
- *   mtc_landmarks, mtc_certificates, mtc_ca_config, mtc_revocations,
+ *   mtc_landmarks, mtc_certificates, mtc_revocations,
  *   mtc_enrollment_nonces.
  ******************************************************************************/
 int mtc_db_init_schema(PGconn *conn)
@@ -297,10 +297,6 @@ int mtc_db_init_schema(PGconn *conn)
         "  index INTEGER PRIMARY KEY,"
         "  certificate JSONB NOT NULL,"
         "  created_at TIMESTAMPTZ DEFAULT now()"
-        ");"
-        "CREATE TABLE IF NOT EXISTS mtc_ca_config ("
-        "  key TEXT PRIMARY KEY,"
-        "  value TEXT NOT NULL"
         ");"
         "CREATE TABLE IF NOT EXISTS mtc_revocations ("
         "  id SERIAL PRIMARY KEY,"
@@ -924,78 +920,6 @@ int mtc_db_is_revoked(PGconn *conn, int cert_index)
     found = (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0);
     PQclear(res);
     return found;
-}
-
-/* ------------------------------------------------------------------ */
-/* CA config                                                           */
-/* ------------------------------------------------------------------ */
-
-/******************************************************************************
- * Function:    mtc_db_save_config
- *
- * Description:
- *   Saves a CA configuration key/value pair.  Uses ON CONFLICT to upsert
- *   if the key already exists.
- *
- * Input Arguments:
- *   conn   - Active PostgreSQL connection.
- *   key    - Configuration key (primary key).
- *   value  - Configuration value string.
- *
- * Returns:
- *    0  on success.
- *   -1  on query failure.
- ******************************************************************************/
-int mtc_db_save_config(PGconn *conn, const char *key, const char *value)
-{
-    PGresult *res;
-    const char *params[2] = { key, value };
-
-    res = PQexecParams(conn,
-        "INSERT INTO mtc_ca_config (key, value) VALUES ($1, $2) "
-        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-        2, NULL, params, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        PQclear(res);
-        return -1;
-    }
-    PQclear(res);
-    return 0;
-}
-
-/******************************************************************************
- * Function:    mtc_db_load_config
- *
- * Description:
- *   Loads a CA configuration value by key.
- *
- * Input Arguments:
- *   conn  - Active PostgreSQL connection.
- *   key   - Configuration key to look up.
- *
- * Returns:
- *   strdup'd value string on success.  Caller must free().
- *   NULL if the key was not found or on query error.
- ******************************************************************************/
-char *mtc_db_load_config(PGconn *conn, const char *key)
-{
-    PGresult *res;
-    const char *params[1] = { key };
-    char *val;
-
-    res = PQexecParams(conn,
-        "SELECT value FROM mtc_ca_config WHERE key = $1",
-        1, NULL, params, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
-        PQclear(res);
-        return NULL;
-    }
-
-    val = strdup(PQgetvalue(res, 0, 0));
-    PQclear(res);
-    return val;
 }
 
 /* ------------------------------------------------------------------ */

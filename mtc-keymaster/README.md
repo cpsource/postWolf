@@ -35,21 +35,23 @@ client tools that interact with it.
 
 ```
 mtc-keymaster/
-  server/
-    python/         MTC CA/Log server (Python)
-      server.py       HTTP REST API
-      ca.py           Certificate Authority + Issuance Log
-      merkle.py       Merkle Tree (RFC 9162 Section 2.1)
-      db.py           PostgreSQL persistence (Neon)
-      client_demo.py  Server-side demo script
-    c/              (reserved for C implementation)
+  server2/
+    c/              MTC CA/Log server (C, production)
+      mtc_server.c    Entry point + listener loop
+      mtc_http.c      HTTPS / MQC API handlers
+      mtc_store.c     Certificate store + ML-DSA-87 CA key
+      mtc_db.c        PostgreSQL (Neon) persistence
+      mtc_log.c       Append-only Merkle log (RFC 9162 §2.1)
 
   tools/
+    c/              MTC client CLI tools (C)
+      show-tpm        Inspect local TPM, verify entries
+      bootstrap_ca    First-time CA enrollment over 8445/DH
+      bootstrap_leaf  First-time leaf enrollment
+      issue_leaf_nonce, revoke-key, renew-cert, migrate-cosigner,
+      backfill-pubkey, admin_recosign, …
     python/         MTC client CLI tools (Python)
-      main.py         CLI with bootstrap, enroll, verify, monitor commands
-      mtc_client.py   Client library (HTTP to server, key generation)
-      verify.py       Standalone proof verification (inclusion, consistency, cosignature)
-      trust_store.py  Local trust store (cosigner keys, landmark cache)
+      verify.py, verify_certificate.py  Standalone proof + cosig verification
 ```
 
 ## Prerequisites
@@ -68,10 +70,16 @@ export MERKLE_NEON="postgresql://user:pass@host/dbname?sslmode=require"
 
 ### 1. Start the CA/Log Server
 
+Build and install the C server + tools (see top-level `CLAUDE.md`):
+
 ```bash
-cd server/python
-python3 server.py --port 8443
+cd /home/ubuntu/postWolf
+./make-all.sh
 ```
+
+This installs `/usr/local/bin/mtc_server`.  Run it directly for ad-hoc
+testing, or use the `mtc-ca.service` systemd unit for production
+(ports 8444 TLS / 8445 DH-bootstrap / 8446 MQC).
 
 The server initializes the database on first run (creates tables, generates
 an ML-DSA-87 CA key pair, seeds the Merkle tree).
@@ -219,7 +227,7 @@ The store path is configurable via `--store` flag or
 
 ## How It Fits Together
 
-1. **CA/Log Server** (`server/python/`) maintains the append-only Merkle
+1. **CA/Log Server** (`server2/c/`) maintains the append-only Merkle
    tree and issues certificates with inclusion proofs and ML-DSA-87
    cosignatures.
 
