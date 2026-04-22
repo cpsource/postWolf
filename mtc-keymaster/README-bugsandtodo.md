@@ -2041,6 +2041,97 @@ spikes; the mailing list is relationship-building.
 what works), this README entry (close when the round is done and
 capture what moved the needle).
 
+### 47. Migrate the log cosigner from Ed25519 to a post-quantum signature
+
+Ed25519 is the only pre-quantum primitive still in the stack.  It
+signs the transparency-log checkpoint — the `cosigner_id || log_id
+|| start || end || subtree_hash` message documented in the MQC
+draft §10.4 and produced by `server/c/mtc_store.c:mtc_store_cosign`.
+
+Why this matters: an adversary with a quantum computer and the
+log's Ed25519 private key can forge checkpoints and thereby inject
+fraudulent MTC certificates into the verification chain.  That
+collapses the transparency property MTC is built on, independently
+of ML-KEM-768/ML-DSA-87 being PQ-safe on the MQC wire.
+
+Why it's still Ed25519 today: the MTC draft itself specifies
+Ed25519 for the cosigner.  Changing postWolf unilaterally would
+fork from the upstream wire format.  The correct path is to raise
+the issue on `plants@ietf.org` as part of MTC's own PQ migration,
+then follow whatever the WG picks.
+
+**Proposed replacement options:**
+
+| Option | Sig size | Notes |
+|---|---|---|
+| ML-DSA-87 | ~4.6 KiB | Already in the stack for peer identity; one PQ signature algo for everything.  Checkpoint signatures are per-log-round, not per-connection, so the size cost is absorbed once. |
+| SLH-DSA (SPHINCS+) | ~30 KiB | Hash-based, no lattice assumption — conservative hedge against unexpected lattice attacks.  Much bigger sigs, but again infrequent. |
+
+**Files affected when we pull the trigger:**
+
+- `server/c/mtc_store.c` — `mtc_store_cosign` signing path.
+- `socket-level-wrapper-MQC/mqc_peer.c` — `verify_cosignature`.
+- `socket-level-wrapper-MQC/draft-page-mqc-protocol-NN.md/.txt` —
+  §10.4 byte layout (algorithm swap), §4 crypto primitives table,
+  §12.1 security considerations (the paragraph that currently
+  flags this as a known gap), IANA section if a new algorithm
+  identifier is needed.
+- Cosigner key material under `~/.mtc-ca-data/` — fresh keygen
+  with the new algorithm; old Ed25519 cosigner retained during a
+  rollover window for verifier compatibility.
+
+**Coordination requirement:** this is a flag-day change for every
+deployed log and verifier unless we add dual-signing (Ed25519 AND
+the PQ algo on every checkpoint) as a migration phase.  The draft
+can describe the dual-signing transition in a new section when
+the MTC spec picks an answer.
+
+### 48. Standing crypto watch — SHA-256, AES-256-GCM, lattice posture
+
+Not an action item today; a standing task to re-evaluate every
+12-18 months or whenever a relevant result drops.  Three items on
+the list:
+
+**SHA-256 (Merkle hashing, HKDF-Extract, checkpoint hash input).**
+Grover's algorithm gives a quadratic speedup on preimage search
+but not on collision search in the birthday-attack regime.
+128-bit collision resistance under Grover is widely judged
+acceptable for transparency-log use today, but a concrete quantum
+advantage against SHA-256 would change that.  Replacement path,
+if forced: SHA-384 or SHA3-384 in all three call sites.
+
+**AES-256-GCM (bulk cipher on MQC wire, also used by mqc CLI for
+password-derived symmetric seal).**  Grover halves effective key
+strength; AES-256 retains 128 bits of PQ key strength.  Not an
+issue at today's quantum-computing trajectory.  Replacement path,
+if forced: no replacement needed unless Grover's practical
+implementation extends far beyond current estimates — at which
+point symmetric crypto as a whole needs rethinking and the
+substitution is not unique to postWolf.
+
+**Lattice-crypto posture (ML-KEM-768, ML-DSA-87).**  These are the
+NIST-selected winners, but academic cryptanalysis continues.
+Watch for new results on module-lattice problems (particularly
+structured-lattice attacks).  Fall-back algorithms within the
+postWolf stack: SLH-DSA (signature) and perhaps Classic McEliece
+(KEM, at the cost of enormous public keys).  A fall-back plan is
+probably overkill today but should be written down before it's
+actually needed, under time pressure.
+
+**Watch artifacts:**
+
+- `https://csrc.nist.gov/projects/post-quantum-cryptography` — NIST
+  PQC round updates and recommendations.
+- `https://ehash.iaik.tugraz.at/wiki/The_SHA-3_Zoo` and peer venues
+  — any noteworthy hash-function cryptanalysis.
+- IACR ePrint feed, filtered for `SHA-256`, `ML-KEM`, `Kyber`,
+  `ML-DSA`, `Dilithium`.
+
+**Cadence:** re-read this section once per calendar quarter,
+treat as a reminder to spend 30 minutes looking at the watch
+artifacts and update the status here.  Not a recurring task that
+needs code changes; just intellectual hygiene.
+
 ---
 
 ## Appendix: Server Directory Layout
