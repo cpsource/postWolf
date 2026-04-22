@@ -80,8 +80,13 @@ static char *mqc_http_get(const char *path_only, long *code)
         return NULL;
     }
 
-    /* Read response into dynamically growing buffer */
-    buf_cap = 16384;
+    /* Read response into dynamically growing buffer.  Start at 64 KiB
+     * because the MQC framing is one frame per mqc_read() — if the
+     * next inbound frame is bigger than the remaining buffer,
+     * mqc_read() returns -1 non-recoverably (the length prefix is
+     * already consumed).  64 KiB covers every current endpoint,
+     * including the CA cert-with-X.509 responses (~21 KiB). */
+    buf_cap = 65536;
     buf = malloc((size_t)buf_cap);
     if (!buf) { mqc_close(conn); return NULL; }
 

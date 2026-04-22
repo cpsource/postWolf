@@ -202,6 +202,7 @@ static void http_send_json(client_io *io, int status, const char *json_str)
 {
     char hdr[512];
     int hdr_len, body_len;
+    char *combined;
 
     if (io->capture_body) {
         if (io->capture_status) *io->capture_status = status;
@@ -224,8 +225,26 @@ static void http_send_json(client_io *io, int status, const char *json_str)
         (status == 429 ? "Too Many Requests" : "Bad Request")))))),
         body_len);
 
-    cio_write(io, hdr, hdr_len);
-    cio_write(io, json_str, body_len);
+    /* Send header + body as a single write so MQC packs them into one
+     * AEAD frame.  The MQC client reads one frame per mqc_read() and
+     * cannot recover if a second frame arrives larger than the caller's
+     * remaining buffer (mqc_read consumes the length prefix before the
+     * buffer-size check).  Packing keeps the on-wire message shape
+     * single-framed regardless of body size, up to MQC_MAX_MSG (1 MiB).
+     * TLS and plain sockets behave the same either way. */
+    combined = (char *)malloc((size_t)(hdr_len + body_len));
+    if (combined) {
+        memcpy(combined, hdr, (size_t)hdr_len);
+        memcpy(combined + hdr_len, json_str, (size_t)body_len);
+        cio_write(io, combined, hdr_len + body_len);
+        free(combined);
+    } else {
+        /* malloc failure: fall back to two writes.  MQC clients reading
+         * >buffer-size bodies may still truncate here, but at least
+         * TLS/plain callers continue to work. */
+        cio_write(io, hdr, hdr_len);
+        cio_write(io, json_str, body_len);
+    }
 }
 
 /******************************************************************************
