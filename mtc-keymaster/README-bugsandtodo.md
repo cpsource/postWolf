@@ -1183,7 +1183,8 @@ positive + negative matrix.  Expected results:
 | Signature invalid for otherwise-valid payload | `403 "signature verification failed"` | NOT TESTED |
 | Timestamp > 5 min old | `400 "timestamp outside ±5 min freshness window"` | NOT TESTED |
 | Timestamp > 5 min in the future | `400` same message | NOT TESTED |
-| Every key algorithm: EC-P256, EC-P384, Ed25519, ML-DSA-44, ML-DSA-65, ML-DSA-87 | `200` on the matching CA, `403` if algorithm mismatched against log | NOT TESTED |
+| Every accepted key algorithm: ML-DSA-44, ML-DSA-65, ML-DSA-87 | `200` on the matching CA, `403` if algorithm mismatched against log | NOT TESTED |
+| Any pre-quantum `ca_algo` (e.g. EC-P256, EC-P384, Ed25519) | `400 "unsupported key algorithm for revocation"` (acceptance dropped 2026-04-26) | NOT TESTED |
 
 **Cross-reference:** `tools/c/revoke-key.c` dry-run mode prints the
 exact body that would be POSTed, which is the easiest way to seed
@@ -2138,6 +2139,106 @@ actually needed, under time pressure.
 treat as a reminder to spend 30 minutes looking at the watch
 artifacts and update the status here.  Not a recurring task that
 needs code changes; just intellectual hygiene.
+
+### 49. Replace X25519 with ML-KEM-768 on the bootstrap port (8445)
+
+**Priority:** Medium — last pre-quantum primitive in active code.
+The full audit is in `mtc-keymaster/README-insecure-report.md`.
+
+`server2/c/mtc_bootstrap.c:498-549` performs a classical X25519 KEX
+to derive an AES-256-GCM session key for the pre-TLS enrollment
+channel on port 8445.  Anything carried over that channel — CA
+public-key discovery for first-time leaves, initial enrollment
+material — is record-now-decrypt-later vulnerable.
+
+**Why it isn't urgent:** the bootstrap channel does not carry any
+long-lived secret.  CA pubkeys are public by definition, and
+enrollment payloads commit to keys the leaf is about to publish
+anyway.  Confidentiality of the *enrolment request* is the only
+property at stake, and that's a privacy concern, not an
+authentication or integrity concern.
+
+**Why it should still be fixed:** "every wire primitive is
+post-quantum" is a clean story to tell.  The pattern is already
+proven in `socket-level-wrapper-MQC/mqc.c` (ML-KEM-768 KEX +
+HKDF + AES-256-GCM); this is a copy-and-adapt, not a new design.
+
+**Files involved:**
+- `mtc-keymaster/server2/c/mtc_bootstrap.c` — server side of the
+  KEX (lines 498–549).
+- `mtc-keymaster/tools/c/bootstrap_ca.c`, `bootstrap_leaf.c` —
+  client side of the KEX (mirror calls to `wc_curve25519_*`).
+- `socket-level-wrapper-MQC/mqc.c` — reference pattern to copy
+  (`wc_MlKemKey_*`).
+
+**Out of scope:** the TLS 1.3 path on port 8444 already negotiates
+hybrid PQ KEX through wolfSSL; this TODO is only about the
+plaintext bootstrap port.
+
+### 50. Strip broken / pre-PQ legacy crypto from `libpostWolf.so` — **DONE 2026-04-26**
+
+`configure.sh` now disables MD5, SHA-1, DES3, ARC4, RC2, MD4, MD2,
+RIPEMD, plus the OpenSSL-compat / OSP / QUIC / CRL shims that
+transitively force them on.  `nm -D` on the installed
+`libpostWolf.so` reports zero exported symbols for any of the
+seven hash/cipher families.  ECDSA / Ed25519 acceptance was
+dropped from `handle_revoke` at the same time (see TODO #19 row).
+Full audit and rationale: `mtc-keymaster/README-insecure-report.md`.
+
+### 51. Split out an MQC-only library target (drop the TLS surface for MQC consumers)
+
+**Priority:** Low — code-size / attack-surface hygiene, not a
+correctness or security bug.
+
+All 33 `src/*.c` files (`bio.c`, `ssl.c`, `tls.c`, `tls13.c`,
+`dtls.c`, `dtls13.c`, `quic.c`, `x509.c`, `x509_str.c`,
+`ssl_api_cert.c`, `ssl_api_crl_ocsp.c`, `ssl_api_pk.c`,
+`ssl_asn1.c`, `ssl_bn.c`, `ssl_certman.c`, `ssl_crypto.c`,
+`ssl_ech.c`, `ssl_load.c`, `ssl_misc.c`, `ssl_mtc.c`,
+`ssl_mtc_standalone.c`, `ssl_p7p12.c`, `ssl_sess.c`, `ssl_sk.c`,
+`internal.c`, `keys.c`, `pk.c`, `pk_ec.c`, `pk_rsa.c`,
+`wolfio.c`, `sniffer.c`, `crl.c`, `ocsp.c`, `conf.c`) are unused
+by `socket-level-wrapper-MQC`.
+
+**Method used to confirm:** `nm` enumeration of `libmqc.a` plus
+the MQC example binaries — every wolfSSL-provided symbol MQC
+pulls in is `wc_*` (defined under `wolfcrypt/src/`, not `src/`)
+or `Base64_Decode`.
+
+Today the TLS surface ships anyway because `libpostWolf.so` is
+one shared object consumed by SLC, `mtc_server`'s TLS 1.3 + ECH
+listener on 8444, and any future TLS caller.  `ssl_mtc.c` and
+`ssl_mtc_standalone.c` are MTC-specific TLS integration helpers —
+used by SLC's MTC mode and the server's `wolfSSL_*` extension
+hooks, not by MQC.
+
+**Proposed split:**
+- `libpostWolf-pqc.so` — wolfcrypt only (no `src/`, no TLS state
+  machine, no X.509, no BIO, no compat shims).  MQC, MQCP, and
+  the standalone `mqc` CLI link against this.
+- `libpostWolf.so` — current full build, kept for SLC and
+  `mtc_server`'s 8444 listener.
+
+**Why this is a real win and not just churn:** MQC's whole pitch
+is "no TLS, no X.509, no ASN.1 attack surface."  Linking against
+a library that contains all of it undercuts the story even though
+the symbols aren't called.  A separate target lets MQC consumers
+hold the line at "if it's in the binary, MQC can be tricked into
+using it."
+
+**Out of scope:** removing files from `src/` outright — they're
+needed by SLC and `mtc_server`.  This is a build-system change
+(autotools second target + a second `.pc` file), not a deletion.
+
+**Files involved:**
+- `Makefile.am` — second `lib_LTLIBRARIES` entry with a curated
+  source list (wolfcrypt only).
+- `configure.ac` — `AC_CONFIG_FILES` for a new `postWolf-pqc.pc.in`.
+- `support/postWolf-pqc.pc.in` (new) — Cflags + Libs for the
+  smaller library.
+- `socket-level-wrapper-MQC/Makefile`,
+  `socket-level-wrapper-QUIC/Makefile` — switch
+  `pkg-config postWolf` → `pkg-config postWolf-pqc`.
 
 ---
 
