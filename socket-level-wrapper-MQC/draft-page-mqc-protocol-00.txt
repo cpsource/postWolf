@@ -876,7 +876,7 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    Cal Page (editor)
    factsorlie.com
 
-   Email: page.cal@gmail.com
+   Email: cal@factsorlie.com
    URI:   https://factsorlie.com/
 
 Appendix A.  Worked Example (informative)
