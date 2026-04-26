@@ -71,8 +71,6 @@
 #include <wolfssl/wolfcrypt/sha256.h>
 #include <wolfssl/wolfcrypt/asn.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
-#include <wolfssl/wolfcrypt/ecc.h>
-#include <wolfssl/wolfcrypt/ed25519.h>
 #include <wolfssl/wolfcrypt/dilithium.h>
 #include <wolfssl/wolfcrypt/coding.h>
 
@@ -1707,7 +1705,6 @@ static void handle_revoke(client_io *io, MtcStore *store,
         uint8_t sig_bytes[8192];
         int sig_len;
         char sign_msg[MAX_PATH_SZ];
-        uint8_t msg_hash[32];
         int verified = 0;
         int ret;
         uint8_t der_buf[4096];
@@ -1715,15 +1712,6 @@ static void handle_revoke(client_io *io, MtcStore *store,
 
         snprintf(sign_msg, sizeof(sign_msg), "revoke:%d:%d:%s:%ld",
                  ca_cert_index, cert_index, reason, timestamp);
-
-        {
-            wc_Sha256 sha;
-            wc_InitSha256(&sha);
-            wc_Sha256Update(&sha, (const uint8_t *)sign_msg,
-                            (word32)strlen(sign_msg));
-            wc_Sha256Final(&sha, msg_hash);
-            wc_Sha256Free(&sha);
-        }
 
         sig_len = (int)strlen(sig_hex) / 2;
         if (sig_len <= 0 || sig_len > (int)sizeof(sig_bytes)) {
@@ -1756,32 +1744,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
         }
         der_sz = ret;
 
-        if (strcmp(ca_algo, "EC-P256") == 0 ||
-            strcmp(ca_algo, "EC-P384") == 0) {
-            ecc_key ecc;
-            word32 idx = 0;
-            wc_ecc_init(&ecc);
-            ret = wc_EccPublicKeyDecode(der_buf, &idx, &ecc,
-                                        (word32)der_sz);
-            if (ret == 0)
-                ret = wc_ecc_verify_hash(sig_bytes, (word32)sig_len,
-                                         msg_hash, 32, &verified, &ecc);
-            wc_ecc_free(&ecc);
-        }
-        else if (strcmp(ca_algo, "Ed25519") == 0) {
-            ed25519_key ed;
-            word32 idx = 0;
-            wc_ed25519_init(&ed);
-            ret = wc_Ed25519PublicKeyDecode(der_buf, &idx, &ed,
-                                            (word32)der_sz);
-            if (ret == 0)
-                ret = wc_ed25519_verify_msg(sig_bytes, (word32)sig_len,
-                                            (const uint8_t *)sign_msg,
-                                            (word32)strlen(sign_msg),
-                                            &verified, &ed);
-            wc_ed25519_free(&ed);
-        }
-        else if (strncmp(ca_algo, "ML-DSA-", 7) == 0) {
+        if (strncmp(ca_algo, "ML-DSA-", 7) == 0) {
             dilithium_key dil;
             byte level;
             if (strcmp(ca_algo, "ML-DSA-44") == 0)       level = WC_ML_DSA_44;

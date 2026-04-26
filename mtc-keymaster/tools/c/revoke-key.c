@@ -49,8 +49,6 @@
 #include <wolfssl/wolfcrypt/sha256.h>
 #include <wolfssl/wolfcrypt/asn.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
-#include <wolfssl/wolfcrypt/ecc.h>
-#include <wolfssl/wolfcrypt/ed25519.h>
 #include <wolfssl/wolfcrypt/dilithium.h>
 #include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/types.h>
@@ -191,40 +189,7 @@ static int sign_message(const char *privkey_pem, const char *algo,
     }
     rng_ok = 1;
 
-    if (strcmp(algo, "EC-P256") == 0 || strcmp(algo, "EC-P384") == 0) {
-        ecc_key ecc;
-        word32 idx = 0;
-        uint8_t hash[32];
-        wc_Sha256 sha;
-
-        wc_ecc_init(&ecc);
-        ret = wc_EccPrivateKeyDecode(der_buf, &idx, &ecc, (word32)der_sz);
-        if (ret != 0) { wc_ecc_free(&ecc); goto fail; }
-        ret = wc_ecc_set_rng(&ecc, &rng);
-        if (ret != 0) { wc_ecc_free(&ecc); goto fail; }
-
-        wc_InitSha256(&sha);
-        wc_Sha256Update(&sha, (const uint8_t *)msg, (word32)strlen(msg));
-        wc_Sha256Final(&sha, hash);
-        wc_Sha256Free(&sha);
-
-        ret = wc_ecc_sign_hash(hash, 32, sig_out, &out_len, &rng, &ecc);
-        wc_ecc_free(&ecc);
-        if (ret != 0) goto fail;
-    }
-    else if (strcmp(algo, "Ed25519") == 0) {
-        ed25519_key ed;
-        word32 idx = 0;
-
-        wc_ed25519_init(&ed);
-        ret = wc_Ed25519PrivateKeyDecode(der_buf, &idx, &ed, (word32)der_sz);
-        if (ret != 0) { wc_ed25519_free(&ed); goto fail; }
-        ret = wc_ed25519_sign_msg((const uint8_t *)msg, (word32)strlen(msg),
-                                  sig_out, &out_len, &ed);
-        wc_ed25519_free(&ed);
-        if (ret != 0) goto fail;
-    }
-    else if (strncmp(algo, "ML-DSA-", 7) == 0) {
+    if (strncmp(algo, "ML-DSA-", 7) == 0) {
         dilithium_key dil;
         byte level;
         word32 idx = 0;
@@ -675,7 +640,7 @@ int main(int argc, char **argv)
     char *index_str   = NULL;
     int   ca_cert_index = -1;
     struct json_object *cert_json = NULL, *sc = NULL, *tbs = NULL, *val = NULL;
-    const char *algo     = "EC-P256";
+    const char *algo     = "ML-DSA-87";
     const char *ca_subj  = NULL;
 
     snprintf(path_buf, sizeof(path_buf), "%s/private_key.pem", ca_tpm_path);

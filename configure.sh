@@ -1,2 +1,2 @@
 #!/bin/bash
-./configure --enable-quic --enable-ech --enable-tls13 --enable-mtc --enable-all --quiet --enable-debug --enable-dilithium --includedir=/usr/local/include/postWolf
+./configure --enable-ech --enable-tls13 --enable-mtc --enable-all --disable-all-osp --disable-quic --disable-opensslextra --disable-opensslall --disable-stunnel --disable-asio --disable-md5 --disable-sha --disable-des3 --disable-arc4 --disable-rc2 --disable-md4 --disable-ripemd --disable-md2 --disable-bump --disable-crl --quiet --enable-debug --enable-dilithium --includedir=/usr/local/include/postWolf

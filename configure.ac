@@ -53,7 +53,7 @@ AC_ARG_VAR(EXTRA_LDFLAGS, [Extra LDFLAGS to add to end of autoconf-computed arg 
 WOLFSSL_CONFIG_ARGS=$ac_configure_args
 AC_SUBST([WOLFSSL_CONFIG_ARGS])
 
-# Store configure options and CFLAGS for debian rules generation
+# Store configure options and CFLAGS for downstream substitution
 CONFIGURE_OPTIONS="$ac_configure_args"
 AC_SUBST([CONFIGURE_OPTIONS])
 
@@ -9917,46 +9917,6 @@ then
 fi
 
 
-# microchip api
-AC_ARG_ENABLE([mcapi],
-    [AS_HELP_STRING([--enable-mcapi],[Enable Microchip API (default: disabled)])],
-    [ ENABLED_MCAPI=$enableval ],
-    [ ENABLED_MCAPI=no ]
-    )
-
-if test "$ENABLED_MCAPI" = "yes"
-then
-    AM_CFLAGS="$AM_CFLAGS -DHAVE_MCAPI"
-    if test "x$ENABLED_AESCTR" != "xyes"
-    then
-        # These flags are already implied by --enable-aesctr
-        AM_CFLAGS="$AM_CFLAGS -DWOLFSSL_AES_COUNTER -DWOLFSSL_AES_DIRECT"
-    fi
-    if test "x$ENABLED_AESGCM" != "xyes" && test "x$ENABLED_AESGCM" != "xno"
-    then
-        # Use the smaller object size implementation
-        ENABLED_AESGCM=yes
-    fi
-
-    ENABLED_MD5=yes
-fi
-
-if test "$ENABLED_MCAPI" = "yes" && test "$ENABLED_SHA512" = "no"
-then
-    AC_MSG_ERROR([please enable sha512 if enabling mcapi.])
-fi
-
-if test "$ENABLED_MCAPI" = "yes" && test "$ENABLED_ECC" = "no"
-then
-    AC_MSG_ERROR([please enable ecc if enabling mcapi.])
-fi
-
-if test "$ENABLED_MCAPI" = "yes" && test "$ENABLED_LIBZ" = "no"
-then
-    AC_MSG_ERROR([please use --with-libz if enabling mcapi.])
-fi
-
-
 # cryptodev is old name, replaced with cryptocb
 AC_ARG_ENABLE([cryptodev],
     [AS_HELP_STRING([--enable-cryptodev],[DEPRECATED, use cryptocb instead])],
@@ -10710,9 +10670,6 @@ if test "$ENABLED_STRONGSWAN" = "yes"; then
         ENABLED_OCSP="yes"
     fi
 fi
-
-AS_IF([test "x$ENABLED_MCAPI" = "xyes"],
-      [AS_IF([test "x$ENABLED_DES3" = "xno"],[ENABLED_DES3="yes"])])
 
 if test "$ENABLED_OPENSSH" = "yes" || test "$ENABLED_NGINX" = "yes" || \
    test "$ENABLED_SIGNAL" = "yes" || test "$ENABLED_WPAS" = "yes" || \
@@ -11648,7 +11605,6 @@ AM_CONDITIONAL([BUILD_SP_INT],[test "x$ENABLED_SP_MATH" = "xyes" || test "x$ENAB
 AM_COND_IF([BUILD_SP], [INCLUDE_SP_INT="yes"])
 AM_COND_IF([BUILD_SP_INT], [INCLUDE_SP_INT="yes"])
 AC_SUBST([INCLUDE_SP_INT])
-AM_CONDITIONAL([BUILD_MCAPI],[test "x$ENABLED_MCAPI" = "xyes"])
 AM_CONDITIONAL([BUILD_ASYNCCRYPT],[test "x$ENABLED_ASYNCCRYPT" = "xyes"])
 AM_CONDITIONAL([BUILD_WOLFEVENT],[test "x$ENABLED_ASYNCCRYPT" = "xyes"])
 AM_CONDITIONAL([BUILD_CRYPTOCB],[test "x$ENABLED_CRYPTOCB" = "xyes" || test "x$ENABLED_USERSETTINGS" = "xyes"])
@@ -11744,9 +11700,6 @@ AC_CONFIG_FILES([Makefile
         wolfssl/version.h
         wolfssl/options.h
         support/postWolf.pc
-        debian/control
-        debian/changelog
-        rpm/spec
         wolfcrypt/test/test_paths.h
         ])
 AS_IF([ test "x$ENABLED_CMAKE_INSTALL" = "xyes" ],[
@@ -11756,7 +11709,6 @@ AC_CONFIG_FILES([cmake/wolfssl-config.cmake:cmake/Config.cmake.in
         ])
 ])
 AC_CONFIG_FILES([scripts/unit.test],[chmod +x scripts/unit.test])
-AC_CONFIG_FILES([debian/rules],[chmod +x debian/rules])
 
 AX_CREATE_GENERIC_CONFIG
 AX_AM_JOBSERVER([yes])

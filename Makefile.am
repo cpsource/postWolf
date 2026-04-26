@@ -146,18 +146,13 @@ EXTRA_DIST+= wolfssl.vcproj
 EXTRA_DIST+= wolfssl.vcxproj
 EXTRA_DIST+= wolfssl-VS2022.vcxproj
 EXTRA_DIST+= wolfssl64.sln
-EXTRA_DIST+= valgrind-error.sh
-EXTRA_DIST+= valgrind-bash.supp
 EXTRA_DIST+= fips-hash.sh
 EXTRA_DIST+= gencertbuf.pl
 EXTRA_DIST+= README.md
-EXTRA_DIST+= README-async.md
-EXTRA_DIST+= README
+EXTRA_DIST+= readmes/README-async.md
 EXTRA_DIST+= ChangeLog.md
 EXTRA_DIST+= LICENSING
 EXTRA_DIST+= INSTALL
-EXTRA_DIST+= LPCExpresso.cproject
-EXTRA_DIST+= LPCExpresso.project
 EXTRA_DIST+= resource.h wolfssl.rc
 EXTRA_DIST+= CMakeLists.txt
 EXTRA_DIST+= CMakePresets.json
@@ -165,11 +160,9 @@ EXTRA_DIST+= CMakeSettings.json
 EXTRA_DIST+= m4/ax_atomic.m4
 
 include cmake/include.am
-include wrapper/include.am
 include wolfssl/include.am
 include certs/include.am
 include doc/include.am
-include Docker/include.am
 
 include src/include.am
 include support/include.am
@@ -179,13 +172,6 @@ include wolfcrypt/test/include.am
 include examples/include.am
 include testsuite/include.am
 include tests/include.am
-include sslSniffer/sslSnifferTest/include.am
-include debian/include.am
-include rpm/include.am
-include linuxkm/include.am
-include bsdkm/include.am
-include zephyr/include.am
-include RTOS/nuttx/include.am
 
 # Exclude references to non-DFSG sources from build files
 if !BUILD_DISTRO
@@ -194,78 +180,9 @@ include mqx/wolfcrypt_benchmark/Sources/include.am
 include mqx/wolfcrypt_test/Sources/include.am
 include mqx/wolfssl/include.am
 include mqx/wolfssl_client/Sources/include.am
-include mplabx/include.am
-include mplabx/wolfcrypt_benchmark.X/nbproject/include.am
-include mplabx/wolfcrypt_test.X/nbproject/include.am
-include mplabx/wolfssl.X/nbproject/include.am
-include mcapi/include.am
-include mcapi/wolfcrypt_mcapi.X/nbproject/include.am
-include mcapi/wolfcrypt_test.X/nbproject/include.am
-include mcapi/wolfssl.X/nbproject/include.am
-include mcapi/zlib.X/nbproject/include.am
-include tirtos/include.am
 include IDE/include.am
 endif
 include scripts/include.am
-
-if BUILD_LINUXKM
-    # rather than setting $SUBDIRS here directly, we set an auxiliary variable.
-    # autotools sees the SUBDIRS assignment here even if BUILD_LINUXKM is false,
-    # at least for purposes of recursing for "make distdir", which we don't want to happen.
-    SUBDIRS_OPT += linuxkm
-    DIST_SUBDIRS_OPT += linuxkm
-
-    export build_triplet host_triplet CC AS LD \
-        KERNEL_ROOT KERNEL_ARCH KERNEL_EXTRA_CFLAGS \
-        EXTRA_CFLAGS EXTRA_CPPFLAGS EXTRA_CCASFLAGS EXTRA_LDFLAGS \
-	AM_CPPFLAGS CPPFLAGS AM_CFLAGS CFLAGS \
-        AM_CCASFLAGS CCASFLAGS \
-        src_libpostWolf_la_OBJECTS ENABLED_CRYPT_TESTS ENABLED_LINUXKM_LKCAPI_REGISTER \
-        ENABLED_LINUXKM_PIE ENABLED_ASM \
-        CFLAGS_FPU_DISABLE CFLAGS_FPU_ENABLE CFLAGS_SIMD_DISABLE CFLAGS_SIMD_ENABLE \
-        CFLAGS_AUTO_VECTORIZE_DISABLE CFLAGS_AUTO_VECTORIZE_ENABLE \
-        ASFLAGS_FPU_DISABLE_SIMD_ENABLE ASFLAGS_FPU_ENABLE_SIMD_DISABLE \
-        ASFLAGS_FPUSIMD_DISABLE ASFLAGS_FPUSIMD_ENABLE ENABLED_KERNEL_BENCHMARKS \
-        FIPS_FLAVOR
-
-module:
-	+$(MAKE) -C linuxkm module
-
-module-update-fips-hash:
-	+$(MAKE) -C linuxkm module-update-fips-hash
-
-module-with-matching-fips-hash:
-	+$(MAKE) -C linuxkm module-with-matching-fips-hash
-
-module-with-matching-fips-hash-no-sign:
-	+$(MAKE) -C linuxkm module-with-matching-fips-hash-no-sign
-
-clean_module:
-	+$(MAKE) -C linuxkm clean
-
-install_module modules_install:
-	+$(MAKE) -C linuxkm modules_install
-
-endif
-
-if BUILD_BSDKM
-    SUBDIRS_OPT += bsdkm
-    DIST_SUBDIRS_OPT += bsdkm
-
-.MAKE.EXPORTED = build_triplet host_triplet CC AS LD \
-        KERNEL_ROOT BSDKM_EXPORT_SYMS KERNEL_EXTRA_CFLAGS \
-        EXTRA_CFLAGS EXTRA_CPPFLAGS EXTRA_CCASFLAGS EXTRA_LDFLAGS \
-        AM_CPPFLAGS CPPFLAGS AM_CFLAGS CFLAGS \
-        AM_CCASFLAGS CCASFLAGS \
-        src_libpostWolf_la_OBJECTS ENABLED_CRYPT_TESTS ENABLED_BSDKM_REGISTER \
-        ENABLED_ASM ENABLED_INTELASM ENABLED_AESNI ENABLED_AESNI_WITH_AVX \
-        ENABLED_KERNEL_BENCHMARKS
-endif
-
-
-if USE_VALGRIND
-TESTS_ENVIRONMENT=./valgrind-error.sh
-endif
 
 TEST_EXTENSIONS=.test
 TESTS += $(check_PROGRAMS)
