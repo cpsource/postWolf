@@ -756,7 +756,7 @@ such negotiation is actually introduced.
 
     Cal Page (editor)
     factsorlie.com
-    Email: page.cal@gmail.com
+    Email: cal@factsorlie.com
     URI:   https://factsorlie.com/
 
 ---
