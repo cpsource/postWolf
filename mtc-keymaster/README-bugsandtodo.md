@@ -2325,10 +2325,17 @@ is one box (server + bundled tools) and a release wave to leaves.
   the data plane under the new construction).
 
 **Open follow-ups:**
-- `.txt` page-break markers drifted on pages 9–10 (~60 lines vs
-  the standard ~56) because content was inserted without
-  repagination.  Datatracker may flag this on submission;
-  re-run the 58-line tally before submitting.
+- `.txt` regeneration tooling landed alongside the GCM fix:
+  `socket-level-wrapper-MQC/render-draft.py` reads the `.md` and
+  emits a freshly paginated, 72-col `.txt` (every page exactly 56
+  lines).  Run with
+  `python3 render-draft.py draft-page-mqc-protocol-00.md
+   > draft-page-mqc-protocol-00.txt`; warnings go to stderr.
+- Two pre-existing over-72-col content lines in the `.md` still
+  trigger the renderer's lint (line 801 — `[GOOGLE-2029]` URL,
+  line 852 — `MLKEM-Encap-Result(EK_c)` comment).  They need to
+  be wrapped in the `.md` source before datatracker submission;
+  the renderer does not silently mangle them.
 
 ---
 
