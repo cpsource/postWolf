@@ -48,7 +48,8 @@
 #include <json-c/json.h>
 #include <hiredis/hiredis.h>
 
-#define MQC_HKDF_INFO      "mqc-session"
+#define MQC_HKDF_INFO_C2S  "mqc-session-c2s"
+#define MQC_HKDF_INFO_S2C  "mqc-session-s2c"
 #define MQC_AES_KEY_SZ      32
 #define MQC_GCM_IV_SZ       12
 #define MQC_GCM_TAG_SZ      16
@@ -146,7 +147,12 @@ struct mqc_ctx {
 
 struct mqc_conn {
     int          fd;
-    uint8_t      aes_key[MQC_AES_KEY_SZ];
+    /* Per-direction AES-256-GCM keys derived via HKDF with distinct
+     * info labels ("mqc-session-c2s" / "mqc-session-s2c").  Each
+     * direction has its own counter — same nonce on different keys
+     * is safe; same (key, nonce) pair would not be. */
+    uint8_t      send_key[MQC_AES_KEY_SZ];
+    uint8_t      recv_key[MQC_AES_KEY_SZ];
     uint64_t     send_seq;
     uint64_t     recv_seq;
     int          peer_index;
@@ -273,6 +279,25 @@ static void make_nonce(uint64_t seq, uint8_t nonce[MQC_GCM_IV_SZ])
     nonce[9]  = (uint8_t)(seq >> 16);
     nonce[10] = (uint8_t)(seq >> 8);
     nonce[11] = (uint8_t)(seq);
+}
+
+/* Derive per-direction AES-256-GCM keys from the ML-KEM shared secret.
+ * Two HKDF-Expand calls with distinct info labels: c2s and s2c.  GCM
+ * requires that the same (key, nonce) pair never encrypt two distinct
+ * plaintexts — using one shared key in both directions with each side
+ * starting its counter at 0 collides on every message.  Per-direction
+ * keys eliminate the collision regardless of nonce policy. */
+static int derive_session_keys(const uint8_t *shared_secret,
+                               uint8_t c2s_key[MQC_AES_KEY_SZ],
+                               uint8_t s2c_key[MQC_AES_KEY_SZ])
+{
+    int ret = wc_HKDF(WC_SHA256, shared_secret, WC_ML_KEM_SS_SZ,
+        NULL, 0, (const byte *)MQC_HKDF_INFO_C2S,
+        (word32)strlen(MQC_HKDF_INFO_C2S), c2s_key, MQC_AES_KEY_SZ);
+    if (ret != 0) return ret;
+    return wc_HKDF(WC_SHA256, shared_secret, WC_ML_KEM_SS_SZ,
+        NULL, 0, (const byte *)MQC_HKDF_INFO_S2C,
+        (word32)strlen(MQC_HKDF_INFO_S2C), s2c_key, MQC_AES_KEY_SZ);
 }
 
 /* --- Socket timeout --- */
@@ -662,7 +687,8 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
     uint8_t sig[8192];
     word32 sig_sz = sizeof(sig);
     uint8_t shared_secret[WC_ML_KEM_SS_SZ];
-    uint8_t aes_key[MQC_AES_KEY_SZ];
+    uint8_t c2s_key[MQC_AES_KEY_SZ];
+    uint8_t s2c_key[MQC_AES_KEY_SZ];
     char json_buf[64000];
     int ret;
     mqc_conn_t *conn = NULL;
@@ -833,17 +859,16 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
             goto fail;
         }
 
-        /* Derive session key */
-        ret = wc_HKDF(WC_SHA256, shared_secret, WC_ML_KEM_SS_SZ,
-            NULL, 0, (const byte *)MQC_HKDF_INFO,
-            (word32)strlen(MQC_HKDF_INFO), aes_key, MQC_AES_KEY_SZ);
+        /* Derive per-direction session keys */
+        ret = derive_session_keys(shared_secret, c2s_key, s2c_key);
         if (ret != 0) goto fail;
 
-        /* Build connection */
+        /* Build connection (client: send=c2s, recv=s2c) */
         conn = calloc(1, sizeof(*conn));
         if (!conn) goto fail;
         conn->fd = fd;
-        memcpy(conn->aes_key, aes_key, MQC_AES_KEY_SZ);
+        memcpy(conn->send_key, c2s_key, MQC_AES_KEY_SZ);
+        memcpy(conn->recv_key, s2c_key, MQC_AES_KEY_SZ);
         conn->peer_index = peer_index;
         conn->send_seq = 0;
         conn->recv_seq = 0;
@@ -853,7 +878,8 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
 
     /* Cleanup */
     secure_zero(shared_secret, sizeof(shared_secret));
-    secure_zero(aes_key, sizeof(aes_key));
+    secure_zero(c2s_key, sizeof(c2s_key));
+    secure_zero(s2c_key, sizeof(s2c_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
     if (dil_ok) wc_dilithium_free(&dil);
     if (rng_ok) wc_FreeRng(&rng);
@@ -862,7 +888,8 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
 fail:
     MQC_TRACE("[mqc] connect to %s:%d failed (handshake)\n", host, port);
     secure_zero(shared_secret, sizeof(shared_secret));
-    secure_zero(aes_key, sizeof(aes_key));
+    secure_zero(c2s_key, sizeof(c2s_key));
+    secure_zero(s2c_key, sizeof(s2c_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
     if (dil_ok) wc_dilithium_free(&dil);
     if (rng_ok) wc_FreeRng(&rng);
@@ -884,7 +911,8 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
     word32 ct_sz;
     uint8_t sig[8192];
     word32 sig_sz = sizeof(sig);
-    uint8_t aes_key[MQC_AES_KEY_SZ];
+    uint8_t c2s_key[MQC_AES_KEY_SZ];
+    uint8_t s2c_key[MQC_AES_KEY_SZ];
     char json_buf[64000];
     int ret;
     mqc_conn_t *conn = NULL;
@@ -1043,17 +1071,16 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
                 goto fail;
         }
 
-        /* Derive session key */
-        ret = wc_HKDF(WC_SHA256, shared_secret, WC_ML_KEM_SS_SZ,
-            NULL, 0, (const byte *)MQC_HKDF_INFO,
-            (word32)strlen(MQC_HKDF_INFO), aes_key, MQC_AES_KEY_SZ);
+        /* Derive per-direction session keys */
+        ret = derive_session_keys(shared_secret, c2s_key, s2c_key);
         if (ret != 0) goto fail;
 
-        /* Build connection */
+        /* Build connection (server: send=s2c, recv=c2s) */
         conn = calloc(1, sizeof(*conn));
         if (!conn) goto fail;
         conn->fd = fd;
-        memcpy(conn->aes_key, aes_key, MQC_AES_KEY_SZ);
+        memcpy(conn->send_key, s2c_key, MQC_AES_KEY_SZ);
+        memcpy(conn->recv_key, c2s_key, MQC_AES_KEY_SZ);
         conn->peer_index = peer_index;
         conn->send_seq = 0;
         conn->recv_seq = 0;
@@ -1063,7 +1090,8 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
     }
 
     secure_zero(shared_secret, sizeof(shared_secret));
-    secure_zero(aes_key, sizeof(aes_key));
+    secure_zero(c2s_key, sizeof(c2s_key));
+    secure_zero(s2c_key, sizeof(s2c_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
     if (dil_ok) wc_dilithium_free(&dil);
     if (rng_ok) wc_FreeRng(&rng);
@@ -1072,7 +1100,8 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
 fail:
     mqc_ratelimit_fail_record(client_ip);
     secure_zero(shared_secret, sizeof(shared_secret));
-    secure_zero(aes_key, sizeof(aes_key));
+    secure_zero(c2s_key, sizeof(c2s_key));
+    secure_zero(s2c_key, sizeof(s2c_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
     if (dil_ok) wc_dilithium_free(&dil);
     if (rng_ok) wc_FreeRng(&rng);
@@ -1082,7 +1111,7 @@ fail:
 
 /* --- Encrypted-identity handshake helpers --- */
 
-static int enc_send(int fd, const uint8_t *aes_key, uint64_t *seq,
+static int enc_send(int fd, const uint8_t *key, uint64_t *seq,
                     const void *data, int data_sz)
 {
     Aes aes;
@@ -1097,7 +1126,7 @@ static int enc_send(int fd, const uint8_t *aes_key, uint64_t *seq,
     make_nonce((*seq)++, nonce);
     ret = wc_AesInit(&aes, NULL, INVALID_DEVID);
     if (ret != 0) { free(ct); return -1; }
-    ret = wc_AesGcmSetKey(&aes, aes_key, MQC_AES_KEY_SZ);
+    ret = wc_AesGcmSetKey(&aes, key, MQC_AES_KEY_SZ);
     if (ret != 0) { wc_AesFree(&aes); free(ct); return -1; }
     ret = wc_AesGcmEncrypt(&aes, ct, (const byte *)data, (word32)data_sz,
         nonce, MQC_GCM_IV_SZ, tag, MQC_GCM_TAG_SZ, NULL, 0);
@@ -1114,7 +1143,7 @@ static int enc_send(int fd, const uint8_t *aes_key, uint64_t *seq,
     return 0;
 }
 
-static int enc_recv(int fd, const uint8_t *aes_key, uint64_t *seq,
+static int enc_recv(int fd, const uint8_t *key, uint64_t *seq,
                     void *buf, int bufsz)
 {
     Aes aes;
@@ -1140,7 +1169,7 @@ static int enc_recv(int fd, const uint8_t *aes_key, uint64_t *seq,
     make_nonce((*seq)++, nonce);
     ret = wc_AesInit(&aes, NULL, INVALID_DEVID);
     if (ret != 0) { free(ct); return -1; }
-    ret = wc_AesGcmSetKey(&aes, aes_key, MQC_AES_KEY_SZ);
+    ret = wc_AesGcmSetKey(&aes, key, MQC_AES_KEY_SZ);
     if (ret != 0) { wc_AesFree(&aes); free(ct); return -1; }
     ret = wc_AesGcmDecrypt(&aes, (byte *)buf, ct, (word32)ct_sz,
         nonce, MQC_GCM_IV_SZ, tag, MQC_GCM_TAG_SZ, NULL, 0);
@@ -1167,7 +1196,8 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
     uint8_t sig[8192];
     word32 sig_sz = sizeof(sig);
     uint8_t shared_secret[WC_ML_KEM_SS_SZ];
-    uint8_t aes_key[MQC_AES_KEY_SZ];
+    uint8_t c2s_key[MQC_AES_KEY_SZ];
+    uint8_t s2c_key[MQC_AES_KEY_SZ];
     char json_buf[64000];
     int ret;
     mqc_conn_t *conn = NULL;
@@ -1246,10 +1276,8 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
         if (ret != 0) goto fail;
     }
 
-    /* Derive session key */
-    ret = wc_HKDF(WC_SHA256, shared_secret, WC_ML_KEM_SS_SZ,
-        NULL, 0, (const byte *)MQC_HKDF_INFO,
-        (word32)strlen(MQC_HKDF_INFO), aes_key, MQC_AES_KEY_SZ);
+    /* Derive per-direction session keys */
+    ret = derive_session_keys(shared_secret, c2s_key, s2c_key);
     if (ret != 0) goto fail;
     MQC_TRACE("[mqc-enc] phase 1: ML-KEM shared secret derived\n");
 
@@ -1278,7 +1306,8 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
             "{\"cert_index\":%d,\"signature\":\"%s\"}",
             ctx->our_cert_index, sig_hex);
         free(sig_hex);
-        if (enc_send(fd, aes_key, &hs_seq, json_buf, id_len) != 0)
+        /* Client→server uses c2s_key with its own counter starting at 0 */
+        if (enc_send(fd, c2s_key, &hs_seq, json_buf, id_len) != 0)
             goto fail;
     }
     MQC_TRACE("[mqc-enc] phase 2: sent identity (encrypted, cert_index=%d)\n",
@@ -1287,7 +1316,8 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
     /* Receive encrypted server identity */
     {
         uint64_t hs_seq = 0;
-        ret = enc_recv(fd, aes_key, &hs_seq, json_buf, sizeof(json_buf) - 1);
+        /* Server→client uses s2c_key — independent counter, no collision */
+        ret = enc_recv(fd, s2c_key, &hs_seq, json_buf, sizeof(json_buf) - 1);
         if (ret <= 0) goto fail;
         json_buf[ret] = '\0';
     }
@@ -1353,15 +1383,19 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
         conn = calloc(1, sizeof(*conn));
         if (!conn) goto fail;
         conn->fd = fd;
-        memcpy(conn->aes_key, aes_key, MQC_AES_KEY_SZ);
+        /* Client: send=c2s, recv=s2c.  Each direction's handshake
+         * counter ended at 1 (one message), so resume at 1. */
+        memcpy(conn->send_key, c2s_key, MQC_AES_KEY_SZ);
+        memcpy(conn->recv_key, s2c_key, MQC_AES_KEY_SZ);
         conn->peer_index = peer_index;
-        conn->send_seq = 1;  /* 0 was used for handshake */
+        conn->send_seq = 1;
         conn->recv_seq = 1;
     }
 
     MQC_TRACE("[mqc-enc] session established\n");
     secure_zero(shared_secret, sizeof(shared_secret));
-    secure_zero(aes_key, sizeof(aes_key));
+    secure_zero(c2s_key, sizeof(c2s_key));
+    secure_zero(s2c_key, sizeof(s2c_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
     if (dil_ok) wc_dilithium_free(&dil);
     if (rng_ok) wc_FreeRng(&rng);
@@ -1370,7 +1404,8 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
 fail:
     MQC_TRACE("[mqc-enc] connect to %s:%d failed (handshake)\n", host, port);
     secure_zero(shared_secret, sizeof(shared_secret));
-    secure_zero(aes_key, sizeof(aes_key));
+    secure_zero(c2s_key, sizeof(c2s_key));
+    secure_zero(s2c_key, sizeof(s2c_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
     if (dil_ok) wc_dilithium_free(&dil);
     if (rng_ok) wc_FreeRng(&rng);
@@ -1392,7 +1427,8 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
     uint8_t shared_secret[WC_ML_KEM_SS_SZ];
     uint8_t ciphertext[4096];
     word32 ct_sz;
-    uint8_t aes_key[MQC_AES_KEY_SZ];
+    uint8_t c2s_key[MQC_AES_KEY_SZ];
+    uint8_t s2c_key[MQC_AES_KEY_SZ];
     char json_buf[64000];
     int ret;
     mqc_conn_t *conn = NULL;
@@ -1461,17 +1497,15 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
             /* Store on stack — we need it for phase 2 verification */
             /* ek_sz and encaps_key are still valid here */
 
-            /* Derive session key */
-            ret = wc_HKDF(WC_SHA256, shared_secret, WC_ML_KEM_SS_SZ,
-                NULL, 0, (const byte *)MQC_HKDF_INFO,
-                (word32)strlen(MQC_HKDF_INFO), aes_key, MQC_AES_KEY_SZ);
+            /* Derive per-direction session keys */
+            ret = derive_session_keys(shared_secret, c2s_key, s2c_key);
             if (ret != 0) goto fail;
             MQC_TRACE("[mqc-enc] phase 1: ML-KEM done, channel encrypted\n");
 
-            /* Phase 2: receive encrypted client identity */
+            /* Phase 2: receive encrypted client identity (uses c2s_key) */
             {
                 uint64_t hs_seq = 0;
-                ret = enc_recv(fd, aes_key, &hs_seq,
+                ret = enc_recv(fd, c2s_key, &hs_seq,
                                json_buf, sizeof(json_buf) - 1);
                 if (ret <= 0) goto fail;
                 json_buf[ret] = '\0';
@@ -1563,7 +1597,8 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
                             "{\"cert_index\":%d,\"signature\":\"%s\"}",
                             ctx->our_cert_index, sh);
                         free(sh);
-                        if (enc_send(fd, aes_key, &hs_seq, json_buf, il) != 0)
+                        /* Server→client uses s2c_key with its own counter */
+                        if (enc_send(fd, s2c_key, &hs_seq, json_buf, il) != 0)
                             goto fail;
                     }
                 }
@@ -1571,7 +1606,10 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
                 conn = calloc(1, sizeof(*conn));
                 if (!conn) goto fail;
                 conn->fd = fd;
-                memcpy(conn->aes_key, aes_key, MQC_AES_KEY_SZ);
+                /* Server: send=s2c, recv=c2s.  Each handshake counter
+                 * ended at 1, so resume at 1. */
+                memcpy(conn->send_key, s2c_key, MQC_AES_KEY_SZ);
+                memcpy(conn->recv_key, c2s_key, MQC_AES_KEY_SZ);
                 conn->peer_index = peer_index;
                 conn->send_seq = 1;
                 conn->recv_seq = 1;
@@ -1582,7 +1620,8 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
 
     MQC_TRACE("[mqc-enc] session established\n");
     secure_zero(shared_secret, sizeof(shared_secret));
-    secure_zero(aes_key, sizeof(aes_key));
+    secure_zero(c2s_key, sizeof(c2s_key));
+    secure_zero(s2c_key, sizeof(s2c_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
     if (dil_ok) wc_dilithium_free(&dil);
     if (rng_ok) wc_FreeRng(&rng);
@@ -1591,7 +1630,8 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
 fail:
     mqc_ratelimit_fail_record(client_ip);
     secure_zero(shared_secret, sizeof(shared_secret));
-    secure_zero(aes_key, sizeof(aes_key));
+    secure_zero(c2s_key, sizeof(c2s_key));
+    secure_zero(s2c_key, sizeof(s2c_key));
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
     if (dil_ok) wc_dilithium_free(&dil);
     if (rng_ok) wc_FreeRng(&rng);
@@ -1668,7 +1708,8 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
         word32 ct_sz;
         uint8_t sig[8192];
         word32 sig_sz = sizeof(sig);
-        uint8_t aes_key[MQC_AES_KEY_SZ];
+        uint8_t c2s_key[MQC_AES_KEY_SZ];
+        uint8_t s2c_key[MQC_AES_KEY_SZ];
         int ret;
         mqc_conn_t *conn = NULL;
         int mlkem_ok = 0, dil_ok = 0, rng_ok = 0;
@@ -1732,19 +1773,22 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
               free(ch); free(sh);
               if (write_all(fd,(unsigned char*)json_buf,(unsigned int)jl)!=0) goto clear_fail; }
 
-            ret = wc_HKDF(WC_SHA256, shared_secret, WC_ML_KEM_SS_SZ, NULL, 0,
-                (const byte*)MQC_HKDF_INFO, (word32)strlen(MQC_HKDF_INFO), aes_key, MQC_AES_KEY_SZ);
+            ret = derive_session_keys(shared_secret, c2s_key, s2c_key);
             if (ret != 0) goto clear_fail;
 
             conn = calloc(1, sizeof(*conn));
             if (!conn) goto clear_fail;
-            conn->fd = fd; memcpy(conn->aes_key, aes_key, MQC_AES_KEY_SZ);
+            conn->fd = fd;
+            /* Server: send=s2c, recv=c2s */
+            memcpy(conn->send_key, s2c_key, MQC_AES_KEY_SZ);
+            memcpy(conn->recv_key, c2s_key, MQC_AES_KEY_SZ);
             conn->peer_index = peer_index;
             clear_socket_timeout(fd);
             MQC_TRACE("[mqc-auto] clear session with peer %d\n", peer_index);
         }
         secure_zero(shared_secret, sizeof(shared_secret));
-        secure_zero(aes_key, sizeof(aes_key));
+        secure_zero(c2s_key, sizeof(c2s_key));
+        secure_zero(s2c_key, sizeof(s2c_key));
         if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
         if (dil_ok) wc_dilithium_free(&dil);
         wc_FreeRng(&rng);
@@ -1756,7 +1800,8 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
               inet_ntop(AF_INET, &pa.sin_addr, cip, sizeof(cip));
           mqc_ratelimit_fail_record(cip); }
         secure_zero(shared_secret, sizeof(shared_secret));
-        secure_zero(aes_key, sizeof(aes_key));
+        secure_zero(c2s_key, sizeof(c2s_key));
+        secure_zero(s2c_key, sizeof(s2c_key));
         if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
         if (dil_ok) wc_dilithium_free(&dil);
         if (rng_ok) wc_FreeRng(&rng);
@@ -1771,7 +1816,8 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
         uint8_t shared_secret[WC_ML_KEM_SS_SZ];
         uint8_t ciphertext[4096];
         word32 ct_sz;
-        uint8_t aes_key[MQC_AES_KEY_SZ];
+        uint8_t c2s_key[MQC_AES_KEY_SZ];
+        uint8_t s2c_key[MQC_AES_KEY_SZ];
         int ret;
         mqc_conn_t *conn = NULL;
         int mlkem_ok = 0, dil_ok = 0, rng_ok = 0;
@@ -1813,16 +1859,15 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
               free(ch);
               if (write_all(fd,(unsigned char*)json_buf,(unsigned int)jl)!=0) goto enc_fail; }
 
-            /* Derive session key */
-            ret = wc_HKDF(WC_SHA256, shared_secret, WC_ML_KEM_SS_SZ, NULL, 0,
-                (const byte*)MQC_HKDF_INFO, (word32)strlen(MQC_HKDF_INFO), aes_key, MQC_AES_KEY_SZ);
+            /* Derive per-direction session keys */
+            ret = derive_session_keys(shared_secret, c2s_key, s2c_key);
             if (ret != 0) goto enc_fail;
 
             MQC_TRACE("[mqc-auto] encrypted: ML-KEM done, receiving identity\n");
 
-            /* Receive encrypted client identity */
+            /* Receive encrypted client identity (uses c2s_key) */
             { uint64_t hs_seq = 0;
-              ret = enc_recv(fd, aes_key, &hs_seq, json_buf, sizeof(json_buf)-1);
+              ret = enc_recv(fd, c2s_key, &hs_seq, json_buf, sizeof(json_buf)-1);
               if (ret <= 0) goto enc_fail;
               json_buf[ret] = '\0'; }
 
@@ -1871,11 +1916,15 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
                     to_hex(our_sig,(int)our_sig_sz,sh);
                     il = snprintf(json_buf,sizeof(json_buf),"{\"cert_index\":%d,\"signature\":\"%s\"}",ctx->our_cert_index,sh);
                     free(sh);
-                    if (enc_send(fd, aes_key, &hs_seq, json_buf, il) != 0) goto enc_fail; } }
+                    /* Server→client uses s2c_key */
+                    if (enc_send(fd, s2c_key, &hs_seq, json_buf, il) != 0) goto enc_fail; } }
 
                 conn = calloc(1, sizeof(*conn));
                 if (!conn) goto enc_fail;
-                conn->fd = fd; memcpy(conn->aes_key, aes_key, MQC_AES_KEY_SZ);
+                conn->fd = fd;
+                /* Server: send=s2c, recv=c2s */
+                memcpy(conn->send_key, s2c_key, MQC_AES_KEY_SZ);
+                memcpy(conn->recv_key, c2s_key, MQC_AES_KEY_SZ);
                 conn->peer_index = peer_index;
                 conn->send_seq = 1; conn->recv_seq = 1;
                 clear_socket_timeout(fd);
@@ -1884,7 +1933,8 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
         }
 
         secure_zero(shared_secret, sizeof(shared_secret));
-        secure_zero(aes_key, sizeof(aes_key));
+        secure_zero(c2s_key, sizeof(c2s_key));
+        secure_zero(s2c_key, sizeof(s2c_key));
         if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
         if (dil_ok) wc_dilithium_free(&dil);
         wc_FreeRng(&rng);
@@ -1896,7 +1946,8 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
               inet_ntop(AF_INET, &pa.sin_addr, cip, sizeof(cip));
           mqc_ratelimit_fail_record(cip); }
         secure_zero(shared_secret, sizeof(shared_secret));
-        secure_zero(aes_key, sizeof(aes_key));
+        secure_zero(c2s_key, sizeof(c2s_key));
+        secure_zero(s2c_key, sizeof(s2c_key));
         if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
         if (dil_ok) wc_dilithium_free(&dil);
         if (rng_ok) wc_FreeRng(&rng);
@@ -1926,7 +1977,7 @@ int mqc_write(mqc_conn_t *conn, const void *buf, int sz)
     ret = wc_AesInit(&aes, NULL, INVALID_DEVID);
     if (ret != 0) { free(ct); return -1; }
 
-    ret = wc_AesGcmSetKey(&aes, conn->aes_key, MQC_AES_KEY_SZ);
+    ret = wc_AesGcmSetKey(&aes, conn->send_key, MQC_AES_KEY_SZ);
     if (ret != 0) { wc_AesFree(&aes); free(ct); return -1; }
 
     ret = wc_AesGcmEncrypt(&aes, ct, (const byte *)buf, (word32)sz,
@@ -1987,7 +2038,7 @@ int mqc_read(mqc_conn_t *conn, void *buf, int sz)
     ret = wc_AesInit(&aes, NULL, INVALID_DEVID);
     if (ret != 0) { free(ct); return -1; }
 
-    ret = wc_AesGcmSetKey(&aes, conn->aes_key, MQC_AES_KEY_SZ);
+    ret = wc_AesGcmSetKey(&aes, conn->recv_key, MQC_AES_KEY_SZ);
     if (ret != 0) { wc_AesFree(&aes); free(ct); return -1; }
 
     ret = wc_AesGcmDecrypt(&aes, (byte *)buf, ct, (word32)ct_sz,
@@ -2057,7 +2108,8 @@ void mqc_close(mqc_conn_t *conn)
 {
     if (!conn) return;
     if (conn->fd >= 0) close(conn->fd);
-    secure_zero(conn->aes_key, MQC_AES_KEY_SZ);
+    secure_zero(conn->send_key, MQC_AES_KEY_SZ);
+    secure_zero(conn->recv_key, MQC_AES_KEY_SZ);
     free(conn);
 }
 

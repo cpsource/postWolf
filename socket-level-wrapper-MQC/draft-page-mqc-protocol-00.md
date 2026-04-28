@@ -184,7 +184,8 @@ after the handshake completes.
              |            ─ MTC cert_index          |
              |<-------------------------------------|
              |                                      |
-        HKDF-SHA256(shared_secret, "mqc-session") → 32-byte AES key
+        HKDF-SHA256(shared_secret, "mqc-session-c2s") → 32-byte c2s_key
+        HKDF-SHA256(shared_secret, "mqc-session-s2c") → 32-byte s2c_key
              |                                      |
              |  application data frames (both ways) |
              |<====== AES-256-GCM frames =========>|
@@ -398,10 +399,10 @@ and sends a frame whose JSON contains:
 ```
 
 where `identity_s` is a nested JSON object `{"cert_index": C_s,
-"signature": Sig_s}` serialized to UTF-8.  The AEAD key `k` is
-derived once from `SS` via HKDF as in Section 8.  The nonce is
-eight bytes of zero in the counter region (Section 9.2) and is
-used exactly once, for this frame, on this direction.
+"signature": Sig_s}` serialized to UTF-8.  The AEAD key for this
+server→client frame is `s2c_key`, derived from `SS` via HKDF as
+in Section 8.  The nonce is eight bytes of zero in the counter
+region (Section 9.2) and is consumed exactly once on `s2c_key`.
 
 ### 7.4. Encrypted-Identity Client Identity
 
@@ -411,44 +412,52 @@ AEAD-sealed frame:
 
 ```json
    {
-     "encrypted": "<hex(AEAD-Seal(k, nonce=0, identity_c))>"
+     "encrypted": "<hex(AEAD-Seal(c2s_key, nonce=0, identity_c))>"
    }
 ```
 
 where `identity_c = {"cert_index": C_c, "signature":
-MLDSA-Sign(EK_c)}`.  The nonce in this direction is also an
-all-zero counter, consumed once for this frame.
+MLDSA-Sign(EK_c)}`.  This frame is sealed with `c2s_key`, an
+independent key from §7.3's `s2c_key`; both directions may use
+nonce counter 0 because the keys differ.
 
 ### 7.5. Sequence Starts After Identity Frames
 
-Because nonce 0 is consumed by the handshake on each direction in
-encrypted-identity mode, the first data-plane frame in either
-direction MUST use nonce counter 1 (Section 9.2).  Clear-identity
-mode does not consume nonce 0 and data-plane frames begin at
-nonce 0.
+Each direction's nonce counter advances independently because
+each direction has its own key.  In encrypted-identity mode each
+side has consumed nonce 0 on its respective key (one frame), so
+the first data-plane frame in either direction MUST use nonce
+counter 1 (Section 9.2).  In clear-identity mode no AEAD frames
+were exchanged during handshake, so each direction's data-plane
+counter begins at 0.
 
 ---
 
 ## 8. Key Derivation
 
-Both modes derive a single 32-byte AES-256-GCM session key from
-the ML-KEM-768 shared secret:
+Both modes derive **two** 32-byte AES-256-GCM session keys from
+the ML-KEM-768 shared secret — one per direction:
 
 ```
-    session_key = HKDF-SHA256(
-                    IKM      = SS,              // 32 bytes
-                    salt     = <empty>,         // zero-length
-                    info     = "mqc-session",   // ASCII, 11 bytes
-                    L        = 32)
+    c2s_key = HKDF-SHA256(
+                IKM      = SS,                       // 32 bytes
+                salt     = <empty>,                  // zero-length
+                info     = "mqc-session-c2s",        // ASCII, 15 bytes
+                L        = 32)
+
+    s2c_key = HKDF-SHA256(
+                IKM      = SS,
+                salt     = <empty>,
+                info     = "mqc-session-s2c",        // ASCII, 15 bytes
+                L        = 32)
 ```
 
-Both directions use the same session key; direction separation is
-enforced by the nonce construction (Section 9.2).
-
-Implementations MAY derive separate direction-specific keys in a
-future protocol revision (e.g., by appending `"-c2s"` and
-`"-s2c"` to `info`); such a revision MUST advertise itself via a
-new version identifier to remain backward-incompatible.
+`c2s_key` encrypts every client→server frame; `s2c_key` encrypts
+every server→client frame.  Each direction maintains its own
+nonce counter (Section 9.2).  Per-direction keys eliminate the
+possibility of `(key, nonce)` pair reuse across directions, which
+under AES-256-GCM would leak both plaintexts and the GHASH
+authentication key.
 
 ---
 
@@ -485,19 +494,27 @@ and encrypts with:
 
 ```
       (ct, tag) = AES-256-GCM-Seal(
-                      key = session_key,
+                      key = K_send,
                       nonce = nonce,
                       aad = <empty>,
                       plaintext = application_payload)
 ```
 
-It then increments `send_seq` by one.
+where `K_send` is `c2s_key` on the client and `s2c_key` on the
+server (Section 8).  It then increments `send_seq` by one.
 
-To receive a frame, an endpoint uses `recv_seq` to form the nonce
-in the same way, performs AES-256-GCM-Open, and increments
-`recv_seq` on success.  A decryption failure MUST cause the
-connection to be terminated; the endpoint SHOULD record the
-failure for rate-limiting (Section 11.2).
+To receive a frame, an endpoint uses `recv_seq` to form the
+nonce in the same way and decrypts with `K_recv` — `s2c_key` on
+the client, `c2s_key` on the server — then increments `recv_seq`
+on success.  A decryption failure MUST cause the connection to
+be terminated; the endpoint SHOULD record the failure for
+rate-limiting (Section 11.2).
+
+Direction separation is enforced by the **per-direction key**,
+not by the nonce.  Endpoint counters may collide (both sides at
+`send_seq = N` simultaneously) without consequence: an AES-GCM
+collision requires the same `(key, nonce)` pair, and the keys
+differ.
 
 ### 9.3. No Reordering or Omission
 
@@ -651,16 +668,23 @@ Section 13).
 
 The all-zero reserved prefix in the nonce construction (Section
 9.2) MUST NOT be interpreted as slack for key-reuse across
-connections.  Each MQC connection derives a fresh `session_key`
-from a fresh ML-KEM shared secret; the nonce counter starts at 0
-(or 1 in encrypted-identity mode) and never wraps within a single
+connections.  Each MQC connection derives fresh per-direction
+keys (`c2s_key`, `s2c_key`) from a fresh ML-KEM shared secret;
+each direction's nonce counter starts at 0 (or 1 in
+encrypted-identity mode) and never wraps within a single
 connection before the 2^64 limit — effectively, never.
 
-Direction separation is provided by the TCP stream, not by the
-nonce.  Implementations running over a non-TCP transport, or
-layering MQC above a medium that could re-order direction-level
-frames, MUST add a direction bit to the reserved nonce prefix or
-otherwise ensure per-direction nonce uniqueness.
+Direction separation is enforced cryptographically by the
+per-direction keys derived in Section 8.  AES-GCM is catastrophic
+under `(key, nonce)` reuse: encrypting two distinct plaintexts
+under the same `(K, N)` lets a passive observer XOR the
+ciphertexts to recover plaintext XOR and additionally lets them
+recover the GHASH authentication subkey, enabling forgery.
+Earlier MQC drafts derived a single session key shared by both
+directions and relied on the TCP stream to separate them; that
+construction is incorrect because TCP delivers both halves of the
+stream to a passive observer, and is replaced in this revision
+by the per-direction-key construction.
 
 ### 12.3. Identity Exposure
 
@@ -799,19 +823,26 @@ Both sides now derive:
 ```
     shared_secret = MLKEM-Decap(DK_c, CT_s)     // on client
                   = MLKEM-Encap-Result(EK_c)     // on server (already held)
-    session_key   = HKDF-SHA256(shared_secret,
+    c2s_key       = HKDF-SHA256(shared_secret,
                                 salt="",
-                                info="mqc-session",
+                                info="mqc-session-c2s",
+                                L=32)
+    s2c_key       = HKDF-SHA256(shared_secret,
+                                salt="",
+                                info="mqc-session-s2c",
                                 L=32)
 ```
 
-The first data-plane frame from client to server uses GCM nonce:
+The first data-plane frame from client to server uses `c2s_key`
+with GCM nonce:
 
 ```
      00 00 00 00  00 00 00 00 00 00 00 00
 ```
 
-and increments `client.send_seq` to 1 after encryption.
+and increments `client.send_seq` to 1 after encryption.  The
+first server→client frame uses `s2c_key` with the same nonce —
+safe, because the keys differ.
 
 ## Appendix B. Reference Implementation (informative)
 
