@@ -2240,6 +2240,96 @@ needed by SLC and `mtc_server`.  This is a build-system change
   `socket-level-wrapper-QUIC/Makefile` — switch
   `pkg-config postWolf` → `pkg-config postWolf-pqc`.
 
+### 52. MQC GCM (key, nonce) reuse across directions — **DONE 2026-04-28**
+
+**Severity (pre-fix):** Critical — passive eavesdropper trivially
+recovers plaintext-XOR for every byte sent on a connection plus the
+GHASH authentication subkey, allowing forgery of arbitrary
+authenticated frames.  Caught during the IETF-draft review.
+
+**The bug.**  `mqc.c` derived a single 32-byte AES-256-GCM key
+from the ML-KEM-768 shared secret via
+`HKDF(shared, "mqc-session")` and stored it as `conn->aes_key`.
+Both directions (client→server *and* server→client) used that
+one key.  Each direction kept its own counter (`send_seq`,
+`recv_seq`), but both counters started at the same value (0 for
+clear-identity mode, 1 for encrypted-identity mode after the
+handshake).  The `make_nonce` builder was a 12-byte construction
+of 4 zero bytes followed by big-endian seq; no direction bit.
+
+Concretely on the wire:
+
+| Direction | Key | Nonce | Plaintext |
+|---|---|---|---|
+| C→S frame 0 | `aes_key` | `00..00 00..00` | C0 |
+| S→C frame 0 | `aes_key` (same) | `00..00 00..00` (same) | S0 |
+
+Two distinct plaintexts under the same `(key, nonce)` is the
+canonical AES-GCM catastrophe.  CTR-mode XOR of the two
+ciphertexts equals `C0 XOR S0`; with a known protocol header
+(JSON, HTTP-ish framing) crib-dragging recovers both plaintexts.
+GHASH's authentication key `H` is also recoverable from the two
+tag-input pairs, so an attacker can forge AEAD frames at will.
+
+The encrypted-identity handshake had the same bug in miniature:
+`hs_seq=0` was used by *both* `enc_send` (client identity) and
+`enc_recv` (server identity), each on the same `aes_key`.
+
+The draft itself (§12.2 in `-00`) gestured at the issue with the
+text *"Direction separation is provided by the TCP stream, not
+by the nonce."*  That justification was wrong: TCP delivers both
+halves of the stream to a passive observer, so it provides zero
+cryptographic separation.
+
+**The fix (TLS 1.3 / Noise / WireGuard pattern).**  Two HKDF
+expansions with distinct info labels produce two keys; each
+direction uses its own:
+
+```c
+HKDF(shared, "mqc-session-c2s") -> c2s_key
+HKDF(shared, "mqc-session-s2c") -> s2c_key
+```
+
+`struct mqc_conn` now stores `send_key` and `recv_key`, assigned
+by role: client `send=c2s, recv=s2c`; server `send=s2c, recv=c2s`.
+`mqc_write` uses `conn->send_key`; `mqc_read` uses `conn->recv_key`.
+Encrypted-identity handshake `enc_send`/`enc_recv` use the matching
+per-direction key.  The nonce construction is unchanged — same
+counter scheme, same all-zero reserved prefix — because the keys
+differ, simultaneous `send_seq = recv_seq = N` on opposite sides
+is now safe.
+
+**Wire-incompatible.**  An old single-key client cannot handshake
+with a new per-direction-key server (and vice versa).  Both sides
+must update together.  Acceptable on factsorlie because the deploy
+is one box (server + bundled tools) and a release wave to leaves.
+
+**Files changed:**
+- `socket-level-wrapper-MQC/mqc.c` — keygen, struct, all five
+  connect/accept paths, data plane, close.
+- `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.{md,txt}`
+  — §3 diagram, §7.3/7.4/7.5, §8 (Key Derivation rewrite), §9.2
+  (Nonce Construction), §12.2 (Nonce Management), Appendix A
+  worked example.
+
+**Verification:**
+- `make -f Makefile.tools clean && make -f Makefile.tools` —
+  zero warnings.
+- `mtc-ca.service` restart clean; `journalctl -u mtc-ca.service`
+  shows MQC listener up on 8446.
+- `show-tpm --verify` from the leaf box reports
+  `server=OK proof=OK pubkey_db=OK pair=OK spkh=OK` for both
+  the leaf and the CA.
+- `echo X | mqc --encode --env --no-cache | mqc --decode --env
+  --no-cache` round-trips intact (exercises both directions of
+  the data plane under the new construction).
+
+**Open follow-ups:**
+- `.txt` page-break markers drifted on pages 9–10 (~60 lines vs
+  the standard ~56) because content was inserted without
+  repagination.  Datatracker may flag this on submission;
+  re-run the 58-line tally before submitting.
+
 ---
 
 ## Appendix: Server Directory Layout
