@@ -2677,21 +2677,21 @@ int ProcessFile(WOLFSSL_CTX* ctx, const char* fname, int format, int type,
 
         /* Look for CA header and footer - same as CERT_TYPE. */
         if (wc_PemGetHeaderFooter(CA_TYPE, &header, &footer) == 0 &&
-                (XSTRNSTR((char*)content.buffer, header, (word32)sz) != NULL)) {
+                (XSTRNSTR((char*)content.buffer, header, sz) != NULL)) {
             type = CA_TYPE;
             WOLFSSL_MSG_CERT_LOG_EX("Detected cert type CA_TYPE = %d:", type);
         }
 #ifdef HAVE_CRL
         /* Look for CRL header and footer. */
         else if (wc_PemGetHeaderFooter(CRL_TYPE, &header, &footer) == 0 &&
-                (XSTRNSTR((char*)content.buffer, header, (word32)sz) != NULL)) {
+                (XSTRNSTR((char*)content.buffer, header, sz) != NULL)) {
             type = CRL_TYPE;
             WOLFSSL_MSG_CERT_LOG_EX("Detected cert type CRL_TYPE = %d:", type);
         }
 #endif
         /* Look for cert header and footer - same as CA_TYPE. */
         else if (wc_PemGetHeaderFooter(CERT_TYPE, &header, &footer) == 0 &&
-                (XSTRNSTR((char*)content.buffer, header, (word32)sz) !=
+                (XSTRNSTR((char*)content.buffer, header, sz) !=
                     NULL)) {
             type = CERT_TYPE;
             WOLFSSL_MSG_CERT_LOG_EX("Detected cert type CERT_TYPE = %d:", type);
@@ -4159,6 +4159,10 @@ int wolfSSL_CTX_use_PrivateKey_Id(WOLFSSL_CTX* ctx, const unsigned char* id,
 
     WOLFSSL_ENTER("wolfSSL_CTX_use_PrivateKey_Id");
 
+    if (ctx == NULL || id == NULL || sz < 0) {
+        return 0;
+    }
+
     /* Dispose of old private key and allocate and copy in id. */
     FreeDer(&ctx->privateKey);
     if (AllocCopyDer(&ctx->privateKey, id, (word32)sz, PRIVATEKEY_TYPE,
@@ -4198,12 +4202,12 @@ int wolfSSL_CTX_use_PrivateKey_Id(WOLFSSL_CTX* ctx, const unsigned char* id,
  * @return  1 on success.
  * @return  0 on failure.
  */
-int wolfSSL_CTX_use_PrivateKey_id(WOLFSSL_CTX* ctx, const unsigned char* id,
+int wolfSSL_CTX_use_PrivateKey_Id_ex(WOLFSSL_CTX* ctx, const unsigned char* id,
     long sz, int devId, long keySz)
 {
     int ret;
 
-    WOLFSSL_ENTER("wolfSSL_CTX_use_PrivateKey_id");
+    WOLFSSL_ENTER("wolfSSL_CTX_use_PrivateKey_Id_ex");
 
     ret = wolfSSL_CTX_use_PrivateKey_Id(ctx, id, sz, devId);
     if (ret == 1) {
@@ -4211,7 +4215,7 @@ int wolfSSL_CTX_use_PrivateKey_id(WOLFSSL_CTX* ctx, const unsigned char* id,
         ctx->privateKeySz = (int)keySz;
     }
 
-    WOLFSSL_LEAVE("wolfSSL_CTX_use_PrivateKey_id", ret);
+    WOLFSSL_LEAVE("wolfSSL_CTX_use_PrivateKey_Id_ex", ret);
     return ret;
 }
 
@@ -4227,9 +4231,15 @@ int wolfSSL_CTX_use_PrivateKey_Label(WOLFSSL_CTX* ctx, const char* label,
     int devId)
 {
     int ret = 1;
-    word32 sz = (word32)XSTRLEN(label) + 1;
+    word32 sz;
 
     WOLFSSL_ENTER("wolfSSL_CTX_use_PrivateKey_Label");
+
+    if (ctx == NULL || label == NULL) {
+        return 0;
+    }
+
+    sz = (word32)XSTRLEN(label) + 1;
 
     /* Dispose of old private key and allocate and copy in label. */
     FreeDer(&ctx->privateKey);
@@ -4268,7 +4278,7 @@ int wolfSSL_CTX_use_AltPrivateKey_Id(WOLFSSL_CTX* ctx, const unsigned char* id,
 
     WOLFSSL_ENTER("wolfSSL_CTX_use_AltPrivateKey_Id");
 
-    if ((ctx == NULL) || (id == NULL)) {
+    if ((ctx == NULL) || (id == NULL) || (sz < 0)) {
         ret = 0;
     }
 
@@ -4280,7 +4290,7 @@ int wolfSSL_CTX_use_AltPrivateKey_Id(WOLFSSL_CTX* ctx, const unsigned char* id,
         }
     }
     if (ret == 1) {
-        XMEMCPY(ctx->altPrivateKey->buffer, id, sz);
+        XMEMCPY(ctx->altPrivateKey->buffer, id, (word32)sz);
         ctx->altPrivateKeyId = 1;
         if (devId != INVALID_DEVID) {
             ctx->altPrivateKeyDevId = devId;
@@ -4294,19 +4304,19 @@ int wolfSSL_CTX_use_AltPrivateKey_Id(WOLFSSL_CTX* ctx, const unsigned char* id,
     return ret;
 }
 
-int wolfSSL_CTX_use_AltPrivateKey_id(WOLFSSL_CTX* ctx, const unsigned char* id,
-    long sz, int devId, long keySz)
+int wolfSSL_CTX_use_AltPrivateKey_Id_ex(WOLFSSL_CTX* ctx,
+    const unsigned char* id, long sz, int devId, long keySz)
 {
     int ret;
 
-    WOLFSSL_ENTER("wolfSSL_CTX_use_AltPrivateKey_id");
+    WOLFSSL_ENTER("wolfSSL_CTX_use_AltPrivateKey_Id_ex");
 
     ret = wolfSSL_CTX_use_AltPrivateKey_Id(ctx, id, sz, devId);
     if (ret == 1) {
         ctx->altPrivateKeySz = (word32)keySz;
     }
 
-    WOLFSSL_LEAVE("wolfSSL_CTX_use_AltPrivateKey_id", ret);
+    WOLFSSL_LEAVE("wolfSSL_CTX_use_AltPrivateKey_Id_ex", ret);
     return ret;
 }
 
@@ -4561,6 +4571,10 @@ int wolfSSL_use_PrivateKey_Id(WOLFSSL* ssl, const unsigned char* id,
 {
     int ret = 1;
 
+    if (ssl == NULL || id == NULL || sz < 0) {
+        return 0;
+    }
+
     /* Dispose of old private key if owned and allocate and copy in id. */
     if (ssl->buffers.weOwnKey) {
         FreeDer(&ssl->buffers.key);
@@ -4606,7 +4620,7 @@ int wolfSSL_use_PrivateKey_Id(WOLFSSL* ssl, const unsigned char* id,
  * @return  1 on success.
  * @return  0 on failure.
  */
-int wolfSSL_use_PrivateKey_id(WOLFSSL* ssl, const unsigned char* id,
+int wolfSSL_use_PrivateKey_Id_ex(WOLFSSL* ssl, const unsigned char* id,
     long sz, int devId, long keySz)
 {
     int ret = wolfSSL_use_PrivateKey_Id(ssl, id, sz, devId);
@@ -4629,7 +4643,13 @@ int wolfSSL_use_PrivateKey_id(WOLFSSL* ssl, const unsigned char* id,
 int wolfSSL_use_PrivateKey_Label(WOLFSSL* ssl, const char* label, int devId)
 {
     int ret = 1;
-    word32 sz = (word32)XSTRLEN(label) + 1;
+    word32 sz;
+
+    if (ssl == NULL || label == NULL) {
+        return 0;
+    }
+
+    sz = (word32)XSTRLEN(label) + 1;
 
     /* Dispose of old private key if owned and allocate and copy in label. */
     if (ssl->buffers.weOwnKey) {
@@ -4672,7 +4692,7 @@ int wolfSSL_use_AltPrivateKey_Id(WOLFSSL* ssl, const unsigned char* id, long sz,
 {
     int ret = 1;
 
-    if ((ssl == NULL) || (id == NULL)) {
+    if ((ssl == NULL) || (id == NULL) || (sz < 0)) {
         ret = 0;
     }
 
@@ -4689,7 +4709,7 @@ int wolfSSL_use_AltPrivateKey_Id(WOLFSSL* ssl, const unsigned char* id, long sz,
         }
     }
     if (ret == 1) {
-        XMEMCPY(ssl->buffers.altKey->buffer, id, sz);
+        XMEMCPY(ssl->buffers.altKey->buffer, id, (word32)sz);
         ssl->buffers.weOwnAltKey = 1;
         ssl->buffers.altKeyId = 1;
         if (devId != INVALID_DEVID) {
@@ -4703,8 +4723,8 @@ int wolfSSL_use_AltPrivateKey_Id(WOLFSSL* ssl, const unsigned char* id, long sz,
     return ret;
 }
 
-int wolfSSL_use_AltPrivateKey_id(WOLFSSL* ssl, const unsigned char* id, long sz,
-    int devId, long keySz)
+int wolfSSL_use_AltPrivateKey_Id_ex(WOLFSSL* ssl, const unsigned char* id,
+    long sz, int devId, long keySz)
 {
     int ret = wolfSSL_use_AltPrivateKey_Id(ssl, id, sz, devId);
     if (ret == 1) {
@@ -5365,6 +5385,9 @@ int wolfSSL_CTX_use_RSAPrivateKey(WOLFSSL_CTX* ctx, WOLFSSL_RSA* rsa)
     }
 
     /* Dispos of dynamically allocated data. */
+    if (der != NULL) {
+        ForceZero(der, (word32)derSize);
+    }
     XFREE(der, NULL, DYNAMIC_TYPE_TMP_BUFFER);
     return ret;
 }
@@ -5662,9 +5685,14 @@ static int wolfssl_ctx_set_tmp_dh(WOLFSSL_CTX* ctx, unsigned char* p, int pSz,
 
     WOLFSSL_ENTER("wolfSSL_CTX_SetTmpDH");
 
+    if ((ctx == NULL) || (p == NULL) || (g == NULL))
+        ret = BAD_FUNC_ARG;
+
     /* Check the size of the prime meets the requirements of the SSL context. */
-    if (((word16)pSz < ctx->minDhKeySz) || ((word16)pSz > ctx->maxDhKeySz)) {
-        ret = DH_KEY_SIZE_E;
+    if (ret == 1) {
+        if (((word16)pSz < ctx->minDhKeySz) || ((word16)pSz > ctx->maxDhKeySz)) {
+            ret = DH_KEY_SIZE_E;
+        }
     }
 
 #if !defined(WOLFSSL_OLD_PRIME_CHECK) && !defined(HAVE_FIPS) && \
@@ -5930,12 +5958,10 @@ static int ws_ctx_ssl_set_tmp_dh(WOLFSSL_CTX* ctx, WOLFSSL* ssl,
 
     /* PemToDer allocates its own DER buffer. */
     if ((res == 1) && (format != WOLFSSL_FILETYPE_PEM)) {
-        /* Create an empty DER buffer. */
-        ret = AllocDer(&der, 0, DH_PARAM_TYPE, heap);
+        /* Create a DER buffer and copy in the encoded DH parameters. */
+        ret = AllocDer(&der, (word32)sz, DH_PARAM_TYPE, heap);
         if (ret == 0) {
-            /* Assign encoded DH parameters to DER buffer. */
-            der->buffer = (byte*)buf;
-            der->length = (word32)sz;
+            XMEMCPY(der->buffer, buf, (word32)sz);
         }
         else {
             res = ret;

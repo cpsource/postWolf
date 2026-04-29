@@ -8238,6 +8238,27 @@ int wolfSSL_set_compression(WOLFSSL* ssl)
                    ssl->options.haveECC, TRUE, ssl->options.haveStaticECC,
                    ssl->options.useAnon, TRUE, TRUE, TRUE, TRUE, ssl->options.side);
     }
+
+#if defined(WOLFSSL_TLS13) && defined(WOLFSSL_CERT_WITH_EXTERN_PSK)
+    int wolfSSL_CTX_set_cert_with_extern_psk(WOLFSSL_CTX* ctx, int state)
+    {
+        WOLFSSL_ENTER("wolfSSL_CTX_set_cert_with_extern_psk");
+        if (ctx == NULL)
+            return WOLFSSL_FAILURE;
+        ctx->certWithExternPsk = (byte)(state != 0);
+        return WOLFSSL_SUCCESS;
+    }
+
+    int wolfSSL_set_cert_with_extern_psk(WOLFSSL* ssl, int state)
+    {
+        WOLFSSL_ENTER("wolfSSL_set_cert_with_extern_psk");
+        if (ssl == NULL)
+            return WOLFSSL_FAILURE;
+        ssl->options.certWithExternPsk = (word16)(state != 0);
+        return WOLFSSL_SUCCESS;
+    }
+#endif
+
     #ifdef OPENSSL_EXTRA
     /**
      * set call back function for psk session use
@@ -10202,6 +10223,10 @@ size_t wolfSSL_get_client_random(const WOLFSSL* ssl, unsigned char* out,
     #if defined(HAVE_TLS_EXTENSIONS) && !defined(NO_TLS)
         TLSX_FreeAll(ssl->extensions, ssl->heap);
         ssl->extensions = NULL;
+      #if defined(HAVE_SECURE_RENEGOTIATION) \
+       || defined(HAVE_SERVER_RENEGOTIATION_INFO)
+        ssl->secure_renegotiation = NULL;
+      #endif
     #endif
 
         if (ssl->keys.encryptionOn) {
@@ -11850,13 +11875,19 @@ char* wolfSSL_CIPHER_description(const WOLFSSL_CIPHER* cipher, char* in,
 int wolfSSL_OCSP_parse_url(const char* url, char** host, char** port,
         char** path, int* ssl)
 {
-    const char* u = url;
+    const char* u;
     const char* upath; /* path in u */
     const char* uport; /* port in u */
     const char* hostEnd;
 
     WOLFSSL_ENTER("OCSP_parse_url");
 
+    if (url == NULL || host == NULL || port == NULL || path == NULL ||
+            ssl == NULL) {
+        return WOLFSSL_FAILURE;
+    }
+
+    u = url;
     *host = NULL;
     *port = NULL;
     *path = NULL;
@@ -14695,8 +14726,14 @@ void* wolfSSL_GetHKDFExtractCtx(WOLFSSL* ssl)
         }
         else if (a->type == WOLFSSL_GEN_DNS || a->type == WOLFSSL_GEN_EMAIL ||
                  a->type == WOLFSSL_GEN_URI) {
-            bufSz = (int)XSTRLEN((const char*)a->obj);
-            XMEMCPY(buf, a->obj, min((word32)bufSz, (word32)bufLen));
+            size_t objLen = XSTRLEN((const char*)a->obj);
+            if (objLen >= (size_t)bufLen) {
+                bufSz = bufLen - 1;
+            }
+            else {
+                bufSz = (int)objLen;
+            }
+            XMEMCPY(buf, a->obj, (size_t)bufSz);
         }
         else if ((bufSz = wolfssl_obj2txt_numeric(buf, bufLen, a)) > 0) {
             if ((desc = oid_translate_num_to_str(buf))) {
@@ -15237,7 +15274,7 @@ void crypto_ex_cb_free_data(void *obj, CRYPTO_EX_cb_ctx* cb_ctx,
 }
 
 /**
- * get_ex_new_index is a helper function for the following
+ * wolfssl_local_get_ex_new_index is a helper function for the following
  * xx_get_ex_new_index functions:
  *  - wolfSSL_CRYPTO_get_ex_new_index
  *  - wolfSSL_CTX_get_ex_new_index
@@ -15246,7 +15283,7 @@ void crypto_ex_cb_free_data(void *obj, CRYPTO_EX_cb_ctx* cb_ctx,
  * Returns an index number greater or equal to zero on success,
  * -1 on failure.
  */
-int wolfssl_get_ex_new_index(int class_index, long ctx_l, void* ctx_ptr,
+int wolfssl_local_get_ex_new_index(int class_index, long ctx_l, void* ctx_ptr,
         WOLFSSL_CRYPTO_EX_new* new_func, WOLFSSL_CRYPTO_EX_dup* dup_func,
         WOLFSSL_CRYPTO_EX_free* free_func)
 {
@@ -15312,8 +15349,8 @@ int wolfSSL_CTX_get_ex_new_index(long idx, void* arg,
 
     WOLFSSL_ENTER("wolfSSL_CTX_get_ex_new_index");
 
-    return wolfssl_get_ex_new_index(WOLF_CRYPTO_EX_INDEX_SSL_CTX, idx, arg,
-                                    new_func, dup_func, free_func);
+    return wolfssl_local_get_ex_new_index(WOLF_CRYPTO_EX_INDEX_SSL_CTX, idx,
+                                    arg, new_func, dup_func, free_func);
 }
 
 /* Return the index that can be used for the WOLFSSL structure to store
@@ -15326,8 +15363,8 @@ int wolfSSL_get_ex_new_index(long argValue, void* arg,
 {
     WOLFSSL_ENTER("wolfSSL_get_ex_new_index");
 
-    return wolfssl_get_ex_new_index(WOLF_CRYPTO_EX_INDEX_SSL, argValue, arg,
-            cb1, cb2, cb3);
+    return wolfssl_local_get_ex_new_index(WOLF_CRYPTO_EX_INDEX_SSL, argValue,
+            arg, cb1, cb2, cb3);
 }
 #endif /* HAVE_EX_DATA_CRYPTO */
 
@@ -17649,7 +17686,7 @@ int wolfSSL_CTX_set_alpn_protos(WOLFSSL_CTX *ctx, const unsigned char *p,
                             unsigned int p_len)
 {
     WOLFSSL_ENTER("wolfSSL_CTX_set_alpn_protos");
-    if (ctx == NULL)
+    if (ctx == NULL || p == NULL)
         return BAD_FUNC_ARG;
     if (ctx->alpn_cli_protos != NULL) {
         XFREE((void*)ctx->alpn_cli_protos, ctx->heap, DYNAMIC_TYPE_OPENSSL);
@@ -17703,7 +17740,7 @@ int wolfSSL_set_alpn_protos(WOLFSSL* ssl,
 
     WOLFSSL_ENTER("wolfSSL_set_alpn_protos");
 
-    if (ssl == NULL || p_len <= 1) {
+    if (ssl == NULL || p_len <= 1 || p == NULL) {
 #if defined(WOLFSSL_ERROR_CODE_OPENSSL)
         /* 0 on success in OpenSSL, non-0 on failure in OpenSSL
          * the function reverses the return value convention.
@@ -18732,55 +18769,75 @@ static int SetStaticEphemeralKey(WOLFSSL_CTX* ctx,
         #ifdef HAVE_ECC
             if (keyAlgo == WC_PK_TYPE_NONE) {
                 word32 idx = 0;
-                ecc_key eccKey;
-                ret = wc_ecc_init_ex(&eccKey, heap, INVALID_DEVID);
+                WC_DECLARE_VAR(eccKey, ecc_key, 1, heap);
+                WC_ALLOC_VAR_EX(eccKey, ecc_key, 1, heap, DYNAMIC_TYPE_ECC,
+                                ret = MEMORY_E);
+                if (ret == 0)
+                    ret = wc_ecc_init_ex(eccKey, heap, INVALID_DEVID);
                 if (ret == 0) {
-                    ret = wc_EccPrivateKeyDecode(keyBuf, &idx, &eccKey, keySz);
+                    ret = wc_EccPrivateKeyDecode(keyBuf, &idx, eccKey, keySz);
                     if (ret == 0)
                         keyAlgo = WC_PK_TYPE_ECDH;
-                    wc_ecc_free(&eccKey);
+                    wc_ecc_free(eccKey);
+                    ret = 0; /* clear error to enable key-type detect cascade */
                 }
+                WC_FREE_VAR_EX(eccKey, heap, DYNAMIC_TYPE_ECC);
             }
         #endif
         #if !defined(NO_DH) && defined(WOLFSSL_DH_EXTRA)
             if (keyAlgo == WC_PK_TYPE_NONE) {
                 word32 idx = 0;
-                DhKey dhKey;
-                ret = wc_InitDhKey_ex(&dhKey, heap, INVALID_DEVID);
+                WC_DECLARE_VAR(dhKey, DhKey, 1, heap);
+                WC_ALLOC_VAR_EX(dhKey, DhKey, 1, heap, DYNAMIC_TYPE_DH,
+                                ret = MEMORY_E);
+                if (ret == 0)
+                    ret = wc_InitDhKey_ex(dhKey, heap, INVALID_DEVID);
                 if (ret == 0) {
-                    ret = wc_DhKeyDecode(keyBuf, &idx, &dhKey, keySz);
+                    ret = wc_DhKeyDecode(keyBuf, &idx, dhKey, keySz);
                     if (ret == 0)
                         keyAlgo = WC_PK_TYPE_DH;
-                    wc_FreeDhKey(&dhKey);
+                    wc_FreeDhKey(dhKey);
+                    ret = 0; /* clear error to enable key-type detect cascade */
                 }
+                WC_FREE_VAR_EX(dhKey, heap, DYNAMIC_TYPE_DH);
             }
         #endif
         #ifdef HAVE_CURVE25519
             if (keyAlgo == WC_PK_TYPE_NONE) {
                 word32 idx = 0;
-                curve25519_key x25519Key;
-                ret = wc_curve25519_init_ex(&x25519Key, heap, INVALID_DEVID);
+                WC_DECLARE_VAR(x25519Key, curve25519_key, 1, heap);
+                WC_ALLOC_VAR_EX(x25519Key, curve25519_key, 1, heap,
+                                DYNAMIC_TYPE_CURVE25519, ret = MEMORY_E);
+                if (ret == 0)
+                    ret = wc_curve25519_init_ex(x25519Key, heap, INVALID_DEVID);
                 if (ret == 0) {
                     ret = wc_Curve25519PrivateKeyDecode(keyBuf, &idx,
-                        &x25519Key, keySz);
+                        x25519Key, keySz);
                     if (ret == 0)
                         keyAlgo = WC_PK_TYPE_CURVE25519;
-                    wc_curve25519_free(&x25519Key);
+                    wc_curve25519_free(x25519Key);
+                    ret = 0; /* clear error to enable key-type detect cascade */
                 }
+                WC_FREE_VAR_EX(x25519Key, heap, DYNAMIC_TYPE_CURVE25519);
             }
         #endif
         #ifdef HAVE_CURVE448
             if (keyAlgo == WC_PK_TYPE_NONE) {
                 word32 idx = 0;
-                curve448_key x448Key;
-                ret = wc_curve448_init(&x448Key);
+                WC_DECLARE_VAR(x448Key, curve448_key, 1, heap);
+                WC_ALLOC_VAR_EX(x448Key, curve448_key, 1, heap,
+                                DYNAMIC_TYPE_CURVE448, ret = MEMORY_E);
+                if (ret == 0)
+                    ret = wc_curve448_init(x448Key);
                 if (ret == 0) {
-                    ret = wc_Curve448PrivateKeyDecode(keyBuf, &idx, &x448Key,
+                    ret = wc_Curve448PrivateKeyDecode(keyBuf, &idx, x448Key,
                         keySz);
                     if (ret == 0)
                         keyAlgo = WC_PK_TYPE_CURVE448;
-                    wc_curve448_free(&x448Key);
+                    wc_curve448_free(x448Key);
+                    ret = 0; /* clear error to enable key-type detect cascade */
                 }
+                WC_FREE_VAR_EX(x448Key, heap, DYNAMIC_TYPE_CURVE448);
             }
         #endif
 
@@ -18796,6 +18853,7 @@ static int SetStaticEphemeralKey(WOLFSSL_CTX* ctx,
 #ifndef NO_FILESYSTEM
     /* done with keyFile buffer */
     if (keyFile && keyBuf) {
+        ForceZero(keyBuf, keySz);
         XFREE(keyBuf, heap, DYNAMIC_TYPE_TMP_BUFFER);
     }
 #endif
@@ -19321,7 +19379,7 @@ int wolfSSL_CRYPTO_get_ex_new_index(int class_index, long argl, void *argp,
 {
     WOLFSSL_ENTER("wolfSSL_CRYPTO_get_ex_new_index");
 
-    return wolfssl_get_ex_new_index(class_index, argl, argp, new_func,
+    return wolfssl_local_get_ex_new_index(class_index, argl, argp, new_func,
             dup_func, free_func);
 }
 #endif /* HAVE_EX_DATA_CRYPTO */
@@ -19752,7 +19810,7 @@ int wolfSSL_RAND_egd(const char* nm)
         return WOLFSSL_FATAL_ERROR;
     }
 
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    fd = wc_socket_cloexec(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
         WOLFSSL_MSG("Error creating socket");
         WC_FREE_VAR_EX(buf, NULL, DYNAMIC_TYPE_TMP_BUFFER);

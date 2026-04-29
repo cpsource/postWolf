@@ -592,34 +592,40 @@ static int wolfSSL_BIO_BIO_write(WOLFSSL_BIO* bio, const void* data,
  * data buffer holding the data to be written
  * len  length of data buffer
  *
- * returns the amount of data written on success and WOLFSSL_FAILURE or
- *         WOLFSSL_BIO_ERROR for failure cases.
+ * returns the amount of data written on success or WOLFSSL_BIO_ERROR
+ * for failure cases.
  */
 static int wolfSSL_BIO_MEMORY_write(WOLFSSL_BIO* bio, const void* data,
         int len)
 {
     WOLFSSL_ENTER("wolfSSL_BIO_MEMORY_write");
 
-    if (bio == NULL || bio->mem_buf == NULL || data == NULL) {
-        WOLFSSL_MSG("one of input parameters is null");
-        return WOLFSSL_FAILURE;
-    }
-    if (bio->flags & WOLFSSL_BIO_FLAG_MEM_RDONLY) {
-        return WOLFSSL_FAILURE;
+    /* ossl returns 0 on bio == NULL */
+    if (bio == NULL) {
+        return 0;
     }
 
-    if (len == 0)
-        return WOLFSSL_SUCCESS; /* Return early to make logic simpler */
+    if (bio->mem_buf == NULL || data == NULL) {
+        WOLFSSL_MSG("one of input parameters is null");
+        return WOLFSSL_BIO_ERROR;
+    }
+
+    if (bio->flags & WOLFSSL_BIO_FLAG_MEM_RDONLY) {
+        return WOLFSSL_BIO_ERROR;
+    }
+
+    if (len <= 0)
+        return 0; /* Nothing to write */
 
     if (wolfSSL_BUF_MEM_grow_ex(bio->mem_buf, ((size_t)bio->wrSz) +
                                                     ((size_t)len), 0) == 0) {
         WOLFSSL_MSG("Error growing memory area");
-        return WOLFSSL_FAILURE;
+        return WOLFSSL_BIO_ERROR;
     }
 
     if (bio->mem_buf->data == NULL) {
         WOLFSSL_MSG("Buffer data is NULL");
-        return WOLFSSL_FAILURE;
+        return WOLFSSL_BIO_ERROR;
     }
 
     XMEMCPY(bio->mem_buf->data + bio->wrSz, data, (size_t)len);
@@ -868,7 +874,11 @@ long wolfSSL_BIO_ctrl(WOLFSSL_BIO *bio, int cmd, long larg, void *parg)
 
     WOLFSSL_ENTER("wolfSSL_BIO_ctrl");
 
-    if (bio && bio->method && bio->method->ctrlCb) {
+    if (bio == NULL) {
+        return WOLFSSL_FAILURE;
+    }
+
+    if (bio->method && bio->method->ctrlCb) {
         return bio->method->ctrlCb(bio, cmd, larg, parg);
     }
 
@@ -985,9 +995,8 @@ void wolfSSL_BIO_ADDR_clear(WOLFSSL_BIO_ADDR *addr) {
 }
 
 socklen_t wolfSSL_BIO_ADDR_size(const WOLFSSL_BIO_ADDR *addr) {
-    if (addr == NULL) {
+    if (addr == NULL)
         return 0;
-    }
     switch (addr->sa.sa_family) {
 #ifndef WOLFSSL_NO_BIO_ADDR_IN
     case AF_INET:
@@ -1105,20 +1114,17 @@ int wolfSSL_BIO_gets(WOLFSSL_BIO* bio, char* buf, int sz)
                 }
 
                 cSz = wolfSSL_getLineLength((char*)c, cSz);
-                /* check case where line was bigger then buffer and buffer
-                 * needs end terminator */
                 if (cSz >= sz) {
                     cSz = sz - 1;
-                    buf[cSz] = '\0';
-                }
-                else {
-                    /* not minus 1 here because placing terminator after
-                       msg and have checked that sz is large enough */
-                    buf[cSz] = '\0';
                 }
 
                 ret = wolfSSL_BIO_MEMORY_read(bio, (void*)buf, cSz);
-                /* ret is read after the switch statement */
+                if (ret > 0) {
+                    buf[ret] = '\0';
+                }
+                else {
+                    buf[0] = '\0';
+                }
                 break;
             }
         case WOLFSSL_BIO_BIO:
@@ -1133,21 +1139,17 @@ int wolfSSL_BIO_gets(WOLFSSL_BIO* bio, char* buf, int sz)
                 }
 
                 cSz = wolfSSL_getLineLength(c, cSz);
-                /* check case where line was bigger then buffer and buffer
-                 * needs end terminator */
                 if (cSz >= sz) {
                     cSz = sz - 1;
-                    buf[cSz] = '\0';
-                }
-                else {
-                    /* not minus 1 here because placing terminator after
-                       msg and have checked that sz is large enough */
-                    buf[cSz] = '\0';
                 }
 
                 ret = wolfSSL_BIO_nread(bio, &c, cSz);
-                if (ret > 0 && ret < sz) {
+                if (ret > 0) {
                     XMEMCPY(buf, c, (size_t)ret);
+                    buf[ret] = '\0';
+                }
+                else {
+                    buf[0] = '\0';
                 }
                 break;
             }
@@ -1303,51 +1305,42 @@ size_t wolfSSL_BIO_ctrl_pending(WOLFSSL_BIO *bio)
     WOLFSSL_ENTER("wolfSSL_BIO_ctrl_pending");
 #endif
 
-    if (bio == NULL) {
-        return 0;
-    }
-
-    if (bio->method != NULL && bio->method->ctrlCb != NULL) {
-        long ret;
-        WOLFSSL_MSG("Calling custom BIO ctrl pending callback");
-        ret = bio->method->ctrlCb(bio, WOLFSSL_BIO_CTRL_PENDING, 0, NULL);
-        return (ret < 0) ? 0 : (size_t)ret;
-    }
-
-    if (bio->type == WOLFSSL_BIO_MD ||
-            bio->type == WOLFSSL_BIO_BASE64) {
-        /* these are wrappers only, get next bio */
-        while (bio->next != NULL) {
-            bio = bio->next;
-            if (bio->type != WOLFSSL_BIO_MD &&
-                    bio->type != WOLFSSL_BIO_BASE64) {
-                break;
-            }
+    for (; bio != NULL; bio = bio->next) {
+        if (bio->method != NULL && bio->method->ctrlCb != NULL) {
+            long ret;
+            WOLFSSL_MSG("Calling custom BIO ctrl pending callback");
+            ret = bio->method->ctrlCb(bio, WOLFSSL_BIO_CTRL_PENDING, 0, NULL);
+            return (ret < 0) ? 0 : (size_t)ret;
         }
-    }
 
+        switch (bio->type) {
+        case WOLFSSL_BIO_MD:
+        case WOLFSSL_BIO_BASE64:
+            /* wrappers only, skip to next bio in chain */
+            continue;
 #ifndef WOLFCRYPT_ONLY
-    if (bio->type == WOLFSSL_BIO_SSL && bio->ptr.ssl != NULL) {
-        return (size_t)wolfSSL_pending(bio->ptr.ssl);
-    }
+        case WOLFSSL_BIO_SSL:
+            if (bio->ptr.ssl != NULL)
+                return (size_t)wolfSSL_pending(bio->ptr.ssl);
+            return 0;
 #endif
-
-    if (bio->type == WOLFSSL_BIO_MEMORY) {
-        return (size_t)(bio->wrSz - bio->rdIdx);
-    }
-
-    /* type BIO_BIO then check paired buffer */
-    if (bio->type == WOLFSSL_BIO_BIO && bio->pair != NULL) {
-        WOLFSSL_BIO* pair = bio->pair;
-        if (pair->wrIdx > 0 && pair->wrIdx <= pair->rdIdx) {
-            /* in wrap around state where beginning of buffer is being
-             * overwritten */
-            return ((size_t)pair->wrSz) - ((size_t)pair->rdIdx) +
-                                                ((size_t)pair->wrIdx);
-        }
-        else {
-            /* simple case where has not wrapped around */
-            return (size_t)(pair->wrIdx - pair->rdIdx);
+        case WOLFSSL_BIO_MEMORY:
+            return (size_t)(bio->wrSz - bio->rdIdx);
+        case WOLFSSL_BIO_BIO:
+            if (bio->pair != NULL) {
+                WOLFSSL_BIO* pair = bio->pair;
+                if (pair->wrIdx > 0 && pair->wrIdx <= pair->rdIdx) {
+                    /* wrap around state */
+                    return ((size_t)pair->wrSz) - ((size_t)pair->rdIdx) +
+                                                        ((size_t)pair->wrIdx);
+                }
+                else {
+                    return (size_t)(pair->wrIdx - pair->rdIdx);
+                }
+            }
+            return 0;
+        default:
+            return 0;
         }
     }
     return 0;
@@ -1831,7 +1824,7 @@ long wolfSSL_BIO_get_fp(WOLFSSL_BIO *bio, XFILE* fp)
 {
     WOLFSSL_ENTER("wolfSSL_BIO_get_fp");
 
-    if (bio == NULL || fp == XBADFILE) {
+    if (bio == NULL || fp == NULL) {
         return WOLFSSL_FAILURE;
     }
 
@@ -2098,12 +2091,7 @@ WOLFSSL_BIO_METHOD *wolfSSL_BIO_meth_new(int type, const char *name)
         return NULL;
     }
     XMEMSET(meth, 0, sizeof(WOLFSSL_BIO_METHOD));
-    if (type < 0 || type > 255) {
-        WOLFSSL_MSG("BIO method type out of range");
-        XFREE(meth, NULL, DYNAMIC_TYPE_OPENSSL);
-        return NULL;
-    }
-    meth->type = (byte)type;
+    meth->type = type;
     XSTRNCPY(meth->name, name, MAX_BIO_METHOD_NAME - 1);
 
     return meth;
@@ -2839,41 +2827,15 @@ int wolfSSL_BIO_flush(WOLFSSL_BIO* bio)
         }
 
         newLen = XSTRLEN(name);
+        if (b->ip != NULL && XSTRLEN(b->ip) != newLen) {
+            XFREE(b->ip, b->heap, DYNAMIC_TYPE_OPENSSL);
+            b->ip = NULL;
+        }
         if (b->ip == NULL) {
-            /* +1 for null char */
             b->ip = (char*)XMALLOC(newLen + 1, b->heap, DYNAMIC_TYPE_OPENSSL);
             if (b->ip == NULL) {
                 WOLFSSL_MSG("Hostname malloc failed.");
                 return WOLFSSL_FAILURE;
-            }
-        }
-        else {
-            size_t currLen = XSTRLEN(b->ip);
-        #ifdef WOLFSSL_NO_REALLOC
-            char* tmp = NULL;
-        #endif
-
-            if (currLen != newLen) {
-        #ifdef WOLFSSL_NO_REALLOC
-                tmp = b->ip;
-                b->ip = (char*)XMALLOC(newLen+1, b->heap, DYNAMIC_TYPE_OPENSSL);
-                if (b->ip == NULL) {
-                    b->ip = tmp; /* restore original on failure */
-                    WOLFSSL_MSG("Hostname realloc failed.");
-                    return WOLFSSL_FAILURE;
-                }
-                if (tmp != NULL) {
-                    XFREE(tmp, b->heap, DYNAMIC_TYPE_OPENSSL);
-                    tmp = NULL;
-                }
-        #else
-                b->ip = (char*)XREALLOC(b->ip, newLen + 1, b->heap,
-                    DYNAMIC_TYPE_OPENSSL);
-                if (b->ip == NULL) {
-                    WOLFSSL_MSG("Hostname realloc failed.");
-                    return WOLFSSL_FAILURE;
-                }
-        #endif
             }
         }
 
@@ -2926,7 +2888,7 @@ int wolfSSL_BIO_flush(WOLFSSL_BIO* bio)
                 DYNAMIC_TYPE_OPENSSL);
         if (bio) {
             XMEMSET(bio, 0, sizeof(WOLFSSL_BIO));
-            bio->type = (byte)method->type;
+            bio->type = method->type;
 #if defined(OPENSSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER >= 0x10100000L
             bio->method = (WOLFSSL_BIO_METHOD*)method;
 #else
@@ -3196,6 +3158,8 @@ int wolfSSL_BIO_flush(WOLFSSL_BIO* bio)
  */
 WOLFSSL_BIO* wolfSSL_BIO_pop(WOLFSSL_BIO* bio)
 {
+    WOLFSSL_BIO* next;
+
     if (bio == NULL) {
         WOLFSSL_MSG("Bad argument passed in");
         return NULL;
@@ -3209,7 +3173,11 @@ WOLFSSL_BIO* wolfSSL_BIO_pop(WOLFSSL_BIO* bio)
         bio->next->prev = bio->prev;
     }
 
-    return bio->next;
+    next = bio->next;
+    bio->prev = NULL;
+    bio->next = NULL;
+
+    return next;
 }
 
 

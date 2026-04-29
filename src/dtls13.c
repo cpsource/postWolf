@@ -490,29 +490,33 @@ int Dtls13HashClientHello(const WOLFSSL* ssl, byte* hash, int* hashSz,
     /* msg_type(1) + length (3) */
     byte header[OPAQUE32_LEN];
     int ret;
-    wc_HashAlg hashCtx;
+    WC_DECLARE_VAR(hashCtx, wc_HashAlg, 1, ssl->heap);
     int type = wolfSSL_GetHmacType_ex(specs);
 
     if (type < 0)
         return type;
 
+    WC_ALLOC_VAR_EX(hashCtx, wc_HashAlg, 1, ssl->heap, DYNAMIC_TYPE_HASHES,
+                    return MEMORY_E);
+
     header[0] = (byte)client_hello;
     c32to24(length, header + 1);
 
-    ret = wc_HashInit_ex(&hashCtx, (enum wc_HashType)type, ssl->heap, ssl->devId);
+    ret = wc_HashInit_ex(hashCtx, (enum wc_HashType)type, ssl->heap, ssl->devId);
     if (ret == 0) {
-        ret = wc_HashUpdate(&hashCtx, (enum wc_HashType)type, header, OPAQUE32_LEN);
+        ret = wc_HashUpdate(hashCtx, (enum wc_HashType)type, header, OPAQUE32_LEN);
         if (ret == 0)
-            ret = wc_HashUpdate(&hashCtx, (enum wc_HashType)type, body, length);
+            ret = wc_HashUpdate(hashCtx, (enum wc_HashType)type, body, length);
         if (ret == 0)
-            ret = wc_HashFinal(&hashCtx, (enum wc_HashType)type, hash);
+            ret = wc_HashFinal(hashCtx, (enum wc_HashType)type, hash);
         if (ret == 0) {
             *hashSz = wc_HashGetDigestSize((enum wc_HashType)type);
             if (*hashSz < 0)
                 ret = *hashSz;
         }
-        wc_HashFree(&hashCtx, (enum wc_HashType)type);
+        wc_HashFree(hashCtx, (enum wc_HashType)type);
     }
+    WC_FREE_VAR_EX(hashCtx, ssl->heap, DYNAMIC_TYPE_HASHES);
     return ret;
 }
 
@@ -721,9 +725,14 @@ static Dtls13RecordNumber* Dtls13NewRecordNumber(w64wrapper epoch,
     return rn;
 }
 
+#ifndef DTLS13_MAX_ACK_RECORDS
+#define DTLS13_MAX_ACK_RECORDS 512
+#endif
+
 int Dtls13RtxAddAck(WOLFSSL* ssl, w64wrapper epoch, w64wrapper seq)
 {
     Dtls13RecordNumber* rn;
+    int count;
 
     WOLFSSL_ENTER("Dtls13RtxAddAck");
 
@@ -742,7 +751,9 @@ int Dtls13RtxAddAck(WOLFSSL* ssl, w64wrapper epoch, w64wrapper seq)
             return 0; /* list full, silently drop */
         }
 
+        count = 0;
         for (; cur != NULL; prevNext = &cur->next, cur = cur->next) {
+            count++;
             if (w64Equal(cur->epoch, epoch) && w64Equal(cur->seq, seq)) {
                 /* already in list. no duplicates. */
     #ifdef WOLFSSL_RW_THREADED
@@ -755,6 +766,16 @@ int Dtls13RtxAddAck(WOLFSSL* ssl, w64wrapper epoch, w64wrapper seq)
                             && w64LT(seq, cur->seq))) {
                 break;
             }
+        }
+
+        /* Cap the ACK list to prevent word16 overflow in
+         * Dtls13GetAckListLength and bound memory consumption */
+        if (count >= DTLS13_MAX_ACK_RECORDS) {
+            WOLFSSL_MSG("DTLS 1.3 ACK list full, dropping record");
+        #ifdef WOLFSSL_RW_THREADED
+            wc_UnLockMutex(&ssl->dtls13Rtx.mutex);
+        #endif
+            return 0;
         }
 
         rn = Dtls13NewRecordNumber(epoch, seq, ssl->heap);
@@ -1042,6 +1063,10 @@ static int Dtls13SendFragmentedInternal(WOLFSSL* ssl)
         if (outputSz < 0) {
             Dtls13FreeFragmentsBuffer(ssl);
             return outputSz;
+        }
+        if ((word32)outputSz > WOLFSSL_MAX_16BIT) {
+            Dtls13FreeFragmentsBuffer(ssl);
+            return BUFFER_E;
         }
 
         ret = CheckAvailableSize(ssl, outputSz);
@@ -1637,6 +1662,10 @@ static int Dtls13RtxSendBuffered(WOLFSSL* ssl)
         if (!w64IsZero(r->epoch))
             sendSz += MAX_MSG_EXTRA;
 
+        if ((word32)sendSz > WOLFSSL_MAX_16BIT) {
+            return BUFFER_E;
+        }
+
         ret = CheckAvailableSize(ssl, sendSz);
         if (ret != 0)
             return ret;
@@ -2107,8 +2136,10 @@ static const byte snLabel[SN_LABEL_SZ + 1] = "sn";
  */
 int Dtls13DeriveSnKeys(WOLFSSL* ssl, int provision)
 {
-    byte key_dig[MAX_PRF_DIG];
     int ret = 0;
+    WC_DECLARE_VAR(key_dig, byte, MAX_PRF_DIG, ssl->heap);
+    WC_ALLOC_VAR_EX(key_dig, byte, MAX_PRF_DIG, ssl->heap, DYNAMIC_TYPE_DIGEST,
+                    return MEMORY_E);
 
     if (provision & PROVISION_CLIENT) {
         WOLFSSL_MSG("Derive SN Client key");
@@ -2135,8 +2166,9 @@ int Dtls13DeriveSnKeys(WOLFSSL* ssl, int provision)
 end:
     ForceZero(key_dig, MAX_PRF_DIG);
 #ifdef WOLFSSL_CHECK_MEM_ZERO
-    wc_MemZero_Check(key_dig, sizeof(key_dig));
+    wc_MemZero_Check(key_dig, MAX_PRF_DIG);
 #endif
+    WC_FREE_VAR_EX(key_dig, ssl->heap, DYNAMIC_TYPE_DIGEST);
     return ret;
 }
 

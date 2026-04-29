@@ -2654,6 +2654,14 @@ struct WOLFSSL_CERT_MANAGER {
 ||  defined(HAVE_CERTIFICATE_STATUS_REQUEST_V2)
     byte            ocspMustStaple:1;      /* server must respond with staple */
 #endif
+    /* Track which sub-resources successfully initialized so DoCertManagerFree
+     * can do a partial-construction cleanup safely if CertManagerNew_ex
+     * fails partway through. */
+    WC_BITFIELD     caLockInit:1;          /* caLock has been initialized */
+#ifdef WOLFSSL_TRUST_PEER_CERT
+    WC_BITFIELD     tpLockInit:1;          /* tpLock has been initialized */
+#endif
+    WC_BITFIELD     refInit:1;             /* ref has been initialized */
 
 #ifndef NO_RSA
     short           minRsaKeySz;         /* minimum allowed RSA key size */
@@ -2826,7 +2834,7 @@ struct WOLFSSL_BIO {
     } num;
     int          eof;           /* eof flag */
     int          flags;
-    byte         type;          /* method type */
+    int          type;          /* method type */
     byte         init:1;        /* bio has been initialized */
     byte         shutdown:1;    /* close flag */
     byte         connected:1;   /* connected state, for datagram BIOs -- as for
@@ -2965,6 +2973,7 @@ typedef struct Options Options;
 #define TLSXT_ENCRYPT_THEN_MAC           0x0016 /* RFC 7366 */
 #define TLSXT_EXTENDED_MASTER_SECRET     0x0017 /* HELLO_EXT_EXTMS */
 #define TLSXT_SESSION_TICKET             0x0023
+#define TLSXT_CERT_WITH_EXTERN_PSK       0x0021 /* RFC 8773bis */
 #define TLSXT_PRE_SHARED_KEY             0x0029
 #define TLSXT_EARLY_DATA                 0x002a
 #define TLSXT_SUPPORTED_VERSIONS         0x002b
@@ -3017,11 +3026,12 @@ typedef enum {
     TLSX_EARLY_DATA                 = TLSXT_EARLY_DATA,
     #endif
     TLSX_SUPPORTED_VERSIONS         = TLSXT_SUPPORTED_VERSIONS,
-    #ifdef WOLFSSL_SEND_HRR_COOKIE
     TLSX_COOKIE                     = TLSXT_COOKIE,
-    #endif
     #if defined(HAVE_SESSION_TICKET) || !defined(NO_PSK)
     TLSX_PSK_KEY_EXCHANGE_MODES     = TLSXT_PSK_KEY_EXCHANGE_MODES,
+    #if defined(WOLFSSL_CERT_WITH_EXTERN_PSK)
+    TLSX_CERT_WITH_EXTERN_PSK       = TLSXT_CERT_WITH_EXTERN_PSK,
+    #endif
     #endif
     #if !defined(NO_CERTS) && !defined(WOLFSSL_NO_CA_NAMES)
     TLSX_CERTIFICATE_AUTHORITIES    = TLSXT_CERTIFICATE_AUTHORITIES,
@@ -3613,9 +3623,9 @@ typedef struct TicketEncCbCtx {
 
 WOLFSSL_LOCAL int  TLSX_UseSessionTicket(TLSX** extensions,
                                              SessionTicket* ticket, void* heap);
-WOLFSSL_LOCAL SessionTicket* TLSX_SessionTicket_Create(word32 lifetime,
+WOLFSSL_TEST_VIS SessionTicket* TLSX_SessionTicket_Create(word32 lifetime,
                                            byte* data, word16 size, void* heap);
-WOLFSSL_LOCAL void TLSX_SessionTicket_Free(SessionTicket* ticket, void* heap);
+WOLFSSL_TEST_VIS void TLSX_SessionTicket_Free(SessionTicket* ticket, void* heap);
 
 #endif /* HAVE_SESSION_TICKET */
 
@@ -4719,10 +4729,7 @@ struct WOLFSSL_SESSION {
 #if defined(SESSION_CERTS) && defined(OPENSSL_EXTRA)
     WOLFSSL_X509*      peer;              /* peer cert */
 #endif
-#if defined(SESSION_CERTS) || (defined(WOLFSSL_TLS13) && \
-                               defined(HAVE_SESSION_TICKET))
     ProtocolVersion    version;           /* which version was used   */
-#endif
 #if defined(SESSION_CERTS) || !defined(NO_RESUME_SUITE_CHECK) || \
                         (defined(WOLFSSL_TLS13) && defined(HAVE_SESSION_TICKET))
     byte               cipherSuite0;      /* first byte, normally 0   */
@@ -5252,6 +5259,7 @@ struct Options {
     byte            asyncState;         /* sub-state for enum asyncState */
     byte            buildMsgState;      /* sub-state for enum buildMsgState */
     byte            alertCount;         /* detect warning dos attempt */
+    byte            emptyRecordCount;   /* detect empty record dos attempt */
 #ifdef WOLFSSL_MULTICAST
     word16          mcastID;            /* Multicast group ID */
 #endif

@@ -119,7 +119,7 @@
 #endif
 
 #ifndef HAVE_AEAD
-    #ifndef _MSC_VER
+    #if !defined(_MSC_VER) && !defined(__TASKING__)
         #error "The build option HAVE_AEAD is required for TLS 1.3"
     #else
         #pragma \
@@ -128,7 +128,7 @@
 #endif
 
 #ifndef HAVE_HKDF
-    #ifndef _MSC_VER
+    #if !defined(_MSC_VER) && !defined(__TASKING__)
         #error "The build option HAVE_HKDF is required for TLS 1.3"
     #else
         #pragma message("error: The build option HAVE_HKDF is required for TLS 1.3")
@@ -136,7 +136,7 @@
 #endif
 
 #ifndef HAVE_TLS_EXTENSIONS
-    #ifndef _MSC_VER
+    #if !defined(_MSC_VER) && !defined(__TASKING__)
         #error "The build option HAVE_TLS_EXTENSIONS is required for TLS 1.3"
     #else
         #pragma message("error: The build option HAVE_TLS_EXTENSIONS is required for TLS 1.3")
@@ -2629,9 +2629,10 @@ static int EncryptTls13(WOLFSSL* ssl, byte* output, const byte* input,
         #endif
 
         #ifdef WOLFSSL_CIPHER_TEXT_CHECK
-            if (ssl->specs.bulk_cipher_algorithm != wolfssl_cipher_null) {
+            if (ssl->specs.bulk_cipher_algorithm != wolfssl_cipher_null &&
+                    dataSz >= sizeof(ssl->encrypt.sanityCheck)) {
                 XMEMCPY(ssl->encrypt.sanityCheck, input,
-                    min(dataSz, sizeof(ssl->encrypt.sanityCheck)));
+                    sizeof(ssl->encrypt.sanityCheck));
             }
         #endif
 
@@ -2815,8 +2816,9 @@ static int EncryptTls13(WOLFSSL* ssl, byte* output, const byte* input,
 
         #ifdef WOLFSSL_CIPHER_TEXT_CHECK
             if (ssl->specs.bulk_cipher_algorithm != wolfssl_cipher_null &&
+                    dataSz >= sizeof(ssl->encrypt.sanityCheck) &&
                 XMEMCMP(output, ssl->encrypt.sanityCheck,
-                    min(dataSz, sizeof(ssl->encrypt.sanityCheck))) == 0) {
+                    sizeof(ssl->encrypt.sanityCheck)) == 0) {
 
                 WOLFSSL_MSG("EncryptTls13 sanity check failed! Glitch?");
                 return ENCRYPT_ERROR;
@@ -2959,6 +2961,7 @@ static int Tls13IntegrityOnly_Decrypt(WOLFSSL* ssl, byte* output,
     /* Copy the input to output if not the same buffer */
     if (ret == 0 && output != input)
         XMEMCPY(output, input, sz);
+    ForceZero(hmac, sizeof(hmac));
     return ret;
 }
 #endif
@@ -3266,6 +3269,10 @@ int BuildTls13Message(WOLFSSL* ssl, byte* output, int outSz, const byte* input,
     BuildMsg13Args  lcl_args;
 
     WOLFSSL_ENTER("BuildTls13Message");
+
+    if (ssl == NULL) {
+        return BAD_FUNC_ARG;
+    }
 
 #ifdef WOLFSSL_ASYNC_CRYPT
     ret = WC_NO_PENDING_E;
@@ -3601,7 +3608,7 @@ int CreateCookieExt(const WOLFSSL* ssl, byte* hash, word16 hashSz,
 {
     int  ret;
     byte mac[WC_MAX_DIGEST_SIZE] = {0};
-    Hmac cookieHmac;
+    WC_DECLARE_VAR(cookieHmac, Hmac, 1, ssl->heap);
     byte cookieType = 0;
     byte macSz = 0;
     byte cookie[OPAQUE8_LEN + WC_MAX_DIGEST_SIZE + OPAQUE16_LEN * 2];
@@ -3651,29 +3658,33 @@ int CreateCookieExt(const WOLFSSL* ssl, byte* hash, word16 hashSz,
     #error "No digest to available to use with HMAC for cookies."
 #endif /* NO_SHA */
 
-    ret = wc_HmacInit(&cookieHmac, ssl->heap, ssl->devId);
+    WC_ALLOC_VAR_EX(cookieHmac, Hmac, 1, ssl->heap, DYNAMIC_TYPE_HMAC,
+                    return MEMORY_E);
+
+    ret = wc_HmacInit(cookieHmac, ssl->heap, ssl->devId);
     if (ret == 0) {
-        ret = wc_HmacSetKey(&cookieHmac, cookieType,
+        ret = wc_HmacSetKey(cookieHmac, cookieType,
                             ssl->buffers.tls13CookieSecret.buffer,
                             ssl->buffers.tls13CookieSecret.length);
     }
     if (ret == 0)
-        ret = wc_HmacUpdate(&cookieHmac, cookie, cookieSz);
+        ret = wc_HmacUpdate(cookieHmac, cookie, cookieSz);
 #ifdef WOLFSSL_DTLS13
     /* Tie cookie to peer address */
     if (ret == 0) {
         /* peerLock not necessary. Still in handshake phase. */
         if (ssl->options.dtls && ssl->buffers.dtlsCtx.peer.sz > 0) {
-            ret = wc_HmacUpdate(&cookieHmac,
+            ret = wc_HmacUpdate(cookieHmac,
                 (byte*)ssl->buffers.dtlsCtx.peer.sa,
                 ssl->buffers.dtlsCtx.peer.sz);
         }
     }
 #endif
     if (ret == 0)
-        ret = wc_HmacFinal(&cookieHmac, mac);
+        ret = wc_HmacFinal(cookieHmac, mac);
 
-    wc_HmacFree(&cookieHmac);
+    wc_HmacFree(cookieHmac);
+    WC_FREE_VAR_EX(cookieHmac, ssl->heap, DYNAMIC_TYPE_HMAC);
     if (ret != 0)
         return ret;
 
@@ -3791,6 +3802,7 @@ int EchConfigGetSupportedCipherSuite(WOLFSSL_EchConfig* config)
     int i = 0;
 
     if (!wc_HpkeKemIsSupported(config->kemId)) {
+        WOLFSSL_MSG("ECH config: KEM not supported");
         return WOLFSSL_FATAL_ERROR;
     }
 
@@ -3801,6 +3813,7 @@ int EchConfigGetSupportedCipherSuite(WOLFSSL_EchConfig* config)
         }
     }
 
+    WOLFSSL_MSG("ECH config: KDF or AEAD not supported");
     return WOLFSSL_FATAL_ERROR;
 }
 
@@ -3923,12 +3936,13 @@ static int EchCalcAcceptance(WOLFSSL* ssl, byte* label, word16 labelSz,
 
     if (isHrr) {
         /* the transcript hash of ClientHelloInner1 */
-        hashSz = GetMsgHash(ssl, clientHelloInnerHash);
-        if (hashSz > 0) {
+        ret = GetMsgHash(ssl, clientHelloInnerHash);
+        if (ret > 0) {
+            hashSz = ret;
             ret = 0;
         }
-        else {
-            ret = (hashSz < 0) ? hashSz : WOLFSSL_FATAL_ERROR;
+        else if (ret == 0) {
+            ret = HASH_TYPE_E;
         }
 
         /* restart ECH transcript hash, similar to RestartHandshakeHash but
@@ -3968,6 +3982,9 @@ static int EchCalcAcceptance(WOLFSSL* ssl, byte* label, word16 labelSz,
         ret = GetMsgHash(ssl, transcriptEchConf);
         if (ret > 0) {
             ret = 0;
+        }
+        else if (ret == 0) {
+            ret = HASH_TYPE_E;
         }
     }
 
@@ -4305,8 +4322,17 @@ static int SetupPskKey(WOLFSSL* ssl, PreSharedKey* psk, int clientHello)
         }
 
         if (!clientHello) {
-            /* CLIENT: using PSK for peer authentication. */
-            ssl->options.peerAuthGood = 1;
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+            if (ssl->options.certWithExternPsk) {
+                /* Certificate authentication is still required. */
+                ssl->options.peerAuthGood = 0;
+            }
+            else
+#endif
+            {
+                /* CLIENT: using PSK for peer authentication. */
+                ssl->options.peerAuthGood = 1;
+            }
         }
     }
 #endif
@@ -4748,11 +4774,12 @@ int SendTls13ClientHello(WOLFSSL* ssl)
 
             /* get size for inner */
             ret = TLSX_GetRequestSize(ssl, client_hello, &args->length);
+
+            /* set the type to outer */
+            args->ech->type = ECH_TYPE_OUTER;
             if (ret != 0)
                 return ret;
 
-            /* set the type to outer */
-            args->ech->type = 0;
             /* set innerClientHelloLen to ClientHelloInner + padding + tag
              * RFC 9849 Section 6.1.7: pad using maximum_name_length */
             {
@@ -4778,6 +4805,8 @@ int SendTls13ClientHello(WOLFSSL* ssl)
             }
             args->ech->innerClientHelloLen = args->length +
                 args->ech->paddingLen + args->ech->hpke->Nt;
+            if (args->ech->innerClientHelloLen > 0xFFFF)
+                return BUFFER_E;
             /* set the length back to before we computed ClientHelloInner size */
             args->length = (word32)args->preXLength;
         }
@@ -4920,7 +4949,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
             (byte*)XMALLOC(args->ech->innerClientHelloLen - args->ech->hpke->Nt,
             ssl->heap, DYNAMIC_TYPE_TMP_BUFFER);
         if (args->ech->innerClientHello == NULL) {
-            args->ech->type = 0;
+            args->ech->type = ECH_TYPE_OUTER;
             return MEMORY_E;
         }
         /* set the padding bytes to 0 */
@@ -4946,7 +4975,7 @@ int SendTls13ClientHello(WOLFSSL* ssl)
         ret = wc_RNG_GenerateBlock(ssl->rng, args->output +
             args->clientRandomOffset, RAN_LEN);
         if (ret != 0) {
-            args->ech->type = 0;
+            args->ech->type = ECH_TYPE_OUTER;
             return ret;
         }
         /* copy the new client random */
@@ -4957,12 +4986,10 @@ int SendTls13ClientHello(WOLFSSL* ssl)
         ret = TLSX_WriteRequest(ssl, args->ech->innerClientHello + args->idx -
             (RECORD_HEADER_SZ + HANDSHAKE_HEADER_SZ), client_hello,
             &args->length);
-        if (ret != 0) {
-            args->ech->type = 0;
-            return ret;
-        }
         /* set the type to outer */
-        args->ech->type = 0;
+        args->ech->type = ECH_TYPE_OUTER;
+        if (ret != 0)
+            return ret;
     }
 #endif
 
@@ -5719,6 +5746,7 @@ int DoTls13ServerHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
         args->echX = TLSX_Find(ssl->extensions, TLSX_ECH);
         if (args->echX == NULL || args->echX->data == NULL)
             return WOLFSSL_FATAL_ERROR;
+
         /* account for hrr extension instead of server random */
         if (args->extMsgType == hello_retry_request) {
             byte *confBuf = ((WOLFSSL_ECH*)args->echX->data)->confBuf;
@@ -5763,6 +5791,20 @@ int DoTls13ServerHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
             XMEMSET(ssl->arrays->psk_key, 0, MAX_PSK_KEY_LEN);
         }
         else {
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+            if (ssl->options.certWithExternPsk && psk->resumption) {
+                /* RFC8773bis mode requires external PSK, not ticket resumption. */
+                WOLFSSL_ERROR_VERBOSE(PSK_KEY_ERROR);
+                return PSK_KEY_ERROR;
+            }
+            if (ssl->options.certWithExternPsk && ssl->options.shSentKeyShare == 0) {
+                /* RFC8773bis Sec. 3: cert_with_extern_psk requires psk_dhe_ke;
+                 * a ServerHello without a key_share confirms only psk_ke. */
+                WOLFSSL_MSG("cert_with_extern_psk: ServerHello missing key_share");
+                WOLFSSL_ERROR_VERBOSE(EXT_MISSING);
+                return EXT_MISSING;
+            }
+#endif
             if ((ret = SetupPskKey(ssl, psk, 0)) != 0)
                 return ret;
             ssl->options.pskNegotiated = 1;
@@ -6107,10 +6149,15 @@ static int FindPsk(WOLFSSL* ssl, PreSharedKey* psk, const byte* suite, int* err)
     ret = FindPskSuite(ssl, psk, ssl->arrays->psk_key, &ssl->arrays->psk_keySz,
                        suite, &found, foundSuite);
     if (ret == 0 && found) {
+        /* This identity matched via external PSK callback, not ticket resume. */
+        psk->resumption = 0;
         /* Default to ciphersuite if cb doesn't specify. */
         ssl->options.resuming = 0;
         /* Don't send certificate request when using PSK. */
-        ssl->options.verifyPeer = 0;
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+        if (!ssl->options.certWithExternPsk)
+#endif
+            ssl->options.verifyPeer = 0;
 
         /* PSK age is always zero. */
         if (psk->ticketAge != 0) {
@@ -6130,8 +6177,13 @@ static int FindPsk(WOLFSSL* ssl, PreSharedKey* psk, const byte* suite, int* err)
         if (ret == 0) {
             /* PSK negotiation has succeeded */
             ssl->options.isPSK = 1;
-            /* SERVER: using PSK for peer authentication. */
-            ssl->options.peerAuthGood = 1;
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+            if (!ssl->options.certWithExternPsk)
+#endif
+            {
+                /* SERVER: using PSK for peer authentication. */
+                ssl->options.peerAuthGood = 1;
+            }
         }
     }
 
@@ -6160,6 +6212,9 @@ static int DoPreSharedKeys(WOLFSSL* ssl, const byte* input, word32 inputSz,
     byte          binderKey[WC_MAX_DIGEST_SIZE];
     byte          binder[WC_MAX_DIGEST_SIZE];
     word32        binderLen;
+#if defined(WOLFSSL_CERT_WITH_EXTERN_PSK) && defined(HAVE_SESSION_TICKET)
+    int           certWithExternOffered = 0;
+#endif
 
     #ifdef NO_PSK
         (void) suite; /* to avoid unused var warning when not used */
@@ -6172,15 +6227,21 @@ static int DoPreSharedKeys(WOLFSSL* ssl, const byte* input, word32 inputSz,
     ext = TLSX_Find(ssl->extensions, TLSX_PRE_SHARED_KEY);
     if (ext == NULL) {
         WOLFSSL_MSG("No pre shared extension keys found");
-        return BAD_FUNC_ARG;
+        ret = BAD_FUNC_ARG;
+        goto cleanup;
     }
+#if defined(WOLFSSL_CERT_WITH_EXTERN_PSK) && defined(HAVE_SESSION_TICKET)
+    certWithExternOffered =
+        TLSX_Find(ssl->extensions, TLSX_CERT_WITH_EXTERN_PSK) != NULL;
+#endif
 
     /* Look through all client's pre-shared keys for a match. */
     for (current = (PreSharedKey*)ext->data; current != NULL;
             current = current->next) {
     #ifndef NO_PSK
         if (current->identityLen > MAX_PSK_ID_LEN) {
-            return BUFFER_ERROR;
+            ret = BUFFER_ERROR;
+            goto cleanup;
         }
         XMEMCPY(ssl->arrays->client_identity, current->identity,
                 current->identityLen);
@@ -6207,7 +6268,7 @@ static int DoPreSharedKeys(WOLFSSL* ssl, const byte* input, word32 inputSz,
 
         #ifdef WOLFSSL_ASYNC_CRYPT
         if (ret == WC_NO_ERR_TRACE(WC_PENDING_E))
-            return ret;
+            goto cleanup;
         #endif
 
         if (ret != WOLFSSL_TICKET_RET_OK && current->sess_free_cb != NULL) {
@@ -6218,6 +6279,27 @@ static int DoPreSharedKeys(WOLFSSL* ssl, const byte* input, word32 inputSz,
                     sizeof(psk_sess_free_cb_ctx));
         }
         if (ret == WOLFSSL_TICKET_RET_OK) {
+#if defined(WOLFSSL_CERT_WITH_EXTERN_PSK) && defined(HAVE_SESSION_TICKET)
+            /* RFC 8773bis Sect. 5.1: all PSKs listed alongside
+             * tls_cert_with_extern_psk MUST be external PSKs.  A successfully
+             * decrypted session ticket identity is a resumption PSK, so the
+             * server MUST abort with illegal_parameter regardless of whether
+             * the ticket would otherwise be acceptable.  Check here, before
+             * DoClientTicketFinalize, to avoid polluting ssl->session with
+             * ticket state that will not be used. */
+            if (certWithExternOffered) {
+                if (current->sess_free_cb != NULL) {
+                    current->sess_free_cb(ssl, current->sess,
+                            &current->sess_free_cb_ctx);
+                    current->sess = NULL;
+                    XMEMSET(&current->sess_free_cb_ctx, 0,
+                            sizeof(psk_sess_free_cb_ctx));
+                }
+                ret = PSK_KEY_ERROR;
+                WOLFSSL_ERROR_VERBOSE(ret);
+                goto cleanup;
+            }
+#endif
             ret = DoClientTicketCheck(ssl, current, ssl->timeout, suite);
             if (ret == 0)
                 DoClientTicketFinalize(ssl, current->it, current->sess);
@@ -6242,45 +6324,45 @@ static int DoPreSharedKeys(WOLFSSL* ssl, const byte* input, word32 inputSz,
             ssl->options.cipherSuite    = ssl->session->cipherSuite;
             ret = SetCipherSpecs(ssl);
             if (ret != 0)
-                return ret;
+                goto cleanup;
 
             /* Resumption PSK is resumption master secret. */
             ssl->arrays->psk_keySz = ssl->specs.hash_size;
             if ((ret = DeriveResumptionPSK(ssl, ssl->session->ticketNonce.data,
                 ssl->session->ticketNonce.len, ssl->arrays->psk_key)) != 0) {
-                return ret;
+                goto cleanup;
             }
 
             /* Derive the early secret using the PSK. */
             ret = DeriveEarlySecret(ssl);
             if (ret != 0)
-                return ret;
+                goto cleanup;
 
             /* Hash data up to binders for deriving binders in PSK extension. */
             ret = HashInput(ssl, input, (int)inputSz);
             if (ret < 0)
-                return ret;
+                goto cleanup;
 
             /* Derive the binder key to use with HMAC. */
             ret = DeriveBinderKeyResume(ssl, binderKey);
             if (ret != 0)
-                return ret;
+                goto cleanup;
         }
         else
     #endif /* HAVE_SESSION_TICKET */
     #ifndef NO_PSK
         if (FindPsk(ssl, current, suite, &ret)) {
             if (ret != 0)
-                return ret;
+                goto cleanup;
 
             ret = HashInput(ssl, input, (int)inputSz);
             if (ret < 0)
-                return ret;
+                goto cleanup;
 
             /* Derive the binder key to use with HMAC. */
             ret = DeriveBinderKey(ssl, binderKey);
             if (ret != 0)
-                return ret;
+                goto cleanup;
         }
         else
     #endif
@@ -6295,42 +6377,62 @@ static int DoPreSharedKeys(WOLFSSL* ssl, const byte* input, word32 inputSz,
                                    ssl->keys.client_write_MAC_secret,
                                    0 /* neither end */);
         if (ret != 0)
-            return ret;
+            goto cleanup;
 
         /* Derive the binder and compare with the one in the extension. */
         ret = BuildTls13HandshakeHmac(ssl,
                          ssl->keys.client_write_MAC_secret, binder, &binderLen);
         if (ret != 0)
-            return ret;
+            goto cleanup;
         if (binderLen != current->binderLen ||
                              ConstantCompare(binder, current->binder,
                                 binderLen) != 0) {
             WOLFSSL_ERROR_VERBOSE(BAD_BINDER);
-            return BAD_BINDER;
+            ret = BAD_BINDER;
+            goto cleanup;
         }
 
         /* This PSK works, no need to try any more. */
         current->chosen = 1;
         ext->resp = 1;
+#if defined(WOLFSSL_EARLY_DATA) && defined(HAVE_SESSION_TICKET) && \
+    !defined(NO_SESSION_CACHE)
+        /* RFC 8446 section 8: accept 0-RTT for a given handshake at most
+         * once. Evict the session from both the internal cache (under a
+         * write lock) and any external cache (via ctx->rem_sess_cb) so
+         * the same ClientHello cannot replay early data. Only when the
+         * client offered 0-RTT on a session that permits it. */
+        if (ssl->earlyData != no_early_data &&
+                ssl->session->maxEarlyDataSz != 0) {
+            (void)wolfSSL_SSL_CTX_remove_session(ssl->ctx, ssl->session);
+        }
+#endif
         break;
     }
 
     if (current == NULL) {
 #ifdef WOLFSSL_PSK_ID_PROTECTION
     #ifndef NO_CERTS
-        if (ssl->buffers.certChainCnt != 0)
-            return 0;
+        if (ssl->buffers.certChainCnt != 0) {
+            ret = 0;
+            goto cleanup;
+        }
     #endif
         WOLFSSL_ERROR_VERBOSE(BAD_BINDER);
-        return BAD_BINDER;
+        ret = BAD_BINDER;
+        goto cleanup;
 #else
-        return 0;
+        ret = 0;
+        goto cleanup;
 #endif
     }
 
     *first = (current == ext->data);
     *usingPSK = 1;
 
+cleanup:
+    ForceZero(binderKey, sizeof(binderKey));
+    ForceZero(binder, sizeof(binder));
     WOLFSSL_LEAVE("DoPreSharedKeys", ret);
 
     return ret;
@@ -6446,13 +6548,29 @@ static int CheckPreSharedKeys(WOLFSSL* ssl, const byte* input, word32 helloSz,
 
     if (*usingPSK != 0) {
         word32 modes;
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+        int usingCertWithExternPsk = 0;
+        TLSX* certExt = NULL;
+        TLSX* pskExt = NULL;
+        PreSharedKey* chosenPsk = NULL;
+#endif
     #ifdef WOLFSSL_EARLY_DATA
         TLSX*  extEarlyData;
+    #ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+        int hasCertWithExternPsk = (TLSX_Find(ssl->extensions,
+                                    TLSX_CERT_WITH_EXTERN_PSK) != NULL);
+    #endif
 
         extEarlyData = TLSX_Find(ssl->extensions, TLSX_EARLY_DATA);
         if (extEarlyData != NULL) {
-            /* Check if accepting early data and first PSK. */
-            if (ssl->earlyData != no_early_data && first) {
+            /* Check if accepting early data and first PSK.
+             * RFC 8773bis: early_data is not compatible with
+             * cert_with_extern_psk, so skip key derivation in that case. */
+            if (ssl->earlyData != no_early_data && first
+    #ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+                && !hasCertWithExternPsk
+    #endif
+            ) {
                 extEarlyData->resp = 1;
 
                 /* Derive early data decryption key. */
@@ -6479,14 +6597,76 @@ static int CheckPreSharedKeys(WOLFSSL* ssl, const byte* input, word32 helloSz,
         }
         modes = ext->val;
 
+    #ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+        certExt = TLSX_Find(ssl->extensions, TLSX_CERT_WITH_EXTERN_PSK);
+        if (certExt != NULL) {
+            pskExt = TLSX_Find(ssl->extensions, TLSX_PRE_SHARED_KEY);
+            if (pskExt != NULL)
+                chosenPsk = (PreSharedKey*)pskExt->data;
+            while (chosenPsk != NULL && !chosenPsk->chosen)
+                chosenPsk = chosenPsk->next;
+            if (chosenPsk == NULL || chosenPsk->resumption) {
+                WOLFSSL_ERROR_VERBOSE(PSK_KEY_ERROR);
+                return PSK_KEY_ERROR;
+            }
+            if ((modes & (1 << PSK_DHE_KE)) == 0) {
+                WOLFSSL_ERROR_VERBOSE(PSK_KEY_ERROR);
+                return PSK_KEY_ERROR;
+            }
+            usingCertWithExternPsk = 1;
+            ssl->options.certWithExternPsk = 1;
+            if (clSuites->hashSigAlgoSz == 0) {
+                WOLFSSL_ERROR_VERBOSE(MISSING_HANDSHAKE_DATA);
+                return MISSING_HANDSHAKE_DATA;
+            }
+            ret = PickHashSigAlgo(ssl, clSuites->hashSigAlgo,
+                                  clSuites->hashSigAlgoSz, 1);
+            if (ret != 0)
+                return ret;
+            ssl->options.sendVerify = SEND_CERT;
+            certExt->resp = 1;
+        #ifdef WOLFSSL_EARLY_DATA
+            /* RFC 8773bis: early_data is not compatible with
+             * cert_with_extern_psk.  TLSX_Parse already rejects the
+             * combination in the ClientHello, but clear the response flag
+             * here as a defense-in-depth measure. */
+            if (extEarlyData != NULL) {
+                extEarlyData->resp = 0;
+                ssl->earlyData = no_early_data;
+            }
+        #endif
+        }
+        else {
+            ssl->options.certWithExternPsk = 0;
+        }
+    #endif
+
+#ifndef HAVE_SUPPORTED_CURVES
+    #ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+        if (usingCertWithExternPsk) {
+            WOLFSSL_ERROR_VERBOSE(PSK_KEY_ERROR);
+            return PSK_KEY_ERROR;
+        }
+    #endif
+#endif
     #ifdef HAVE_SUPPORTED_CURVES
         ext = TLSX_Find(ssl->extensions, TLSX_KEY_SHARE);
         /* Use (EC)DHE for forward-security if possible. */
-        if ((modes & (1 << PSK_DHE_KE)) != 0 && !ssl->options.noPskDheKe &&
-                                                                  ext != NULL) {
-            /* Only use named group used in last session. */
-            ssl->namedGroup = ssl->session->namedGroup;
-
+        if (((modes & (1 << PSK_DHE_KE)) != 0 && !ssl->options.noPskDheKe &&
+             ext != NULL)
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+             || usingCertWithExternPsk
+#endif
+        ) {
+            if (ext == NULL) {
+                WOLFSSL_ERROR_VERBOSE(EXT_MISSING);
+                return EXT_MISSING;
+            }
+            /* Resumption path uses previous session group. */
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+            if (!usingCertWithExternPsk)
+#endif
+                ssl->namedGroup = ssl->session->namedGroup;
             *usingPSK = 2; /* generate new ephemeral key */
         }
         else if (ssl->options.onlyPskDheKe) {
@@ -6506,16 +6686,20 @@ static int CheckPreSharedKeys(WOLFSSL* ssl, const byte* input, word32 helloSz,
             *usingPSK = 1;
         }
     }
-#ifdef WOLFSSL_PSK_ID_PROTECTION
     else {
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+        TLSX_Remove(&ssl->extensions, TLSX_CERT_WITH_EXTERN_PSK, ssl->heap);
+        ssl->options.certWithExternPsk = 0;
+#endif
+#ifdef WOLFSSL_PSK_ID_PROTECTION
     #ifndef NO_CERTS
         if (ssl->buffers.certChainCnt != 0)
             return 0;
     #endif
         WOLFSSL_ERROR_VERBOSE(BAD_BINDER);
         return BAD_BINDER;
-    }
 #endif
+    }
 
     WOLFSSL_LEAVE("CheckPreSharedKeys", ret);
 
@@ -6535,7 +6719,7 @@ int TlsCheckCookie(const WOLFSSL* ssl, const byte* cookie, word16 cookieSz)
 {
     int  ret;
     byte mac[WC_MAX_DIGEST_SIZE] = {0};
-    Hmac cookieHmac;
+    WC_DECLARE_VAR(cookieHmac, Hmac, 1, ssl->heap);
     byte cookieType = 0;
     byte macSz = 0;
 
@@ -6565,29 +6749,33 @@ int TlsCheckCookie(const WOLFSSL* ssl, const byte* cookie, word16 cookieSz)
         return HRR_COOKIE_ERROR;
     cookieSz -= macSz;
 
-    ret = wc_HmacInit(&cookieHmac, ssl->heap, ssl->devId);
+    WC_ALLOC_VAR_EX(cookieHmac, Hmac, 1, ssl->heap, DYNAMIC_TYPE_HMAC,
+                    return MEMORY_E);
+
+    ret = wc_HmacInit(cookieHmac, ssl->heap, ssl->devId);
     if (ret == 0) {
-        ret = wc_HmacSetKey(&cookieHmac, cookieType,
+        ret = wc_HmacSetKey(cookieHmac, cookieType,
                             ssl->buffers.tls13CookieSecret.buffer,
                             ssl->buffers.tls13CookieSecret.length);
     }
     if (ret == 0)
-        ret = wc_HmacUpdate(&cookieHmac, cookie, cookieSz);
+        ret = wc_HmacUpdate(cookieHmac, cookie, cookieSz);
 #ifdef WOLFSSL_DTLS13
     /* Tie cookie to peer address */
     if (ret == 0) {
         /* peerLock not necessary. Still in handshake phase. */
         if (ssl->options.dtls && ssl->buffers.dtlsCtx.peer.sz > 0) {
-            ret = wc_HmacUpdate(&cookieHmac,
+            ret = wc_HmacUpdate(cookieHmac,
                 (byte*)ssl->buffers.dtlsCtx.peer.sa,
                 ssl->buffers.dtlsCtx.peer.sz);
         }
     }
 #endif
     if (ret == 0)
-        ret = wc_HmacFinal(&cookieHmac, mac);
+        ret = wc_HmacFinal(cookieHmac, mac);
 
-    wc_HmacFree(&cookieHmac);
+    wc_HmacFree(cookieHmac);
+    WC_FREE_VAR_EX(cookieHmac, ssl->heap, DYNAMIC_TYPE_HMAC);
     if (ret != 0)
         return ret;
 
@@ -7364,7 +7552,11 @@ int DoTls13ClientHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
 
 #if (defined(HAVE_SESSION_TICKET) || !defined(NO_PSK)) && \
                                                     defined(HAVE_TLS_EXTENSIONS)
-    if (!args->usingPSK)
+    if (!args->usingPSK
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+        || ssl->options.certWithExternPsk
+#endif
+    )
 #endif
     {
 #if defined(HAVE_SESSION_TICKET) || !defined(NO_PSK)
@@ -8421,7 +8613,10 @@ static WC_INLINE int DecodeTls13SigAlg(byte* input, byte* hashAlgo,
             break;
     #endif
         case NEW_SA_MAJOR:
-            *hashAlgo = GetNewSAHashAlgo(input[1]);
+        {
+            enum wc_MACAlgorithm mac = GetNewSAHashAlgo(input[1]);
+            *hashAlgo = (byte)mac;
+        }
 
             /* PSS encryption: 0x080[4-6] */
             if (input[1] >= RSA_PSS_RSAE_SHA256_MINOR &&
@@ -8680,6 +8875,8 @@ int CreateSigData(WOLFSSL* ssl, byte* sigData, word16* sigDataSz,
     ret = GetMsgHash(ssl, &sigData[idx]);
     if (ret < 0)
         return ret;
+    if (ret == 0)
+        return HASH_TYPE_E;
 
     *sigDataSz = (word16)(idx + ret);
     ret = 0;
@@ -8914,7 +9111,7 @@ static word32 NextCert(byte* data, word32 length, word32* idx)
  * extIdx    The index number of certificate status request data
  *           for the certificate.
  * offset    index offset
- * returns   Total number of bytes written.
+ * returns   Total number of bytes written on success or negative value on error.
  */
 static int WriteCSRToBuffer(WOLFSSL* ssl, DerBuffer** certExts,
                                 word16* extSz,  word16 extSz_num)
@@ -8928,6 +9125,9 @@ static int WriteCSRToBuffer(WOLFSSL* ssl, DerBuffer** certExts,
     word32 tmpSz;
     word32 extIdx;
     DerBuffer* der;
+
+    if (extSz_num > MAX_CERT_EXTENSIONS)
+        return MAX_CERT_EXTENSIONS_ERR;
 
     ext = TLSX_Find(ssl->extensions, TLSX_STATUS_REQUEST);
     csr = ext ? (CertificateStatusRequest*)ext->data : NULL;
@@ -9180,8 +9380,11 @@ static int SendTls13Certificate(WOLFSSL* ssl)
             if (ret != 0)
                 return ret;
 
-            ret = WriteCSRToBuffer(ssl, &ssl->buffers.certExts[0], &extSz[0],
-                    1 /* +1 for leaf */ + (word16)ssl->buffers.certChainCnt);
+            if ((1 + ssl->buffers.certChainCnt) > MAX_CERT_EXTENSIONS)
+                ret = MAX_CERT_EXTENSIONS_ERR;
+            if (ret == 0)
+                ret = WriteCSRToBuffer(ssl, &ssl->buffers.certExts[0], &extSz[0],
+                        1 /* +1 for leaf */ + (word16)ssl->buffers.certChainCnt);
             if (ret < 0)
                 return ret;
             totalextSz += ret;
@@ -9334,7 +9537,7 @@ static int SendTls13Certificate(WOLFSSL* ssl)
                         break;
                 #if defined(HAVE_CERTIFICATE_STATUS_REQUEST) && \
                         !defined(NO_WOLFSSL_SERVER)
-                    if (MAX_CERT_EXTENSIONS > extIdx)
+                    if (extIdx + 1 < MAX_CERT_EXTENSIONS)
                         extIdx++;
                 #endif
                 }
@@ -9367,6 +9570,10 @@ static int SendTls13Certificate(WOLFSSL* ssl)
             /* DTLS1.3 uses a separate variable and logic for fragments */
             ssl->options.buildingMsg = 0;
             ssl->fragOffset = 0;
+            if ((word32)sendSz > WOLFSSL_MAX_16BIT || i > WOLFSSL_MAX_16BIT) {
+                WOLFSSL_MSG("Send Cert DTLS size exceeds word16");
+                return BUFFER_E;
+            }
             ret = Dtls13HandshakeSend(ssl, output, (word16)sendSz, (word16)i,
                                       certificate, 1);
         }
@@ -10153,11 +10360,16 @@ static int SendTls13CertificateVerify(WOLFSSL* ssl)
                 /* check for signature faults */
                 byte* sigOut = args->verify + HASH_SIG_SIZE + VERIFY_HEADER +
                                 args->sigLen + OPAQUE16_LEN + OPAQUE16_LEN;
+            #ifdef HAVE_PK_CALLBACKS
+                buffer tmp;
+                tmp.length = ssl->buffers.altKey->length;
+                tmp.buffer = ssl->buffers.altKey->buffer;
+            #endif
                 ret = EccVerify(ssl, sigOut, args->altSigLen,
                         args->altSigData, args->altSigDataSz,
                         (ecc_key*)ssl->hsAltKey,
             #ifdef HAVE_PK_CALLBACKS
-                        ssl->buffers.altKey
+                        &tmp
             #else
                         NULL
             #endif
@@ -11386,28 +11598,30 @@ int DoTls13Finished(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
             ret = NO_PEER_CERT; /* NO_PEER_VERIFY */
             WOLFSSL_MSG("TLS v1.3 client did not present peer cert");
             DoCertFatalAlert(ssl, ret);
-            return ret;
+            goto cleanup;
         }
     }
 #endif
 
     /* check against totalSz */
-    if (*inOutIdx + size > totalSz)
-        return BUFFER_E;
+    if (*inOutIdx + size > totalSz) {
+        ret = BUFFER_E;
+        goto cleanup;
+    }
 
 #if defined(WOLFSSL_RENESAS_TSIP_TLS)
     ret = tsip_Tls13HandleFinished(ssl, input, inOutIdx, size, totalSz);
     if (ret == 0) {
         ssl->options.serverState = SERVER_FINISHED_COMPLETE;
-        return ret;
+        goto cleanup;
     }
     if (ret == WC_NO_ERR_TRACE(VERIFY_FINISHED_ERROR)) {
         SendAlert(ssl, alert_fatal, decrypt_error);
-        return ret;
+        goto cleanup;
     }
     if (ret != WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE)) {
         /* other errors */
-        return ret;
+        goto cleanup;
     }
     ret = 0;
 #endif /* WOLFSSL_RENESAS_TSIP_TLS */
@@ -11417,7 +11631,7 @@ int DoTls13Finished(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
                                    ssl->keys.client_write_MAC_secret,
                                    WOLFSSL_CLIENT_END);
         if (ret != 0)
-            return ret;
+            goto cleanup;
 
         secret = ssl->keys.client_write_MAC_secret;
     }
@@ -11429,13 +11643,13 @@ int DoTls13Finished(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
                                    ssl->keys.client_write_MAC_secret,
                                    WOLFSSL_CLIENT_END);
         if (ret != 0)
-            return ret;
+            goto cleanup;
 
         ret = DeriveFinishedSecret(ssl, ssl->serverSecret,
                                    ssl->keys.server_write_MAC_secret,
                                    WOLFSSL_SERVER_END);
         if (ret != 0)
-            return ret;
+            goto cleanup;
 
         secret = ssl->keys.server_write_MAC_secret;
     }
@@ -11448,7 +11662,8 @@ int DoTls13Finished(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
         ret = BuildTls13HandshakeHmac(ssl, secret, mac, &finishedSz);
     #ifdef WOLFSSL_HAVE_TLS_UNIQUE
         if (finishedSz > TLS_FINISHED_SZ_MAX) {
-            return BUFFER_ERROR;
+            ret = BUFFER_ERROR;
+            goto cleanup;
         }
         if (ssl->options.side == WOLFSSL_CLIENT_END) {
             XMEMCPY(ssl->serverFinished, mac, finishedSz);
@@ -11460,9 +11675,11 @@ int DoTls13Finished(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
         }
     #endif /* WOLFSSL_HAVE_TLS_UNIQUE */
         if (ret != 0)
-            return ret;
-        if (size != finishedSz)
-            return BUFFER_ERROR;
+            goto cleanup;
+        if (size != finishedSz) {
+            ret = BUFFER_ERROR;
+            goto cleanup;
+        }
     }
 
 #ifdef WOLFSSL_CALLBACKS
@@ -11477,7 +11694,8 @@ int DoTls13Finished(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
             WOLFSSL_MSG("Verify finished error on hashes");
             SendAlert(ssl, alert_fatal, decrypt_error);
             WOLFSSL_ERROR_VERBOSE(VERIFY_FINISHED_ERROR);
-            return VERIFY_FINISHED_ERROR;
+            ret = VERIFY_FINISHED_ERROR;
+            goto cleanup;
         }
     }
 
@@ -11490,12 +11708,12 @@ int DoTls13Finished(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
 #ifdef WOLFSSL_EARLY_DATA
         if (ssl->earlyData != no_early_data) {
             if ((ret = DeriveTls13Keys(ssl, no_key, DECRYPT_SIDE_ONLY, 1)) != 0)
-                return ret;
+                goto cleanup;
         }
 #endif
         /* Setup keys for application data messages from client. */
         if ((ret = SetKeysSide(ssl, DECRYPT_SIDE_ONLY)) != 0)
-            return ret;
+            goto cleanup;
     }
 #endif
 
@@ -11526,10 +11744,13 @@ int DoTls13Finished(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
     }
 #endif /* WOLFSSL_QUIC && WOLFSSL_EARLY_DATA */
 
-    WOLFSSL_LEAVE("DoTls13Finished", 0);
+    ret = 0;
+cleanup:
+    ForceZero(mac, sizeof(mac));
+    WOLFSSL_LEAVE("DoTls13Finished", ret);
     WOLFSSL_END(WC_FUNC_FINISHED_DO);
 
-    return 0;
+    return ret;
 }
 
 #if !defined(NO_WOLFSSL_CLIENT) || !defined(NO_WOLFSSL_SERVER)
@@ -12354,8 +12575,6 @@ restore:
             wc_Sha256Free(&ssl->hsHashes->hashSha256);
             ret = wc_Sha256Copy(&digest.sha256, &ssl->hsHashes->hashSha256);
             wc_Sha256Free(&digest.sha256);
-            if (ret != 0)
-                return ret;
             break;
     #endif
     #ifdef WOLFSSL_SHA384
@@ -12363,8 +12582,6 @@ restore:
             wc_Sha384Free(&ssl->hsHashes->hashSha384);
             ret = wc_Sha384Copy(&digest.sha384, &ssl->hsHashes->hashSha384);
             wc_Sha384Free(&digest.sha384);
-            if (ret != 0)
-                return ret;
             break;
     #endif
     #ifdef WOLFSSL_TLS13_SHA512
@@ -12372,8 +12589,6 @@ restore:
             wc_Sha512Free(&ssl->hsHashes->hashSha512);
             ret = wc_Sha512Copy(&digest.sha512, &ssl->hsHashes->hashSha512);
             wc_Sha512Free(&digest.sha512);
-            if (ret != 0)
-                return ret;
             break;
     #endif
     #ifdef WOLFSSL_SM3
@@ -12381,12 +12596,11 @@ restore:
             wc_Sm3Free(&ssl->hsHashes->hashSm3);
             ret = wc_Sm3Copy(&digest.sm3, &ssl->hsHashes->hashSm3);
             wc_Sm3Free(&digest.sm3);
-            if (ret != 0)
-                return ret;
             break;
     #endif
     }
 
+    ForceZero(mac, sizeof(mac));
     return ret;
 }
 #endif
@@ -12776,7 +12990,11 @@ static int SanityCheckTls13MsgReceived(WOLFSSL* ssl, byte type)
             /* Server's authenticating with PSK must not send this. */
             if (ssl->options.side == WOLFSSL_CLIENT_END &&
                              ssl->options.serverState == SERVER_CERT_COMPLETE &&
-                             ssl->options.pskNegotiated) {
+                             ssl->options.pskNegotiated
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+                             && !ssl->options.certWithExternPsk
+#endif
+               ) {
                 WOLFSSL_MSG("Certificate received while using PSK");
                 WOLFSSL_ERROR_VERBOSE(SANITY_MSG_E);
                 return SANITY_MSG_E;
@@ -12840,7 +13058,11 @@ static int SanityCheckTls13MsgReceived(WOLFSSL* ssl, byte type)
         #endif
         #if defined(HAVE_SESSION_TICKET) || !defined(NO_PSK)
             /* Server's authenticating with PSK must not send this. */
-            if (ssl->options.pskNegotiated) {
+            if (ssl->options.pskNegotiated
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+                && !ssl->options.certWithExternPsk
+#endif
+               ) {
                 WOLFSSL_MSG("CertificateRequest received while using PSK");
                 WOLFSSL_ERROR_VERBOSE(SANITY_MSG_E);
                 return SANITY_MSG_E;
@@ -12881,7 +13103,11 @@ static int SanityCheckTls13MsgReceived(WOLFSSL* ssl, byte type)
                 }
             #if defined(HAVE_SESSION_TICKET) || !defined(NO_PSK)
                 /* Server's authenticating with PSK must not send this. */
-                if (ssl->options.pskNegotiated) {
+                if (ssl->options.pskNegotiated
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+                    && !ssl->options.certWithExternPsk
+#endif
+                   ) {
                     WOLFSSL_MSG("CertificateVerify received while using PSK");
                     WOLFSSL_ERROR_VERBOSE(SANITY_MSG_E);
                     return SANITY_MSG_E;
@@ -12936,11 +13162,25 @@ static int SanityCheckTls13MsgReceived(WOLFSSL* ssl, byte type)
                  * using PSK. */
             #if defined(HAVE_SESSION_TICKET) || !defined(NO_PSK)
                 if (ssl->options.pskNegotiated) {
-                    if (ssl->options.serverState !=
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+                    if (ssl->options.certWithExternPsk) {
+                        if (ssl->options.serverState !=
+                                                SERVER_CERT_VERIFY_COMPLETE) {
+                            WOLFSSL_MSG("Finished received out of order - "
+                                        "cert_with_extern_psk");
+                            WOLFSSL_ERROR_VERBOSE(OUT_OF_ORDER_E);
+                            return OUT_OF_ORDER_E;
+                        }
+                    }
+                    else
+#endif
+                    {
+                        if (ssl->options.serverState !=
                                          SERVER_ENCRYPTED_EXTENSIONS_COMPLETE) {
-                        WOLFSSL_MSG("Finished received out of order - PSK");
-                        WOLFSSL_ERROR_VERBOSE(OUT_OF_ORDER_E);
-                        return OUT_OF_ORDER_E;
+                            WOLFSSL_MSG("Finished received out of order - PSK");
+                            WOLFSSL_ERROR_VERBOSE(OUT_OF_ORDER_E);
+                            return OUT_OF_ORDER_E;
+                        }
                     }
                 }
                 else
@@ -12978,7 +13218,11 @@ static int SanityCheckTls13MsgReceived(WOLFSSL* ssl, byte type)
             }
         #endif
         #if defined(HAVE_SESSION_TICKET) || !defined(NO_PSK)
-            if (!ssl->options.pskNegotiated)
+            if (!ssl->options.pskNegotiated
+#ifdef WOLFSSL_CERT_WITH_EXTERN_PSK
+                || ssl->options.certWithExternPsk
+#endif
+            )
         #endif
             {
                 /* Must have received a Certificate message from client if
