@@ -171,19 +171,20 @@ static void FreeOcspEntry(OcspEntry* entry, void* heap)
 void FreeOCSP(WOLFSSL_OCSP* ocsp, int dynamic)
 {
     OcspEntry *entry, *next;
+    void* heap = (ocsp->cm != NULL) ? ocsp->cm->heap : NULL;
 
     WOLFSSL_ENTER("FreeOCSP");
 
     for (entry = ocsp->ocspList; entry; entry = next) {
         next = entry->next;
-        FreeOcspEntry(entry, ocsp->cm->heap);
-        XFREE(entry, ocsp->cm->heap, DYNAMIC_TYPE_OCSP_ENTRY);
+        FreeOcspEntry(entry, heap);
+        XFREE(entry, heap, DYNAMIC_TYPE_OCSP_ENTRY);
     }
 
     wc_FreeMutex(&ocsp->ocspLock);
 
     if (dynamic)
-        XFREE(ocsp, ocsp->cm->heap, DYNAMIC_TYPE_OCSP);
+        XFREE(ocsp, heap, DYNAMIC_TYPE_OCSP);
 
 }
 
@@ -749,7 +750,9 @@ int wolfSSL_OCSP_resp_find_status(WOLFSSL_OCSP_BASICRESP *bs,
 
     single = bs->single;
     while (single != NULL) {
-        if ((XMEMCMP(single->status->serial, id->status->serial, (size_t)single->status->serialSz) == 0)
+        if (single->status != NULL && id->status != NULL &&
+            (XMEMCMP(single->status->serial, id->status->serial,
+                     (size_t)single->status->serialSz) == 0)
          && (XMEMCMP(single->issuerHash, id->issuerHash, OCSP_DIGEST_SIZE) == 0)
          && (XMEMCMP(single->issuerKeyHash, id->issuerKeyHash, OCSP_DIGEST_SIZE) == 0)) {
             break;
@@ -1108,6 +1111,9 @@ int wolfSSL_OCSP_basic_verify(WOLFSSL_OCSP_BASICRESP* bs,
     int embedded;
     DecodedCert *cert = NULL;
 
+    if (bs == NULL)
+        return WOLFSSL_FAILURE;
+
     ret = OcspFindSigner(bs, certs, &cert, &embedded, flags);
     if (ret != 0) {
         WOLFSSL_MSG("OCSP no signer found");
@@ -1300,15 +1306,31 @@ int wolfSSL_i2d_OCSP_RESPONSE(OcspResponse* response,
     if (response == NULL)
         return BAD_FUNC_ARG;
 
+    if (response->source == NULL)
+        return BAD_FUNC_ARG;
+
     if (data == NULL)
         return (int)response->maxIdx;
 
-    XMEMCPY(*data, response->source, response->maxIdx);
+    if (*data == NULL) {
+        *data = (unsigned char*)XMALLOC(response->maxIdx, NULL,
+                                        DYNAMIC_TYPE_OPENSSL);
+        if (*data == NULL)
+            return -1;
+        XMEMCPY(*data, response->source, response->maxIdx);
+    }
+    else {
+        XMEMCPY(*data, response->source, response->maxIdx);
+        *data += response->maxIdx;
+    }
+
     return (int)response->maxIdx;
 }
 
 int wolfSSL_OCSP_response_status(OcspResponse *response)
 {
+    if (response == NULL)
+        return -1;
     return response->responseStatus;
 }
 
@@ -1335,8 +1357,12 @@ const char *wolfSSL_OCSP_response_status_str(long s)
 WOLFSSL_OCSP_BASICRESP* wolfSSL_OCSP_response_get1_basic(OcspResponse* response)
 {
     WOLFSSL_OCSP_BASICRESP* bs;
-    const unsigned char *ptr = response->source;
+    const unsigned char *ptr;
 
+    if (response == NULL || response->source == NULL)
+        return NULL;
+
+    ptr = response->source;
     bs = wolfSSL_d2i_OCSP_RESPONSE(NULL, &ptr, response->maxIdx);
     return bs;
 }
@@ -1370,7 +1396,11 @@ int wolfSSL_i2d_OCSP_REQUEST(OcspRequest* request, unsigned char** data)
     if (size <= 0 || data == NULL)
         return size;
 
-    return EncodeOcspRequest(request, *data, (word32) size);
+    size = EncodeOcspRequest(request, *data, (word32) size);
+    if (size > 0)
+        *data += size;
+
+    return size;
 }
 
 WOLFSSL_OCSP_ONEREQ* wolfSSL_OCSP_request_add0_id(OcspRequest *req,
@@ -1403,7 +1433,6 @@ WOLFSSL_OCSP_ONEREQ* wolfSSL_OCSP_request_add0_id(OcspRequest *req,
 WOLFSSL_OCSP_CERTID* wolfSSL_OCSP_CERTID_dup(WOLFSSL_OCSP_CERTID* id)
 {
     WOLFSSL_OCSP_CERTID* certId;
-    CertStatus* statusCopy;
 
     if (id == NULL)
         return NULL;
@@ -1414,24 +1443,30 @@ WOLFSSL_OCSP_CERTID* wolfSSL_OCSP_CERTID_dup(WOLFSSL_OCSP_CERTID* id)
         return NULL;
 
     XMEMCPY(certId, id, sizeof(WOLFSSL_OCSP_CERTID));
+    certId->next = NULL;
+    certId->rawCertId = NULL;
+    certId->rawCertIdSize = 0;
 
     /* Deep-copy the status to avoid double-free */
-    if (id->status != NULL && id->ownStatus) {
-        statusCopy = (CertStatus*)XMALLOC(sizeof(CertStatus),
-            NULL, DYNAMIC_TYPE_OPENSSL);
-        if (statusCopy == NULL) {
+    if (id->status != NULL) {
+        certId->status = (CertStatus*)XMALLOC(sizeof(CertStatus),
+            NULL, DYNAMIC_TYPE_OCSP_STATUS);
+        if (certId->status == NULL) {
             XFREE(certId, NULL, DYNAMIC_TYPE_OPENSSL);
             return NULL;
         }
-        XMEMCPY(statusCopy, id->status, sizeof(CertStatus));
-        statusCopy->next = NULL;
-        statusCopy->rawOcspResponse = NULL;
-        statusCopy->rawOcspResponseSz = 0;
-#ifdef OPENSSL_EXTRA
-        statusCopy->serialInt = NULL;
+        XMEMCPY(certId->status, id->status, sizeof(CertStatus));
+        certId->status->next = NULL;
+        /* Don't share dynamically allocated fields */
+        certId->status->rawOcspResponse = NULL;
+        certId->status->rawOcspResponseSz = 0;
+        certId->status->serialInt = NULL;
+#ifdef WOLFSSL_OCSP_PARSE_STATUS
+        certId->status->thisDateAsn = NULL;
+        certId->status->nextDateAsn = NULL;
 #endif
-        certId->status = statusCopy;
     }
+    certId->ownStatus = 1;
 
     return certId;
 }
@@ -1442,7 +1477,6 @@ int wolfSSL_i2d_OCSP_REQUEST_bio(WOLFSSL_BIO* out,
 {
     int size = -1;
     unsigned char* data = NULL;
-    unsigned char* dataOrig = NULL;
 
     WOLFSSL_ENTER("wolfSSL_i2d_OCSP_REQUEST_bio");
     if (out == NULL || req == NULL)
@@ -1455,9 +1489,9 @@ int wolfSSL_i2d_OCSP_REQUEST_bio(WOLFSSL_BIO* out,
     }
 
     if (data != NULL) {
-        dataOrig = data;
+        unsigned char* dataOrig = data;
         size = wolfSSL_i2d_OCSP_REQUEST(req, &data);
-        data = dataOrig; /* restore after i2d advances pointer */
+        data = dataOrig;
     }
 
     if (size <= 0) {
@@ -1629,8 +1663,8 @@ int wolfSSL_OCSP_single_get0_status(WOLFSSL_OCSP_SINGLERESP *single,
                                     WOLFSSL_ASN1_TIME **thisupd,
                                     WOLFSSL_ASN1_TIME **nextupd)
 {
-    if (single == NULL)
-        return WOLFSSL_FAILURE;
+    if (single == NULL || single->status == NULL)
+        return -1;
 
 #ifdef WOLFSSL_OCSP_PARSE_STATUS
     if (thisupd != NULL)
@@ -1776,7 +1810,7 @@ int wolfSSL_OCSP_REQ_CTX_add1_header(WOLFSSL_OCSP_REQ_CTX *ctx,
 {
     WOLFSSL_ENTER("wolfSSL_OCSP_REQ_CTX_add1_header");
 
-    if (name == NULL) {
+    if (ctx == NULL || name == NULL) {
         WOLFSSL_MSG("Bad parameter");
         return WOLFSSL_FAILURE;
     }
@@ -2159,8 +2193,8 @@ int wolfSSL_OCSP_request_add1_nonce(OcspRequest* req, unsigned char* val,
  */
 int wolfSSL_OCSP_check_nonce(OcspRequest* req, WOLFSSL_OCSP_BASICRESP* bs)
 {
-    byte* reqNonce = NULL;
-    byte* rspNonce = NULL;
+    const byte* reqNonce = NULL;
+    const byte* rspNonce = NULL;
     int reqNonceSz = 0;
     int rspNonceSz = 0;
 
@@ -2548,8 +2582,8 @@ int wc_OcspResponder_SetCertStatus(OcspResponder* responder,
     if (status == CERT_REVOKED) {
         if (revocationTime <= 0)
             goto out;
-        if (revocationReason < CRL_REASON_UNSPECIFIED ||
-            revocationReason > CRL_REASON_AA_COMPROMISE)
+        if (revocationReason < WC_CRL_REASON_UNSPECIFIED ||
+            revocationReason > WC_CRL_REASON_AA_COMPROMISE)
             goto out;
         /* Skip value 7 which is not used */
         if (revocationReason == 7)
