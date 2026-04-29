@@ -556,28 +556,11 @@ int SetEchConfigsEx(WOLFSSL_EchConfig** outputConfigs, void* heap,
         ato16(echConfig, &hpkePubkeyLen);
         echConfig += 2;
 
-        /* hpke public_key — validate length against the specific KEM */
-        {
-            word16 expectedLen = 0;
-            switch (workingConfig->kemId) {
-            #if defined(HAVE_ECC)
-                case DHKEM_P256_HKDF_SHA256: expectedLen = 65; break;
-                case DHKEM_P384_HKDF_SHA384: expectedLen = 97; break;
-                case DHKEM_P521_HKDF_SHA512: expectedLen = 133; break;
-            #endif
-            #if defined(HAVE_CURVE25519)
-                case DHKEM_X25519_HKDF_SHA256: expectedLen = 32; break;
-            #endif
-            #if defined(HAVE_CURVE448)
-                case DHKEM_X448_HKDF_SHA512: expectedLen = 56; break;
-            #endif
-                default: break;
-            }
-            if (hpkePubkeyLen == 0 || hpkePubkeyLen > HPKE_Npk_MAX ||
-                (expectedLen > 0 && hpkePubkeyLen != expectedLen)) {
-                ret = BUFFER_E;
-                break;
-            }
+        /* hpke public_key
+         * KEM support will be checked along with the ciphersuites */
+        if (hpkePubkeyLen != wc_HpkeKemGetEncLen(workingConfig->kemId)) {
+            ret = BUFFER_E;
+            break;
         }
         idx += hpkePubkeyLen;
         if (idx >= length) {
