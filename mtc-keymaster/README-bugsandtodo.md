@@ -529,17 +529,24 @@ Distribute the CA cosigner pubkey out-of-band (bundled with clients,
 via signed DNS TXT, or similar) so no client ever trusts the MTC
 server for initial bootstrap.
 
-The same vulnerability also exists on port 8445 (DH bootstrap) for
-fresh leaf enrollments via `bootstrap_leaf`: the DH exchange is
-unauthenticated, so an on-path attacker can substitute their own
-cosigner pubkey while forwarding the leaf's nonce to the real CA.
-A detailed plan to close the leaf-bootstrap half of this hole — by
-having `issue_leaf_nonce` emit the cosigner fingerprint alongside
-the nonce so `bootstrap_leaf` can pin against it — is in the
-**Appendix: Plan to close MiTM hole on port 8445** below.  The
-`show-tpm` first-contact surface remains open under #9b until a
-broader OOB distribution channel (bundled binary, DNSSEC, ...) is
-added.
+The same vulnerability also exists on port 8445 (DH bootstrap), in
+two forms:
+
+- **Leaf enrollments via `bootstrap_leaf`** — the DH exchange is
+  unauthenticated, so an on-path attacker can substitute their own
+  cosigner pubkey while forwarding the leaf's nonce to the real CA.
+- **CA enrollments via `bootstrap_ca`** — same MitM exposure; CA
+  enrollment uses DNS TXT instead of a nonce, so the
+  fingerprint-paired-with-nonce trick from the leaf branch does
+  not apply.  Closed by signing the bootstrap response with the
+  parent CA's already-trusted X.509 TLS private key (the cert used
+  for port 8444), validated client-side via the system CA store +
+  hostname-SAN check.
+
+Both branches are detailed in the **Appendix: Plan to close MiTM hole
+on port 8445** below.  The `show-tpm` first-contact surface remains
+open under #9b until a broader OOB distribution channel (bundled
+binary, DNSSEC, ...) is added.
 
 **9c. Load CA cosigner pubkey in every MQC client — DONE**
 
@@ -3309,7 +3316,7 @@ Ranked by depth of change:
    `echo hi | mqc --encode --env --no-cache | mqc --decode --env
    --no-cache` → `hi` to confirm the overall stack still works.
 
-### Out of scope
+### Out of scope (for the leaf-bootstrap branch)
 
 - Classical FFDH → ML-KEM-768 on 8445 (TODO #49 — separate flag-day).
 - DNSSEC TXT cosigner-fingerprint distribution (TODO #9b alternative
@@ -3324,3 +3331,256 @@ Ranked by depth of change:
   missing and fail closed — operators must upgrade the server before
   issuing pin-required enrollments.  Acceptable since factsorlie is a
   single deployment.
+
+---
+
+### CA-bootstrap branch (`bootstrap_ca`)
+
+The leaf-bootstrap design above relies on an operator-issued nonce
+delivered out-of-band to convey the cosigner pubkey fingerprint.
+**`bootstrap_ca` does not have a nonce.**  CA enrollment uses DNS TXT
+proof at `_mtc-ca.<SAN>` plus an X.509 cert with that SAN
+(`mtc_bootstrap.c:638-643`, `mtc_validate_ca_cert` in
+`mtc-keymaster/server2/c/mtc_ca_validate.c:198`).  No
+`issue_leaf_nonce`-equivalent OOB channel exists, so the
+operator-paste-the-fingerprint trick does not carry over.
+
+Bare DH on 8445 is symmetric-on-the-wire — the user's framing
+captures it exactly:
+
+> Plain Diffie-Hellman without authentication is inherently vulnerable
+> to MITM.  You need to add some form of authentication on top of
+> the key exchange.
+
+The classic fix is **sign the DH exchange**: each side has a long-term
+key, and the server signs its DH public value plus the client's DH
+public value (channel binding) so an attacker doing two separate DH
+exchanges cannot satisfy both signatures.  Ed25519 / X25519 is the
+textbook minimal good design; postWolf already has X25519 wired into
+8445 (`mtc_bootstrap.c:60` `wc_curve25519_*`), so only the signature
+step is missing.
+
+**The trust anchor postWolf can re-use without inventing a new OOB
+channel:** the parent CA already runs TLS 1.3 on port 8444 with a
+publicly-issued X.509 cert (cert path
+`/home/ubuntu/.mtc-ca-data/server-cert.pem`).  That cert is already
+trusted by the system CA store on every joining CA's host — it is
+the exact infrastructure that makes DNS TXT validation meaningful in
+the first place (an attacker who can forge the parent's X.509 can
+also forge `_mtc-ca.<domain>`).  Re-using it for bootstrap-response
+signing gives strong authentication without DNSSEC, without
+pre-shared secrets, and without operator paste.
+
+**Decisions (user-endorsed):**
+
+- Sign the bootstrap response with the parent CA's existing TLS X.509
+  private key (already on disk at
+  `/home/ubuntu/.mtc-ca-data/server-key.pem`).
+- Joining CA validates the X.509 chain against the system CA store
+  and checks SAN matches the `--server` hostname.
+- Signature is over the **DH transcript** plus response payload —
+  channel-bound, prevents MitM substitution of DH values.
+- This is "TLS-without-TLS": confidentiality from DH, authenticity
+  from a signed transcript using long-term keys, exactly the pattern
+  TLS 1.3 implements.  Not falling back to TLS itself because the
+  pre-TLS DH design on 8445 is preserved as-is — only the missing
+  authentication is added.
+
+#### Wire-protocol change (CA branch)
+
+Add three fields to the encrypted bootstrap response (collision-safe
+against the existing `status`, `index`, `standalone_certificate`,
+`checkpoint` per `mtc_bootstrap.c:1126-1132`):
+
+```
+server -> client (encrypted JSON adds three fields):
+{
+  ...existing fields (status, index, standalone_certificate,
+                      checkpoint, ca_cosigner_pem, ...) ...
+  "tls_cert_chain_pem":  "<PEM of leaf + intermediates>",
+  "tls_signed_at":       "<ISO-8601 UTC>",
+  "tls_response_sig":    "<base64 signature>"
+}
+```
+
+`tls_response_sig` covers the canonical SHA-256 hash of:
+
+```
+ctx_label  = "mtc-bootstrap-tls/v1\n\x00"   (24 bytes, fixed)
+H(server_dh_pub || client_dh_pub || salt
+  || subject || cosigner_pubkey_der || tls_signed_at)
+```
+
+Signed with the parent CA's TLS private key.  Algorithm follows the
+cert (RSA-PSS for RSA certs, ECDSA-P256-SHA256 for ECC certs); the
+`tls_cert_chain_pem` lets the verifier discover the algorithm.
+
+The DH-transcript binding (`server_dh_pub || client_dh_pub || salt`)
+defeats the classic two-DH-exchanges MitM: the attacker would have
+to produce a signature over their own DH values, which requires the
+parent CA's TLS private key.
+
+Joining CA flow:
+
+1. Decrypt response.
+2. Parse `tls_cert_chain_pem` → wolfSSL `WOLFSSL_CERT_MANAGER` chain
+   verify against system CA store.
+3. Extract leaf cert SAN; require it to match the hostname portion
+   of `--server` (default `factsorlie.com:8445`).
+4. Recompute the transcript hash from the DH values the joining CA
+   actually saw + the response fields.
+5. Verify `tls_response_sig` over that hash using the leaf cert's
+   public key.
+6. Reject `tls_signed_at` more than ±300 s from local clock (replay
+   defense; clocks must be NTP-synced — already a postWolf
+   assumption).
+7. Now `cosigner_pubkey_pem` is authenticated.  Pin it to
+   `~/.TPM/<subject>/ca-cosigner.pem`.
+
+#### Code changes (CA branch)
+
+**1. CA-side: plumb the TLS cert/key into the bootstrap thread.**
+The TLS cert/key are loaded for port 8444 in `mtc_http.c:2152-2155`
+and not currently visible to the bootstrap thread launched at
+`mtc_server.c:251`.
+
+- `mtc-keymaster/server2/c/mtc_server.c`: read both files
+  (`server-cert.pem`, `server-key.pem`) at startup; store the
+  buffered cert chain (PEM text) and a parsed private key handle in
+  a new field on `MtcStore` or in a shared `mtc_tls_cfg_t` passed
+  alongside the store to both threads.
+- `mtc-keymaster/server2/c/mtc_store.{c,h}`: add accessors
+  `mtc_store_get_tls_cert_chain_pem()` and
+  `mtc_store_tls_sign(store, hash, hash_len, sig, &sig_len)`.
+  The latter dispatches RSA-PSS vs ECDSA based on the loaded key
+  type using `wc_RsaPSS_Sign` / `wc_ecc_sign_hash` (currently NOT
+  linked into the bootstrap path — only Dilithium is — so the link
+  must add them via `libpostWolf.so`).
+
+**2. CA-side: sign the bootstrap response.**
+`mtc-keymaster/server2/c/mtc_bootstrap.c` (response build site near
+lines 1126-1132 / 1208):
+
+- After building the response JSON with the existing fields plus
+  `ca_cosigner_pem` (already added in the leaf-bootstrap branch
+  above), append `tls_cert_chain_pem` and `tls_signed_at`.
+- Compute the transcript hash via `wc_Sha256` over
+  `ctx_label || server_dh_pub || client_dh_pub || salt || subject ||
+   cosigner_pubkey_der || tls_signed_at`.  DH publics and salt are
+  already in scope at this point in the function.
+- Call `mtc_store_tls_sign(store, hash, 32, sig, &sig_len)`.
+- Base64-encode and add as `tls_response_sig`.
+- Re-serialize, AES-GCM encrypt, send.
+
+This signature is *additional* to the leaf-bootstrap
+`ca_response_sig` (cosigner-key sig).  Both can coexist: a leaf with
+operator-supplied `--cosigner-fp` verifies the cosigner-key sig; a
+CA with no fingerprint verifies the TLS sig.  A defense-in-depth
+client verifies both.
+
+**3. Client-side: verify on `bootstrap_ca`.**
+`mtc-keymaster/tools/c/bootstrap_ca.c` (after the existing decrypt
+around lines 723-759):
+
+- Parse `tls_cert_chain_pem`, `tls_signed_at`, `tls_response_sig`.
+- Build a wolfSSL `WOLFSSL_CERT_MANAGER`:
+  - `wolfSSL_CertManagerNew_ex(NULL)`
+  - `wolfSSL_CertManagerLoadCABuffer` for system CA bundle
+    (`/etc/ssl/certs/ca-certificates.crt` on Linux — make it a
+    `--ca-bundle` flag with that as default).
+  - `wolfSSL_CertManagerVerifyBuffer` on `tls_cert_chain_pem`.
+- Parse the leaf cert via `wc_ParseCert`; walk `decoded.altNames`
+  for `ASN_DNS_TYPE` and require a SAN entry equal to the hostname
+  portion of `--server`.  Same pattern as
+  `mtc_ca_validate.c:264-273`.
+- Recompute the transcript hash as the server did.
+- Verify the signature against the leaf cert's public key (RSA-PSS
+  or ECDSA depending on the key type detected from the parsed
+  cert).
+- Sanity-check `tls_signed_at` is within ±300 s of `time(NULL)`.
+- On any failure: exit non-zero with a clear diagnostic, write
+  nothing under `~/.TPM/`.
+- On success: pin `cosigner_pubkey_pem` (now authenticated) to
+  `~/.TPM/<subject>/ca-cosigner.pem`.
+
+**4. Optional defense-in-depth on `bootstrap_leaf`.**
+`bootstrap_leaf` may also verify the TLS signature as a second
+factor, but it is not required.  The leaf-branch `--cosigner-fp`
+flow remains the primary authentication; TLS verification becomes
+defense-in-depth for leaves whose operators happen to also trust
+the system CA store.
+
+#### Critical files to modify (CA branch)
+
+Ranked by depth of change:
+
+1. `mtc-keymaster/server2/c/mtc_bootstrap.c` — compute transcript
+   hash, call store accessor for sign, add three JSON fields.
+2. `mtc-keymaster/tools/c/bootstrap_ca.c` — chain validation, SAN
+   match, transcript verify.
+3. `mtc-keymaster/server2/c/mtc_store.{c,h}` — load TLS cert + key
+   at startup, expose `_tls_sign` and `_get_tls_cert_chain_pem`.
+4. `mtc-keymaster/server2/c/mtc_server.c` — read the cert + key at
+   process start, pass into the bootstrap-thread args (currently
+   the bootstrap thread receives only `MtcStore`, so plumbing
+   through `MtcStore` is cleanest).
+5. README updates: `bootstrap_ca` usage example showing
+   `--ca-bundle` default and the new automatic chain verification.
+
+#### Functions / patterns to reuse (CA branch)
+
+- **X.509 chain validation**: `wolfSSL_CertManagerNew_ex`,
+  `wolfSSL_CertManagerLoadCABuffer`,
+  `wolfSSL_CertManagerVerifyBuffer` (already linked).
+- **X.509 SAN extraction**: `wc_ParseCert` + walk `altNames` —
+  copy from `mtc_ca_validate.c:264-273`.
+- **SPKI fingerprint**: `wc_Sha256Hash` — already in
+  `mtc_ca_validate.c:298`.
+- **RSA-PSS sign/verify**: `wc_RsaPSS_Sign`, `wc_RsaPSS_Verify`.
+- **ECDSA sign/verify**: `wc_ecc_sign_hash`, `wc_ecc_verify_hash`.
+- **Transcript hash**: `wc_Sha256` — already in bootstrap path
+  (`mtc_bootstrap.c:62`).
+
+#### Migration runbook (CA branch)
+
+1. Build + install: `./make-all.sh` (after the leaf-branch changes
+   merged).
+2. Restart CA: `sudo systemctl restart mtc-ca.service`.  Verify it
+   logs that the TLS cert+key are loaded for both ports 8444 and
+   bootstrap-signing.
+3. On a fresh CA box: `bootstrap_ca --server factsorlie.com:8445
+   --domain example.org --ca-cert example-org-ca.pem ...` — must
+   succeed, must write `~/.TPM/example.org-ca/ca-cosigner.pem`.
+4. Negative test: redirect `factsorlie.com` to a different host
+   with a valid Let's Encrypt cert for an unrelated domain —
+   `bootstrap_ca` must fail with "SAN mismatch" and write nothing.
+5. Negative test: stub the response with a tampered DH value but
+   keep the original signature — `bootstrap_ca` must fail at
+   transcript verification.
+
+#### Verification (CA branch)
+
+1. **Zero-warning build** (CLAUDE.md guardrail) — same as leaf.
+2. **Service health** — same as leaf.
+3. **Happy path** — runbook step 3.
+4. **MitM-rejection paths** — runbook steps 4 and 5.
+5. **Backwards-compat sanity** — old `bootstrap_ca` clients
+   connecting to a new server ignore the three new fields and
+   continue working with TOFU; new `bootstrap_ca` clients
+   connecting to an old server see fields missing and fail closed.
+
+#### Out of scope (CA branch)
+
+- Re-signing the in-store certificates with the TLS key.  This plan
+  only authenticates the bootstrap-response *channel*; the cert
+  contents continue to be cosigner-signed as today.
+- Replacing 8445's pre-TLS DH with TLS 1.3 wholesale — explicitly
+  rejected to preserve the architectural separation of the
+  bootstrap port.
+- Cert rotation for the parent CA's TLS key.  Existing operational
+  procedure (renew via certbot, restart `mtc-ca.service`) carries
+  through unchanged; clients will see the new cert chain on the
+  next bootstrap and validate it the same way.
+- DNSSEC alternative for cosigner fingerprint distribution (TODO
+  #9b's other path) — orthogonal; can be added later as a third
+  authentication channel without conflict.
