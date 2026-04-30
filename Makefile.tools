@@ -66,6 +66,16 @@ install: all
 			$(DESTDIR)/usr/local/share/augeas/lenses/myconf.aug; \
 		_RESTART=1; \
 	fi; \
+	if cmp -s mtc-keymaster/read-config/config.server \
+	         $(DESTDIR)/etc/postWolf/config 2>/dev/null; then \
+		echo "[install] /etc/postWolf/config unchanged"; \
+	else \
+		echo "[install] installing fresh /etc/postWolf/config"; \
+		install -d $(DESTDIR)/etc/postWolf; \
+		install -m 644 mtc-keymaster/read-config/config.server \
+			$(DESTDIR)/etc/postWolf/config; \
+		_RESTART=1; \
+	fi; \
 	if cmp -s mtc-keymaster/server2/c/mtc-ca.service \
 	         $(DESTDIR)/etc/systemd/system/mtc-ca.service 2>/dev/null; then \
 		echo "[install] mtc-ca.service unchanged"; \
