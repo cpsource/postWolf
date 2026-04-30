@@ -48,10 +48,40 @@ install-lib:
 	$(MAKE) -f Makefile install
 	ldconfig
 
-# Install tools to /usr/local/bin + refresh ldconfig
+# Install tools to /usr/local/bin + refresh ldconfig.
+# mtc-ca.service and the mtc_server binary are each updated only if their
+# repo copy differs from the installed one (cmp -s).  If anything changed
+# AND the service is currently active, restart it once at the end so the
+# new unit (daemon-reload'd) and the new binary land together.
 install: all
 	ldconfig
-	$(MAKE) -C $(MTC_DIR) install
+	@_RESTART=0; \
+	if cmp -s mtc-keymaster/server2/c/mtc-ca.service \
+	         $(DESTDIR)/etc/systemd/system/mtc-ca.service 2>/dev/null; then \
+		echo "[install] mtc-ca.service unchanged"; \
+	else \
+		echo "[install] installing fresh mtc-ca.service"; \
+		install -d $(DESTDIR)/etc/systemd/system; \
+		install -m 644 mtc-keymaster/server2/c/mtc-ca.service \
+			$(DESTDIR)/etc/systemd/system/mtc-ca.service; \
+		[ -z "$(DESTDIR)" ] && systemctl daemon-reload; \
+		_RESTART=1; \
+	fi; \
+	if cmp -s mtc-keymaster/server2/c/mtc_server \
+	         $(DESTDIR)/usr/local/bin/mtc_server 2>/dev/null; then \
+		echo "[install] mtc_server unchanged"; \
+	else \
+		echo "[install] installing fresh mtc_server"; \
+		install -d $(DESTDIR)/usr/local/bin; \
+		install -m 755 mtc-keymaster/server2/c/mtc_server \
+			$(DESTDIR)/usr/local/bin/mtc_server; \
+		_RESTART=1; \
+	fi; \
+	if [ "$$_RESTART" = "1" ] && [ -z "$(DESTDIR)" ] && \
+	   systemctl is-active --quiet mtc-ca.service 2>/dev/null; then \
+		echo "[install] restarting mtc-ca.service"; \
+		systemctl restart mtc-ca.service; \
+	fi
 	$(MAKE) -C $(TOOLS_DIR) install
 	install -d $(DESTDIR)/usr/local/sbin
 	install -m 755 mtc-keymaster/tools/sh/setup-recert-crond.sh \
@@ -60,6 +90,9 @@ install: all
 		$(DESTDIR)/usr/local/bin/register-ca.sh
 	install -m 755 mtc-keymaster/tools/sh/register-leaf.sh \
 		$(DESTDIR)/usr/local/bin/register-leaf.sh
+	install -d $(DESTDIR)/usr/local/share/augeas/lenses
+	install -m 644 mtc-keymaster/read-config/myconf.aug \
+		$(DESTDIR)/usr/local/share/augeas/lenses/myconf.aug
 
 clean:
 	$(MAKE) -C $(SLC_DIR) clean
