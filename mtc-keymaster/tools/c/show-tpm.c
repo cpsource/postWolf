@@ -788,21 +788,9 @@ int main(int argc, char *argv[])
 
         /* Pick MQC server: CLI -s wins; otherwise [global] url-server in
          * /etc/postWolf/config; otherwise compiled-in DEFAULT_SERVER. */
-        if (!server_from_cli && init_augeas() == 0) {
-            char *cfg_url = get_augeas("global/url-server");
-            if (cfg_url) {
-                static char url_buf[256];
-                const char *p = cfg_url;
-                if (strncmp(p, "https://", 8) == 0) p += 8;
-                else if (strncmp(p, "http://", 7) == 0) p += 7;
-                snprintf(url_buf, sizeof(url_buf), "%s", p);
-                server = url_buf;
-                fprintf(stderr,
-                        "Using url-server from /etc/postWolf/config: %s\n",
-                        cfg_url);
-                free(cfg_url);
-            }
-            close_augeas();
+        if (!server_from_cli) {
+            char *cfg = read_config_url("global/url-server");
+            if (cfg) server = cfg;
         }
 
         /* Parse host:port from server string */

@@ -41,6 +41,25 @@ char *get_augeas(const char *key) {
     return strdup(value);
 }
 
+char *read_config_url(const char *key) {
+    if (init_augeas() != 0)
+        return NULL;
+    char *raw = get_augeas(key);
+    close_augeas();
+    if (!raw)
+        return NULL;
+
+    fprintf(stderr, "Using %s from /etc/postWolf/config: %s\n", key, raw);
+
+    const char *p = raw;
+    if (strncmp(p, "https://", 8) == 0) p += 8;
+    else if (strncmp(p, "http://",  7) == 0) p += 7;
+    if (p != raw)
+        memmove(raw, p, strlen(p) + 1);
+
+    return raw;
+}
+
 #ifdef TEST_MAIN
 int main(void) {
     if (init_augeas() != 0) {

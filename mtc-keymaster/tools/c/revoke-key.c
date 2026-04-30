@@ -57,6 +57,7 @@
 
 #include "mqc.h"
 #include "mqc_peer.h"
+#include "../../read-config/read-config.h"
 
 /* Explicit path — there's also a server-side config.h on the include
  * search path that would shadow this one. */
@@ -554,6 +555,7 @@ int main(int argc, char **argv)
     int dry_run = 0;
     int trace   = 0;
     int refresh_mode = 0;
+    int server_from_cli = 0;
     int i;
     const char *home;
     char tpm_root[1024];
@@ -570,8 +572,10 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "--ca-tpm-path") == 0 && i + 1 < argc)
             ca_tpm_path = argv[++i];
         else if ((strcmp(argv[i], "-s") == 0 ||
-                  strcmp(argv[i], "--server") == 0) && i + 1 < argc)
+                  strcmp(argv[i], "--server") == 0) && i + 1 < argc) {
             server = argv[++i];
+            server_from_cli = 1;
+        }
         else if (strcmp(argv[i], "--dry-run") == 0)
             dry_run = 1;
         else if (strcmp(argv[i], "--trace") == 0)
@@ -597,6 +601,12 @@ int main(int argc, char **argv)
                 "mutually exclusive\n");
             return 1;
         }
+    }
+
+    /* CLI -s wins; otherwise [global] url-server in /etc/postWolf/config. */
+    if (!server_from_cli) {
+        char *cfg = read_config_url("global/url-server");
+        if (cfg) server = cfg;
     }
 
     /* --list mode: no CA identity needed, pure public read */

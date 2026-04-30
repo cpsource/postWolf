@@ -50,6 +50,7 @@
 
 #include "mqc.h"
 #include "mqc_peer.h"
+#include "../../read-config/read-config.h"
 
 #include "../../../socket-level-wrapper-MQC/config.h"
 #define DEFAULT_SERVER    MQC_DEFAULT_SERVER
@@ -238,6 +239,7 @@ int main(int argc, char **argv)
     const char *label = NULL;
     const char *server = DEFAULT_SERVER;
     const char *ca_tpm_path = NULL;
+    int server_from_cli = 0;
     int trace = 0;
     int dry_run = 0;
     int i, rc = 0;
@@ -256,6 +258,7 @@ int main(int argc, char **argv)
         } else if ((strcmp(argv[i], "-s") == 0 ||
                     strcmp(argv[i], "--server") == 0) && i + 1 < argc) {
             server = argv[++i];
+            server_from_cli = 1;
         } else if (strcmp(argv[i], "--ca-tpm-path") == 0 && i + 1 < argc) {
             ca_tpm_path = argv[++i];
         } else if (strcmp(argv[i], "--dry-run") == 0) {
@@ -289,6 +292,12 @@ int main(int argc, char **argv)
             return 1;
         }
         ca_tpm_path = ca_tpm_owned;
+    }
+
+    /* CLI -s wins; otherwise [global] url-server in /etc/postWolf/config. */
+    if (!server_from_cli) {
+        char *cfg = read_config_url("global/url-server");
+        if (cfg) server = cfg;
     }
 
     /* --- Parse --server host:port --- */

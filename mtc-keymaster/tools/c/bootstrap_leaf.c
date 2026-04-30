@@ -24,6 +24,7 @@
 
 #include "mtc_crypt.h"
 #include "mtc_pubkey_db.h"
+#include "../../read-config/read-config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -495,9 +496,11 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* Default --server to factsorlie.com:8445 */
-    if (!server_arg)
-        server_arg = "factsorlie.com:8445";
+    /* Default --server: CLI > [global] url-bootstrap > factsorlie.com:8445. */
+    if (!server_arg) {
+        char *cfg = read_config_url("global/url-bootstrap");
+        server_arg = cfg ? cfg : "factsorlie.com:8445";
+    }
 
     /* Default paths from ~/.mtc-ca-data/<domain>/ if not specified */
     {

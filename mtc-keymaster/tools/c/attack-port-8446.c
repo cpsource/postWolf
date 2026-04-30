@@ -60,6 +60,8 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 
+#include "../../read-config/read-config.h"
+
 #define DEFAULT_HOST    "factsorlie.com"
 #define DEFAULT_PORT    8446
 #define RECV_TIMEOUT_MS 3000
@@ -1048,11 +1050,12 @@ int main(int argc, char **argv)
 {
     const char *host = DEFAULT_HOST;
     int port = DEFAULT_PORT;
+    int host_from_cli = 0;
     int i;
 
     for (i = 1; i < argc; i++) {
         if ((!strcmp(argv[i], "-s") || !strcmp(argv[i], "--server"))
-            && i + 1 < argc)   host = argv[++i];
+            && i + 1 < argc) { host = argv[++i]; host_from_cli = 1; }
         else if ((!strcmp(argv[i], "-p") || !strcmp(argv[i], "--port"))
             && i + 1 < argc)   port = atoi(argv[++i]);
         else if ((!strcmp(argv[i], "-d") || !strcmp(argv[i], "--delay"))
@@ -1064,6 +1067,17 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr, "Unknown arg: %s\n", argv[i]);
             usage(argv[0]); return 1;
+        }
+    }
+
+    /* CLI -s wins; otherwise [global] url-server in /etc/postWolf/config.
+     * Port is fixed by the binary identity; only the host is overridden. */
+    if (!host_from_cli) {
+        char *cfg = read_config_url("global/url-server");
+        if (cfg) {
+            char *colon = strrchr(cfg, ':');
+            if (colon) *colon = '\0';
+            host = cfg;
         }
     }
 
