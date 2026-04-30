@@ -28,11 +28,11 @@ DEFAULT_OUT = Path.home() / ".mtc-ca-data"
 DEFAULT_DAYS = 365
 DEFAULT_ALGORITHM = "ML-DSA-87"
 
-OPENSSL = "openssl35"
+OPENSSL = "openssl40"
 
 
-def check_openssl35():
-    """Verify openssl35 is available."""
+def check_openssl40():
+    """Verify openssl40 is available."""
     try:
         result = subprocess.run(
             [OPENSSL, "version"],
@@ -43,12 +43,12 @@ def check_openssl35():
         print(f"Using: {result.stdout.strip()}")
     except FileNotFoundError:
         print(f"ERROR: {OPENSSL} not found in PATH", file=sys.stderr)
-        print("Install OpenSSL 3.5+ and symlink as openssl35", file=sys.stderr)
+        print("Install OpenSSL 3.5+ and symlink as openssl40", file=sys.stderr)
         sys.exit(1)
 
 
 def generate_ca_cert(domain, out_base, days, algorithm):
-    """Generate CA key + self-signed CA certificate using openssl35."""
+    """Generate CA key + self-signed CA certificate using openssl40."""
     out_dir = Path(out_base) / domain
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -238,7 +238,7 @@ def main():
                         help=f"Key algorithm (default: {DEFAULT_ALGORITHM})")
     args = parser.parse_args()
 
-    check_openssl35()
+    check_openssl40()
     generate_ca_cert(args.domain, args.out, args.days, args.algorithm)
 
 

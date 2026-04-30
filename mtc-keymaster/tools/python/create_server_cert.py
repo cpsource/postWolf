@@ -3,9 +3,9 @@
 Generate an ML-DSA-87 (or other algorithm) self-signed X.509 TLS certificate
 for the MTC CA server's own TLS listener.
 
-This replaces the openssl35 commands in the clean install guide:
-    openssl35 genpkey -algorithm ML-DSA-87 -out server-key.pem
-    openssl35 req -x509 -new -key server-key.pem -out server-cert.pem ...
+This replaces the openssl40 commands in the clean install guide:
+    openssl40 genpkey -algorithm ML-DSA-87 -out server-key.pem
+    openssl40 req -x509 -new -key server-key.pem -out server-cert.pem ...
 
 Usage:
     python3 create_server_cert.py factsorlie.com
@@ -31,12 +31,12 @@ DEFAULT_OUT = Path.home() / ".mtc-ca-data"
 DEFAULT_DAYS = 365
 DEFAULT_ALGORITHM = "ML-DSA-87"
 
-# openssl35 is OpenSSL 3.5+ with post-quantum support
-OPENSSL = "openssl35"
+# openssl40 is OpenSSL 3.5+ with post-quantum support
+OPENSSL = "openssl40"
 
 
-def check_openssl35():
-    """Verify openssl35 is available and supports ML-DSA-87."""
+def check_openssl40():
+    """Verify openssl40 is available and supports ML-DSA-87."""
     try:
         result = subprocess.run(
             [OPENSSL, "version"],
@@ -47,19 +47,19 @@ def check_openssl35():
         print(f"Using: {result.stdout.strip()}")
     except FileNotFoundError:
         print(f"ERROR: {OPENSSL} not found in PATH", file=sys.stderr)
-        print("Install OpenSSL 3.5+ and symlink as openssl35", file=sys.stderr)
+        print("Install OpenSSL 3.5+ and symlink as openssl40", file=sys.stderr)
         sys.exit(1)
 
 
 def generate_ml_dsa_cert(domain, out_dir, days, algorithm):
-    """Generate key + self-signed cert using openssl35."""
+    """Generate key + self-signed cert using openssl40."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     key_path = out_dir / "server-key.pem"
     cert_path = out_dir / "server-cert.pem"
 
-    # Map algorithm names to openssl35 algorithm identifiers
+    # Map algorithm names to openssl40 algorithm identifiers
     algo_map = {
         "ML-DSA-87": "ML-DSA-87",
         "ML-DSA-65": "ML-DSA-65",
@@ -138,7 +138,7 @@ def main():
                         help=f"Key algorithm (default: {DEFAULT_ALGORITHM})")
     args = parser.parse_args()
 
-    check_openssl35()
+    check_openssl40()
     generate_ml_dsa_cert(args.domain, args.out, args.days, args.algorithm)
 
 

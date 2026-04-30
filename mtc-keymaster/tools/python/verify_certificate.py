@@ -103,7 +103,7 @@ def verify_times(tbs_entry: dict, now: float):
 
 
 def verify_cosignature(cosig: dict, pubkey_pem_path: Path | None):
-    """Verify an ML-DSA-87 MTC cosignature via `openssl35 pkeyutl -verify`.
+    """Verify an ML-DSA-87 MTC cosignature via `openssl40 pkeyutl -verify`.
 
     OpenSSL 3.5+ natively supports ML-DSA; we shell out because the
     `cryptography` package's PQ coverage is still version-dependent and
@@ -119,10 +119,10 @@ def verify_cosignature(cosig: dict, pubkey_pem_path: Path | None):
         result["reason"] = "No log public key supplied; skipped"
         return result
 
-    openssl = shutil.which("openssl35") or shutil.which("openssl")
+    openssl = shutil.which("openssl40") or shutil.which("openssl")
     if openssl is None:
         result["reason"] = (
-            "no openssl35/openssl on PATH — run buildopenssl3.5.sh from "
+            "no openssl40/openssl on PATH — run buildopenssl3.5.sh from "
             "the postWolf kit"
         )
         return result

@@ -160,7 +160,7 @@ def verify_cosignature(
     Returns:
         True if the signature is valid.
 
-    Implementation: shells out to `openssl35` (OpenSSL 3.5+) because
+    Implementation: shells out to `openssl40` (OpenSSL 3.5+) because
     the `cryptography` library's ML-DSA support is still
     version-dependent.  OpenSSL 3.5 ships with every postWolf kit's
     install step.
@@ -178,10 +178,10 @@ def verify_cosignature(
     sig_input += end.to_bytes(8, "big")
     sig_input += subtree_hash
 
-    openssl = shutil.which("openssl35") or shutil.which("openssl")
+    openssl = shutil.which("openssl40") or shutil.which("openssl")
     if openssl is None:
         raise RuntimeError(
-            "verify_cosignature: no openssl35/openssl binary on PATH "
+            "verify_cosignature: no openssl40/openssl binary on PATH "
             "(install via buildopenssl3.5.sh from the postWolf kit)"
         )
 
