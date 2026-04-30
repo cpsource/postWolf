@@ -5941,6 +5941,30 @@ fi
 AS_IF([test "x$ENABLED_CMAC" = "xyes"],
       [AM_CFLAGS="$AM_CFLAGS -DWOLFSSL_CMAC -DWOLFSSL_AES_DIRECT"])
 
+# KMAC (NIST SP 800-185)
+AC_ARG_ENABLE([kmac],
+    [AS_HELP_STRING([--enable-kmac],[Enable KMAC (default: disabled)])],
+    [ ENABLED_KMAC=$enableval ],
+    [ ENABLED_KMAC=no ]
+    )
+
+# FIPS traditionally does not support SHAKE128/256 (so neither KMAC); v6+ does.
+AS_IF([test "x$ENABLED_FIPS" = "xyes" && test $HAVE_FIPS_VERSION -lt 6],
+        [ENABLED_KMAC="no"])
+
+if test "$ENABLED_KMAC" != "no"
+then
+    if test "$ENABLED_SHA3" = "no"
+    then
+        AC_MSG_ERROR([kmac requires SHA-3: --enable-sha3])
+    fi
+    if test "$ENABLED_SHAKE128" = "no" && test "$ENABLED_SHAKE256" = "no"
+    then
+        AC_MSG_ERROR([kmac requires SHAKE128 and/or SHAKE256: --enable-shake128 / --enable-shake256])
+    fi
+    AM_CFLAGS="$AM_CFLAGS -DWOLFSSL_KMAC"
+fi
+
 
 # AES-XTS
 AC_ARG_ENABLE([aesxts],
@@ -11541,6 +11565,7 @@ AM_CONDITIONAL([BUILD_FIPS_V6],[test $HAVE_FIPS_VERSION = 6])
 AM_CONDITIONAL([BUILD_FIPS_V6_PLUS],[test $HAVE_FIPS_VERSION -ge 6])
 AM_CONDITIONAL([BUILD_SIPHASH],[test "x$ENABLED_SIPHASH" = "xyes" || test "x$ENABLED_USERSETTINGS" = "xyes"])
 AM_CONDITIONAL([BUILD_CMAC],[test "x$ENABLED_CMAC" = "xyes" || test "x$ENABLED_USERSETTINGS" = "xyes"])
+AM_CONDITIONAL([BUILD_KMAC],[test "x$ENABLED_KMAC" = "xyes" || test "x$ENABLED_USERSETTINGS" = "xyes"])
 AM_CONDITIONAL([BUILD_SELFTEST],[test "x$ENABLED_SELFTEST" = "xyes"])
 AM_CONDITIONAL([BUILD_SHA224],[test "x$ENABLED_SHA224" = "xyes" || test "x$ENABLED_USERSETTINGS" = "xyes"])
 AM_CONDITIONAL([BUILD_SHA3],[test "x$ENABLED_SHA3" != "xno" || test "x$ENABLED_USERSETTINGS" = "xyes"])
@@ -12013,6 +12038,7 @@ echo "   * BLAKE2:                     $ENABLED_BLAKE2"
 echo "   * BLAKE2S:                    $ENABLED_BLAKE2S"
 echo "   * SipHash:                    $ENABLED_SIPHASH"
 echo "   * CMAC:                       $ENABLED_CMAC"
+echo "   * KMAC:                       $ENABLED_KMAC"
 echo "   * keygen:                     $ENABLED_KEYGEN"
 echo "   * acert:                      $ENABLED_ACERT"
 echo "   * certgen:                    $ENABLED_CERTGEN"

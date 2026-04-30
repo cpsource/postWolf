@@ -1008,6 +1008,10 @@ src_libpostWolf@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/cmac.c
 endif
 endif !BUILD_FIPS_V2_PLUS
 
+if BUILD_KMAC
+src_libpostWolf@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/kmac.c
+endif
+
 if !BUILD_FIPS_V2
 if BUILD_DES3
 src_libpostWolf@LIBSUFFIX@_la_SOURCES += wolfcrypt/src/des3.c

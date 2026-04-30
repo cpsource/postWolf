@@ -235,6 +235,17 @@ WOLFSSL_API void wc_Shake256_Free(wc_Shake* shake);
 WOLFSSL_API int wc_Shake256_Copy(wc_Shake* src, wc_Sha3* dst);
 #endif
 
+#ifdef WOLFSSL_KMAC
+#ifdef WOLFSSL_SHAKE128
+WOLFSSL_LOCAL int wc_Sha3_cSHAKE128_Final(wc_Shake* shake, byte* hash,
+    word32 hashLen);
+#endif
+#ifdef WOLFSSL_SHAKE256
+WOLFSSL_LOCAL int wc_Sha3_cSHAKE256_Final(wc_Shake* shake, byte* hash,
+    word32 hashLen);
+#endif
+#endif /* WOLFSSL_KMAC */
+
 #ifdef WOLFSSL_HASH_FLAGS
     WOLFSSL_API int wc_Sha3_SetFlags(wc_Sha3* sha3, word32 flags);
     WOLFSSL_API int wc_Sha3_GetFlags(wc_Sha3* sha3, word32* flags);

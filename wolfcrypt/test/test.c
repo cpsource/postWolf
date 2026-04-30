@@ -348,6 +348,9 @@ static const byte const_byte_array[] = "A+Gd\0\0\0";
 #include <wolfssl/wolfcrypt/aes.h>
 #include <wolfssl/wolfcrypt/wc_encrypt.h>
 #include <wolfssl/wolfcrypt/cmac.h>
+#ifdef WOLFSSL_KMAC
+    #include <wolfssl/wolfcrypt/kmac.h>
+#endif
 #include <wolfssl/wolfcrypt/siphash.h>
 #include <wolfssl/wolfcrypt/poly1305.h>
 #include <wolfssl/wolfcrypt/camellia.h>
@@ -682,6 +685,9 @@ WOLFSSL_TEST_SUBROUTINE wc_test_ret_t  aes192_test(void);
 WOLFSSL_TEST_SUBROUTINE wc_test_ret_t  aes256_test(void);
 WOLFSSL_TEST_SUBROUTINE wc_test_ret_t  aesofb_test(void);
 WOLFSSL_TEST_SUBROUTINE wc_test_ret_t  cmac_test(void);
+#ifdef WOLFSSL_KMAC
+WOLFSSL_TEST_SUBROUTINE wc_test_ret_t  kmac_test(void);
+#endif
 #ifdef HAVE_ASCON
 WOLFSSL_TEST_SUBROUTINE wc_test_ret_t  ascon_hash256_test(void);
 WOLFSSL_TEST_SUBROUTINE wc_test_ret_t  ascon_aead128_test(void);
@@ -2871,6 +2877,13 @@ options: [-s max_relative_stack_bytes] [-m max_relative_heap_memory_bytes]\n\
         TEST_FAIL("CMAC     test failed!\n", ret);
     else
         TEST_PASS("CMAC     test passed!\n");
+#endif
+
+#ifdef WOLFSSL_KMAC
+    if ( (ret = kmac_test()) != 0)
+        TEST_FAIL("KMAC     test failed!\n", ret);
+    else
+        TEST_PASS("KMAC     test passed!\n");
 #endif
 
 #if defined(WOLFSSL_SIPHASH)
@@ -55801,6 +55814,183 @@ WOLFSSL_TEST_SUBROUTINE wc_test_ret_t cmac_test(void)
 }
 
 #endif /* !NO_AES && WOLFSSL_CMAC */
+
+#ifdef WOLFSSL_KMAC
+
+typedef struct KMAC_Test_Case {
+    int          type;       /* WC_KMAC_128 or WC_KMAC_256 */
+    int          xof;        /* 0 or 1 */
+    const byte*  k;
+    word32       kSz;
+    const byte*  m;
+    word32       mSz;
+    const byte*  s;
+    word32       sSz;
+    const byte*  out;
+    word32       outSz;
+    const char*  name;
+} KMAC_Test_Case;
+
+WOLFSSL_TEST_SUBROUTINE wc_test_ret_t kmac_test(void)
+{
+    /* NIST SP 800-185 KMAC sample data (Key, Input, Custom, Output). */
+    WOLFSSL_SMALL_STACK_STATIC const byte kmacKey[32] = {
+        0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47,
+        0x48,0x49,0x4A,0x4B,0x4C,0x4D,0x4E,0x4F,
+        0x50,0x51,0x52,0x53,0x54,0x55,0x56,0x57,
+        0x58,0x59,0x5A,0x5B,0x5C,0x5D,0x5E,0x5F
+    };
+    WOLFSSL_SMALL_STACK_STATIC const byte kmacIn[4] = { 0,1,2,3 };
+    WOLFSSL_SMALL_STACK_STATIC const byte kmacCustom[] =
+        "My Tagged Application";
+
+#ifdef WOLFSSL_SHAKE128
+    WOLFSSL_SMALL_STACK_STATIC const byte kmac128_out1[32] = {
+        0xE5,0x78,0x0B,0x0D,0x3E,0xA6,0xF7,0xD3,
+        0xA4,0x29,0xC5,0x70,0x6A,0xA4,0x3A,0x00,
+        0xFA,0xDB,0xD7,0xD4,0x96,0x28,0x83,0x9E,
+        0x31,0x87,0x24,0x3F,0x45,0x6E,0xE1,0x4E
+    };
+    WOLFSSL_SMALL_STACK_STATIC const byte kmac128_out2[32] = {
+        0x3B,0x1F,0xBA,0x96,0x3C,0xD8,0xB0,0xB5,
+        0x9E,0x8C,0x1A,0x6D,0x71,0x88,0x8B,0x71,
+        0x43,0x65,0x1A,0xF8,0xBA,0x0A,0x70,0x70,
+        0xC0,0x97,0x9E,0x28,0x11,0x32,0x4A,0xA5
+    };
+    WOLFSSL_SMALL_STACK_STATIC const byte kmac128_xof[32] = {
+        0x31,0xA4,0x45,0x27,0xB4,0xED,0x9F,0x5C,
+        0x61,0x01,0xD1,0x1D,0xE6,0xD2,0x6F,0x06,
+        0x20,0xAA,0x5C,0x34,0x1D,0xEF,0x41,0x29,
+        0x96,0x57,0xFE,0x9D,0xF1,0xA3,0xB1,0x6C
+    };
+#endif
+#ifdef WOLFSSL_SHAKE256
+    WOLFSSL_SMALL_STACK_STATIC const byte kmac256_out[64] = {
+        0x20,0xC5,0x70,0xC3,0x13,0x46,0xF7,0x03,
+        0xC9,0xAC,0x36,0xC6,0x1C,0x03,0xCB,0x64,
+        0xC3,0x97,0x0D,0x0C,0xFC,0x78,0x7E,0x9B,
+        0x79,0x59,0x9D,0x27,0x3A,0x68,0xD2,0xF7,
+        0xF6,0x9D,0x4C,0xC3,0xDE,0x9D,0x10,0x4A,
+        0x35,0x16,0x89,0xF2,0x7C,0xF6,0xF5,0x95,
+        0x1F,0x01,0x03,0xF3,0x3F,0x4F,0x24,0x87,
+        0x10,0x24,0xD9,0xC2,0x77,0x73,0xA8,0xDD
+    };
+    WOLFSSL_SMALL_STACK_STATIC const byte kmac256_xof[64] = {
+        0x17,0x55,0x13,0x3F,0x15,0x34,0x75,0x2A,
+        0xAD,0x07,0x48,0xF2,0xC7,0x06,0xFB,0x5C,
+        0x78,0x45,0x12,0xCA,0xB8,0x35,0xCD,0x15,
+        0x67,0x6B,0x16,0xC0,0xC6,0x64,0x7F,0xA9,
+        0x6F,0xAA,0x7A,0xF6,0x34,0xA0,0xBF,0x8F,
+        0xF6,0xDF,0x39,0x37,0x4F,0xA0,0x0F,0xAD,
+        0x9A,0x39,0xE3,0x22,0xA7,0xC9,0x20,0x65,
+        0xA6,0x4E,0xB1,0xFB,0x08,0x01,0xEB,0x2B
+    };
+#endif
+
+    /* customLen excludes the implicit NUL terminator from the literal. */
+    const word32 customLen = (word32)(sizeof(kmacCustom) - 1);
+
+    const KMAC_Test_Case testCases[] = {
+#ifdef WOLFSSL_SHAKE128
+        { WC_KMAC_128, 0, kmacKey, sizeof(kmacKey), kmacIn, sizeof(kmacIn),
+          NULL, 0, kmac128_out1, sizeof(kmac128_out1), "KMAC128 NoCustom" },
+        { WC_KMAC_128, 0, kmacKey, sizeof(kmacKey), kmacIn, sizeof(kmacIn),
+          kmacCustom, customLen, kmac128_out2, sizeof(kmac128_out2),
+          "KMAC128 Custom" },
+        { WC_KMAC_128, 1, kmacKey, sizeof(kmacKey), kmacIn, sizeof(kmacIn),
+          kmacCustom, customLen, kmac128_xof, sizeof(kmac128_xof),
+          "KMAC128 XOF Custom" },
+#endif
+#ifdef WOLFSSL_SHAKE256
+        { WC_KMAC_256, 0, kmacKey, sizeof(kmacKey), kmacIn, sizeof(kmacIn),
+          kmacCustom, customLen, kmac256_out, sizeof(kmac256_out),
+          "KMAC256 Custom" },
+        { WC_KMAC_256, 1, kmacKey, sizeof(kmacKey), kmacIn, sizeof(kmacIn),
+          kmacCustom, customLen, kmac256_xof, sizeof(kmac256_xof),
+          "KMAC256 XOF Custom" },
+#endif
+    };
+
+    Kmac          kmac;
+    byte          mac[64];
+    const KMAC_Test_Case* tc;
+    word32        i;
+    wc_test_ret_t ret;
+
+    WOLFSSL_ENTER("kmac_test");
+
+    for (i = 0; i < sizeof(testCases)/sizeof(testCases[0]); i++) {
+        tc = &testCases[i];
+        XMEMSET(mac, 0, sizeof(mac));
+
+        ret = wc_InitKmac(&kmac, tc->type, tc->k, tc->kSz, tc->s, tc->sSz,
+                          HEAP_HINT, INVALID_DEVID);
+        if (ret != 0) ERROR_OUT(WC_TEST_RET_ENC_EC(ret), out);
+
+        if (tc->xof) {
+            ret = wc_KmacSetXof(&kmac, 1);
+            if (ret != 0) ERROR_OUT(WC_TEST_RET_ENC_EC(ret), out);
+        }
+
+        ret = wc_KmacUpdate(&kmac, tc->m, tc->mSz);
+        if (ret != 0) ERROR_OUT(WC_TEST_RET_ENC_EC(ret), out);
+
+        ret = wc_KmacFinal(&kmac, mac, tc->outSz);
+        if (ret != 0) ERROR_OUT(WC_TEST_RET_ENC_EC(ret), out);
+
+        if (XMEMCMP(mac, tc->out, tc->outSz) != 0)
+            ERROR_OUT(WC_TEST_RET_ENC_NC, out);
+
+        wc_KmacFree(&kmac);
+    }
+
+#ifdef WOLFSSL_SHAKE128
+    /* Split Update: same as KMAC128 NoCustom but feed input in two pieces. */
+    XMEMSET(mac, 0, sizeof(mac));
+    ret = wc_InitKmac(&kmac, WC_KMAC_128, kmacKey, sizeof(kmacKey),
+                      NULL, 0, HEAP_HINT, INVALID_DEVID);
+    if (ret != 0) ERROR_OUT(WC_TEST_RET_ENC_EC(ret), out);
+    ret = wc_KmacUpdate(&kmac, kmacIn, 2);
+    if (ret != 0) ERROR_OUT(WC_TEST_RET_ENC_EC(ret), out);
+    ret = wc_KmacUpdate(&kmac, kmacIn + 2, sizeof(kmacIn) - 2);
+    if (ret != 0) ERROR_OUT(WC_TEST_RET_ENC_EC(ret), out);
+    ret = wc_KmacFinal(&kmac, mac, sizeof(kmac128_out1));
+    if (ret != 0) ERROR_OUT(WC_TEST_RET_ENC_EC(ret), out);
+    if (XMEMCMP(mac, kmac128_out1, sizeof(kmac128_out1)) != 0)
+        ERROR_OUT(WC_TEST_RET_ENC_NC, out);
+    wc_KmacFree(&kmac);
+#endif
+
+    /* Negative tests. */
+    if (wc_InitKmac(NULL, WC_KMAC_128, kmacKey, sizeof(kmacKey), NULL, 0,
+                    HEAP_HINT, INVALID_DEVID) != BAD_FUNC_ARG)
+        ERROR_OUT(WC_TEST_RET_ENC_NC, out);
+    if (wc_InitKmac(&kmac, 0xFF, kmacKey, sizeof(kmacKey), NULL, 0,
+                    HEAP_HINT, INVALID_DEVID) != BAD_FUNC_ARG)
+        ERROR_OUT(WC_TEST_RET_ENC_NC, out);
+
+#ifdef WOLFSSL_SHAKE128
+    /* Update-after-Final and SetXof-after-Update. */
+    ret = wc_InitKmac(&kmac, WC_KMAC_128, kmacKey, sizeof(kmacKey),
+                      NULL, 0, HEAP_HINT, INVALID_DEVID);
+    if (ret != 0) ERROR_OUT(WC_TEST_RET_ENC_EC(ret), out);
+    ret = wc_KmacUpdate(&kmac, kmacIn, sizeof(kmacIn));
+    if (ret != 0) ERROR_OUT(WC_TEST_RET_ENC_EC(ret), out);
+    if (wc_KmacSetXof(&kmac, 1) != BAD_STATE_E)
+        ERROR_OUT(WC_TEST_RET_ENC_NC, out);
+    ret = wc_KmacFinal(&kmac, mac, 32);
+    if (ret != 0) ERROR_OUT(WC_TEST_RET_ENC_EC(ret), out);
+    if (wc_KmacUpdate(&kmac, kmacIn, sizeof(kmacIn)) != BAD_STATE_E)
+        ERROR_OUT(WC_TEST_RET_ENC_NC, out);
+    wc_KmacFree(&kmac);
+#endif
+
+    ret = 0;
+out:
+    return ret;
+}
+
+#endif /* WOLFSSL_KMAC */
 
 #if defined(WOLFSSL_SIPHASH)
 

@@ -1922,6 +1922,39 @@ int wc_Shake128_Copy(wc_Shake* src, wc_Shake* dst)
 {
     return wc_Sha3Copy(src, dst);
 }
+
+#ifdef WOLFSSL_KMAC
+/* cSHAKE128 finalize. Same as SHAKE128 finalize except the
+ * domain-separation byte is 0x04 (NIST SP 800-185 §3.3) instead of
+ * SHAKE's 0x1F. Internal helper for KMAC. */
+int wc_Sha3_cSHAKE128_Final(wc_Shake* shake, byte* hash, word32 hashLen)
+{
+    int ret;
+
+    if (shake == NULL || hash == NULL) {
+        return BAD_FUNC_ARG;
+    }
+
+#if defined(PSOC6_HASH_SHA3)
+    ret = wolfSSL_CryptHwMutexLock();
+    if (ret == 0) {
+        ret = wc_Psoc6_Sha3_Final(shake, 0x04, hash, WC_SHA3_128_COUNT,
+                                  hashLen);
+        if (ret == 0) {
+            ret = wc_Psoc6_Sha3_Init(shake);
+        }
+        wolfSSL_CryptHwMutexUnLock();
+    }
+#else
+    ret = Sha3Final(shake, 0x04, hash, WC_SHA3_128_COUNT, hashLen);
+    if (ret == 0) {
+        ret = InitSha3(shake);
+    }
+#endif
+
+    return ret;
+}
+#endif /* WOLFSSL_KMAC */
 #endif
 
 #ifdef WOLFSSL_SHAKE256
@@ -2162,6 +2195,39 @@ int wc_Shake256_Copy(wc_Shake* src, wc_Shake* dst)
 {
     return wc_Sha3Copy(src, dst);
 }
+
+#ifdef WOLFSSL_KMAC
+/* cSHAKE256 finalize. Same as SHAKE256 finalize except the
+ * domain-separation byte is 0x04 (NIST SP 800-185 §3.3) instead of
+ * SHAKE's 0x1F. Internal helper for KMAC. */
+int wc_Sha3_cSHAKE256_Final(wc_Shake* shake, byte* hash, word32 hashLen)
+{
+    int ret;
+
+    if (shake == NULL || hash == NULL) {
+        return BAD_FUNC_ARG;
+    }
+
+#if defined(PSOC6_HASH_SHA3)
+    ret = wolfSSL_CryptHwMutexLock();
+    if (ret == 0) {
+        ret = wc_Psoc6_Sha3_Final(shake, 0x04, hash, WC_SHA3_256_COUNT,
+                                  hashLen);
+        if (ret == 0) {
+            ret = wc_Psoc6_Sha3_Init(shake);
+        }
+        wolfSSL_CryptHwMutexUnLock();
+    }
+#else
+    ret = Sha3Final(shake, 0x04, hash, WC_SHA3_256_COUNT, hashLen);
+    if (ret == 0) {
+        ret = InitSha3(shake);
+    }
+#endif
+
+    return ret;
+}
+#endif /* WOLFSSL_KMAC */
 #endif
 
 #endif /* WOLFSSL_SHA3 */

@@ -20409,7 +20409,7 @@ static int test_wolfSSL_OCSP_single_get0_status(void)
     ExpectPtrEq(nextDate, &certStatus.nextDateParsed);
 
     ExpectIntEQ(wolfSSL_OCSP_single_get0_status(NULL, NULL, NULL, NULL, NULL),
-        CERT_GOOD);
+        -1);
     ExpectIntEQ(wolfSSL_OCSP_single_get0_status(&single, NULL, NULL, NULL,
         NULL), CERT_GOOD);
 #endif
@@ -22326,7 +22326,7 @@ static int test_wolfSSL_X509_CRL_reason_critical_boolean(void)
 
     ExpectIntEQ(wc_ParseCRLReasonFromExtensions(ext, (word32)sizeof(ext),
                                                  &reasonCode), 0);
-    ExpectIntEQ(reasonCode, CRL_REASON_CA_COMPROMISE);
+    ExpectIntEQ(reasonCode, WC_CRL_REASON_CA_COMPROMISE);
 
     return EXPECT_RESULT();
 }
@@ -31693,7 +31693,8 @@ static int test_TLSX_CA_NAMES_bad_extension(void)
 
         ExpectIntEQ(wolfSSL_connect(ssl_c), -1);
 #ifndef WOLFSSL_DISABLE_EARLY_SANITY_CHECKS
-        ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), WC_NO_ERR_TRACE(EXT_MISSING));
+        ExpectIntEQ(wolfSSL_get_error(ssl_c, -1),
+                                        WC_NO_ERR_TRACE(UNSUPPORTED_EXTENSION));
 #else
         ExpectIntEQ(wolfSSL_get_error(ssl_c, -1), WC_NO_ERR_TRACE(BUFFER_ERROR));
 #endif
