@@ -3,12 +3,17 @@ CFLAGS  += -Wall -Wextra -O2
 CFLAGS  += $(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H
 CFLAGS  += $(shell pkg-config --cflags json-c)
 CFLAGS  += $(shell pkg-config --cflags libpq)
+CFLAGS  += $(shell pkg-config --cflags augeas)
 CFLAGS  += -I../../server2/c
 CFLAGS  += -I../../../socket-level-wrapper-MQC
+CFLAGS  += -I../../read-config
 
 POSTWOLF_LIBS = $(shell pkg-config --libs postWolf)
 JSON_LIBS     = $(shell pkg-config --libs json-c)
 PQ_LIBS       = $(shell pkg-config --libs libpq)
+AUGEAS_LIBS   = $(shell pkg-config --libs augeas)
+
+READ_CONFIG_SRC = ../../read-config/read-config.c
 
 SERVER_DIR = ../../server2/c
 
@@ -73,9 +78,10 @@ bootstrap_leaf: bootstrap_leaf.c mtc_pubkey_db.c mtc_pubkey_db.h \
 		bootstrap_leaf.c mtc_pubkey_db.c $(SERVER_DIR)/mtc_crypt.c \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS)
 
-show-tpm: show-tpm.c $(MQC_LIB)
-	$(CC) $(CFLAGS) -o $@ show-tpm.c $(MQC_LIB) \
-		$(POSTWOLF_LIBS) $(JSON_LIBS) -lcurl -lhiredis -lpthread -lm
+show-tpm: show-tpm.c $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) -o $@ show-tpm.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
+		-lcurl -lhiredis -lpthread -lm
 
 issue_leaf_nonce: issue_leaf_nonce.c $(MQC_LIB)
 	$(CC) $(CFLAGS) -o $@ issue_leaf_nonce.c $(MQC_LIB) \
