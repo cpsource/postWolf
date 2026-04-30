@@ -45,6 +45,7 @@
 
 #include "mqc.h"
 #include "mqc_peer.h"
+#include "../../read-config/read-config.h"
 
 /* Explicit path — there's also a server-side config.h on the include
  * search path that would shadow this one. */
@@ -378,6 +379,7 @@ int main(int argc, char *argv[])
     const char *label_arg   = NULL;
     int dry_run = 0, trace = 0;
     int ttl_days = 0;               /* 0 = default short-lived 15-min */
+    int server_from_cli = 0;
     int i;
 
     char fp_hex[WC_SHA256_DIGEST_SIZE * 2 + 1];
@@ -394,8 +396,10 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "--fingerprint") == 0 && i + 1 < argc)
             fingerprint = argv[++i];
         else if ((strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--server") == 0)
-                 && i + 1 < argc)
+                 && i + 1 < argc) {
             server = argv[++i];
+            server_from_cli = 1;
+        }
         else if (strcmp(argv[i], "--tpm-path") == 0 && i + 1 < argc)
             tpm_path = argv[++i];
         else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc)
@@ -478,6 +482,12 @@ int main(int argc, char *argv[])
         printf("Leaf public key fingerprint: sha256:%s\n", fp_hex);
     }
     /* else: reservation mode — no fp to submit; server will late-bind. */
+
+    /* CLI -s wins; otherwise [global] url-server in /etc/postWolf/config. */
+    if (!server_from_cli) {
+        char *cfg = read_config_url("global/url-server");
+        if (cfg) server = cfg;
+    }
 
     /* --- Parse server host:port --- */
     {

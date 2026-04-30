@@ -42,6 +42,7 @@
 
 #include "mqc.h"
 #include "mqc_peer.h"
+#include "../../read-config/read-config.h"
 
 #include "../../../socket-level-wrapper-MQC/config.h"
 #define DEFAULT_SERVER    MQC_DEFAULT_SERVER
@@ -237,6 +238,7 @@ int main(int argc, char **argv)
     const char *out_path    = NULL;
     int         validity    = 0;   /* 0 = don't send; server default */
     int         trace       = 0;
+    int         server_from_cli = 0;
     char        tpm_root[1024];
     const char *home;
     char       *tpm_owned   = NULL;
@@ -261,6 +263,7 @@ int main(int argc, char **argv)
         } else if ((strcmp(argv[i], "-s") == 0 ||
                     strcmp(argv[i], "--server") == 0) && i + 1 < argc) {
             server = argv[++i];
+            server_from_cli = 1;
         } else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
             out_path = argv[++i];
         } else if (strcmp(argv[i], "--trace") == 0) {
@@ -276,6 +279,12 @@ int main(int argc, char **argv)
         fprintf(stderr, "Error: --new-pubkey is required\n");
         usage(argv[0]);
         return 2;
+    }
+
+    /* CLI -s wins; otherwise [global] url-server in /etc/postWolf/config. */
+    if (!server_from_cli) {
+        char *cfg = read_config_url("global/url-server");
+        if (cfg) server = cfg;
     }
 
     home = getenv("HOME");

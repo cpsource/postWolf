@@ -1,0 +1,9 @@
+
+[global]
+
+url-bootstrap https://factsorlie.com:8445
+
+url-server https://factsorlie.com:8446
+
+url-local https://factsorlie.com:8444
+

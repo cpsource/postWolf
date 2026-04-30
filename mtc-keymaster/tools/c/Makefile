@@ -3,12 +3,17 @@ CFLAGS  += -Wall -Wextra -O2
 CFLAGS  += $(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H
 CFLAGS  += $(shell pkg-config --cflags json-c)
 CFLAGS  += $(shell pkg-config --cflags libpq)
+CFLAGS  += $(shell pkg-config --cflags augeas)
 CFLAGS  += -I../../server2/c
 CFLAGS  += -I../../../socket-level-wrapper-MQC
+CFLAGS  += -I../../read-config
 
 POSTWOLF_LIBS = $(shell pkg-config --libs postWolf)
 JSON_LIBS     = $(shell pkg-config --libs json-c)
 PQ_LIBS       = $(shell pkg-config --libs libpq)
+AUGEAS_LIBS   = $(shell pkg-config --libs augeas)
+
+READ_CONFIG_SRC = ../../read-config/read-config.c
 
 SERVER_DIR = ../../server2/c
 
@@ -62,40 +67,50 @@ backfill-pubkey: backfill-pubkey.c \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) -lcurl
 
 bootstrap_ca: bootstrap_ca.c mtc_pubkey_db.c mtc_pubkey_db.h \
-              $(SERVER_DIR)/mtc_crypt.c $(SERVER_DIR)/mtc_crypt.h
+              $(SERVER_DIR)/mtc_crypt.c $(SERVER_DIR)/mtc_crypt.h \
+              $(READ_CONFIG_SRC)
 	$(CC) $(CFLAGS) -o $@ \
 		bootstrap_ca.c mtc_pubkey_db.c $(SERVER_DIR)/mtc_crypt.c \
-		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS)
+		$(READ_CONFIG_SRC) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) $(AUGEAS_LIBS)
 
 bootstrap_leaf: bootstrap_leaf.c mtc_pubkey_db.c mtc_pubkey_db.h \
-                $(SERVER_DIR)/mtc_crypt.c $(SERVER_DIR)/mtc_crypt.h
+                $(SERVER_DIR)/mtc_crypt.c $(SERVER_DIR)/mtc_crypt.h \
+                $(READ_CONFIG_SRC)
 	$(CC) $(CFLAGS) -o $@ \
 		bootstrap_leaf.c mtc_pubkey_db.c $(SERVER_DIR)/mtc_crypt.c \
-		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS)
+		$(READ_CONFIG_SRC) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) $(AUGEAS_LIBS)
 
-show-tpm: show-tpm.c $(MQC_LIB)
-	$(CC) $(CFLAGS) -o $@ show-tpm.c $(MQC_LIB) \
-		$(POSTWOLF_LIBS) $(JSON_LIBS) -lcurl -lhiredis -lpthread -lm
+show-tpm: show-tpm.c $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) -o $@ show-tpm.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
+		-lcurl -lhiredis -lpthread -lm
 
-issue_leaf_nonce: issue_leaf_nonce.c $(MQC_LIB)
-	$(CC) $(CFLAGS) -o $@ issue_leaf_nonce.c $(MQC_LIB) \
-		$(POSTWOLF_LIBS) $(JSON_LIBS) -lcurl -lhiredis -lpthread -lm
+issue_leaf_nonce: issue_leaf_nonce.c $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) -o $@ issue_leaf_nonce.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
+		-lcurl -lhiredis -lpthread -lm
 
-revoke-key: revoke-key.c $(MQC_LIB)
-	$(CC) $(CFLAGS) -o $@ revoke-key.c $(MQC_LIB) \
-		$(POSTWOLF_LIBS) $(JSON_LIBS) -lcurl -lhiredis -lpthread -lm
+revoke-key: revoke-key.c $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) -o $@ revoke-key.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
+		-lcurl -lhiredis -lpthread -lm
 
-renew-cert: renew-cert.c $(MQC_LIB)
-	$(CC) $(CFLAGS) -o $@ renew-cert.c $(MQC_LIB) \
-		$(POSTWOLF_LIBS) $(JSON_LIBS) -lcurl -lhiredis -lpthread -lm
+renew-cert: renew-cert.c $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) -o $@ renew-cert.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
+		-lcurl -lhiredis -lpthread -lm
 
-check-renewal-cert: check-renewal-cert.c $(MQC_LIB)
-	$(CC) $(CFLAGS) -o $@ check-renewal-cert.c $(MQC_LIB) \
-		$(POSTWOLF_LIBS) $(JSON_LIBS) -lcurl -lhiredis -lpthread -lm
+check-renewal-cert: check-renewal-cert.c $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) -o $@ check-renewal-cert.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
+		-lcurl -lhiredis -lpthread -lm
 
-cancel-nonce: cancel-nonce.c $(MQC_LIB)
-	$(CC) $(CFLAGS) -o $@ cancel-nonce.c $(MQC_LIB) \
-		$(POSTWOLF_LIBS) $(JSON_LIBS) -lcurl -lhiredis -lpthread -lm
+cancel-nonce: cancel-nonce.c $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) -o $@ cancel-nonce.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
+		-lcurl -lhiredis -lpthread -lm
 
 # Standalone symmetric-crypto pipe tool.  No MQC link needed — pure
 # wolfCrypt + json-c.
@@ -104,11 +119,16 @@ mqc: mqc.c
 		$(POSTWOLF_LIBS) $(JSON_LIBS)
 
 # Adversarial probes — raw sockets only, no MQC/postWolf link dep.
-attack-port-8445: attack-port-8445.c
-	$(CC) -Wall -Wextra -O2 -o $@ attack-port-8445.c
+# read-config (Augeas) pulled in so they pick up [global] url-{server,bootstrap}.
+attack-port-8445: attack-port-8445.c $(READ_CONFIG_SRC)
+	$(CC) -Wall -Wextra -O2 $(shell pkg-config --cflags augeas) \
+		-I../../read-config \
+		-o $@ attack-port-8445.c $(READ_CONFIG_SRC) $(AUGEAS_LIBS)
 
-attack-port-8446: attack-port-8446.c
-	$(CC) -Wall -Wextra -O2 -o $@ attack-port-8446.c
+attack-port-8446: attack-port-8446.c $(READ_CONFIG_SRC)
+	$(CC) -Wall -Wextra -O2 $(shell pkg-config --cflags augeas) \
+		-I../../read-config \
+		-o $@ attack-port-8446.c $(READ_CONFIG_SRC) $(AUGEAS_LIBS)
 
 BINDIR ?= /usr/local/bin
 

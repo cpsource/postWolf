@@ -2,7 +2,7 @@
 """
 Generate a leaf key pair for MTC enrollment via the DH bootstrap port.
 
-Supports EC-P256, Ed25519, and ML-DSA-87 (post-quantum via openssl35).
+Supports EC-P256, Ed25519, and ML-DSA-87 (post-quantum via openssl40).
 
 Creates the key files needed by bootstrap_leaf:
     ~/.mtc-ca-data/<domain>/private_key.pem
@@ -26,11 +26,11 @@ from pathlib import Path
 DEFAULT_OUT = Path.home() / ".mtc-ca-data"
 DEFAULT_ALGORITHM = "ML-DSA-87"
 
-OPENSSL = "openssl35"
+OPENSSL = "openssl40"
 
 
-def check_openssl35():
-    """Verify openssl35 is available."""
+def check_openssl40():
+    """Verify openssl40 is available."""
     try:
         result = subprocess.run(
             [OPENSSL, "version"],
@@ -45,7 +45,7 @@ def check_openssl35():
 
 
 def generate_leaf(domain, out_base, algorithm):
-    """Generate leaf keypair using openssl35."""
+    """Generate leaf keypair using openssl40."""
     out_dir = Path(out_base) / domain
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -130,7 +130,7 @@ def main():
                         help=f"Key algorithm (default: {DEFAULT_ALGORITHM})")
     args = parser.parse_args()
 
-    check_openssl35()
+    check_openssl40()
     generate_leaf(args.domain, args.out, args.algorithm)
 
 

@@ -28,7 +28,7 @@ import sys
 from cryptography import x509
 from cryptography.x509.oid import ExtensionOID
 
-OPENSSL = "openssl35"
+OPENSSL = "openssl40"
 
 
 def load_cert(path: str) -> x509.Certificate:
@@ -64,7 +64,7 @@ def is_ca(cert: x509.Certificate) -> tuple[bool, int | None]:
 def public_key_fingerprint(cert_path: str) -> str:
     """SHA-256 fingerprint of the public key (DER-encoded SPKI).
 
-    Shells out to openssl35 so ML-DSA-{44,65,87} certs — which
+    Shells out to openssl40 so ML-DSA-{44,65,87} certs — which
     python-cryptography does not yet parse — work alongside classical
     RSA/EC/Ed25519 CAs.
     """

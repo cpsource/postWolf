@@ -36,6 +36,7 @@
 #include <json-c/json.h>
 #include "mqc.h"
 #include "mqc_peer.h"
+#include "../../read-config/read-config.h"
 
 #define DEFAULT_TPM_DIR   ".TPM"
 /* Explicit path — there's also a server-side config.h on the include
@@ -686,6 +687,7 @@ int main(int argc, char *argv[])
     const char *tpm_dir_arg = NULL;
     const char *mqc_tpm_path = NULL;
     int verify = 0, verbose = 0, trace = 0, cnt = 0;
+    int server_from_cli = 0;
     char tpm_dir[512];
     tpm_entry_t entries[MAX_ENTRIES];
     int num_entries = 0;
@@ -699,8 +701,10 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "--tpm-path") == 0 && i + 1 < argc)
             mqc_tpm_path = argv[++i];
         else if ((strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--server") == 0)
-                 && i + 1 < argc)
+                 && i + 1 < argc) {
             server = argv[++i];
+            server_from_cli = 1;
+        }
         else if ((strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0))
             verbose = 1;
         else if (strcmp(argv[i], "--trace") == 0)
@@ -780,6 +784,13 @@ int main(int argc, char *argv[])
                 fprintf(stderr, "Error: no TPM identity found for MQC\n");
                 return 1;
             }
+        }
+
+        /* Pick MQC server: CLI -s wins; otherwise [global] url-server in
+         * /etc/postWolf/config; otherwise compiled-in DEFAULT_SERVER. */
+        if (!server_from_cli) {
+            char *cfg = read_config_url("global/url-server");
+            if (cfg) server = cfg;
         }
 
         /* Parse host:port from server string */
