@@ -3584,3 +3584,168 @@ Ranked by depth of change:
 - DNSSEC alternative for cosigner fingerprint distribution (TODO
   #9b's other path) — orthogonal; can be added later as a third
   authentication channel without conflict.
+
+## Appendix: KMAC-SHA3 evaluation for MQC
+
+### Q: Would MQC benefit from KMAC-SHA3 (NIST SP 800-185)?
+
+**Honest take: marginal — mostly aesthetic, not worth a focused
+effort.**
+
+Where KMAC could slot in, and what we'd actually gain:
+
+| Use site | Today | KMAC swap | Real benefit? |
+|---|---|---|---|
+| Session-key derivation (`wc_HKDF` in `mqc.c:294,298`) | HKDF-SHA256 (HMAC-based) | KMACXOF256 | None practically. HKDF is fine. KMAC is cleaner (one call does extract+expand, customization string = native domain separation) but the HKDF info-string trick already does that. |
+| Record auth | AES-256-GCM (GMAC) | Would force CTR+KMAC, no AEAD | **Worse.** GCM has hardware accel (AES-NI + PCLMULQDQ); KMAC is software-only. |
+| Merkle node hash (`wc_MtcHashNode` in `wolfcrypt/src/mtc.c:51`) | Bare SHA-256 (RFC 9162) | n/a | Fixed by spec; can't change without forking the log format. |
+| Cosignature | ML-DSA-87 | n/a | ML-DSA already uses SHAKE-256 internally. |
+
+The honest case for KMAC is **stack coherence**: ML-KEM-768 and
+ML-DSA-87 are both Keccak-based, so the symmetric layer being
+SHA-256/HMAC is the lone SHA-2 holdout.  Replacing HKDF-SHA256
+with KMACXOF256 makes the whole MQC pipeline "Keccak everywhere,"
+which is a nice property if we ever need to audit "what hash
+families am I trusting" — answer becomes one instead of two.
+
+The case against:
+
+- **Performance**: SHA-NI gives HMAC-SHA-256 ~3-5x throughput over
+  software Keccak on x86.  Doesn't matter for one-shot HKDF, would
+  matter if we ever extended KMAC to per-record use.
+- **Maturity / library support**: wolfSSL has SHA-3 / SHAKE but
+  no KMAC and no cSHAKE (verified — `grep` for `kmac` /
+  `cshake` in `wolfssl/` and `wolfcrypt/` returns nothing
+  relevant).  So either we link a second crypto lib or we
+  implement KMAC ourselves.  Real cost for a cosmetic win.
+- **No security delta**: HMAC-SHA-256 has no known weakness;
+  we're not closing a hole.
+
+**Recommendation**: skip it as a standalone task.  If we ever do a
+broader "rip out SHA-2" pass — e.g., to rebuild against a
+Keccak-only crypto core for FIPS/PQ-coherence reasons — fold it in
+then.  Otherwise the existing HKDF-SHA256 + AES-GCM stack is the
+right call.
+
+### Q: How hard is OpenSSL 4.0.0's KMAC to use?
+
+The KMAC code itself is straightforward; the friction is **how
+we'd link it into postWolf**, not the API.
+
+#### Calling the OpenSSL EVP_MAC API
+
+Looking at the example in
+`~/openssl-4.0.0/doc/man7/EVP_MAC-KMAC.pod` — about 30 lines per
+call site (`fetch → CTX_new → build OSSL_PARAM array →
+set_params → init → update → final → free`).  Wrapped once in
+`mqc_kmac256(key, custom, in, in_len, out, out_len)`, our call
+sites collapse to one line.  So **the API is easy** —
+verbose-but-mechanical EVP boilerplate, the same pattern OpenSSL
+uses for every MAC.
+
+#### The actual cost: a new heavy dep
+
+postWolf today links only `libpostWolf` (the wolfSSL fork) on the
+C side.  Using OpenSSL's KMAC means:
+
+- Add `libcrypto` to `pkg-config` for MQC, the MTC server, and
+  every tool that touches sessions.
+- Now we have **two** crypto libraries in every binary: wolfSSL
+  for ML-KEM/ML-DSA/AES-GCM/SHAKE, OpenSSL for KMAC.  Both ship
+  Keccak.  Both have their own RNG.  Risk of accidentally pulling
+  system-libcrypto symbols (Ubuntu's OpenSSL 3.x) instead of
+  `~/openssl-4.0.0` is non-trivial, and `LD_LIBRARY_PATH` games
+  are exactly what we already fight with on this box.
+- The Python tools shelling out to `openssl40` is fine — it's an
+  opaque subprocess.  C-level linking is a different game.
+
+#### The cleaner alternative: ~150-line native impl on top of wolfSSL SHAKE
+
+wolfSSL has `wc_Shake256_{Init,Absorb,Update,SqueezeBlocks,Final}`
+but no KMAC, no cSHAKE.  KMAC256 per SP 800-185 is just:
+
+```
+prefix = bytepad(encode_string("KMAC") || encode_string(S), 136)
+body   = bytepad(encode_string(K), 136) || X || right_encode(L_bits)
+         (or right_encode(0) for XOF)
+out    = SHAKE256(prefix || body, L)
+```
+
+The encoding helpers are 158 lines in OpenSSL's
+`crypto/sha/sha3_encode.c` — all of it bit-twiddling +
+length-prefixing.  A `wc_Kmac256()` in `wolfcrypt/src/kmac.c`
+mirroring those helpers comes out to ~120 lines plus ~30 lines of
+NIST test vectors.  wolfSSL upstream might even take a PR.  **No
+new dep, fits the existing dispatch style** (`wc_Shake256_*`,
+`wc_Sha256*`).
+
+#### Recommendation
+
+If we ever decide to ship KMAC in MQC, do the **native wolfSSL
+impl**, not the OpenSSL link-in.  The OpenSSL API is "not hard"
+but the linkage cost is real and lasting; the encoding helpers
+are trivial and live forever.  Whether we ship it at all is the
+prior question — the security delta over HKDF-SHA256 + GCM is
+~zero.  The case for KMAC remains coherence ("Keccak everywhere"),
+not need.
+
+### Q: Does KMAC-SHA3 help close the MiTM hole on port 8445?
+
+**Considered and rejected.**  See the "Plan to close MiTM hole on
+port 8445" appendix above for the accepted design (ML-DSA-87
+cosigner sig + OOB fingerprint pin on the leaf branch; X.509-chain
+validated signature on the CA branch).
+
+The hole is *asymmetric-authentication-shaped*, not *MAC-shaped*:
+
+1. **The leaf and CA share no secret before the DH exchange.**
+   That's the whole reason MiTM works on bare DH — the attacker
+   runs two independent DH exchanges, derives two correct
+   AES-GCM keys via HKDF, decrypts/re-encrypts in the middle,
+   and neither side can detect it.  A keyed MAC needs a key;
+   both sides need to hold the same one.  They don't.
+
+2. **The leaf branch's enrollment nonce *could* in theory be the
+   KMAC key** — leaf and CA both know it OOB, you'd
+   `KMAC256(nonce, server_dh_pub || client_dh_pub || salt)` and
+   append.  That would close the MiTM hole.  But it would be a
+   strict **downgrade** vs. the accepted plan:
+   - The nonce is single-use; consumed on enrollment.  Any
+     post-enrollment verification (re-auditing the response,
+     future re-enrollment) loses the symmetric anchor.  ML-DSA-87
+     against a pinned public-key fingerprint stays valid forever.
+   - The plan's cosigner key is **already in use** for
+     log-checkpoint signing.  Reusing it for response signing
+     introduces no new key material.  KMAC would create a new
+     symmetric-secret distribution surface.
+   - If the CA's bootstrap-signing machinery is later compromised,
+     asymmetric pinning gives forward-authentication failure only;
+     a leaked symmetric secret retroactively breaks every prior
+     enrollment that used it.
+
+3. **The CA-bootstrap branch has no shared secret at all**
+   (no nonce — DNS TXT proof + X.509).  KMAC is a non-starter
+   here.  There's no PSK to feed it.  The plan correctly uses the
+   parent CA's TLS X.509 private key as the asymmetric
+   authenticator.
+
+4. **Could KMAC replace `HKDF(DH_shared, salt)`?**  Same question
+   as the previous Q — yes, you could KMACXOF256 the session keys
+   instead of HKDF-SHA256 them.  But the MiTM happens **upstream
+   of the KDF**: the attacker derives a correct session key with
+   each side using their own DH_shared.  Swapping the KDF
+   primitive changes nothing about MiTM resistance.
+
+5. **The SHA-256 in `sha256(DER(cosigner_pem)) == cosigner_fp`**
+   is an unkeyed fingerprint, not a MAC.  KMAC doesn't apply
+   (no key).  Switching to SHA3-256 here would be a cosmetic
+   change with no security impact — the operator still pastes one
+   256-bit string OOB.
+
+**Bottom line**: the MiTM problem on 8445 is "we need an
+asymmetric authenticator anchored OOB by a public reference
+(fingerprint, X.509 chain)."  KMAC is a symmetric primitive.
+Even granting that wolfSSL had it natively (it doesn't), it would
+not help here.  The accepted plan's choice of ML-DSA-87 +
+cosigner-fingerprint pinning (leaf branch) and X.509-chain-validated
+signature (CA branch) is the right shape.
