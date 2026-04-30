@@ -7,7 +7,6 @@ Type=simple
 User=ubuntu
 Group=ubuntu
 ExecStart=/usr/local/bin/mtc_server \
-    --port 8444 \
     --data-dir /home/ubuntu/.mtc-ca-data \
     --tokenpath /home/ubuntu/.env \
     --ca-name MTC-CA-C \
@@ -16,8 +15,6 @@ ExecStart=/usr/local/bin/mtc_server \
     --tls-key /home/ubuntu/.mtc-ca-data/server-key.pem \
     --ech-name factsorlie.com \
     --log-level 2 \
-    --dh-port 8445 \
-    --mqc-port 8446 \
     --tpm-path /home/ubuntu/.TPM/factsorlie.com-ca
 Restart=on-failure
 RestartSec=5

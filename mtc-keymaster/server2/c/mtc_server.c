@@ -49,6 +49,21 @@
 #include "mtc_checkendpoint.h"
 #include "mtc_log.h"
 #include "mtc_ratelimit.h"
+#include "../../read-config/read-config.h"
+
+/* Pull port number out of [global] <key> in /etc/postWolf/config.
+ * The value is a URL like https://host:8446 — split on the last ':'
+ * and atoi the tail.  Returns 0 if the key is missing or the URL has
+ * no port. */
+static int port_from_config_url(const char *key)
+{
+    char *url = read_config_url(key);
+    if (!url) return 0;
+    char *colon = strrchr(url, ':');
+    int p = colon ? atoi(colon + 1) : 0;
+    free(url);
+    return p;
+}
 
 /******************************************************************************
  * Function:    wolfssl_log_bridge
@@ -147,6 +162,9 @@ int main(int argc, char *argv[])
     const char *ech_name = NULL;
     int dh_port = 0;
     int mqc_port = 0;
+    int port_from_cli = 0;
+    int dh_port_from_cli = 0;
+    int mqc_port_from_cli = 0;
     const char *tpm_path = NULL;
     const char *mtc_server_url = NULL;
     int log_level = MTC_LOG_INFO;
@@ -159,8 +177,10 @@ int main(int argc, char *argv[])
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--host") == 0 && i + 1 < argc)
             host = argv[++i];
-        else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc)
+        else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
             port = atoi(argv[++i]);
+            port_from_cli = 1;
+        }
         else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc)
             data_dir = argv[++i];
         else if (strcmp(argv[i], "--tokenpath") == 0 && i + 1 < argc)
@@ -179,10 +199,14 @@ int main(int argc, char *argv[])
             tls_ca = argv[++i];
         else if (strcmp(argv[i], "--ech-name") == 0 && i + 1 < argc)
             ech_name = argv[++i];
-        else if (strcmp(argv[i], "--dh-port") == 0 && i + 1 < argc)
+        else if (strcmp(argv[i], "--dh-port") == 0 && i + 1 < argc) {
             dh_port = atoi(argv[++i]);
-        else if (strcmp(argv[i], "--mqc-port") == 0 && i + 1 < argc)
+            dh_port_from_cli = 1;
+        }
+        else if (strcmp(argv[i], "--mqc-port") == 0 && i + 1 < argc) {
             mqc_port = atoi(argv[++i]);
+            mqc_port_from_cli = 1;
+        }
         else if (strcmp(argv[i], "--tpm-path") == 0 && i + 1 < argc)
             tpm_path = argv[++i];
         else if (strcmp(argv[i], "--mtc-server") == 0 && i + 1 < argc)
@@ -195,6 +219,24 @@ int main(int argc, char *argv[])
                  strcmp(argv[i], "--help") == 0) {
             usage(argv[0]); return 0;
         }
+    }
+
+    /* 0. Resolve ports: CLI flag wins; otherwise read URL value out of
+     *    /etc/postWolf/config and use the trailing :port.
+     *      url-local     → --port      (TLS HTTP, default 8444)
+     *      url-bootstrap → --dh-port   (DH bootstrap, 8445)
+     *      url-server    → --mqc-port  (MQC, 8446)                       */
+    if (!port_from_cli) {
+        int p = port_from_config_url("global/url-local");
+        if (p) port = p;
+    }
+    if (!dh_port_from_cli) {
+        int p = port_from_config_url("global/url-bootstrap");
+        if (p) dh_port = p;
+    }
+    if (!mqc_port_from_cli) {
+        int p = port_from_config_url("global/url-server");
+        if (p) mqc_port = p;
     }
 
     /* 1. Initialize logging */
