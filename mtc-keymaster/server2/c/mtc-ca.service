@@ -6,6 +6,10 @@ After=network.target
 Type=simple
 User=ubuntu
 Group=ubuntu
+RuntimeDirectory=mtc-ca
+RuntimeDirectoryMode=0755
+PIDFile=/run/mtc-ca/mtc-ca.pid
+ExecStartPost=/bin/sh -c 'echo $MAINPID > /run/mtc-ca/mtc-ca.pid'
 ExecStart=/usr/local/bin/mtc_server \
     --data-dir /home/ubuntu/.mtc-ca-data \
     --tokenpath /home/ubuntu/.env \
