@@ -3749,3 +3749,72 @@ Even granting that wolfSSL had it natively (it doesn't), it would
 not help here.  The accepted plan's choice of ML-DSA-87 +
 cosigner-fingerprint pinning (leaf branch) and X.509-chain-validated
 signature (CA branch) is the right shape.
+
+### Q: KMAC fixed-output vs XOF mode — what's the difference?
+
+Two ways KMAC can be asked to produce its output.  Both go through
+the same Keccak permutation; the difference is how the requested
+output length L is bound into the input.
+
+#### Fixed-output mode (`xof = 0`)
+
+The output length is **encoded into the input** before hashing:
+
+```
+body = bytepad(encode_string(K), rate)  ||  X  ||  right_encode(L_in_bits)
+```
+
+- `right_encode(L_in_bits)` is the SP 800-185 length-prefix
+  function — for L=32 bytes it appends `[0x01, 0x00, 0x01]`
+  (256 bits, encoded length + length-of-length byte).
+- The result is that **the requested tag size is part of what
+  gets hashed**.
+- Asking for 32 bytes vs 64 bytes produces *completely different*
+  outputs.  Even the first 32 bytes of the L=64 result are not
+  the first 32 bytes of the L=32 result.
+- Why: prevents a length-extension-style ambiguity where a
+  verifier could re-interpret a 64-byte tag as a 32-byte tag.
+
+This is the **MAC mode** — what you use when you've committed to
+a specific tag length and you want that length to be
+cryptographically bound.
+
+#### XOF mode (`xof = 1`)
+
+The output length is **NOT encoded** — `right_encode(0)` is
+appended instead:
+
+```
+body = bytepad(encode_string(K), rate)  ||  X  ||  right_encode(0)
+```
+
+- The output is a stream you can squeeze any length out of.
+- The first 32 bytes of an L=64 output **are** the first 32 bytes
+  of an L=32 output — both prefixes of the same Keccak squeeze.
+- Why: useful when the same input should produce a deterministic
+  key-derivation stream that you can extend later (e.g. KDF use,
+  where you might want 32 bytes today and 96 bytes tomorrow from
+  the same context).
+
+This is the **KDF mode** — what you use when you want
+length-flexible output.
+
+#### Concrete: same key, same input, same custom string, L=32
+
+| Mode | First 32 bytes of output |
+|---|---|
+| KMAC128 fixed | `3B 1F BA 96 3C D8 B0 B5 …` (kmac128_out2 in `kmac_test`) |
+| KMAC128 XOF   | `31 A4 45 27 B4 ED 9F 5C …` (kmac128_xof in `kmac_test`) |
+
+Different bytes — that's not a bug, that's the design.  The
+single-bit "this output length is hashed in / this output length
+is zero" choice gives two different MACs.
+
+#### Why MQC would care
+
+If we ever swap HKDF-SHA256 for KMACXOF256, we'd use **XOF mode**,
+because HKDF semantics require "give me N bytes, then maybe N more
+later from the same context, and they should all be one consistent
+stream."  Fixed-output mode would tag each derive call to its
+requested length, breaking the prefix property HKDF callers
+expect.
