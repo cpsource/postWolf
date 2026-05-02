@@ -17,6 +17,21 @@
 > `README-fips.md` §"The Solution" for the rewritten architecture.
 > Implementation impact is itemized inline below with `[ISSUE #1]` tags.
 
+> **Amendment — Issue #2 from `README-fips-issues.md`:** Pinning of the
+> CA public key is **mandatory**, not optional. The verifier MUST read
+> the CA key from a local pinned file
+> (`/etc/postWolf/ca-pubkey/<name>.der` system-wide,
+> `~/.config/mtc-fips/ca-pubkey/<name>.der` per-user, or
+> `fips-framework/config/ca-pubkey.h` compiled-in). Receipts not
+> chaining to a pinned key MUST fail closed — no trust-on-first-use,
+> no fallback to network/website/receipt-embedded keys. The bootstrap
+> channels (DNS TXT, project website, package metadata, GPG-signed
+> tag, CMVP cert) are for first-time acquisition and key-change
+> detection only, never for verification-time trust. The receipt
+> ships *inside* the tarball and is therefore not self-validating —
+> the pinned CA key, sourced from a channel the attacker does not
+> control, is the only real defence. Implementation tags `[ISSUE #2]`.
+
 ## Context
 
 OpenSSL's FIPS integrity system stores SHA256 checksums of source files in the same repository as the source. An attacker with write access can modify both a source file and its checksum — nothing downstream detects it. The HMAC key is public, so rebuilding and re-running `fipsinstall` produces valid MACs for the tampered binary.
@@ -152,7 +167,7 @@ fips-framework/
     fips-manifest-submit.c        Kit registration tool
     fips-manifest-verify.c        Kit verification tool
     config/
-        ca-pubkey.h               Pinned CA Ed25519 public key (32 bytes)
+        ca-pubkey.h               Pinned CA ML-DSA-87 public key (2592 bytes — `[ISSUE #2]` mandatory pin source for compiled-in builds; mutually exclusive with the runtime-file pin paths)
 ```
 
 **`fips-manifest-submit.c`** — run by publisher after building a kit:
@@ -195,9 +210,7 @@ SHA-256 uses `wc_Sha256Hash()`. HTTP uses minimal socket code (no libcurl).
 - Add `fips-manifest-submit` and `fips-manifest-verify` targets
 
 **Ship `fips-manifest-receipt.json`** with the package (add to `EXTRA_DIST`).
-This single file contains the manifest, inclusion proof, and Ed25519
-cosignature — everything needed for offline verification. The only external
-dependency is the pinned CA public key (32 bytes, obtained out-of-band).
+This single file contains the manifest, inclusion proof, log signature, and CA-signed checkpoint. **`[ISSUE #2]` It is not self-validating** — it ships inside the same tarball it certifies, so an attacker who substitutes the tarball can substitute the receipt. Verification's defence rests entirely on the pinned CA public key (2592 bytes, obtained out-of-band, never refreshed from the receipt or from the network at verify time). A receipt that does not chain to a pre-pinned CA key MUST be rejected; no first-use prompt, no auto-pin.
 
 ### Reused Existing C Code
 

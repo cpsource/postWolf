@@ -197,13 +197,28 @@ Old receipts signed with the compromised key should be considered invalid. The a
 ### What You Need
 
 - The postWolf source code (tarball, `.deb` source package, or git clone)
-- The `fips-manifest-receipt.json` file (shipped with the release — contains manifest, inclusion proof, and ML-DSA-87 cosignature)
+- The `fips-manifest-receipt.json` file (shipped with the release — contains the manifest, inclusion proof, and the CA-signed checkpoint covering the entry)
 - The `fips-manifest-verify` tool (built from `fips-framework/`, linked against wolfCrypt)
-- The CA ML-DSA-87 public key (2592 bytes — published on the project website, DNS TXT record, or pinned in `fips-framework/config/ca-pubkey.h`)
+- The CA ML-DSA-87 public key (2592 bytes), **pinned to a local file under one of**:
+    - `/etc/postWolf/ca-pubkey/<name>.der` (system-wide, root-only writable; recommended for production hosts)
+    - `~/.config/mtc-fips/ca-pubkey/<name>.der` (per-user; recommended for developer workstations)
+    - `fips-framework/config/ca-pubkey.h` (compiled into a custom build of `fips-manifest-verify` for embedded / CI use)
 
 No OpenSSL or shell dependencies (`curl`, `jq`) are required. All
 cryptographic verification (SHA-256, ML-DSA-87 signature, Merkle proof replay)
 uses wolfCrypt natively.
+
+#### Pinning is mandatory, not optional
+
+The CA public key MUST be obtained out-of-band on first contact and then **pinned** to one of the locations above. After pinning, `fips-manifest-verify` reads the key only from the pinned file — it never re-fetches from the network, the project website, or the receipt itself. Receipts that do not chain to a key already present in the pinned set MUST fail closed; they will not trigger a "trust on first use" prompt.
+
+The bootstrap channels in §"CA Identity Verification" (DNS TXT, project website, package metadata, GPG-signed git tag, CMVP certificate) exist **only to perform the initial acquisition and to detect a key change later**. They are not equivalent substitutes for a local pinned file at verification time. A new key encountered through one of those channels must be reviewed and explicitly pinned by the operator before any receipt signed with it is accepted.
+
+#### The receipt is not a self-validating package
+
+`fips-manifest-receipt.json` ships *inside* the release tarball. The same attacker who can substitute the tarball can substitute the receipt — including replacing the embedded CA-signed checkpoint and inclusion proof with values that match a forged manifest. **The only thing that defeats this is the pinned CA public key**, which lives outside the tarball and which the attacker cannot reach.
+
+In particular: if you find yourself running verification using a CA key that came from the same archive (or the same upload host) as the tarball you are verifying, you are not actually verifying anything. The pinned key must come from a channel the attacker does not control.
 
 ### Online Verification (Recommended)
 
@@ -527,15 +542,17 @@ A downstream user must answer three questions:
 
 ### CA Identity Verification
 
-Each legitimate CA must publish its ML-DSA-87 public key through at least one independent channel that the CA operator controls. A verifier obtains the key through that channel and pins it locally.
+These channels are for **first-time acquisition only**. Each legitimate CA must publish its ML-DSA-87 public key through at least one of them, and a verifier uses one (preferably more, cross-checked) to obtain the key on first contact. Once obtained and reviewed, the key MUST be pinned locally per §"What You Need" → "Pinning is mandatory." Subsequent verification reads the pinned file; it does not re-fetch the key from any channel below.
 
-| Channel | Mechanism | Strength |
-|---------|-----------|----------|
-| **DNS TXT record** | `_mtc-ca-key.example.com TXT "v=mtc-ca1; pk=ed25519:<hex>"` | Strong — requires domain control; can be verified programmatically |
-| **Project website** | Published on an HTTPS page the domain owner controls | Moderate — relies on TLS + domain control |
-| **Package metadata** | Pinned in `.deb` control file, RPM spec, or `MANIFEST` | Moderate — relies on package signing chain |
-| **Git signed tag** | CA public key committed and signed with maintainer's GPG key | Strong — relies on GPG web of trust |
-| **CMVP certificate** | Public key referenced in NIST CMVP validation documentation | Strongest — relies on NIST's process |
+| Channel | Mechanism | Bootstrap strength |
+|---------|-----------|--------------------|
+| **DNS TXT record** | `_mtc-ca-key.example.com TXT "v=mtc-ca1; pk=ml-dsa-87:<hex>"` | Strong — requires domain control; can be cross-checked from multiple resolvers |
+| **Project website** | Published on an HTTPS page the domain owner controls | Moderate — relies on TLS + domain control; vulnerable if site/CDN compromised |
+| **Package metadata** | Pinned in `.deb` control file, RPM spec, or `MANIFEST` | Moderate — relies on the OS package signing chain (and is circular if you obtained the package from the same compromised mirror as the FIPS tarball) |
+| **Git signed tag** | CA public key committed and signed with maintainer's GPG key | Strong — relies on GPG web of trust; requires verifier to have the maintainer's GPG key already pinned |
+| **CMVP certificate** | Public key referenced in NIST CMVP validation documentation | Strongest — relies on NIST's process; only available for CAs whose validated module bundles the FIPS framework |
+
+**None of these channels are usable as a *verification-time* trust source.** A receipt can only be trusted if it chains to a key already in the verifier's pinned set. If the receipt presents a CA key that the verifier has not pinned, the verifier MUST refuse the receipt and require explicit operator action to add the new key (after independent re-verification through one of the bootstrap channels above, ideally cross-checked across two of them).
 
 ### Verifying a Kit End-to-End
 
