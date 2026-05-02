@@ -232,16 +232,19 @@ export MTC_SERVER=https://mtc.example.com:8080
 ./fips-framework/fips-manifest-verify
 ```
 
-What happens:
-1. The script reads `fips-manifest-receipt.json` to get the log index
-2. It checks the manifest `expires` field — rejects if expired
-3. It checks for version rollback (best-effort) — using semver comparison, warns if `git_tag` is older than a previously accepted version for this package; hard-fails under `--strict-rollback`. State is in `/var/lib/mtc-fips/last-verified.json` (preferred) or `~/.config/mtc-fips/last-verified.json` (fallback). See §"Rollback Detection (Best-Effort)" for limitations.
-4. It computes SHA256 of every FIPS source file on your local disk
-5. It queries `GET /fips/manifest/<index>` from the server
-6. It compares each local hash against the server's logged manifest
-7. It queries `GET /fips/manifest/<index>/proof` for a fresh inclusion proof
-8. It replays the Merkle inclusion proof (SHA-256 hash chain from leaf to root)
-9. It verifies the ML-DSA-87 cosignature on the tree root using `wc_dilithium_verify_ctx_msg()` with the pinned CA public key
+What happens (in order, with each earlier failure short-circuiting later steps):
+
+1. **Pinned CA key load** (mandatory). Read the CA public key from the pinned file (`/etc/postWolf/ca-pubkey/` or `~/.config/mtc-fips/ca-pubkey/` or `config/ca-pubkey.h`). Receipts not chaining to a pinned key fail closed.
+2. **Receipt parse + manifest expiry check.** Parse `fips-manifest-receipt.json`. Reject if `manifest.expires` is past.
+3. **Leaf signature verify.** Verify `leaf_signature` over `JCS(manifest)` using the leaf cert at `manifest.publisher.leaf_cert_id` (per §"Leaf Signature on the Manifest").
+4. **Leaf cert revocation check** (mandatory in online mode). `GET /revoked/<leaf_cert_id>`. If revoked, fail closed unless `--allow-revoked` is explicitly passed (see §"Verifying a Kit End-to-End" Step 5).
+5. **CA revocation check** (mandatory in online mode). `GET /revoked/<ca_cert_id>`. If revoked, fail closed unless `--allow-revoked` is explicitly passed.
+6. **Domain scope.** Confirm `manifest.publisher.domain_scope` includes `manifest.package`.
+7. **Rollback check** (best-effort). Semver compare against local state; warn or hard-fail under `--strict-rollback`. State is in `/var/lib/mtc-fips/last-verified.json` (preferred) or `~/.config/mtc-fips/last-verified.json` (fallback). See §"Rollback Detection (Best-Effort)" for limitations.
+8. **File set + hashes.** Apply §"Manifest Path Rules": walk the FIPS prefix(es), compare set equality with manifest paths, then SHA-256 each file.
+9. **Fresh log inclusion proof.** `GET /fips/manifest/<index>/proof`. Replay the inclusion proof (SHA-256 hash chain from leaf to root).
+10. **Log signature verify.** Verify the log signature on the returned root using the log key cert (which itself chains to the pinned CA per §"The Solution").
+11. **CA-signed checkpoint verify.** Verify the CA signature on the covering checkpoint using the pinned CA key (`wc_dilithium_verify_ctx_msg()`).
 
 **Output on success:**
 ```
@@ -906,27 +909,35 @@ curl "$MTC_SERVER/certificate/55" | jq '.tbs_entry'
 #   - The leaf was issued while the CA was active (not revoked)
 ```
 
-**Step 5: Verify the kit's source integrity**
+**Step 5: Check revocation (mandatory in online mode)**
 
-Now that the leaf publisher is confirmed legitimate, verify the FIPS manifest they submitted:
-```bash
-./fips-framework/fips-manifest-verify
-
-# The script checks:
-#   - Local file hashes match the manifest
-#   - Inclusion proof is valid (hash chain to root)
-#   - Cosignature is valid (ML-DSA-87 verify with CA public key)
-```
-
-**Step 6: Check for revocation (optional)**
+Online verification MUST check that neither the leaf certificate nor the CA itself has been revoked since the receipt was issued. This is not optional and is performed *before* the source-integrity check, so a compromised leaf cannot smuggle a "valid" kit through after revocation.
 
 ```bash
 # Check if the leaf certificate has been revoked
 curl "$MTC_SERVER/revoked/55"
-# Returns: {"revoked": false} or {"revoked": true, "reason": "..."}
+# Returns: {"revoked": false} or {"revoked": true, "reason": "...", "effective_at": "..."}
 
 # Check if the CA itself has been revoked
 curl "$MTC_SERVER/revoked/42"
+```
+
+If either returns `revoked: true`, online verification fails. The revocation entry's `effective_at` is compared to `manifest.timestamp`: a leaf revoked *after* the manifest was logged still invalidates the receipt for online use, but the receipt is preserved as a historical record. To accept a revoked-cert receipt anyway (forensics, recovery, post-incident replay), pass `--allow-revoked`. The verifier prints a loud warning and records the override in its audit log.
+
+`--allow-revoked` also implicitly forces `--offline` semantics: revocation cannot be checked offline by definition (the receipt cannot know about future revocations), so passing `--allow-revoked` while online is treated as an explicit acknowledgement that the verifier is choosing to ignore the revocation signal.
+
+**Step 6: Verify the kit's source integrity**
+
+Once the leaf publisher is confirmed legitimate, the leaf signature and CA-checkpoint chain check, and the leaf is not revoked, verify the FIPS manifest they submitted:
+```bash
+./fips-framework/fips-manifest-verify
+
+# The script checks:
+#   - Local file set equals the manifest set (per §"Manifest Path Rules")
+#   - Local file hashes match the manifest
+#   - Inclusion proof is valid (hash chain to root)
+#   - Log signature is valid on that root
+#   - CA-signed checkpoint covers the root and verifies under the pinned CA key
 ```
 
 ### Trust Hierarchy Summary
