@@ -548,6 +548,68 @@ These fixtures do not exist in the v1 source tree yet (`[TODO]` in `README-todo.
 
 ---
 
+## Leaf Signature on the Manifest
+
+The CA-signed checkpoint and the log signature together prove that *some* manifest was logged. They do **not** prove that the rightful publisher submitted it. Without a leaf signature, an attacker who reaches the submission endpoint (network MITM, server compromise, stolen API key) can log any manifest under any package name; the log's signature only certifies that the entry is in the tree.
+
+The fix is to require an end-to-end leaf signature over the canonical manifest, bound to the publisher's identity at the cert layer.
+
+### Manifest fields the leaf signs
+
+The manifest carries a `publisher` block that names the leaf and the scope of authority the leaf claims:
+
+```json
+{
+  "publisher": {
+    "leaf_cert_id": 55,
+    "leaf_pubkey_hash": "sha256:a1b2c3...",
+    "domain_scope": ["postWolf"]
+  }
+}
+```
+
+- `leaf_cert_id` — the Merkle log index where the leaf certificate was registered. Verifiers fetch the cert from the log to obtain the public key bytes.
+- `leaf_pubkey_hash` — SHA-256 of the leaf's ML-DSA-87 public key, as a defence in depth against the leaf cert being substituted at verification time.
+- `domain_scope` — the package names (or namespaces, dot-separated) the leaf is authorized to publish for. The CA enforces this at issuance time; the verifier re-checks it.
+
+### What gets signed
+
+The leaf signs `JCS(manifest)` — the canonical bytes of the manifest object including the `publisher` block, with `leaf_signature` itself excluded (the signature can't cover itself). The exact rule:
+
+```
+signed_input = JCS({ ... entire manifest object as described in §"Manifest Schema (v2)" ... })
+leaf_signature.signature = ML-DSA-87.sign(leaf_priv, signed_input)
+```
+
+The `leaf_signature` object lives **outside** the manifest, alongside it in the receipt and in the submission request body. This keeps the manifest object self-contained and re-verifiable independent of any specific signature.
+
+### Verifier flow with leaf signatures
+
+When verifying a receipt, the verifier performs these checks in order. Earlier failures short-circuit later ones.
+
+1. **Parse and canonicalize.** Parse the receipt JSON (rejecting duplicate keys per §"Canonical JSON"). Re-canonicalize the manifest object and confirm the byte sequence matches `leaf_signature.signed_input`.
+2. **Leaf signature.** Verify `leaf_signature.signature` over the canonical bytes using the public key from the leaf cert at `manifest.publisher.leaf_cert_id`. Confirm SHA-256 of that public key matches `manifest.publisher.leaf_pubkey_hash`.
+3. **Leaf cert chain.** Verify the leaf cert chains to the **pinned** CA (per §"What You Need" → "Pinning is mandatory"), via the leaf cert's own log inclusion proof and CA cosignature.
+4. **Domain scope.** Confirm `manifest.publisher.domain_scope` includes `manifest.package`. Reject otherwise — the leaf is not authorized for this package.
+5. **Log inclusion + log signature.** Replay the inclusion proof for the manifest's leaf hash up to the root in the receipt; verify the log signature on that root using the log key cert (which itself chains to the pinned CA per §"The Solution").
+6. **CA-signed checkpoint.** Verify the covering checkpoint's CA signature against the **pinned** CA key, and confirm `checkpoint.tree_size >= manifest_tree_size_at_inclusion`.
+7. **File set + file hashes.** Apply §"Manifest Path Rules" (set equality + per-file SHA-256).
+8. **Revocation, freshness** (online mode only — see §"Verifying a Kit End-to-End").
+
+A receipt missing `leaf_signature` is rejected as schema-v1 (older format) with a hard error if `--strict` is set, otherwise with a loud warning. New submissions MUST always include the leaf signature.
+
+### Server policy
+
+To keep the leaf signature meaningful, the MTC server's submission endpoint enforces a defence-in-depth check on top of leaf signature validity:
+
+- Submission MUST be over mTLS. The TLS leaf certificate the client presents MUST match `manifest.publisher.leaf_pubkey_hash` byte-for-byte.
+- The TLS-presented cert's `leaf_cert_id` MUST match `manifest.publisher.leaf_cert_id`.
+- If either mismatch, the server returns `401 Unauthorized` and does not log the entry.
+
+This means a stolen leaf signing key alone does not let an attacker submit; they also need a TLS handshake under the same key. (Both compromised → defence reduces to the leaf cert revocation timeline.)
+
+---
+
 ## Architecture Diagram
 
 ```
@@ -599,21 +661,46 @@ Source files + receipt
 
 ### POST /fips/manifest
 
-Submit a FIPS build manifest to the transparency log.
+Submit a FIPS build manifest to the transparency log. The submission MUST include a leaf signature over the canonical manifest (see §"Leaf Signature on the Manifest").
 
 **Request:**
 ```json
 {
-  "package": "postWolf",
-  "git_commit": "abc123def456...",
-  "git_tag": "v5.9.0",
-  "expires": "2027-04-05T00:00:00Z",
-  "files": [
-    {"path": "wolfcrypt/src/aes.c", "sha256": "0e22ea0c..."},
-    {"path": "wolfcrypt/src/fips.c", "sha256": "c049a936..."}
-  ]
+  "manifest": {
+    "type": "fips-build-manifest",
+    "schema_version": 2,
+    "package": "postWolf",
+    "publisher": {
+      "leaf_cert_id": 55,
+      "leaf_pubkey_hash": "sha256:a1b2c3...",
+      "domain_scope": ["postWolf"]
+    },
+    "git_commit": "abc123def456...",
+    "git_tag": "v5.9.0",
+    "timestamp": "2026-04-05T12:34:56Z",
+    "expires": "2027-04-05T00:00:00Z",
+    "scope_paths": [
+      {"prefix": "wolfcrypt/src/", "allow_symlinks": false}
+    ],
+    "files": [
+      {"path": "wolfcrypt/src/aes.c", "sha256": "0e22ea0c..."},
+      {"path": "wolfcrypt/src/fips.c", "sha256": "c049a936..."}
+    ]
+  },
+  "leaf_signature": {
+    "algorithm": "ML-DSA-87",
+    "signed_input": "JCS(manifest)",
+    "signature": "<4627-byte ML-DSA-87 signature, hex>"
+  }
 }
 ```
+
+The server rejects the submission (HTTP 401) if any of the following hold:
+
+- The TLS leaf certificate presented over mTLS does not match `manifest.publisher.leaf_pubkey_hash`.
+- The leaf certificate at index `manifest.publisher.leaf_cert_id` does not exist, has been revoked, or has expired.
+- The leaf certificate's `domain_scope` extension does not include `manifest.package`.
+- `leaf_signature` does not verify under `wc_dilithium_verify_ctx_msg()` against `JCS(manifest)` and the leaf cert's public key.
 
 **Response (201 Created):**
 ```json
@@ -624,12 +711,24 @@ Submit a FIPS build manifest to the transparency log.
   "subtree_start": 0,
   "subtree_end": 43,
   "subtree_hash": "7f8e9d...",
-  "cosignature": {
-    "signature": "b3c4d5e6f7...",
-    "algorithm": "ML-DSA-87"
+  "log_signature": {
+    "algorithm": "ML-DSA-87",
+    "signed_input": "JCS({\"tree_size\":43,\"tree_root\":\"7f8e9d...\",\"timestamp\":\"...\"})",
+    "signature": "<4627-byte ML-DSA-87 signature, hex>"
+  },
+  "covering_checkpoint": {
+    "tree_size": 50,
+    "tree_root": "9c8d7e...",
+    "timestamp": "2026-04-05T13:00:00Z",
+    "ca_signature": {
+      "algorithm": "ML-DSA-87",
+      "signature": "<4627-byte ML-DSA-87 signature, hex>"
+    }
   }
 }
 ```
+
+The receipt the publisher ships (`fips-manifest-receipt.json`) is the request body bundled with this response.
 
 ### GET /fips/manifest/{index}
 
