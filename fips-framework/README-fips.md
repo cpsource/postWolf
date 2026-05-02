@@ -181,14 +181,114 @@ curl http://localhost:8080/ca/public-key
 
 ### Key Rotation
 
-If the ML-DSA-87 CA key is compromised:
-1. Stop the server
-2. Delete `ca_key.der` (and the `ca_private_key_hex` row in the DB)
-3. Restart the server — it generates a new key
-4. Re-submit manifests for any active releases
-5. Distribute the new public key to verifiers
+Rotation comes in two flavors with very different procedures: **scheduled** (planned, both keys still trusted) and **compromise** (old key trust must be revoked). The dangerous earlier "delete the key and regenerate" procedure has been replaced because it leaves verifiers with no machine-readable signal about what happened — every existing receipt becomes invalid simultaneously, and a freshly-spun-up new key is indistinguishable from an attacker's substitution.
 
-Old receipts signed with the compromised key should be considered invalid. The append-only log retains the history, so an auditor can identify which manifests were signed with the old key.
+#### Key transition record (the foundation)
+
+Every rotation, scheduled or compromise, is announced by a **key transition record** logged in the same Merkle tree as a new entry of type `ca-key-transition`:
+
+```json
+{
+  "type": "ca-key-transition",
+  "schema_version": 1,
+  "old_pubkey_hash": "sha256:a1b2c3...",
+  "new_pubkey_hash": "sha256:d4e5f6...",
+  "effective_at": "2027-01-01T00:00:00Z",
+  "reason": "scheduled-rotation",
+  "revoked_indices": []
+}
+```
+
+`reason` is one of:
+- `scheduled-rotation` — planned rollover; old key continues to verify pre-`effective_at` receipts.
+- `suspected-compromise` — old key is no longer trusted from `effective_at` onward; the absence of an old-key signature on this record is itself a signal.
+- `key-loss` — old private key is destroyed/inaccessible; semantically similar to compromise but the old public key still verifies pre-`effective_at` receipts because no fraudulent signing is possible.
+
+`revoked_indices` (optional) lists log indices the old key signed but that are explicitly being revoked alongside the rotation (e.g., entries the operator has reason to believe were forged in the run-up to discovering the compromise). These take precedence over `manifest.timestamp < effective_at`.
+
+#### Scheduled rotation
+
+The old key is trusted to bless its successor. Both keys are still trusted; the old key signs the transition record, the new key co-signs it, and verifiers see an unambiguous handoff.
+
+```bash
+# ---- ON THE OFFLINE CA MACHINE ----
+# 1. Generate the new CA key (separate file, side by side with the old).
+./mtc_ca_init --datadir /var/lib/mtc-ca --label new
+
+# 2. Build the transition record JSON locally.
+./mtc_ca_transition --old-key /var/lib/mtc-ca/ca_key.der \
+                    --new-key /var/lib/mtc-ca/ca_key_new.der \
+                    --reason scheduled-rotation \
+                    --effective-at 2027-01-01T00:00:00Z \
+                    --out transition-001.json
+
+# 3. The tool double-signs: old key first, then new key. Both signatures
+#    appear in the record. Verifiers refuse a scheduled-rotation record
+#    that lacks the old-key signature.
+
+# 4. Upload the signed record to the log host for inclusion.
+scp transition-001.signed.json log-host:/tmp/
+ssh log-host \
+  './mtc_log_submit_transition --in /tmp/transition-001.signed.json'
+
+# 5. After the log returns the inclusion proof + log signature,
+#    publish the receipt to verifiers via the same channels used
+#    for the original CA pubkey distribution (DNS TXT, project
+#    website, package metadata).
+```
+
+Verifier behavior on a scheduled rotation receipt:
+
+- A receipt whose `manifest.timestamp < effective_at` is verified with the **old** key.
+- A receipt whose `manifest.timestamp >= effective_at` is verified with the **new** key.
+- Receipts in `revoked_indices` are rejected regardless of timestamp.
+- An unsigned-by-old-key transition record with `reason: scheduled-rotation` is rejected — that pattern is reserved for compromise rotations.
+
+#### Compromise rotation
+
+The old key cannot be trusted to sign anything new (it may already be in the attacker's hands). The transition record is signed by the **new** key only, and verifiers MUST re-bootstrap the new pubkey through an out-of-band channel — they cannot accept the new key on the old key's say-so.
+
+```bash
+# ---- ON THE OFFLINE CA MACHINE (assumed clean) ----
+# 1. Generate the new CA key on a freshly-imaged offline machine
+#    (do not reuse the host that held the compromised key).
+./mtc_ca_init --datadir /var/lib/mtc-ca-new
+
+# 2. Build the transition record. NOTE: --reason suspected-compromise
+#    forbids the --old-key argument; the tool will not double-sign.
+./mtc_ca_transition --new-key /var/lib/mtc-ca-new/ca_key.der \
+                    --old-pubkey-hash sha256:a1b2c3... \
+                    --reason suspected-compromise \
+                    --effective-at 2026-09-15T00:00:00Z \
+                    --revoked-indices 101,102,103 \
+                    --out compromise-transition.json
+
+# 3. Submit to the log via mtc_log_submit_transition (as above).
+
+# 4. Re-distribute the new pubkey via at least two independent
+#    bootstrap channels (DNS TXT update + GPG-signed git tag, or
+#    similar). Verifiers MUST re-pin manually before accepting any
+#    receipt under the new key. There is no automatic upgrade path.
+```
+
+Verifier behavior on a compromise rotation:
+
+- All receipts under the old key — including those whose `manifest.timestamp < effective_at` — are downgraded to "untrusted" pending operator review. Loud warning is printed; verification fails closed unless `--accept-pre-compromise` is explicitly passed (analogous to `--allow-revoked`, with the same audit logging).
+- The new key is NOT auto-trusted. Verifier configuration must be updated to add the new pinned pubkey via the operator's normal pin-management process. A receipt under the new key is rejected until the new pubkey appears in the verifier's pinned set.
+- If the verifier has not re-bootstrapped, *any* receipt fails until the operator intervenes. This is by design — silent recovery from a compromise is worse than a failure.
+
+#### Key loss
+
+If the old private key is irretrievable but not necessarily compromised (hardware failure, lost passphrase), the procedure is the compromise procedure with `reason: key-loss`. Pre-`effective_at` receipts remain verifiable (the public key still works), but no new entries can be signed under the old key. The transition record is signed only by the new key; verifiers re-bootstrap the same way.
+
+#### Recovery scenarios summary
+
+| Scenario | Old-key sig on transition? | Pre-effective_at receipts | Verifier action |
+|----------|---------------------------|---------------------------|-----------------|
+| Scheduled rotation | Yes (mandatory) | Auto-verified under old key | Update config; transition record auto-discovered from log |
+| Suspected compromise | No (reserved as the signal) | Downgraded to untrusted pending review | Manual re-pin via two independent bootstrap channels |
+| Key loss | No | Auto-verified under old key (no new signing possible) | Manual re-pin via two independent bootstrap channels |
+| Key rotation announced but old key still signs after effective_at | — | — | The new entries are rejected; the old key has gone "rogue" — treat as a fresh suspected-compromise |
 
 ---
 
