@@ -6,11 +6,18 @@ Traditional FIPS source checksum systems (like OpenSSL's `fips-sources.checksums
 
 ## The Solution
 
-postWolf anchors FIPS source checksums in an **external, append-only Merkle Tree transparency log** maintained by the MTC server. At build time, a manifest of every FIPS source file's SHA256 hash is submitted to the server, which logs it into the Merkle tree and signs the tree root with ML-DSA-87. The manifest cannot be altered after submission without detection, because:
+postWolf anchors FIPS source checksums in an **external, append-only Merkle Tree transparency log** maintained by the MTC server. Two distinct ML-DSA-87 keys protect the log; this separation is load-bearing and is described before any other detail because earlier drafts conflated the two:
 
-1. The Merkle tree is append-only — modifying a leaf changes the root hash
-2. The tree root is signed with the server's ML-DSA-87 private key — forging a signature requires compromising the server
-3. A receipt (inclusion proof + signature) ships with the package — verification works offline
+- **Log key** — held *online* by the MTC server. Signs every tree root as new entries are appended. Lets the server return a fresh, self-consistent inclusion proof in real time. If the log key is stolen, the attacker can forge entries and signed roots from the moment of compromise forward.
+- **CA key** — held *offline* by the CA operator (ideally air-gapped, never on the log server's host). Signs (a) the initial **log key certificate** binding the log identity to the log key, and (b) periodic **checkpoints** — `(tree_size, tree_root, timestamp)` tuples that anchor the log's history. Verifiers pin the **CA public key**, never the log public key directly.
+
+At build time, a manifest of every FIPS source file's SHA-256 hash is submitted to the server, logged as a new leaf, and bound to a tree root signed by the log key. A subsequent CA-signed checkpoint that covers the entry's tree size gives the receipt its long-term audit weight. The manifest cannot be altered after submission without detection, because:
+
+1. The Merkle tree is append-only — modifying a leaf changes the root hash.
+2. The CA-signed checkpoints anchor any historical root that a receipt's inclusion proof traces to. Forging a checkpoint requires compromising the offline CA key.
+3. A receipt (inclusion proof + log signature + a covering CA checkpoint) ships with the package. Verification works offline against the pinned CA public key.
+
+A compromised log key lets an attacker forge entries and roots **going forward**, but cannot forge a CA checkpoint for any tree state that existed before the compromise. Receipts whose covering checkpoint pre-dates the compromise remain verifiable; receipts whose covering checkpoint post-dates it require an out-of-band re-validation. (Compromise recovery is detailed in §"Key Rotation," which currently still describes the older single-key model and is being rewritten — see `README-fips-issues.md` issue #9.)
 
 ---
 
@@ -24,24 +31,55 @@ postWolf anchors FIPS source checksums in an **external, append-only Merkle Tree
 
 ### Initial Server Setup
 
+The two-key model from §"The Solution" requires a one-time CA bootstrap on a separate (ideally air-gapped) machine, plus a per-deployment log-key handover:
+
 ```bash
-# Build the MTC server
+# Build the MTC server (and the CA tooling)
 cd mtc-keymaster/server2/c
 make
 
-# Start the server (first run generates an ML-DSA-87 CA key automatically)
-./mtc_server --port 8080 --datadir /var/lib/mtc-fips
+# ---- ON THE OFFLINE CA MACHINE (run once per CA identity) -----------
+# Generate the offline CA key. Keep ca_key.der under physical control.
+./mtc_ca_init --datadir /var/lib/mtc-ca
+#   writes /var/lib/mtc-ca/ca_key.der    (PRIVATE — never copy to the log host)
+#   writes /var/lib/mtc-ca/ca_pubkey.der (PUBLIC  — ship to verifiers)
 
-# The server prints the CA public key on startup — record it:
-#   CA public key: MCowBQYDK2VwAyEA<base64>...
-# This key is needed by verifiers for offline checks.
+# Sign the log key certificate. log_pubkey.der is generated on the log host
+# (see below) and brought across to the CA machine on removable media.
+./mtc_ca_sign --ca-key /var/lib/mtc-ca/ca_key.der \
+              --log-pubkey log_pubkey.der \
+              --validity-days 365 \
+              --out log_cert.der
+
+# ---- ON THE LOG HOST (the MTC server) -------------------------------
+# Generate the online log key.
+./mtc_log_keygen --out-priv log_key.der --out-pub log_pubkey.der
+
+# Take log_pubkey.der to the CA machine, run mtc_ca_sign (above),
+# bring log_cert.der back. Then start the server with both keys:
+./mtc_server --port 8080 --datadir /var/lib/mtc-fips \
+             --log-key log_key.der \
+             --log-cert log_cert.der
+
+# The server prints the CA public key fingerprint on startup so the
+# operator can sanity-check that the log_cert installed matches the
+# CA the verifiers will pin:
+#   CA public key fingerprint: <hex SHA-256 of ca_pubkey.der>
 ```
 
-The server stores:
-- `ca_key_mldsa.der` — ML-DSA-87 private key (keep this secure)
-- `entries.json` — all Merkle tree entries (file-based fallback)
-- `fips_manifests.json` — FIPS manifest metadata
-- PostgreSQL tables if `MERKLE_NEON` is configured
+The log host stores (online — recoverable from filesystem snapshot in event of compromise):
+- `log_key.der` — ML-DSA-87 log private key. Signs every new tree root in real time.
+- `log_cert.der` — log key certificate signed by the offline CA. Lets verifiers confirm the log key is the one the CA endorsed.
+- `entries.json` — all Merkle tree entries (file-based fallback).
+- `fips_manifests.json` — FIPS manifest metadata.
+- `checkpoints/` — most recent CA-signed checkpoints, fetched periodically (see below).
+- PostgreSQL tables if `MERKLE_NEON` is configured.
+
+The CA operator holds (offline — must never appear on the log host):
+- `ca_key.der` — ML-DSA-87 CA private key. Signs log key certs and checkpoints only.
+- `ca_pubkey.der` — distributed to verifiers via the bootstrap channels (DNS TXT, package metadata, etc.) and pinned locally by every verifier. This is the one and only long-term trust anchor.
+
+**Periodic checkpoint signing.** On a cadence the operator picks (e.g., daily, or after every N entries), the log server emits a `checkpoint-request.json` containing the current `(tree_size, tree_root, timestamp)`. The CA operator brings this to the offline machine, signs it with `ca_key.der`, and uploads the resulting `checkpoint-NNN.sig` back to the log host's `checkpoints/` directory. Receipts issued between checkpoints are verifiable but reach their full audit weight only once a covering checkpoint exists.
 
 ### Publishing a FIPS Build
 

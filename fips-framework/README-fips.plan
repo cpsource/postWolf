@@ -1,5 +1,22 @@
 # Plan: Server-Verified FIPS Source Checksums for postWolf
 
+> **Amendment — Issue #1 from `README-fips-issues.md`:** This plan was
+> originally written assuming the MTC server's existing single Ed25519
+> CA key would also sign FIPS manifest tree roots. That conflated two
+> roles. The amended design splits the keys:
+>
+> - **Log key** — online, on the MTC server, signs every tree root.
+> - **CA key** — offline, on a separate (ideally air-gapped) machine,
+>   signs the log key certificate plus periodic checkpoints. Verifiers
+>   pin the CA key, never the log key.
+>
+> Wherever this plan says "the CA key signs the tree root" or
+> "the same Ed25519 key signs manifests," the intended behaviour is now
+> "the log key signs every tree root in real time; the CA key
+> co-signs periodic checkpoints offline." See
+> `README-fips.md` §"The Solution" for the rewritten architecture.
+> Implementation impact is itemized inline below with `[ISSUE #1]` tags.
+
 ## Context
 
 OpenSSL's FIPS integrity system stores SHA256 checksums of source files in the same repository as the source. An attacker with write access can modify both a source file and its checksum — nothing downstream detects it. The HMAC key is public, so rebuilding and re-running `fipsinstall` produces valid MACs for the tampered binary.
@@ -153,14 +170,15 @@ chain) and `openssl35 dgst -verify` (signature):
 
 - Manifest hash → Merkle leaf (via `mtc_tree_append`)
 - Inclusion proof → binds leaf to tree root
-- Ed25519 cosignature → CA signs the tree root (via `mtc_store_cosign`)
+- ML-DSA-87 log signature → log key signs the tree root in real time (via `mtc_store_log_sign` — new helper, see `[ISSUE #1]` below)
+- ML-DSA-87 CA checkpoint → CA key signs the covering checkpoint offline (via `mtc_ca_sign_checkpoint` on the offline CA host; uploaded back to the log)
 
 Verification steps:
 - **Expiration check:** reject manifests past their `expires` timestamp
 - **Rollback detection:** maintain `~/.config/mtc-fips/last-verified.json`; warn/fail if `git_tag` is older (override with `--allow-rollback`)
 - **Publisher verification:** check the publisher leaf's log entry against the pinned CA public key
-- **Online mode:** recompute local hashes → GET `/fips/manifest/<index>` → compare → GET `/fips/manifest/<index>/proof` → replay inclusion proof → verify Ed25519 cosignature
-- **Offline mode:** recompute local hashes → replay inclusion proof from receipt → verify Ed25519 cosignature with pinned CA key from `config/ca-pubkey.h`
+- **Online mode:** recompute local hashes → GET `/fips/manifest/<index>` → compare → GET `/fips/manifest/<index>/proof` → replay inclusion proof → verify log signature on the returned root → verify CA signature on the covering checkpoint with the pinned CA key
+- **Offline mode:** recompute local hashes → replay inclusion proof from receipt → verify log signature → verify CA-signed checkpoint with pinned CA key from `config/ca-pubkey.h`. (Log signature alone is necessary but not sufficient; a verified covering CA checkpoint is required for full audit weight.)
 
 Ed25519 verification uses `wc_ed25519_verify_msg()` from wolfCrypt.
 SHA-256 uses `wc_Sha256Hash()`. HTTP uses minimal socket code (no libcurl).
@@ -193,7 +211,7 @@ dependency is the pinned CA public key (32 bytes, obtained out-of-band).
 | HTTP helpers | `mtc_http.c`: `http_send_json()`, `http_send_error()` | Direct |
 | JSON handling | `mtc_http.c:395-593`: `handle_certificate_request()` | Pattern for `handle_fips_manifest_submit()` |
 | File I/O | `mtc_store.c`: `write_file()`, `read_file()` | Direct for file-based fallback |
-| Key management | `mtc_store.c:64-152`: CA key load/generate | Direct — same Ed25519 key signs manifests |
+| Key management | `mtc_store.c:64-152`: CA key load/generate | **`[ISSUE #1]` Split required.** Existing single-key load/generate becomes two paths: `mtc_store_load_log_key()` (online, signs roots) and `mtc_ca_load_key()` (offline-only tooling, signs checkpoints + log certs; never linked into `mtc_server`). The MTC server binary must NOT be able to load a CA key — enforce by build-time symbol separation. |
 
 ### Files to Create/Modify
 
