@@ -266,28 +266,42 @@ FIPS Manifest Verification: FAIL
   1 file(s) do not match the server-logged manifest.
 ```
 
-### Offline Verification
+### Offline Verification (Limited Guarantees)
 
-Offline verification uses the cached inclusion proof and cosignature from the receipt file. No network access is required — only the CA's ML-DSA-87 public key.
+Offline verification uses the cached inclusion proof, log signature, and CA-signed checkpoint from the receipt file. No network access is required — only the **pinned** CA public key (see §"What You Need" → "Pinning is mandatory").
 
 ```bash
-# Set the CA public key (obtain from project website or pinned config)
-export MTC_CA_PUBKEY="MCowBQYDK2VwAyEA..."
-
-# Verify without contacting the server
+# Verify without contacting the server. The pinned CA key is read
+# from /etc/postWolf/ca-pubkey/ or ~/.config/mtc-fips/ca-pubkey/
+# automatically; no environment variable required.
 ./fips-framework/fips-manifest-verify --offline
 ```
 
 What happens:
-1. The script reads `fips-manifest-receipt.json` (contains the manifest, proof, and signature)
-2. It checks the manifest `expires` field — rejects if expired
-3. It checks for version rollback against local state
-4. It computes SHA256 of every FIPS source file on your local disk
-5. It recomputes the manifest hash from local files and compares to the receipt's manifest hash
-6. It replays the inclusion proof: walks the hash chain from the leaf hash up to the root
-7. It verifies the ML-DSA-87 cosignature on the root using the pinned CA public key (`wc_dilithium_verify_ctx_msg()`)
+1. The script reads `fips-manifest-receipt.json` (contains the manifest, inclusion proof, log signature, and covering CA-signed checkpoint).
+2. It checks the manifest `expires` field — rejects if expired.
+3. It checks for version rollback against local state (best-effort; see §"Rollback Detection (Best-Effort)" for caveats).
+4. It computes SHA-256 of every FIPS source file on your local disk.
+5. It recomputes the manifest hash from local files and compares to the receipt's manifest hash.
+6. It replays the inclusion proof: walks the hash chain from the leaf hash up to the root that the receipt's log signature covers.
+7. It verifies the log signature on that root using the log key cert from the receipt.
+8. It verifies the CA signature on the covering checkpoint using the **pinned** CA public key (`wc_dilithium_verify_ctx_msg()`), and confirms the log key cert chains to the same CA.
 
 If any source file has been modified since the manifest was submitted, the local manifest hash will differ from the receipt's manifest hash, and verification fails.
+
+#### What offline verification proves — and what it does not
+
+Offline mode is designed for short-window verification (e.g., immediately after download, on an air-gapped build host) and for fallback when the network is unavailable. It is **not** equivalent to online verification.
+
+| | Offline proves | Offline does NOT prove |
+|---|----------------|------------------------|
+| File integrity | ✓ Local files match the manifest in the receipt | — |
+| Log inclusion | ✓ Manifest was logged at the claimed index, signed by a covering CA checkpoint *at the time the receipt was issued* | ✗ Whether the log has since been rewritten, split, or otherwise tampered with |
+| Revocation | — | ✗ Whether the leaf certificate or the CA itself has been revoked since the receipt was issued |
+| Freshness / split-view | — | ✗ Whether the log operator has shown a different view of the tree to other verifiers (split-view attack) |
+| Latest-version | — | ✗ Whether a newer release exists that supersedes this one |
+
+Use offline mode when you must (no network, hardened/air-gapped host) or when you can (you downloaded both the kit and a fresh CA-signed checkpoint within the same short window). Use online mode otherwise — see the §"When Online Verification Adds Value" table near the end of this document for the specific guarantees online adds.
 
 ### What Each Check Proves
 
@@ -328,7 +342,7 @@ git checkout v5.9.0
 ./fips-framework/fips-manifest-verify --offline
 ```
 
-The offline mode uses the receipt's cached proof. As long as you trust the CA public key, this is equally secure.
+The offline mode uses the receipt's cached proof and CA-signed checkpoint. **It is not equivalent to online verification** — it cannot detect post-issuance revocation, log rewriting, or split-view attacks. See §"Offline Verification (Limited Guarantees)" for the precise scope of what offline proves and does not prove. For a kit you have just downloaded over an unauthenticated channel, prefer online verification when you can; treat offline as a fallback, not the default.
 
 **"I patched a source file for my own use — how do I confirm what changed?"**
 
