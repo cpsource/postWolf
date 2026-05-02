@@ -115,6 +115,34 @@ The CA operator holds (offline — must never appear on the log host):
 
 **Periodic checkpoint signing.** On a cadence the operator picks (e.g., daily, or after every N entries), the log server emits a `checkpoint-request.json` containing the current `(tree_size, tree_root, timestamp)`. The CA operator brings this to the offline machine, signs it with `ca_key.der`, and uploads the resulting `checkpoint-NNN.sig` back to the log host's `checkpoints/` directory. Receipts issued between checkpoints are verifiable but reach their full audit weight only once a covering checkpoint exists.
 
+### Transport Requirements
+
+All non-air-gapped traffic in this scheme runs over authenticated TLS or its post-quantum equivalent. The cryptographic guarantees of the receipt do not protect against availability attacks, replay-with-substituted-metadata, or submission spoofing — those are the transport layer's job.
+
+#### Submission endpoint (`POST /fips/manifest`)
+
+- **TLS 1.3 mandatory.** Plain HTTP submissions are rejected by the server (HTTP 426 Upgrade Required). TLS 1.2 is rejected (HTTP 426). Older protocols are not configured into the listener at all.
+- **mTLS mandatory.** The publisher (leaf) presents its leaf certificate during the TLS handshake. The server enforces that the TLS-presented leaf cert matches `manifest.publisher.leaf_pubkey_hash` byte-for-byte (per §"Leaf Signature on the Manifest" → "Server policy"). Submission without a valid client cert returns HTTP 401.
+- **Server cert pinning.** The publisher MUST validate the server's certificate against a pinned set of acceptable issuers. The pinning policy lives in `~/.config/mtc-fips/server-pins.json` (per-user) or `/etc/postWolf/server-pins.json` (system-wide). A submission whose TLS handshake completes against an un-pinned server identity fails closed; the publisher does not fall back to "trust on first use."
+- **No HTTP redirects.** The submission client MUST refuse to follow 3xx responses on the submission endpoint. A redirect at the submission layer is treated as a tampering signal.
+
+#### Verification endpoints (`GET /fips/manifest/...`, `GET /revoked/...`, `GET /log/proof/...`)
+
+- **TLS 1.3 strongly recommended; TLS 1.2 permitted with a warning.** Verification GETs may run over TLS 1.2 if the verifier's environment cannot do TLS 1.3, but the verifier prints a warning naming the deprecated handshake. Plain HTTP is never permitted.
+- **Server cert pinning recommended but not mandatory.** The receipt is self-authenticating (log signature + CA-signed checkpoint, both verified against the pinned CA key), so a TLS MITM on a verification GET cannot forge a passing verification — only deny service or return a non-fresh proof. Pinning the server cert closes off the staleness vector.
+- **`--insecure-transport` flag** is provided for diagnostic use. It downgrades TLS pinning to a warning. It is incompatible with `--strict` mode and is logged loudly. There is no equivalent for the submission endpoint — submission always pins.
+
+#### Post-quantum transport (recommended for postWolf-internal deployments)
+
+The MTC server's MQC port (`MTC_MQC_DEFAULT_PORT = 8446`) optionally serves the same `/fips/...` endpoints over a post-quantum-authenticated channel: ML-KEM-768 key exchange + ML-DSA-87 leaf authentication. Verifiers and publishers that can use the MQC port SHOULD prefer it; the receipts produced are identical in either case (the difference is forward-secrecy of the transport against future quantum attackers, not the receipts themselves).
+
+Hybrid TLS 1.3 (X25519 + ML-KEM-768) on the standard `--port` listener is acceptable as a midpoint where the MQC port is unavailable. wolfSSL exposes this via the `--enable-experimental --with-mlkem-hybrid` configure flags.
+
+#### Replay and rate-limiting
+
+- The submission endpoint enforces a server-side replay window: `manifest.timestamp` must be within +/-15 minutes of server time. Older submissions (e.g., a submission replayed days later) are rejected.
+- Submissions are rate-limited per leaf cert: 10 manifests per hour, 100 per day. Higher-volume publishers must request a quota increase from the CA operator. This bounds compromise damage from a stolen leaf signing key.
+
 ### Publishing a FIPS Build
 
 After a successful FIPS build, the administrator runs the manifest submission script. This is typically integrated into the build system (`debian/rules` or `Makefile`) but can also be run manually.
