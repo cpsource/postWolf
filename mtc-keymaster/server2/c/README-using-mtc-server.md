@@ -471,5 +471,5 @@ Installed to `/usr/local/bin` by `sudo make install`:
 
 - `mtc-keymaster/README-clean-install.md` — Full install guide (steps 1-14)
 - `mtc-keymaster/README-bugsandtodo.md` — TODO items and design docs
-- `mtc-keymaster/README-ml-dsa-87.md` — How MTC reduces PQ TLS overhead
+- `fips-framework/README-ml-dsa-87.md` — How MTC reduces PQ TLS overhead
 - `mtc-keymaster/renew-tool/README.md` — Renewal tool documentation

@@ -125,7 +125,7 @@ time a client connects.
 - `socket-level-wrapper-MQC/README-MQC-specifications.md` — the MQC
   protocol spec, including the symmetric-cipher choice
   (AES-256-GCM) that consumes the ML-KEM shared secret.
-- `mtc-keymaster/README-ml-dsa-87.md` — the sibling document for
+- `fips-framework/README-ml-dsa-87.md` — the sibling document for
   ML-DSA-87 (the signature algorithm from the same CRYSTALS suite).
 
 

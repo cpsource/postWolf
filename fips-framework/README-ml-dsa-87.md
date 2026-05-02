@@ -133,7 +133,7 @@ The CA signs the Merkle tree root with Ed25519 (not ML-DSA-87) because:
 This is acceptable because the tree root signature is a **batch
 commitment** — it covers all leaves in the tree. A post-quantum
 migration path for the root signature (to ML-DSA or SLH-DSA) is
-tracked in the post-quantum appendix of README-bugsandtodo.md.
+tracked in the post-quantum appendix of `mtc-keymaster/README-bugsandtodo.md`.
 
 ## What Gets Sent During Enrollment
 
@@ -179,7 +179,7 @@ compromise no longer exposes the signing key.
 
 ## See Also
 
-- `README.md` — MTC system overview
-- `README-bugsandtodo.md` — Appendix: Post-Quantum Readiness
-- `tools/python/create_leaf_keypair.py` — key generation
-- `tools/python/main.py` — enrollment
+- `mtc-keymaster/README.md` — MTC system overview
+- `mtc-keymaster/README-bugsandtodo.md` — Appendix: Post-Quantum Readiness
+- `mtc-keymaster/tools/python/create_leaf_keypair.py` — key generation
+- `mtc-keymaster/tools/python/main.py` — enrollment

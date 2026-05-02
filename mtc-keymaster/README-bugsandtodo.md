@@ -882,7 +882,7 @@ past decisions, and rewriting them distorts the record.
 - `mtc-keymaster/README.md`
 - `README-postWolf.md`
 - `mtc-keymaster/README-clean-install.md`
-- `mtc-keymaster/README-ml-dsa-87.md`
+- `fips-framework/README-ml-dsa-87.md`
 - `mtc-keymaster/server2/c/README-using-mtc-server.md`
 
 ### 15. Gate leaf-nonce issuance by cryptographic caller identity (MQC-only)

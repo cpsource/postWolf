@@ -103,7 +103,7 @@ doesn't ship its own primitives.
 
 Deeper references:
 `socket-level-wrapper-MQC/README-MQC-specifications.md` (MQC wire format),
-`mtc-keymaster/README-ml-dsa-87.md` (ML-DSA-87 integration),
+`fips-framework/README-ml-dsa-87.md` (ML-DSA-87 integration),
 `README-note-ech.md` (ECH deployment).
 
 ## Runtime: three ports
