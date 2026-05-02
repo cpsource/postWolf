@@ -490,6 +490,64 @@ Schema v1 receipts (no `scope_paths`) remain verifiable but produce a startup wa
 
 ---
 
+## Canonical JSON
+
+Every signed object in this scheme — manifest, receipt, leaf signature input, CA-signed checkpoint — is signed and hashed over its **canonical** byte serialization. Two implementations of this spec MUST produce byte-identical canonical output for byte-identical inputs, or signatures issued by one will not verify on the other.
+
+### Normative reference
+
+The canonical serialization is **JCS — JSON Canonicalization Scheme, RFC 8785**. Implementations MUST follow RFC 8785 in full. The summary below is for orientation only; in any conflict, RFC 8785 governs.
+
+JCS pins:
+
+- UTF-8 output, no BOM, no leading or trailing whitespace, no surrounding newline.
+- Object members sorted lexicographically by **UTF-16 code unit** order of the key (RFC 8785 §3.2.3) — *not* by UTF-8 byte order. Important corner case: e.g., `"ﬀ"` (ﬀ) sorts after `"﻿"` only if compared as UTF-16; a naive byte-sort gives a different answer.
+- Numbers serialized via the ECMAScript `Number.prototype.toString()` algorithm as profiled in RFC 8785 §3.2.2.
+- Strings JSON-escape only the characters required by RFC 8259 §7 (`"`, `\`, and `U+0000`–`U+001F`); all other characters, including non-ASCII, are emitted verbatim.
+
+### postWolf-specific tightenings on top of JCS
+
+JCS leaves a few choices to the application; this spec pins them:
+
+- **Timestamps** are RFC 3339 `date-time` with literal `Z` (no numeric offsets), no fractional seconds. Example: `"2026-04-05T12:34:56Z"`. Submissions with offsets, fractional seconds, or non-UTC timestamps are rejected.
+- **Hash and key values** are lowercase hex without `0x` prefix or interior separators. Example: `"sha256": "0e22ea0c..."`. Uppercase, base64, or `0x...` forms are rejected.
+- **`files[]` array order** is sorted lexicographically by `path` (UTF-16 code units, like JCS object keys). Paths are unique by construction (see §"Manifest Path Rules"); duplicate paths cause the parser to reject the manifest.
+- **Duplicate object keys** at any nesting level cause the parser to abort. JSON parsers that silently last-wins-on-duplicate are non-conformant. The parser used MUST surface duplicate-key errors as parse failures.
+- **Numbers in this spec** are restricted to integers in `[0, 2^53 − 1]` (signed JavaScript-safe integer range, but only non-negative values are used). Implementations MUST reject non-integer numbers, negatives, and out-of-range values rather than silently coerce.
+
+### What gets signed
+
+The byte sequence presented to `wc_dilithium_sign_ctx_msg()` (or to SHA-256 when computing `manifest_hash`) is the JCS-canonical serialization of the object, exactly. No surrounding container, no length prefix, no trailing newline, no BOM. The same bytes go into the verification call.
+
+Implementations that re-parse and re-serialize a JCS-canonical document MUST get back the same bytes. This is a useful self-test.
+
+### Test fixtures (planned)
+
+A normative fixture set will live under `fips-framework/test/canonical/` and ship alongside the verifier:
+
+```
+fips-framework/test/canonical/
+├── 01-empty-manifest.input.json
+├── 01-empty-manifest.canonical.bin
+├── 02-out-of-order-keys.input.json
+├── 02-out-of-order-keys.canonical.bin
+├── 03-unicode-bmp.input.json
+├── 03-unicode-bmp.canonical.bin
+├── 04-unicode-supplementary.input.json
+├── 04-unicode-supplementary.canonical.bin
+├── 05-numeric-edge-cases.input.json
+├── 05-numeric-edge-cases.canonical.bin
+├── 06-duplicate-keys.input.json     (parser MUST reject)
+├── 07-non-utc-timestamp.input.json  (parser MUST reject)
+└── README.md                        (how to run)
+```
+
+Independent implementations self-check by JCS-canonicalizing each `.input.json` and comparing the byte output to the corresponding `.canonical.bin`. Cases ending in "MUST reject" assert parse failure.
+
+These fixtures do not exist in the v1 source tree yet (`[TODO]` in `README-todo.md`); the fixture set is mandatory before any second implementation of this spec is considered conformant.
+
+---
+
 ## Architecture Diagram
 
 ```
