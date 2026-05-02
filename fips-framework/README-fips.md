@@ -2,7 +2,7 @@
 
 ## The Problem
 
-Traditional FIPS source checksum systems (like OpenSSL's `fips-sources.checksums`) store SHA256 hashes of source files **in the same repository** as the source code. An attacker with write access to the repository can modify a source file and update its checksum simultaneously. Nothing downstream detects the tampering — the checksums are self-referential.
+Traditional FIPS source checksum systems (like OpenSSL's `fips-sources.checksums`) store SHA256 hashes of source files **in the same repository** as the source code. An attacker with write access to the repository can modify a source file and update its checksum simultaneously, and the checksum file alone offers no tamper signal. (This addresses *post-publication* tampering only — see §"What This Does and Does Not Prove" for the precise scope.)
 
 ## The Solution
 
@@ -18,6 +18,26 @@ At build time, a manifest of every FIPS source file's SHA-256 hash is submitted 
 3. A receipt (inclusion proof + log signature + a covering CA checkpoint) ships with the package. Verification works offline against the pinned CA public key.
 
 A compromised log key lets an attacker forge entries and roots **going forward**, but cannot forge a CA checkpoint for any tree state that existed before the compromise. Receipts whose covering checkpoint pre-dates the compromise remain verifiable; receipts whose covering checkpoint post-dates it require an out-of-band re-validation. (Compromise recovery is detailed in §"Key Rotation.")
+
+## What This Does and Does Not Prove
+
+This system is a *supply-chain integrity control*. It addresses one specific attack: silent tampering with source code between the moment the publisher submitted a manifest and the moment a verifier checks the kit. It does not validate the source for correctness, soundness, or any operational property.
+
+**What this proves:**
+
+The local source files in your kit are byte-identical to a manifest that was submitted to an append-only Merkle log at the claimed index, signed by the leaf publisher whose certificate is endorsed by the CA you have pinned, with that log inclusion subsequently anchored by a CA-signed checkpoint.
+
+**What this does NOT prove:**
+
+- That the submitted source is free of bugs, vulnerabilities, or backdoors. The framework hashes whatever bytes the publisher submitted; an attacker who is *also the publisher* can submit malicious source and the receipt will verify cleanly.
+- That the leaf publisher's intent was honest. A revoked-after-the-fact leaf can have submitted plenty of bad receipts before revocation; offline mode cannot detect the revocation, and online mode only detects it for receipts presented after the revocation timestamp.
+- That the CA was not compromised before issuing the leaf certificate. If the attacker controlled the CA at enrollment time, the leaf cert chains correctly and the manifest checks pass — but the publisher identity is a lie.
+- That the build process producing the binary you actually run was honest. The framework verifies *source*; reproducible builds are a separate (complementary) control.
+- That a FIPS validation lab has approved the source. The framework does not interact with NIST's CMVP process; FIPS 140 validation is performed independently and is referenced via the §"How It Compares to OpenSSL's Approach" trust-anchor row, not provided by this scheme.
+- That the latest released version does not exist. The verifier sees only the receipt it has; rollback detection (§"Rollback Detection (Best-Effort)") is local and best-effort.
+- That the log operator has not shown a different view of the tree to other verifiers (split-view attack). Online mode mitigates this via fresh proof + consistency check; offline mode cannot detect it at all.
+
+This complements code review, FIPS CMVP validation, reproducible builds, and runtime attestation — it does not replace them. Marketing prose elsewhere in this document that says or implies otherwise is wrong; this section governs.
 
 ## Algorithm Sizes
 
