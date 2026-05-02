@@ -39,6 +39,16 @@ The local source files in your kit are byte-identical to a manifest that was sub
 
 This complements code review, FIPS CMVP validation, reproducible builds, and runtime attestation — it does not replace them. Marketing prose elsewhere in this document that says or implies otherwise is wrong; this section governs.
 
+## Terminology
+
+Three distinct ML-DSA-87 signatures appear in this scheme. Earlier drafts called all of them "cosignature," which created ambiguity. The pinned names — used throughout this document, in the wire JSON, and in API responses — are:
+
+- **`leaf_signature`** — the leaf publisher's signature over `JCS(manifest)`. Lives in the receipt (and in the submission body). Verified against the leaf certificate's public key. Proves "this manifest came from this publisher."
+- **`log_signature`** — the log key's signature over a tree root produced when an entry is appended. Lives in the receipt and in `GET /log/proof/<n>` responses. Verified against the log key, which itself chains to the pinned CA via the `log_cert.der` issued at log bring-up. Proves "this root state was attested by the log at this point in time."
+- **`ca_checkpoint_signature`** — the offline CA key's signature over a periodic `(tree_size, tree_root, timestamp)` checkpoint. Lives in the receipt's `covering_checkpoint` block and in `GET /log/checkpoint`. Verified against the **pinned** CA public key. Proves "this tree state was acknowledged by the CA at checkpoint time" — the long-term audit anchor.
+
+Use only these three names. The word "cosignature" should not appear in new text or in the wire JSON.
+
 ## Algorithm Sizes
 
 All signing in this scheme is **ML-DSA-87** (FIPS 204). All hashing is **SHA-256** (FIPS 180-4). The wolfCrypt API for ML-DSA-87 is named `wc_dilithium_*` for historical reasons; the parameter set is the standardized FIPS 204 ML-DSA-87, and the wire bytes are interoperable.
@@ -51,7 +61,7 @@ All signing in this scheme is **ML-DSA-87** (FIPS 204). All hashing is **SHA-256
 | SHA-256 hash | 32 | All Merkle-tree node hashes, file hashes, and pubkey hashes. |
 | Manifest hash (SHA-256 of JCS bytes) | 32 | Becomes the Merkle leaf for the entry. |
 
-These are the canonical sizes; an implementation that produces a different size for any item is non-conformant. (The previous draft of this document erroneously listed the cosignature as 64 bytes — that was an Ed25519 leftover and is fixed.)
+These are the canonical sizes; an implementation that produces a different size for any item is non-conformant. (The previous draft of this document erroneously listed each signature as 64 bytes — that was an Ed25519 leftover and is fixed.)
 
 ---
 
@@ -143,6 +153,59 @@ Hybrid TLS 1.3 (X25519 + ML-KEM-768) on the standard `--port` listener is accept
 - The submission endpoint enforces a server-side replay window: `manifest.timestamp` must be within +/-15 minutes of server time. Older submissions (e.g., a submission replayed days later) are rejected.
 - Submissions are rate-limited per leaf cert: 10 manifests per hour, 100 per day. Higher-volume publishers must request a quota increase from the CA operator. This bounds compromise damage from a stolen leaf signing key.
 
+### Checkpoint Cadence
+
+§"The Solution" said "the receipt's covering checkpoint gives it long-term audit weight"; this section pins the timing.
+
+The MTC server runs in **one of two modes**, configured at startup:
+
+- **Per-submission cadence (`--checkpoint mode=per-submission`).** The server waits to acknowledge each submission until the offline CA has signed a checkpoint covering at least the new entry's `tree_size_at_inclusion`. The submission HTTP request stays open (with periodic 102 Processing keepalives) until the covering checkpoint is available, then returns a fully-populated `covering_checkpoint`. Latency: minutes to hours, depending on CA cadence. Use for high-assurance deployments where the publisher needs the receipt to be immediately and fully verifiable.
+- **Periodic cadence (`--checkpoint mode=periodic --interval 1h`).** Submissions return immediately with `covering_checkpoint` omitted and `"checkpoint_status": "pending"` plus `"next_checkpoint_eta": "2026-04-05T13:00:00Z"`. The publisher ships the receipt with the pending status; verifiers re-query `GET /fips/manifest/<index>/proof` after the ETA to obtain the covering checkpoint. Latency: as configured (1h is typical). Use for higher-throughput deployments where blocking submissions is unacceptable.
+
+Verifier behavior on a pending receipt:
+
+- **Online mode:** the verifier re-fetches the proof and refuses to PASS until a `covering_checkpoint` is present. Until then the result is `PENDING_CHECKPOINT` (distinct from PASS or FAIL) and the verifier prints the next expected checkpoint time.
+- **Offline mode:** a pending receipt that has never been re-fetched cannot be fully verified. The verifier prints a loud warning, treats the result as `PENDING_CHECKPOINT`, and exits non-zero unless `--allow-pending-checkpoint` is explicitly passed (analogous to `--allow-revoked`, with the same audit logging).
+
+The server's `--checkpoint mode` is reported in `GET /log/checkpoint` and in the `mtc_server` startup banner so verifiers and publishers can detect the operator's policy. A receipt's `covering_checkpoint` presence is normative; the verifier never assumes one based on policy.
+
+### Signed Revocation Records
+
+A naive `GET /revoked/<n>` returning `{"revoked": true}` is forgeable by any MITM on the verification connection — TLS protects against passive observers but a successful active MITM can inject a "revoked" answer (denial of service) or, more insidiously, a "not revoked" answer (security bypass). To close this hole, **revocation status MUST itself be a signed log entry**, not an ad-hoc server response.
+
+#### Revocation entries
+
+Revocation is published as a Merkle log entry of type `revocation`:
+
+```json
+{
+  "type": "revocation",
+  "schema_version": 1,
+  "target_cert_id": 55,
+  "target_pubkey_hash": "sha256:a1b2c3...",
+  "reason": "key-compromise" | "superseded" | "cessation-of-operation" | "..." ,
+  "effective_at": "2026-09-15T00:00:00Z",
+  "issuer_cert_id": 42
+}
+```
+
+The entry is signed by the **issuer** (typically the CA, but may be the leaf itself for self-revocation), with the issuer's signature verified against the issuer cert's public key, and is then logged like any other entry — appended to the Merkle tree, the tree root signed by the log key, and covered by a subsequent CA-signed checkpoint.
+
+#### Revocation lookup API
+
+`GET /revoked/<cert_id>` returns either:
+
+- `{"revoked": false, "checked_at_tree_size": <N>, "covering_checkpoint": {...}}` — the server attests that no revocation entry exists for `cert_id` as of `tree_size = N`, with the covering checkpoint proving the tree state.
+- `{"revoked": true, "revocation_index": <M>, "revocation_entry": {...}, "issuer_signature": {...}, "log_inclusion": {...}, "covering_checkpoint": {...}}` — the server returns the full revocation entry, the issuer's signature on it, the inclusion proof for the log entry, and the covering checkpoint.
+
+The verifier checks the issuer signature, replays the inclusion proof, and verifies the covering CA-signed checkpoint against the **pinned** CA key. A `revoked: false` answer is only trusted if the covering checkpoint's `tree_size` is not significantly behind the verifier's known recent tree size (otherwise an attacker could replay an old "not revoked" answer from before the revocation was logged).
+
+#### Verifier ordering
+
+The order in §"Online Verification (Recommended)" is preserved (revocation before fresh proof), but the revocation lookup itself is now structured: the verifier validates the revocation response under the pinned CA key before acting on it. A spoofed "revoked" answer that does not chain to the pinned CA is treated as a transport failure (retry, then fail closed if persistent), not as a true revocation.
+
+This means a network-layer MITM on `/revoked/<n>` can only cause a denial of service (no signed answer ⇒ verifier cannot proceed); they cannot inject a false "not revoked" pass.
+
 ### Publishing a FIPS Build
 
 After a successful FIPS build, the administrator runs the manifest submission script. This is typically integrated into the build system (`debian/rules` or `Makefile`) but can also be run manually.
@@ -167,30 +230,47 @@ export MTC_SERVER=https://mtc.example.com:8080
 ```
 
 The script:
-1. Computes SHA256 of every FIPS source file (the same files listed in `fips-check.sh`)
-2. Builds a canonical JSON manifest with the git commit, tag, timestamp, and expiration (default: 1 year)
-3. POSTs the manifest to `$MTC_SERVER/fips/manifest`
-4. Saves the server's response to `fips-manifest-receipt.json`
+1. Walks the FIPS prefix(es) from `manifest.scope_paths` and computes SHA-256 of every file (the same files listed in `fips-check.sh`).
+2. Builds a schema-v2 canonical JSON manifest with `publisher`, `git_commit`, `git_tag`, RFC-3339 `timestamp`, `expires` (default: 1 year), and `scope_paths` (per §"Manifest Path Rules").
+3. Signs `JCS(manifest)` with the leaf's ML-DSA-87 private key → `leaf_signature`.
+4. POSTs `{manifest, leaf_signature}` to `$MTC_SERVER/fips/manifest` over mTLS (per §"Transport Requirements").
+5. Saves the server's response — `manifest`, `leaf_signature`, plus the `log_signature` and `covering_checkpoint` returned by the server — to `fips-manifest-receipt.json`.
 
 The receipt contains everything needed for offline verification:
 ```json
 {
-  "index": 42,
-  "manifest": { ... },
-  "inclusion_proof": ["a1b2c3...", "d4e5f6...", ...],
-  "subtree_start": 0,
-  "subtree_end": 43,
-  "subtree_hash": "7f8e9d...",
-  "cosignature": {
-    "signature": "b3c4d5...",
-    "algorithm": "ML-DSA-87"
+  "manifest": { ... },                /* schema_version: 2, includes publisher{}, scope_paths[], files[] */
+  "leaf_signature": {
+    "algorithm": "ML-DSA-87",
+    "signature": "<4627-byte hex>"
+  },
+  "log_inclusion": {
+    "index": 42,
+    "tree_size_at_inclusion": 43,
+    "tree_root_at_inclusion": "7f8e9d...",
+    "inclusion_proof": ["a1b2c3...", "d4e5f6...", ...],
+    "log_signature": {
+      "algorithm": "ML-DSA-87",
+      "signature": "<4627-byte hex>"
+    }
+  },
+  "covering_checkpoint": {
+    "tree_size": 50,
+    "tree_root": "9c8d7e...",
+    "timestamp": "2026-04-05T13:00:00Z",
+    "ca_checkpoint_signature": {
+      "algorithm": "ML-DSA-87",
+      "signature": "<4627-byte hex>"
+    }
   }
 }
 ```
 
+Verifiers MUST recompute `JCS(manifest)` and the leaf-hash themselves. The receipt does NOT carry a stored `signed_input` field — earlier drafts encoded a JCS placeholder string in the JSON, which was ambiguous and dangerous (it invited verifiers to trust a server-supplied byte sequence rather than re-canonicalizing locally).
+
 **Step 3: Ship the receipt**
 
-Include `fips-manifest-receipt.json` in the release tarball or `.deb` package. This single file contains the manifest, inclusion proof, and ML-DSA-87 cosignature — everything needed for offline verification using only the pinned CA public key.
+Include `fips-manifest-receipt.json` in the release tarball or `.deb` package. This single file contains the manifest, the `leaf_signature`, the `log_inclusion` block (with the `log_signature`), and the `covering_checkpoint` (with the `ca_checkpoint_signature`) — everything needed for offline verification using only the pinned CA public key. The receipt itself is **not** a self-validating package — see §"What You Need" → "The receipt is not a self-validating package."
 
 ### Automated Build Integration
 
@@ -419,7 +499,7 @@ FIPS Manifest Verification: PASS
   Rollback:   OK (v5.9.0 >= last accepted v5.8.0)
   Files:      127 verified
   Proof:      inclusion proof valid (depth 7)
-  Signature:  ML-DSA-87 cosignature valid
+  Signatures: leaf_signature OK; log_signature OK; ca_checkpoint_signature OK
 ```
 
 **Output on failure (tampered source):**
@@ -477,15 +557,17 @@ Use offline mode when you must (no network, hardened/air-gapped host) or when yo
 | Version rollback check (best-effort) | This is not an older version than one you previously accepted **on this verifier**. Defence-in-depth only: relies on the integrity of the local state file, which is user-writable and trivially deletable. See §"Rollback Detection (Best-Effort)" for the precise threat model. |
 | Local SHA256 matches manifest | Your source files are identical to what was submitted to the server |
 | Inclusion proof is valid | The manifest was genuinely logged in the Merkle tree at the claimed index |
-| ML-DSA-87 cosignature is valid | The Merkle tree root was signed by the CA's private key — not forged |
+| `leaf_signature` is valid | The manifest was signed by the leaf's private key — not just submitted by anyone with network access to the log |
+| `log_signature` is valid | The included tree root was attested by the log key — log-side state is self-consistent |
+| `ca_checkpoint_signature` is valid | The covering checkpoint was signed by the offline CA private key — long-term audit anchor |
 | Consistency proof (optional) | The tree has only grown since the manifest was logged — no entries removed or rewritten |
 
 ### Rollback Detection (Best-Effort)
 
 The verifier maintains a local state file recording the highest version it has previously accepted for each package:
 
-- `/var/lib/mtc-fips/last-verified.json` (system-wide; created mode `0644`, owned by root)
-- `~/.config/mtc-fips/last-verified.json` (per-user fallback if no system file is writable)
+- `/var/lib/mtc-fips/last-verified.json` (system-wide; **directory** mode `0755 root:root`, **file** mode `0644 root:root`. Readable by any verifier process for warning, writable only by root, so unprivileged users cannot suppress the warning by editing or deleting the file. Production deployments that want stricter integrity SHOULD set `0600` with `chattr +i` per the §"Hardening" notes below.)
+- `~/.config/mtc-fips/last-verified.json` (per-user fallback if no system file exists; mode `0600`, owned by the invoking user. The user can trivially edit or delete it — this is acknowledged as best-effort only.)
 
 When a new receipt is verified, the verifier compares `manifest.git_tag` against the stored value for `manifest.package`. A *lower* version triggers a rollback warning by default and a hard failure under `--strict-rollback`.
 
@@ -513,7 +595,7 @@ For environments that need rollback protection as a **security control** rather 
 
 - TPM-sealed monotonic counter — bind the stored version to a sealed PCR-bound counter that cannot be rewound without TPM reset.
 - Anchored remote attestation — verifier pushes its accepted-version manifest to an external append-only log; the server refuses to accept a verification report whose claimed version is older than the last one it logged for the same host identity.
-- System-wide root-only state — already supported via `/var/lib/mtc-fips/`; document it as the production-recommended path and require `0600` perms with `chattr +i` for high-assurance deployments.
+- System-wide root-only state — already supported via `/var/lib/mtc-fips/`. Production-recommended path; for high-assurance deployments, switch from the default `0644 root:root` to `0600 root:root` and apply `chattr +i` to make the file immutable until an explicit `chattr -i` (turns the rollback file into a write-once-per-version structure that even root must consciously unlock to update).
 
 These are not in v1. Until they ship, treat the rollback check as defense in depth only.
 
@@ -561,7 +643,7 @@ The script reports exactly which files differ from the logged manifest. This is 
 | | OpenSSL | postWolf (this system) |
 |---|---------|--------------------------|
 | **Checksums stored** | In the repo (`fips-sources.checksums`) | In an external append-only Merkle tree |
-| **Signed by** | No signature (plain SHA256) | ML-DSA-87 cosignature on tree root |
+| **Signed by** | No signature (plain SHA256) | Three-key chain: leaf signature on manifest + log signature on root + CA checkpoint signature |
 | **Tamper detection** | Only if attacker forgets to update checksums | Always — attacker cannot forge server-side log |
 | **Offline verification** | Yes (but no signature to verify) | Yes — receipt contains proof + signature |
 | **Requires server** | No | No (offline mode); Yes for fresh proofs |
@@ -578,7 +660,7 @@ The manifest is a **closed set** description of the FIPS-relevant file tree, not
 
 All paths in the manifest, and all paths the verifier enumerates locally, are canonicalized identically before any comparison or hashing:
 
-- **Encoding:** UTF-8, NFC-normalized (Unicode normalization form C). Reject paths whose NFC form differs from the as-stored form (this catches NFD/NFKC homoglyphs).
+- **Encoding:** UTF-8. The verifier internally NFC-normalizes (Unicode normalization form C) every path — both manifest-supplied and locally-walked — before comparison, so an NFC manifest path matches an NFD on-disk filename and vice versa. **Two manifest paths whose NFC forms collide is a hard error** (this catches NFD/NFKC homoglyph attacks). Under `--strict-encoding`, paths whose stored form is not already NFC are rejected outright; under default mode they are normalized with a warning. The default tolerates the common macOS HFS+ behavior of presenting filenames in NFD without forcing developers to re-encode every path.
 - **Separator:** forward slash (`/`) only. Reject `\`, mixed separators, and embedded path separators in single components.
 - **Case:** preserved on POSIX. On case-insensitive filesystems (Windows, macOS HFS+ default), the verifier additionally checks that no two manifest paths case-fold to the same string; collision is a hard error.
 - **Leading characters:** reject leading `/`, leading `~`, leading `.` followed by `/` or end-of-string (`./` and `.` as a path component are rejected as unhelpful).
@@ -651,7 +733,7 @@ The closed-set requirement adds `scope_paths` and renames `version` to `schema_v
 }
 ```
 
-Schema v1 receipts (no `scope_paths`) remain verifiable but produce a startup warning — they cannot detect "extra file" attacks. New submissions MUST use schema v2.
+Schema v1 receipts (no `scope_paths`) **fail by default**. v1 lacks closed-set protection, so accepting one silently is exactly the "attacker adds an extra file" bypass §"Manifest Path Rules" exists to prevent. To verify a legacy v1 receipt anyway (recovery, archived kits), pass `--allow-legacy-v1`; the verifier prints a loud warning naming the missing protections (closed-set, leaf signature, scope_paths) and records the override in its audit log. New submissions MUST use schema v2; the server rejects v1 submissions outright.
 
 ---
 
@@ -742,19 +824,19 @@ The manifest carries a `publisher` block that names the leaf and the scope of au
 The leaf signs `JCS(manifest)` — the canonical bytes of the manifest object including the `publisher` block, with `leaf_signature` itself excluded (the signature can't cover itself). The exact rule:
 
 ```
-signed_input = JCS({ ... entire manifest object as described in §"Manifest Schema (v2)" ... })
-leaf_signature.signature = ML-DSA-87.sign(leaf_priv, signed_input)
+canonical_bytes      = JCS(manifest)         /* recomputed by both signer and verifier */
+leaf_signature.signature = ML-DSA-87.sign(leaf_priv, canonical_bytes)
 ```
 
-The `leaf_signature` object lives **outside** the manifest, alongside it in the receipt and in the submission request body. This keeps the manifest object self-contained and re-verifiable independent of any specific signature.
+The `leaf_signature` object lives **outside** the manifest, alongside it in the receipt and in the submission request body. The `canonical_bytes` are not transmitted; both signer and verifier compute them locally from the manifest object. This keeps the manifest object self-contained and re-verifiable independent of any specific signature, and prevents a class of bugs where a server could supply a "canonical bytes preview" that doesn't match what the verifier would have computed.
 
 ### Verifier flow with leaf signatures
 
 When verifying a receipt, the verifier performs these checks in order. Earlier failures short-circuit later ones.
 
-1. **Parse and canonicalize.** Parse the receipt JSON (rejecting duplicate keys per §"Canonical JSON"). Re-canonicalize the manifest object and confirm the byte sequence matches `leaf_signature.signed_input`.
+1. **Parse and canonicalize.** Parse the receipt JSON (rejecting duplicate keys per §"Canonical JSON"). Re-canonicalize the manifest object locally — the verifier always recomputes `JCS(manifest)` from the parsed manifest, never trusts a server-supplied byte image.
 2. **Leaf signature.** Verify `leaf_signature.signature` over the canonical bytes using the public key from the leaf cert at `manifest.publisher.leaf_cert_id`. Confirm SHA-256 of that public key matches `manifest.publisher.leaf_pubkey_hash`.
-3. **Leaf cert chain.** Verify the leaf cert chains to the **pinned** CA (per §"What You Need" → "Pinning is mandatory"), via the leaf cert's own log inclusion proof and CA cosignature.
+3. **Leaf cert chain.** Verify the leaf cert chains to the **pinned** CA (per §"What You Need" → "Pinning is mandatory"), via the leaf cert's own log inclusion proof and a CA-signed checkpoint covering the leaf cert's tree size.
 4. **Domain scope.** Confirm `manifest.publisher.domain_scope` includes `manifest.package`. Reject otherwise — the leaf is not authorized for this package.
 5. **Log inclusion + log signature.** Replay the inclusion proof for the manifest's leaf hash up to the root in the receipt; verify the log signature on that root using the log key cert (which itself chains to the pinned CA per §"The Solution").
 6. **CA-signed checkpoint.** Verify the covering checkpoint's CA signature against the **pinned** CA key, and confirm `checkpoint.tree_size >= manifest_tree_size_at_inclusion`.
@@ -778,44 +860,95 @@ This means a stolen leaf signing key alone does not let an attacker submit; they
 ## Architecture Diagram
 
 ```
-BUILD MACHINE                         MTC SERVER
-==============                         ==========
+BUILD MACHINE (LEAF)                  MTC SERVER (LOG)            OFFLINE CA HOST
+====================                  ================            ===============
+                                                                  ca_key.der (private)
+                                                                  ca_pubkey.der (distributed)
+                                      log_key.der (signs roots)
+                                      log_cert.der (issued by CA)
 
-Source files                           Merkle Tree (append-only)
-    |                                      |
-    +-- sha256sum each file                |
-    |                                      |
-    +-- Build manifest JSON                |
-    |                                      |
-    +-- POST /fips/manifest  ----------->  |
-    |                                      +-- Append manifest hash as leaf
-    |                                      +-- Compute inclusion proof
-    |                                      +-- Sign tree root (ML-DSA-87)
-    |                                      |
-    +-- Save receipt  <------------------  +-- Return {index, proof, signature}
+Source files                          Merkle Tree (append-only)
     |
-    +-- Ship receipt with package
+    +-- Walk scope_paths,
+    |   sha256sum each file
+    |
+    +-- Build schema-v2 manifest
+    |   (publisher{}, scope_paths[],
+    |    files[], JCS-canonical)
+    |
+    +-- leaf_signature =
+    |     ML-DSA-87.sign(leaf_priv,
+    |                    JCS(manifest))
+    |
+    +-- POST /fips/manifest -------->
+    |     {manifest, leaf_signature}    |
+    |     [mTLS, server cert pinned]    |
+    |                                   +-- Verify leaf_signature
+    |                                   +-- Match TLS leaf cert vs
+    |                                       publisher.leaf_pubkey_hash
+    |                                   +-- Append manifest hash as leaf
+    |                                   +-- Build log_inclusion:
+    |                                       proof + log_signature on root
+    |                                   +-- Attach covering_checkpoint if present;
+    |                                       otherwise checkpoint_status: "pending"
+    |
+    +-- Save receipt <-----------------  Response {manifest, leaf_signature,
+    |                                              log_inclusion,
+    |                                              covering_checkpoint?}
+    |
+    +-- Ship receipt with package    Periodically:
+                                      log host emits checkpoint-request -----> CA host
+                                                                                  |
+                                                                       ca_checkpoint_signature =
+                                                                       ML-DSA-87.sign(ca_priv,
+                                                                         JCS({tree_size, tree_root,
+                                                                              timestamp}))
+                                      log host stores      <------------------------+
+                                      checkpoints/checkpoint-NNN.sig
 
 
-VERIFIER (downstream user)             MTC SERVER
-==========================             ==========
+VERIFIER (downstream user)            MTC SERVER (LOG)
+==========================            ================
+ca_pubkey.der (PINNED locally)
+log_cert.der (in receipt; chains to pinned CA)
 
 Source files + receipt
     |
-    +-- sha256sum each file
+    +-- Walk scope_paths;
+    |   build local path SET
     |
-    +-- Compare to receipt manifest
+    +-- Set equality check vs manifest paths
     |       |
-    |       +-- MISMATCH? --> FAIL
+    |       +-- EXTRAS or MISSING? --> FAIL
+    |
+    +-- sha256sum each in-set file
+    |       |
+    |       +-- HASH MISMATCH? --> FAIL
+    |
+    +-- Recompute JCS(manifest) locally;
+    |   verify leaf_signature against
+    |   leaf cert pubkey from receipt
+    |       |
+    |       +-- LEAF SIG INVALID? --> FAIL
+    |
+    +-- Verify log_cert chains to PINNED CA
+    |   (its own log inclusion + covering CA-signed checkpoint)
+    |
+    +-- [Online] GET /revoked/<leaf_id>, /revoked/<ca_id>
+    |       (responses themselves logged & signed —
+    |        see §"Signed Revocation Records")
+    |       |
+    |       +-- REVOKED? --> FAIL (unless --allow-revoked)
     |
     +-- [Online] GET /fips/manifest/<index>/proof
     |       |                              |
-    |       +-- Verify inclusion proof <---+
-    |       +-- Verify ML-DSA-87 signature
+    |       +-- Verify log_signature <-----+
+    |       +-- Verify ca_checkpoint_signature
+    |           against PINNED ca_pubkey
     |
-    +-- [Offline] Verify proof from receipt
-    |       +-- Verify inclusion proof (cached)
-    |       +-- Verify ML-DSA-87 signature (cached)
+    +-- [Offline] Verify cached log_signature +
+    |       cached covering ca_checkpoint_signature
+    |       against PINNED ca_pubkey
     |
     +-- PASS or FAIL
 ```
@@ -854,11 +987,12 @@ Submit a FIPS build manifest to the transparency log. The submission MUST includ
   },
   "leaf_signature": {
     "algorithm": "ML-DSA-87",
-    "signed_input": "JCS(manifest)",
     "signature": "<4627-byte ML-DSA-87 signature, hex>"
   }
 }
 ```
+
+The signature is computed over `JCS(manifest)` — the canonical bytes of the embedded `manifest` object as defined in §"Canonical JSON". There is no `signed_input` field in the wire format; verifiers recompute the canonical bytes locally rather than trusting a server-supplied byte sequence. (An earlier draft included `signed_input` as a string-quoted JCS preview; that field has been removed.)
 
 The server rejects the submission (HTTP 401) if any of the following hold:
 
@@ -870,22 +1004,22 @@ The server rejects the submission (HTTP 401) if any of the following hold:
 **Response (201 Created):**
 ```json
 {
-  "index": 42,
-  "manifest_hash": "8a7b6c5d...",
-  "inclusion_proof": ["a1b2c3...", "d4e5f6..."],
-  "subtree_start": 0,
-  "subtree_end": 43,
-  "subtree_hash": "7f8e9d...",
-  "log_signature": {
-    "algorithm": "ML-DSA-87",
-    "signed_input": "JCS({\"tree_size\":43,\"tree_root\":\"7f8e9d...\",\"timestamp\":\"...\"})",
-    "signature": "<4627-byte ML-DSA-87 signature, hex>"
+  "log_inclusion": {
+    "index": 42,
+    "manifest_hash": "8a7b6c5d...",
+    "tree_size_at_inclusion": 43,
+    "tree_root_at_inclusion": "7f8e9d...",
+    "inclusion_proof": ["a1b2c3...", "d4e5f6..."],
+    "log_signature": {
+      "algorithm": "ML-DSA-87",
+      "signature": "<4627-byte ML-DSA-87 signature, hex>"
+    }
   },
   "covering_checkpoint": {
     "tree_size": 50,
     "tree_root": "9c8d7e...",
     "timestamp": "2026-04-05T13:00:00Z",
-    "ca_signature": {
+    "ca_checkpoint_signature": {
       "algorithm": "ML-DSA-87",
       "signature": "<4627-byte ML-DSA-87 signature, hex>"
     }
@@ -897,44 +1031,72 @@ The receipt the publisher ships (`fips-manifest-receipt.json`) is the request bo
 
 ### GET /fips/manifest/{index}
 
-Retrieve a stored manifest by log index.
+Retrieve a stored manifest by log index, plus the leaf signature the publisher submitted with it.
 
 **Response (200 OK):**
 ```json
 {
-  "type": "fips-build-manifest",
-  "version": 1,
-  "package": "postWolf",
-  "git_commit": "abc123def456...",
-  "git_tag": "v5.9.0",
-  "timestamp": 1712188800.0,
-  "expires": "2027-04-05T00:00:00Z",
-  "files": [
-    {"path": "wolfcrypt/src/aes.c", "sha256": "0e22ea0c..."},
-    {"path": "wolfcrypt/src/fips.c", "sha256": "c049a936..."}
-  ]
+  "manifest": {
+    "type": "fips-build-manifest",
+    "schema_version": 2,
+    "package": "postWolf",
+    "publisher": {
+      "leaf_cert_id": 55,
+      "leaf_pubkey_hash": "sha256:a1b2c3...",
+      "domain_scope": ["postWolf"]
+    },
+    "git_commit": "abc123def456...",
+    "git_tag": "v5.9.0",
+    "timestamp": "2026-04-05T12:34:56Z",
+    "expires": "2027-04-05T00:00:00Z",
+    "scope_paths": [
+      {"prefix": "wolfcrypt/src/", "allow_symlinks": false}
+    ],
+    "files": [
+      {"path": "wolfcrypt/src/aes.c", "sha256": "0e22ea0c..."},
+      {"path": "wolfcrypt/src/fips.c", "sha256": "c049a936..."}
+    ]
+  },
+  "leaf_signature": {
+    "algorithm": "ML-DSA-87",
+    "signature": "<4627-byte hex>"
+  }
 }
 ```
 
+The verifier MUST recompute `JCS(manifest)` from the embedded `manifest` object and verify `leaf_signature` against it; the server does not return a stored byte-image of the canonical form.
+
 ### GET /fips/manifest/{index}/proof
 
-Get a fresh inclusion proof for a manifest (proof path may change as the tree grows).
+Get a fresh inclusion proof for a manifest (proof path may change as the tree grows) plus the current covering checkpoint.
 
 **Response (200 OK):**
 ```json
 {
   "index": 42,
   "manifest_hash": "8a7b6c5d...",
-  "subtree_start": 0,
-  "subtree_end": 100,
-  "subtree_hash": "1a2b3c4d...",
-  "proof": ["a1b2c3...", "d4e5f6...", "g7h8i9..."],
-  "cosignature": {
-    "signature": "b3c4d5e6f7...",
-    "algorithm": "ML-DSA-87"
+  "log_inclusion": {
+    "tree_size_at_inclusion": 43,
+    "tree_root_at_inclusion": "7f8e9d...",
+    "proof": ["a1b2c3...", "d4e5f6...", "g7h8i9..."],
+    "log_signature": {
+      "algorithm": "ML-DSA-87",
+      "signature": "<4627-byte hex>"
+    }
+  },
+  "covering_checkpoint": {
+    "tree_size": 100,
+    "tree_root": "1a2b3c4d...",
+    "timestamp": "2026-04-05T13:00:00Z",
+    "ca_checkpoint_signature": {
+      "algorithm": "ML-DSA-87",
+      "signature": "<4627-byte hex>"
+    }
   }
 }
 ```
+
+If the request is made before any checkpoint covers `tree_size_at_inclusion`, `covering_checkpoint` is omitted and the response includes `"checkpoint_status": "pending"` with the next expected checkpoint time. The verifier MAY cache the proof and re-fetch later, or MAY treat the response as not-yet-fully-verifiable depending on policy (see §"Checkpoint Cadence").
 
 ### GET /fips/manifest/search?package=X&tag=Y
 
@@ -981,7 +1143,7 @@ CA enrolls via DNS TXT                  Leaf builds postWolf
 CA issues leaf certificate                  |
     |                                       +-- Server logs manifest
     +-- Leaf cert logged in Merkle tree     +-- Server returns receipt
-    +-- Leaf receives cert + key pair       |   (index, proof, cosignature)
+    +-- Leaf receives cert + key pair       |   (log_inclusion + covering_checkpoint)
     |                                       |
     v                                       +-- Leaf ships kit:
 Leaf can now publish                            - source tarball
@@ -991,7 +1153,7 @@ Leaf can now publish                            - source tarball
 
 ### The Trust Problem
 
-The Merkle tree and ML-DSA-87 cosignatures prove **consistency** — that an entry was logged and hasn't been tampered with. They do not prove **identity** — that the leaf publisher is who they claim to be. That trust comes from the chain: CA vouches for leaf, and the CA's identity is established out-of-band.
+The Merkle tree, the `log_signature`, and the `ca_checkpoint_signature` together prove **consistency** — that an entry was logged at a specific tree state and the tree state was attested by the offline CA. The `leaf_signature` (per §"Leaf Signature on the Manifest") proves **identity** — that the manifest came from the rightful publisher, not just from anyone with network access to the log. The CA's identity itself is established out-of-band via the pinned CA public key.
 
 A downstream user must answer three questions:
 1. **Is this CA legitimate?** — Does the CA actually control the claimed domain?
@@ -1021,12 +1183,17 @@ When a downstream user receives a kit containing source code, a FIPS manifest re
 The receipt and leaf certificate identify who published this kit:
 ```bash
 # Who published this kit?
-jq '.leaf_subject' fips-manifest-receipt.json
-# Example output: "example.com-builder"
+jq '.manifest.publisher' fips-manifest-receipt.json
+# Example output:
+#   {
+#     "leaf_cert_id": 55,
+#     "leaf_pubkey_hash": "sha256:a1b2c3...",
+#     "domain_scope": ["postWolf"]
+#   }
 
-# Which CA authorized them?
-jq '.cosignature.cosigner_id' fips-manifest-receipt.json
-# Example output: "32473.2.ca"
+# Which CA endorsed the log key that signed the included root?
+# (The log_cert in the receipt names its issuing CA cert id.)
+jq '.log_inclusion.log_signature // .covering_checkpoint' fips-manifest-receipt.json
 ```
 
 **Step 2: Obtain the CA's public key out-of-band (bootstrap channel)**
@@ -1129,7 +1296,7 @@ Out-of-band trust anchor
          |
          v
     FIPS Manifest (submitted by the leaf)
-    (inclusion proof + cosignature verifiable with CA public key)
+    (leaf_signature + log_inclusion + covering_checkpoint, all verifiable with the pinned CA public key)
          |
          v
     Source File Integrity
@@ -1144,7 +1311,9 @@ Out-of-band trust anchor
 | DNS TXT validation | The CA operator controlled the domain at enrollment time | That they still control it today |
 | Leaf certificate | The CA authorized this publisher to act for this domain | That the leaf hasn't been compromised |
 | Merkle inclusion proof | The entry was logged and hasn't been modified | That the entry content is truthful |
-| ML-DSA-87 cosignature | The tree root was signed by the CA's private key | That the CA's key hasn't been stolen |
+| `leaf_signature` | The manifest was signed by the leaf publisher's private key | That the leaf hasn't been compromised |
+| `log_signature` | The included tree root was attested by the log key | That the log host hasn't been compromised |
+| `ca_checkpoint_signature` | The covering tree state was signed by the offline CA private key | That the CA's key hasn't been stolen |
 | File SHA256 hashes | Your local files match what was submitted | That the submitted files were correct |
 | Consistency proof | The tree has only grown — no entries removed | That future entries will be honest |
 | Revocation check | The CA/leaf certificate has not been explicitly revoked | That an unrevoked cert is still trustworthy |
@@ -1153,26 +1322,26 @@ No single layer is sufficient on its own. Together they form a chain where an at
 
 ### Key Distinction: CA vs. Leaf
 
-The CA **never** touches the kit. The CA's job is done after issuing the leaf certificate. If the CA goes offline, existing leaf publishers continue operating — their certificates and FIPS manifest receipts remain verifiable because the Merkle proofs and cosignatures are self-contained.
+The CA **never** touches the kit. The CA's job is done after issuing the leaf certificate and signing periodic checkpoints offline. If the CA goes offline, existing leaf publishers continue operating — their certificates and FIPS manifest receipts remain verifiable because the leaf signatures, log signatures, and CA-signed checkpoints already issued are self-contained.
 
 This separation means:
 - **Compromising a leaf** only affects kits published by that leaf — other leaves under the same CA are unaffected
 - **Compromising a CA** affects all leaves under it — but the CA can be revoked, and a new CA enrolled
-- **Compromising the MTC server** could allow fake entries, but cannot forge cosignatures from a CA whose private key is held elsewhere
+- **Compromising the MTC server** lets the attacker forge `log_signature`s on new entries (the log key is online), but cannot forge `ca_checkpoint_signature`s — the CA key is held offline. Verifiers refuse receipts whose covering checkpoint post-dates the compromise discovery time.
 
 ---
 
 ## What Gets Downloaded at Verification Time
 
-The kit ships with `fips-manifest-receipt.json`, which is self-contained — it includes the full manifest (every file path and SHA256 hash), the Merkle inclusion proof, and the ML-DSA-87 cosignature. This means verification requires minimal or zero network traffic.
+The kit ships with `fips-manifest-receipt.json`, which is self-contained — it includes the full manifest (every file path and SHA-256 hash), the `leaf_signature` over `JCS(manifest)`, the `log_inclusion` block (proof + `log_signature`), and the `covering_checkpoint` block (`ca_checkpoint_signature`). This means online verification requires minimal additional network traffic, and offline verification requires none. (Online still adds value — see the §"When Online Verification Adds Value" table — but offline is no longer "equally secure"; see §"Offline Verification (Limited Guarantees)".)
 
 ### By Verification Mode
 
 | Mode | Server Contact | What's Downloaded | Typical Size |
 |------|---------------|-------------------|--------------|
 | **Offline** | None | Nothing — the receipt has everything needed | 0 bytes |
-| **Online (standard)** | One GET request | Fresh inclusion proof + current cosignature | ~500 bytes |
-| **Online (full audit)** | Two GET requests | Fresh proof + the server's copy of the manifest for comparison | ~5-20 KB |
+| **Online (standard)** | Three GETs | Fresh inclusion proof + new `log_signature` + current `covering_checkpoint` (with `ca_checkpoint_signature`) + signed `revocation` lookups for the leaf and CA cert ids | ~10–15 KB (4627-byte signatures dominate) |
+| **Online (full audit)** | Four GETs | Above + the server's stored copy of the manifest for byte-for-byte comparison after re-canonicalization | ~15–35 KB |
 
 ### What's Already in the Kit
 
@@ -1180,30 +1349,41 @@ The verification bundle shipped with the kit contains:
 
 ```
 fips-manifest-receipt.json
-├── manifest            The full file list with SHA256 hashes (~5-20 KB)
-│   ├── expires         Manifest expiration timestamp
-│   ├── git_tag         Version tag for rollback detection
-│   └── files[]         Path + SHA256 for each FIPS source file
-├── manifest_hash       SHA256 of the canonical manifest (32 bytes)
-├── index               The Merkle tree log index (integer)
-├── inclusion_proof     Array of sibling hashes for the proof path (~200 bytes)
-├── subtree_start       Proof range start (integer)
-├── subtree_end         Proof range end (integer)
-├── subtree_hash        Root hash of the subtree (32 bytes)
-└── cosignature         ML-DSA-87 signature over the subtree hash (4627 bytes)
+├── manifest                                       Schema-v2 manifest object (~5-20 KB)
+│   ├── schema_version                             2
+│   ├── publisher                                  leaf_cert_id, leaf_pubkey_hash, domain_scope
+│   ├── timestamp                                  RFC 3339 UTC
+│   ├── expires                                    Manifest expiration timestamp
+│   ├── git_tag                                    Version tag for rollback detection
+│   ├── scope_paths[]                              Closed-set FIPS prefix list
+│   └── files[]                                    Path + SHA-256 for each FIPS source file
+├── leaf_signature                                 ML-DSA-87 signature over JCS(manifest) (4627 bytes)
+├── log_inclusion
+│   ├── index                                      The Merkle tree log index (integer)
+│   ├── tree_size_at_inclusion                     Tree size after appending this entry
+│   ├── tree_root_at_inclusion                     Root hash at that size (32 bytes)
+│   ├── inclusion_proof[]                          Array of sibling hashes (~200-400 bytes)
+│   └── log_signature                              ML-DSA-87 over the included root (4627 bytes)
+└── covering_checkpoint                            Omitted when checkpoint_status: pending
+    ├── tree_size                                  Size at checkpoint time (>= tree_size_at_inclusion)
+    ├── tree_root                                  Root hash at that size
+    ├── timestamp                                  RFC 3339 UTC
+    └── ca_checkpoint_signature                    ML-DSA-87 over JCS({tree_size,tree_root,timestamp}) (4627 bytes)
 
 ```
 
-This is everything needed to verify the kit without contacting the server. The verifier:
+This is everything needed to verify the kit without contacting the server (subject to the offline-mode limitations in §"Offline Verification (Limited Guarantees)"). The verifier:
 
-1. Checks manifest expiration
-2. Checks version rollback against local state
-3. Computes SHA256 of each local source file
-4. Compares against the manifest in the receipt
-5. Replays the inclusion proof (hash chain from leaf to root)
-6. Verifies the ML-DSA-87 cosignature on the root using pinned CA key
+1. Checks manifest expiration.
+2. Checks version rollback against local state (best-effort; see §"Rollback Detection (Best-Effort)").
+3. Walks `scope_paths[]` and builds the local file set; checks set-equality against `manifest.files[]`.
+4. Computes SHA-256 of each in-set local file; compares against `manifest.files[]`.
+5. Recomputes `JCS(manifest)`; verifies `leaf_signature` against the leaf cert pubkey from the receipt (whose hash is checked against `manifest.publisher.leaf_pubkey_hash`).
+6. Replays the inclusion proof (SHA-256 hash chain from `manifest_hash` to `tree_root_at_inclusion`).
+7. Verifies `log_signature` over the included root using the log key cert (which itself chains to the pinned CA per §"The Solution").
+8. Verifies `ca_checkpoint_signature` over the covering checkpoint using the **pinned** CA key.
 
-All of this is local computation — no network required.
+All of this is local computation — no network required, but the result is correspondingly limited (no revocation, no fresh consistency, no split-view detection).
 
 ### When Online Verification Adds Value
 
@@ -1215,4 +1395,4 @@ Contacting the server provides two additional guarantees that offline mode canno
 | **Revocation check** | Confirms the leaf certificate and CA have not been revoked since the kit was published. The receipt cannot know about future revocations. |
 | **Consistency proof** | Confirms the tree has only grown since the receipt was issued — no entries removed or rewritten. |
 
-For most users unpacking a kit, **offline verification is sufficient**. Online verification is recommended for high-assurance environments, CI/CD pipelines, or when the kit is more than a few days old and revocation status matters.
+**Online verification should be the default.** Offline verification is correctly described in §"Offline Verification (Limited Guarantees)": it cannot detect revocation, log rewriting, or split-view attacks. Use offline mode when network is unavailable (air-gapped build host, disconnected verifier) or when latency forbids it (CI step that runs in milliseconds), and accept the corresponding loss of guarantees. For any kit where the verifier *can* reach the MTC server, prefer online verification — the additional cost is small (a few KB of signed responses) and the guarantees are materially stronger.
