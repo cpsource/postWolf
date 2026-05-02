@@ -405,6 +405,91 @@ The script reports exactly which files differ from the logged manifest. This is 
 
 ---
 
+## Manifest Path Rules
+
+The manifest is a **closed set** description of the FIPS-relevant file tree, not an allowlist. Verification fails if the local tree contains files the manifest does not list, or vice versa. This prevents the "attacker adds an extra file" bypass that pure hash allowlists are vulnerable to.
+
+### Path canonicalization
+
+All paths in the manifest, and all paths the verifier enumerates locally, are canonicalized identically before any comparison or hashing:
+
+- **Encoding:** UTF-8, NFC-normalized (Unicode normalization form C). Reject paths whose NFC form differs from the as-stored form (this catches NFD/NFKC homoglyphs).
+- **Separator:** forward slash (`/`) only. Reject `\`, mixed separators, and embedded path separators in single components.
+- **Case:** preserved on POSIX. On case-insensitive filesystems (Windows, macOS HFS+ default), the verifier additionally checks that no two manifest paths case-fold to the same string; collision is a hard error.
+- **Leading characters:** reject leading `/`, leading `~`, leading `.` followed by `/` or end-of-string (`./` and `.` as a path component are rejected as unhelpful).
+- **Forbidden components:** reject any path containing `..`, `\0`, ASCII control characters (`< 0x20`), or matching reserved Windows device names case-insensitively (`CON`, `PRN`, `AUX`, `NUL`, `COM[1-9]`, `LPT[1-9]`).
+- **Length:** reject any single component longer than 255 bytes; reject any total path longer than 4096 bytes.
+
+A path that fails any of the above causes the entire manifest to be rejected at submission time and at verification time.
+
+### Set-equality requirement
+
+The verifier:
+
+1. Walks the source tree under the FIPS-relevant prefix(es) named in `manifest.scope_paths` (a new manifest field — see §"Manifest Schema (v2)"), applying the same canonicalization rules.
+2. Builds the set of canonicalized local paths.
+3. Builds the set of canonicalized manifest paths (with duplicate-detection — repeated paths are rejected at parse time).
+4. Computes set difference in **both directions**:
+    - `local \ manifest` → "extra files present locally" → **fail**.
+    - `manifest \ local` → "files missing locally" → **fail**.
+5. For paths present in both sets, computes SHA-256 of the local file and compares to the manifest hash.
+
+Set comparison precedes per-file hashing so that adding or removing files is reported clearly, separately from "this file's contents changed."
+
+### Symbolic links
+
+Symbolic links are **rejected by default**. The walker treats a symlink in the FIPS prefix as a hard error.
+
+A manifest may opt in to symlinks per-prefix via `manifest.scope_paths[].allow_symlinks: true`. When opted in:
+
+- The link's *target path* (after resolution, with the same canonicalization) must also appear in the manifest under that prefix or under another prefix that opts in.
+- The hashed bytes are the **target file's** contents, not the link's target string. The link itself is not hashed.
+- Links pointing outside the FIPS prefix set are rejected even when `allow_symlinks: true`.
+- Cycles in the link graph cause hard rejection (no infinite walks).
+
+### Generated and out-of-tree files
+
+The framework does not handle generated files. If a build step writes a file under the FIPS prefix that the manifest did not list, the verifier rejects the kit. Build systems must arrange one of:
+
+- Commit the generated file and include it in the manifest.
+- Configure the FIPS prefix to exclude the build output directory (`scope_paths[].exclude_subdirs`).
+- Run verification before the build (the recommended pattern: extract → verify → build).
+
+### Manifest schema (v2)
+
+The closed-set requirement adds `scope_paths` and renames `version` to `schema_version` to make the bump explicit:
+
+```json
+{
+  "type": "fips-build-manifest",
+  "schema_version": 2,
+  "package": "postWolf",
+  "git_commit": "...",
+  "git_tag": "v5.9.0",
+  "timestamp": "2026-04-05T00:00:00Z",
+  "expires": "2027-04-05T00:00:00Z",
+  "scope_paths": [
+    {
+      "prefix": "wolfcrypt/src/",
+      "allow_symlinks": false,
+      "exclude_subdirs": [".libs/", ".deps/"]
+    },
+    {
+      "prefix": "wolfcrypt/include/",
+      "allow_symlinks": false
+    }
+  ],
+  "files": [
+    {"path": "wolfcrypt/src/aes.c",  "sha256": "0e22ea0c..."},
+    {"path": "wolfcrypt/src/fips.c", "sha256": "c049a936..."}
+  ]
+}
+```
+
+Schema v1 receipts (no `scope_paths`) remain verifiable but produce a startup warning — they cannot detect "extra file" attacks. New submissions MUST use schema v2.
+
+---
+
 ## Architecture Diagram
 
 ```
