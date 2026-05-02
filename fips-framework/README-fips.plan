@@ -32,13 +32,32 @@
 > the pinned CA key, sourced from a channel the attacker does not
 > control, is the only real defence. Implementation tags `[ISSUE #2]`.
 
+> **Amendment — Issue #10 from `README-fips-issues.md`:** All references
+> below to "Ed25519" describe the original design and have been (or
+> are being) swept to **ML-DSA-87** (FIPS 204). Concrete impact:
+>
+> - `mtc_store_cosign()` (Ed25519, 64-byte sig, 32-byte pubkey) is
+>   replaced by `mtc_store_log_sign()` and `mtc_ca_sign_checkpoint()`
+>   per `[ISSUE #1]`, both ML-DSA-87 (4627-byte sig, 2592-byte
+>   pubkey, 4896-byte private key).
+> - `wc_ed25519_verify_msg()` is replaced by
+>   `wc_dilithium_verify_ctx_msg()` (the wolfCrypt API name retains
+>   "dilithium"; the parameter set is standardized ML-DSA-87).
+> - `config/ca-pubkey.h` carries 2592 bytes, not 32.
+> - DNS TXT records cannot inline a 2592-byte pubkey verbatim and
+>   must use the `pkhash=sha256:...` indirection plus a side-channel
+>   pubkey fetch (see `README-fips.md` §"Verifying a Kit End-to-End"
+>   Step 2).
+> - Receipt sizes grow accordingly; update Architecture Diagram and
+>   What-Each-Layer-Proves tables. Implementation tags `[ISSUE #10]`.
+
 ## Context
 
 OpenSSL's FIPS integrity system stores SHA256 checksums of source files in the same repository as the source. An attacker with write access can modify both a source file and its checksum — nothing downstream detects it. The HMAC key is public, so rebuilding and re-running `fipsinstall` produces valid MACs for the tampered binary.
 
-postWolf has the same weakness in `fips-hash.sh` / `fips_test.c`. However, postWolf already has a **Merkle Tree Certificate (MTC) transparency log** with Ed25519 cosignatures, inclusion proofs, and a REST API — implemented as a **C server** (`mtc-keymaster/server/c/`). We can leverage this infrastructure to anchor FIPS source checksums in the append-only server-side log, making tampering detectable.
+postWolf has the same weakness in `fips-hash.sh` / `fips_test.c`. However, postWolf already has a **Merkle Tree Certificate (MTC) transparency log** with ML-DSA-87 cosignatures (originally Ed25519; migrated as part of this work — `[ISSUE #10]`), inclusion proofs, and a REST API — implemented as a **C server** (`mtc-keymaster/server/c/`). We can leverage this infrastructure to anchor FIPS source checksums in the append-only server-side log, making tampering detectable.
 
-**Goal:** At build time, log a signed manifest of FIPS source file checksums to the C MTC server. At verification time, any party can check local source files against the server-logged manifest using inclusion proofs and Ed25519 signatures — with or without network access.
+**Goal:** At build time, log a signed manifest of FIPS source file checksums to the C MTC server. At verification time, any party can check local source files against the server-logged manifest using inclusion proofs and ML-DSA-87 signatures — with or without network access.
 
 ## Approach
 
@@ -79,7 +98,7 @@ Add endpoint handlers following the `handle_certificate_request()` pattern (line
   4. Prefix with `0x02` byte, append canonical JSON → entry buffer
   5. Call `mtc_store_add_entry(store, entry_buf, entry_sz)` → returns index
   6. Call `mtc_tree_inclusion_proof()` for proof
-  7. Call `mtc_tree_subtree_hash()` + `mtc_store_cosign()` for Ed25519 signature
+  7. Call `mtc_tree_subtree_hash()` + `mtc_store_log_sign()` for ML-DSA-87 log signature, then await an `mtc_ca_sign_checkpoint()` covering this size from the offline CA host (`[ISSUE #1]` keys split, `[ISSUE #10]` algorithm sweep)
   8. Build response JSON with index, proof, cosignature, subtree hash
   9. Persist via `mtc_store_save()` + `mtc_db_save_fips_manifest()`
   10. Return 201 Created
@@ -179,7 +198,7 @@ fips-framework/
 
 **`fips-manifest-verify.c`** — run by user to check a kit:
 
-All verification uses the MTC Merkle tree and Ed25519 cosignatures natively.
+All verification uses the MTC Merkle tree and ML-DSA-87 cosignatures natively (`[ISSUE #10]`: was Ed25519 in the original plan; sweep complete).
 The Merkle inclusion proof + cosignature replaces both `openssl35 verify` (cert
 chain) and `openssl35 dgst -verify` (signature):
 
@@ -195,7 +214,7 @@ Verification steps:
 - **Online mode:** recompute local hashes → GET `/fips/manifest/<index>` → compare → GET `/fips/manifest/<index>/proof` → replay inclusion proof → verify log signature on the returned root → verify CA signature on the covering checkpoint with the pinned CA key
 - **Offline mode:** recompute local hashes → replay inclusion proof from receipt → verify log signature → verify CA-signed checkpoint with pinned CA key from `config/ca-pubkey.h`. (Log signature alone is necessary but not sufficient; a verified covering CA checkpoint is required for full audit weight.)
 
-Ed25519 verification uses `wc_ed25519_verify_msg()` from wolfCrypt.
+ML-DSA-87 verification uses `wc_dilithium_verify_ctx_msg()` from wolfCrypt (the ML-DSA-87 wire algorithm is named "Dilithium" in wolfCrypt's API for historical reasons; the parameter set is the standardized FIPS 204 ML-DSA-87).
 SHA-256 uses `wc_Sha256Hash()`. HTTP uses minimal socket code (no libcurl).
 
 **What ships with the kit:**
@@ -217,7 +236,7 @@ This single file contains the manifest, inclusion proof, log signature, and CA-s
 | Component | Existing Code | Reuse |
 |-----------|---------------|-------|
 | Merkle tree | `mtc_merkle.c`: `mtc_tree_append()`, `mtc_tree_inclusion_proof()`, `mtc_tree_subtree_hash()` | Direct — works for any entry data |
-| Ed25519 cosigning | `mtc_store.c:539-583`: `mtc_store_cosign()` | Direct — signs any subtree range |
+| ML-DSA-87 log signing | `mtc_store.c:539-583`: `mtc_store_cosign()` (originally Ed25519, migrated to ML-DSA-87 — `[ISSUE #10]`) | Renamed to `mtc_store_log_sign()` per `[ISSUE #1]` (online log key, signs every root). The CA-checkpoint cosignature lives in separate offline tooling. |
 | Entry persistence | `mtc_store.c:469-503`: `mtc_store_add_entry()` | Direct — just add type 0x02 detection |
 | DB persistence | `mtc_db.c`: `mtc_db_save_certificate()` pattern | Copy for `mtc_db_save_fips_manifest()` |
 | HTTP routing | `mtc_http.c:901-1019`: `handle_request()` | Add new routes to existing dispatch |
@@ -233,8 +252,8 @@ This single file contains the manifest, inclusion proof, log signature, and CA-s
 | `fips-framework/README.md` | **Create** — documentation for the FIPS tools |
 | `fips-framework/Makefile` | **Create** — builds both tools against wolfCrypt |
 | `fips-framework/fips-manifest-submit.c` | **Create** — kit registration tool (hash, POST, save receipt) |
-| `fips-framework/fips-manifest-verify.c` | **Create** — kit verification tool (proof replay, Ed25519 verify) |
-| `fips-framework/config/ca-pubkey.h` | **Create** — pinned CA Ed25519 public key for offline verify |
+| `fips-framework/fips-manifest-verify.c` | **Create** — kit verification tool (proof replay, ML-DSA-87 verify via `wc_dilithium_verify_ctx_msg()`) |
+| `fips-framework/config/ca-pubkey.h` | **Create** — pinned CA ML-DSA-87 public key (2592 bytes) for compiled-in offline verify; `[ISSUE #2]` mandatory pin source |
 | `mtc-keymaster/server/c/mtc_http.c` | **Modify** — add 4 FIPS manifest endpoint handlers + routing |
 | `mtc-keymaster/server/c/mtc_db.c` | **Modify** — add `mtc_fips_manifests` table + CRUD functions |
 | `mtc-keymaster/server/c/mtc_store.c` | **Modify** — add type 0x02 detection + manifest persistence |

@@ -17,7 +17,21 @@ At build time, a manifest of every FIPS source file's SHA-256 hash is submitted 
 2. The CA-signed checkpoints anchor any historical root that a receipt's inclusion proof traces to. Forging a checkpoint requires compromising the offline CA key.
 3. A receipt (inclusion proof + log signature + a covering CA checkpoint) ships with the package. Verification works offline against the pinned CA public key.
 
-A compromised log key lets an attacker forge entries and roots **going forward**, but cannot forge a CA checkpoint for any tree state that existed before the compromise. Receipts whose covering checkpoint pre-dates the compromise remain verifiable; receipts whose covering checkpoint post-dates it require an out-of-band re-validation. (Compromise recovery is detailed in §"Key Rotation," which currently still describes the older single-key model and is being rewritten — see `README-fips-issues.md` issue #9.)
+A compromised log key lets an attacker forge entries and roots **going forward**, but cannot forge a CA checkpoint for any tree state that existed before the compromise. Receipts whose covering checkpoint pre-dates the compromise remain verifiable; receipts whose covering checkpoint post-dates it require an out-of-band re-validation. (Compromise recovery is detailed in §"Key Rotation.")
+
+## Algorithm Sizes
+
+All signing in this scheme is **ML-DSA-87** (FIPS 204). All hashing is **SHA-256** (FIPS 180-4). The wolfCrypt API for ML-DSA-87 is named `wc_dilithium_*` for historical reasons; the parameter set is the standardized FIPS 204 ML-DSA-87, and the wire bytes are interoperable.
+
+| Item | Bytes | Notes |
+|------|-------|-------|
+| ML-DSA-87 public key | 2592 | Distributed via DNS TXT pkhash + side-channel pubkey fetch (TXT cannot inline 2592 bytes). |
+| ML-DSA-87 signature | 4627 | Per signature, every appearance — log signature, CA checkpoint signature, leaf signature on manifest. |
+| ML-DSA-87 private key | 4896 | Held under physical control; never on the log host for the CA key. |
+| SHA-256 hash | 32 | All Merkle-tree node hashes, file hashes, and pubkey hashes. |
+| Manifest hash (SHA-256 of JCS bytes) | 32 | Becomes the Merkle leaf for the entry. |
+
+These are the canonical sizes; an implementation that produces a different size for any item is non-conformant. (The previous draft of this document erroneously listed the cosignature as 64 bytes — that was an Ed25519 leftover and is fixed.)
 
 ---
 
@@ -967,17 +981,24 @@ jq '.cosignature.cosigner_id' fips-manifest-receipt.json
 # Example output: "32473.2.ca"
 ```
 
-**Step 2: Obtain the CA's public key out-of-band**
+**Step 2: Obtain the CA's public key out-of-band (bootstrap channel)**
 
-The CA — not the leaf — is the trust anchor. Get the CA's key independently:
+The CA — not the leaf — is the trust anchor. Get the CA's key independently and pin it locally per §"What You Need" → "Pinning is mandatory":
 ```bash
-# DNS lookup
+# DNS lookup (TXT record carries the pubkey hash; full pubkey is fetched
+# separately and verified against the hash)
 dig TXT _mtc-ca-key.example.com +short
-# Example output: "v=mtc-ca1; pk=ed25519:MCowBQYDK2VwAyEA..."
+# Example output: "v=mtc-ca1; alg=ml-dsa-87; pkhash=sha256:a1b2c3d4..."
 
-# Or use a pinned key from local config
-export MTC_CA_PUBKEY="MCowBQYDK2VwAyEA..."
+# Fetch the full 2592-byte pubkey via the URL listed in the TXT record
+# (or via package metadata, GPG-signed git tag, etc.) and pin it:
+sudo install -o root -m 0644 ca-pubkey.der /etc/postWolf/ca-pubkey/postwolf-ca.der
+
+# Verify the pinned file's SHA-256 matches the TXT record's pkhash:
+sha256sum /etc/postWolf/ca-pubkey/postwolf-ca.der
 ```
+
+ML-DSA-87 public keys are 2592 bytes — too large to inline in a DNS TXT record verbatim. Hence the indirection: TXT carries `pkhash` (SHA-256 of the DER-encoded pubkey), and the actual pubkey ships via a different channel (project website, package metadata, git tag, etc.). The verifier confirms the channel-fetched pubkey hashes to the value in the TXT record.
 
 **Step 3: Verify the CA was enrolled legitimately**
 
@@ -1121,7 +1142,7 @@ fips-manifest-receipt.json
 ├── subtree_start       Proof range start (integer)
 ├── subtree_end         Proof range end (integer)
 ├── subtree_hash        Root hash of the subtree (32 bytes)
-└── cosignature         ML-DSA-87 signature over the subtree hash (64 bytes)
+└── cosignature         ML-DSA-87 signature over the subtree hash (4627 bytes)
 
 ```
 
