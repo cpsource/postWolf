@@ -235,7 +235,7 @@ export MTC_SERVER=https://mtc.example.com:8080
 What happens:
 1. The script reads `fips-manifest-receipt.json` to get the log index
 2. It checks the manifest `expires` field — rejects if expired
-3. It checks for version rollback — warns if `git_tag` is older than a previously accepted version for this package (state tracked in `~/.config/mtc-fips/last-verified.json`)
+3. It checks for version rollback (best-effort) — using semver comparison, warns if `git_tag` is older than a previously accepted version for this package; hard-fails under `--strict-rollback`. State is in `/var/lib/mtc-fips/last-verified.json` (preferred) or `~/.config/mtc-fips/last-verified.json` (fallback). See §"Rollback Detection (Best-Effort)" for limitations.
 4. It computes SHA256 of every FIPS source file on your local disk
 5. It queries `GET /fips/manifest/<index>` from the server
 6. It compares each local hash against the server's logged manifest
@@ -309,11 +309,48 @@ Use offline mode when you must (no network, hardened/air-gapped host) or when yo
 |-------|----------------|
 | Manifest not expired | The kit is still within its validity period |
 | Publisher log entry valid | The publisher was enrolled by the CA and their leaf is in the Merkle tree |
-| Version rollback check | This is not an older version than one you previously accepted |
+| Version rollback check (best-effort) | This is not an older version than one you previously accepted **on this verifier**. Defence-in-depth only: relies on the integrity of the local state file, which is user-writable and trivially deletable. See §"Rollback Detection (Best-Effort)" for the precise threat model. |
 | Local SHA256 matches manifest | Your source files are identical to what was submitted to the server |
 | Inclusion proof is valid | The manifest was genuinely logged in the Merkle tree at the claimed index |
 | ML-DSA-87 cosignature is valid | The Merkle tree root was signed by the CA's private key — not forged |
 | Consistency proof (optional) | The tree has only grown since the manifest was logged — no entries removed or rewritten |
+
+### Rollback Detection (Best-Effort)
+
+The verifier maintains a local state file recording the highest version it has previously accepted for each package:
+
+- `/var/lib/mtc-fips/last-verified.json` (system-wide; created mode `0644`, owned by root)
+- `~/.config/mtc-fips/last-verified.json` (per-user fallback if no system file is writable)
+
+When a new receipt is verified, the verifier compares `manifest.git_tag` against the stored value for `manifest.package`. A *lower* version triggers a rollback warning by default and a hard failure under `--strict-rollback`.
+
+#### Comparison rules
+
+Version strings are parsed as **semantic version 2.0.0** (semver) where possible:
+
+- `v5.10.0 > v5.9.0` (numeric component compare, not lexicographic — fixes the `"v5.10.0" < "v5.9.0"` string-compare bug present in the original draft).
+- Pre-release identifiers sort **before** the corresponding final release: `v5.10.0-rc1 < v5.10.0`. A pre-release receipt does not "raise" the stored version above its base version.
+- Build metadata (`+sha.abcdef`) is ignored for ordering, per semver §10.
+- Tags that fail to parse as semver (e.g., `v5_9_0`, `release-2026-04-30`) cause the rollback check to be **skipped with a warning**, not silently accepted. The state file records the unparseable tag verbatim so subsequent identical tags don't re-warn, but no ordering is inferred.
+
+#### What this defends against — and what it does not
+
+| | Defends | Does not defend |
+|---|---------|-----------------|
+| Accidental downgrade via stale mirror | ✓ Verifier remembers it once accepted v5.10.0 and warns on a v5.9.0 receipt | — |
+| Targeted rollback against a single host | Partial — only if the local state file is intact | ✗ If the attacker can write/delete `last-verified.json`, they can suppress the warning |
+| Rollback against a *fresh* host | — | ✗ A first-time install has no prior state and accepts any version |
+| Coordinated rollback across an organization | — | ✗ Each verifier has independent state; no fleet-wide signal |
+
+#### Hardening (TODO, not v1)
+
+For environments that need rollback protection as a **security control** rather than a usability feature, the planned hardening paths are:
+
+- TPM-sealed monotonic counter — bind the stored version to a sealed PCR-bound counter that cannot be rewound without TPM reset.
+- Anchored remote attestation — verifier pushes its accepted-version manifest to an external append-only log; the server refuses to accept a verification report whose claimed version is older than the last one it logged for the same host identity.
+- System-wide root-only state — already supported via `/var/lib/mtc-fips/`; document it as the production-recommended path and require `0600` perms with `chattr +i` for high-assurance deployments.
+
+These are not in v1. Until they ship, treat the rollback check as defense in depth only.
 
 ### Common Scenarios
 
