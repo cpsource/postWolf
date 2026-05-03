@@ -1295,6 +1295,10 @@ static void *bootstrap_thread(void *arg)
             /* Child: no longer needs the listen socket. */
             LOG_DEBUG("bootstrap: child pid=%d handling conn", (int)getpid());
             close(listen_fd);
+            /* Detach from the parent's PGconn — see comment at the
+             * TLS/plain fork site in mtc_http.c.  Fixes TODO #25
+             * (gratuitous reconnect churn). */
+            mtc_db_after_fork(&store->db);
         }
 
         /* Get client IP */

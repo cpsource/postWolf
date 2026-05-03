@@ -244,6 +244,28 @@ int mtc_db_ensure_connected(PGconn **conn_ptr)
     return -1;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_after_fork
+ *
+ * Description:
+ *   See mtc_db.h for full rationale.  Short version: the child
+ *   process must not call PQfinish on the inherited PGconn (would
+ *   close the parent's TCP socket).  This helper just NULLs the
+ *   pointer so the next mtc_db_ensure_connected call opens a fresh
+ *   connection in the child's address space — eliminating the
+ *   gratuitous "connection lost / attempting reconnect / reconnected
+ *   successfully" log churn that TODO #25 was about.
+ ******************************************************************************/
+void mtc_db_after_fork(PGconn **conn_ptr)
+{
+    if (!conn_ptr) return;
+    /* Deliberately NOT PQfinish: that would close the underlying TCP
+     * socket which the parent process still uses.  Just drop our
+     * pointer; the orphan PGconn struct + inherited FD slot are
+     * freed at child exit. */
+    *conn_ptr = NULL;
+}
+
 /* ------------------------------------------------------------------ */
 /* Schema                                                              */
 /* ------------------------------------------------------------------ */

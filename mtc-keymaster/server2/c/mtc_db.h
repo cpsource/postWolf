@@ -471,6 +471,31 @@ int mtc_db_cancel_nonce(PGconn *conn, const char *domain,
 int mtc_db_ensure_connected(PGconn **conn_ptr);
 
 /**
+ * @brief    Detach this process from an inherited PGconn after fork().
+ *
+ * @details  The child of fork() inherits the parent's PGconn handle and
+ *           the underlying TCP socket FD, but libpq's per-connection
+ *           protocol cursor and buffered messages cannot be safely
+ *           shared between processes.  The child MUST NOT call
+ *           PQfinish on the inherited handle — that would tear down
+ *           the parent's TCP connection.  Instead this function NULLs
+ *           the pointer; the next mtc_db_ensure_connected call opens
+ *           a fresh PGconn in the child's address space.  The
+ *           orphaned PGconn struct in the child is reclaimed at child
+ *           exit; the inherited socket FD is closed at exit (the
+ *           kernel `struct file` refcount stays > 0 because the
+ *           parent still holds it).
+ *
+ *           Closes TODO #25 (gratuitous "connection lost / reconnect"
+ *           churn on every forked child's first DB query) by avoiding
+ *           the dead-connection detect-and-recover path entirely.
+ *
+ * @param[in,out] conn_ptr  Pointer to PGconn pointer (typically
+ *                          &store->db).  Set to NULL on return.
+ */
+void mtc_db_after_fork(PGconn **conn_ptr);
+
+/**
  * @brief    Look up a public key by name from mtc_public_keys.
  *
  * @param[in]  conn      Active PostgreSQL connection.

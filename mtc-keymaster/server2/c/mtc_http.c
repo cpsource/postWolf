@@ -2227,6 +2227,12 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
             LOG_DEBUG("child pid=%d handling %s conn",
                       (int)getpid(), use_tls ? "TLS" : "plain");
             close(listen_fd);
+            /* Detach from the parent's PGconn — must NOT PQfinish
+             * (would close the TCP socket the parent still uses).
+             * mtc_db_ensure_connected will lazily open a fresh
+             * connection in the child on first DB query.  Fixes
+             * TODO #25 (gratuitous reconnect churn). */
+            mtc_db_after_fork(&store->db);
         }
 
         /* Get client IP, log connection, and check against AbuseIPDB */
@@ -2318,6 +2324,9 @@ static void *mqc_listener_thread(void *arg)
             /* Child: no longer needs the listen socket. */
             LOG_DEBUG("child pid=%d handling MQC conn", (int)getpid());
             close(listen_fd);
+            /* Detach from the parent's PGconn — see TLS/plain fork
+             * site above for the same comment.  Fixes TODO #25. */
+            mtc_db_after_fork(&store->db);
         }
 
         /* Get client IP */

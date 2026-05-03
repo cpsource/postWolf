@@ -1252,7 +1252,22 @@ Ships as three binaries + one script:
 Extras (`--dry-run`, `--force <dir>`) support the integration test
 harness in `tools/sh/test-renewal.sh`.
 
-### 25. Fork children pay a gratuitous Neon reconnect on every request
+### 25. Fork children pay a gratuitous Neon reconnect on every request — RESOLVED 2026-05-03
+
+**Resolution:** added `mtc_db_after_fork(&store->db)` in each
+fork-child branch (mtc_http.c TLS/plain, mtc_http.c MQC,
+mtc_bootstrap.c).  The helper just NULLs the inherited PGconn
+pointer (deliberately NOT PQfinish — that would close the
+parent's TCP socket).  The next `mtc_db_ensure_connected` call in
+the child opens a fresh PGconn lazily; the
+"connection lost / attempting reconnect / reconnected
+successfully" log triplet no longer appears for normal
+fork-after-accept traffic.  Fix option #1 from the analysis
+below.  See `mtc_db_after_fork` in `mtc_db.{c,h}`.
+
+---
+
+(Original analysis preserved below for context.)
 
 **Priority:** Low (cosmetic + minor latency), observed after lowering
 the log level to INFO on 2026-04-19.  Every forked child prints
