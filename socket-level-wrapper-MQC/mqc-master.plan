@@ -920,17 +920,31 @@ The remaining open questions:
    callers: none yet — first encrypted-mode caller is the
    testbed below.
 2. Add an `--encrypted` flag to `examples/echo_client.c` /
-   `echo_server.c` for end-to-end testing.
+   `examples/echo_server.c` for end-to-end testing of the new
+   handshake bodies in isolation from the real CLI tools.
 3. Smoke: `echo_client --encrypted` against
    `echo_server --encrypted` succeeds.  `echo_client` (clear) vs
    `echo_server --encrypted-only` fails with a clean mode-mismatch
    diagnostic, and vice versa.
-4. Regression: aggregate suite (`make test-mqc-all`) still 100%;
-   new encrypted-mode suite hits the 4-frame happy path + the
-   ~10 new wire-attack classes.
-5. Operator-facing: add `--encrypted` flag to the CLI tools that
-   want to opt in (`mqc`, `show-tpm`, etc.) — typically those
-   that operate over public networks or shared infrastructure.
+4. Add `--encrypted` to **`show-tpm`** so that
+   `show-tpm --verify --encrypted` exercises the production
+   peer-verification path under the new handshake.  Implementation:
+   set `cfg.encrypt_identity = 1` before `mqc_ctx_new` when the
+   flag is present.  `show-tpm` is the canonical exerciser of
+   `mqc_peer_verify` (it makes one MQC handshake per
+   `/certificate/<n>` lookup), so once `--verify --encrypted`
+   succeeds we know the new code path works against a real
+   server with real cert verification, not just the synthetic
+   echo testbed.
+5. Regression: aggregate suite (`make test-mqc-all`) still 100%;
+   the encrypted-mode regression suite hits the 4-frame happy
+   path + the ~10 new wire-attack classes; the existing
+   `show-tpm --verify` (clear) keeps passing as the baseline.
+6. Operator-facing: extend the `--encrypted` flag to other CLI
+   tools that operate over public networks or shared
+   infrastructure (`mqc`, `bootstrap_*`).  These are
+   informational additions on top of the load-bearing
+   `show-tpm --verify --encrypted` smoke from step 4.
 
 ### Out of scope (within Phase 7)
 
@@ -952,7 +966,11 @@ The remaining open questions:
 - **Commit 2:** `mqc_connect_encrypted` / `mqc_accept_encrypted`
   are no longer stubs.
 - `examples/echo_client --encrypted` ↔ `echo_server --encrypted`
-  roundtrip succeeds.
+  roundtrip succeeds (synthetic isolation test).
+- **`show-tpm --verify --encrypted` succeeds against
+  factsorlie:8446** (the load-bearing end-to-end smoke for the
+  new code path under real peer-verification load — one MQC
+  encrypted handshake per /certificate/<n> lookup).
 - Aggregate suite extended with the encrypted-mode happy path +
   the new wire-attack classes; 100% pass.
 - Spec §7 reconciled with §6 / §8 / §9.1; Appendix A has worked
