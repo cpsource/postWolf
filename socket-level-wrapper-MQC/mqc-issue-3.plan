@@ -1,0 +1,456 @@
+# Plan: transcript-bound HKDF derivation (issue #3)
+
+## Status
+
+- Tracks issue #3 of `socket-level-wrapper-MQC/README-mqc-issues.md`.
+- Builds on `mqc-issue-1.plan` (transcript construction is the
+  prerequisite) and **subsumes** `mqc-issue-2.plan` once landed
+  (the version+suite info-string tag is no longer load-bearing
+  after the transcript hash carries the same fields).
+- Wire format: unchanged from issue-1.  This is internal
+  derivation only.  Bytes-on-wire are byte-identical; derived keys
+  differ; peers running issue-3 cannot interoperate with peers
+  running pre-issue-3.  Same flag-day cutover as issue-1.
+
+## What changes
+
+### Today (after issue-1 + issue-2)
+
+```
+c2s_key = HKDF(SHA-256,
+               IKM   = SS,                            // 32 bytes ML-KEM
+               salt  = <empty>,
+               info  = "mqc/v0/MQC_…SHA256/c2s-session-key",
+               L     = 32)
+s2c_key = HKDF(…, info = "…/s2c-session-key", L = 32)
+```
+
+`wc_HKDF` is the combined Extract+Expand.  Salt is empty.  Nonce
+construction is `4 zero bytes || htobe64(seq)` (`make_nonce`,
+`mqc.c:269-282`).
+
+### After issue-3
+
+Split into the two HKDF stages explicitly.  Use the SHA-256
+transcript hash defined by issue-1 as the **salt** of HKDF-Extract.
+Derive per-direction keys *and* per-direction IVs from the
+resulting PRK.  Use TLS-1.3-style `iv XOR (8 zeros || htobe64(seq))`
+for the per-frame nonce.
+
+```
+data_secret  = HKDF-Extract(SHA-256,
+                            salt = transcript_hash_full,
+                            IKM  = SS)               // 32 bytes
+
+data_c2s_key = HKDF-Expand(SHA-256, PRK = data_secret,
+                           info = "mqc/v0/.../data-c2s-key",  L = 32)
+data_s2c_key = HKDF-Expand(SHA-256, PRK = data_secret,
+                           info = "mqc/v0/.../data-s2c-key",  L = 32)
+data_c2s_iv  = HKDF-Expand(SHA-256, PRK = data_secret,
+                           info = "mqc/v0/.../data-c2s-iv",   L = 12)
+data_s2c_iv  = HKDF-Expand(SHA-256, PRK = data_secret,
+                           info = "mqc/v0/.../data-s2c-iv",   L = 12)
+```
+
+`transcript_hash_full` is the **end-of-handshake** transcript hash:
+the version-1 transcript-input from `mqc-issue-1.plan` with both
+`C_c` and `C_s` populated, and with the role tag *omitted* (the
+role-tagged variant is what the signatures cover; the un-tagged
+variant is what HKDF binds, so c2s and s2c on both peers compute
+the identical input).  Concretely:
+
+```
+transcript_input_kdf =
+      LABEL                          (16 bytes, "mqc-hndshk/v1\n\x00")
+   || u8(version=0)                  (1 byte)
+   || u8(mode_id)                    (1 byte)
+   || SUITE_ID                       (32 bytes, SHA-256 of suite string)
+   || u32be(len(EK_c)) || EK_c
+   || u32be(len(CT_s)) || CT_s
+   || s32be(C_c)
+   || s32be(C_s)
+
+transcript_hash_full = SHA-256(transcript_input_kdf)
+```
+
+### Encrypted-identity mode: early-secret stage
+
+Encrypted-identity mode (issue-1, 4 frames) needs encryption keys
+*before* both `C_c` and `C_s` are known to both sides.  That forces
+a two-stage derivation:
+
+```
+transcript_input_phase1 =
+      LABEL || u8(version=0) || u8(MODE_ENC) || SUITE_ID
+   || u32be(len(EK_c)) || EK_c
+   || u32be(len(CT_s)) || CT_s
+   || s32be(0) || s32be(0)               // C_c, C_s not yet known
+
+transcript_hash_phase1 = SHA-256(transcript_input_phase1)
+
+early_secret = HKDF-Extract(SHA-256,
+                            salt = transcript_hash_phase1,
+                            IKM  = SS)
+
+early_c2s_key = HKDF-Expand(SHA-256, PRK = early_secret,
+                            info = "mqc/v0/.../early-c2s-key", L = 32)
+early_s2c_key = HKDF-Expand(SHA-256, PRK = early_secret,
+                            info = "mqc/v0/.../early-s2c-key", L = 32)
+early_c2s_iv  = HKDF-Expand(SHA-256, PRK = early_secret,
+                            info = "mqc/v0/.../early-c2s-iv",  L = 12)
+early_s2c_iv  = HKDF-Expand(SHA-256, PRK = early_secret,
+                            info = "mqc/v0/.../early-s2c-iv",  L = 12)
+```
+
+The `early_*` keys seal phase-2 identity blobs (one frame per
+direction).  The `data_*` keys seal data-plane traffic.  In
+clear-identity mode there are no encrypted phase-2 frames, so only
+`data_*` keys are derived.
+
+### Nonce construction (TLS-1.3 style)
+
+```c
+static void make_nonce(const uint8_t iv[12], uint64_t seq,
+                       uint8_t nonce[12])
+{
+    /* nonce = iv XOR (4 zeros || htobe64(seq)) */
+    uint8_t mask[12];
+    memset(mask, 0, 4);
+    mask[4]  = (uint8_t)(seq >> 56);
+    /* … through … */
+    mask[11] = (uint8_t)(seq);
+    for (int i = 0; i < 12; i++) nonce[i] = iv[i] ^ mask[i];
+}
+```
+
+Effects:
+- Nonces are no longer correlatable across connections (the IV
+  prefix is per-connection and per-direction).
+- Within a connection, sequence-derivation is unchanged (one
+  counter increments per frame, never wraps within `2^64`).
+- AEAD safety still rests on per-direction keys (the per-direction
+  IV is a defense-in-depth bonus, not the primary safety property).
+
+---
+
+## Spec edits (`draft-page-mqc-protocol-00.md`)
+
+1. **Section 8 (Key Derivation)** — full rewrite.  Replace the
+   single `HKDF-SHA256(IKM=SS, salt=<empty>, info="mqc-session-…")`
+   construction with the Extract → Expand split shown above.
+   Document `transcript_input_kdf` and `transcript_input_phase1`
+   precisely (relative to the issue-1 `transcript_input(role)`,
+   which differs only by omitting the role tag).
+2. **Section 9.2 (Nonce Construction)** — replace the
+   `4 zero bytes || htobe64(seq)` construction with
+   `iv XOR (4 zero bytes || htobe64(seq))`.  Note that the IV is
+   12 bytes, derived per-direction, and constant for the lifetime
+   of the connection.
+3. **Section 7 (Encrypted-identity mode)** — add a sentence in the
+   ServerHello-receive step that the phase-2 identity blobs are
+   sealed under `early_c2s_key` / `early_s2c_key`, NOT under
+   `data_c2s_key` / `data_s2c_key`.  Data-plane keys are derived
+   later, after phase 2 completes.
+4. **Section 12.7 (added by issue-1)** — extend with a paragraph
+   on the HKDF-Extract salt:
+
+   > The HKDF-Extract salt is the SHA-256 hash of the same
+   > transcript bytes that the handshake signatures cover (modulo
+   > the role tag).  An attacker who alters any byte of the
+   > handshake — including bytes the signatures do not cover, such
+   > as the JSON whitespace or a malformed `version` field — would
+   > cause the two peers to derive different `data_secret` values
+   > and therefore different session keys; the AEAD will reject the
+   > first data frame.  This complements the signature-binding by
+   > catching tampering that the signature path missed (e.g., a
+   > buggy verifier that accepts a malformed field).
+5. **Section 12.2 (Nonce Management)** — note that the per-direction
+   IV is derived secret material; logging it is equivalent to
+   logging the session key for forgery purposes.
+
+---
+
+## Code edits
+
+### `mqc.h`
+
+```c
+#define MQC_HKDF_INFO_DATA_C2S_KEY \
+    "mqc/v0/" MQC_SUITE_STRING "/data-c2s-key"
+#define MQC_HKDF_INFO_DATA_S2C_KEY \
+    "mqc/v0/" MQC_SUITE_STRING "/data-s2c-key"
+#define MQC_HKDF_INFO_DATA_C2S_IV \
+    "mqc/v0/" MQC_SUITE_STRING "/data-c2s-iv"
+#define MQC_HKDF_INFO_DATA_S2C_IV \
+    "mqc/v0/" MQC_SUITE_STRING "/data-s2c-iv"
+#define MQC_HKDF_INFO_EARLY_C2S_KEY \
+    "mqc/v0/" MQC_SUITE_STRING "/early-c2s-key"
+#define MQC_HKDF_INFO_EARLY_S2C_KEY \
+    "mqc/v0/" MQC_SUITE_STRING "/early-s2c-key"
+#define MQC_HKDF_INFO_EARLY_C2S_IV \
+    "mqc/v0/" MQC_SUITE_STRING "/early-c2s-iv"
+#define MQC_HKDF_INFO_EARLY_S2C_IV \
+    "mqc/v0/" MQC_SUITE_STRING "/early-s2c-iv"
+```
+
+(The old `MQC_HKDF_INFO_C2S` / `MQC_HKDF_INFO_S2C` from
+`mqc-issue-2.plan` are deleted — superseded.)
+
+### `mqc.c` — `mqc_conn` struct
+
+Add per-direction IV fields:
+
+```c
+struct mqc_conn {
+    int       fd;
+    uint8_t   send_key[MQC_AES_KEY_SZ];
+    uint8_t   recv_key[MQC_AES_KEY_SZ];
+    uint8_t   send_iv[MQC_GCM_IV_SZ];      /* NEW */
+    uint8_t   recv_iv[MQC_GCM_IV_SZ];      /* NEW */
+    uint64_t  send_seq;
+    uint64_t  recv_seq;
+    int       peer_index;
+};
+```
+
+### `mqc.c` — replace `derive_session_keys`
+
+Delete the existing function.  Add three replacements:
+
+```c
+/* Compute the un-role-tagged transcript hash used as HKDF salt. */
+static int mqc_transcript_hash_kdf(
+    uint8_t out_hash[WC_SHA256_DIGEST_SIZE],
+    int mode_id,
+    const uint8_t *ek, size_t ek_len,
+    const uint8_t *ct, size_t ct_len,
+    int32_t cert_index_c, int32_t cert_index_s);
+
+/* Derive data-plane keys + IVs from the full-transcript hash. */
+static int derive_data_keys(
+    const uint8_t *shared_secret,
+    const uint8_t  transcript_hash[WC_SHA256_DIGEST_SIZE],
+    uint8_t c2s_key[MQC_AES_KEY_SZ],
+    uint8_t s2c_key[MQC_AES_KEY_SZ],
+    uint8_t c2s_iv [MQC_GCM_IV_SZ],
+    uint8_t s2c_iv [MQC_GCM_IV_SZ]);
+
+/* Derive early (phase-2 identity-blob) keys + IVs from the
+ * phase-1 transcript hash.  Encrypted-identity mode only. */
+static int derive_early_keys(
+    const uint8_t *shared_secret,
+    const uint8_t  transcript_hash_phase1[WC_SHA256_DIGEST_SIZE],
+    uint8_t c2s_key[MQC_AES_KEY_SZ],
+    uint8_t s2c_key[MQC_AES_KEY_SZ],
+    uint8_t c2s_iv [MQC_GCM_IV_SZ],
+    uint8_t s2c_iv [MQC_GCM_IV_SZ]);
+```
+
+Both `derive_*_keys` functions:
+1. `wc_HKDF_Extract(SHA-256, salt=transcript_hash, IKM=SS) → PRK`
+2. Four `wc_HKDF_Expand(SHA-256, PRK, info, L)` calls with the
+   appropriate info labels.
+3. Zero `PRK` before returning.
+
+(`wc_HKDF_Extract` and `wc_HKDF_Expand` are already in wolfCrypt;
+they are gated on the same `HAVE_HKDF` configure switch as the
+existing `wc_HKDF`.)
+
+### `mqc.c` — `make_nonce`
+
+Replace:
+
+```c
+static void make_nonce(uint64_t seq, uint8_t nonce[MQC_GCM_IV_SZ])
+```
+
+with:
+
+```c
+static void make_nonce(const uint8_t iv[MQC_GCM_IV_SZ],
+                       uint64_t seq, uint8_t nonce[MQC_GCM_IV_SZ])
+{
+    int i;
+    uint8_t mask[MQC_GCM_IV_SZ];
+    memset(mask, 0, 4);
+    mask[4]  = (uint8_t)(seq >> 56);
+    mask[5]  = (uint8_t)(seq >> 48);
+    mask[6]  = (uint8_t)(seq >> 40);
+    mask[7]  = (uint8_t)(seq >> 32);
+    mask[8]  = (uint8_t)(seq >> 24);
+    mask[9]  = (uint8_t)(seq >> 16);
+    mask[10] = (uint8_t)(seq >> 8);
+    mask[11] = (uint8_t)(seq);
+    for (i = 0; i < MQC_GCM_IV_SZ; i++)
+        nonce[i] = iv[i] ^ mask[i];
+}
+```
+
+Update all four call sites to pass the appropriate IV:
+- `mqc.c:1126` (`enc_send` for handshake-phase frames) — pass the
+  early IV in encrypted mode.
+- `mqc.c:1169` (`enc_recv` for handshake-phase frames) — same.
+- `mqc.c:1975` (`mqc_send` data-plane) — `conn->send_iv`.
+- `mqc.c:2036` (`mqc_recv` data-plane) — `conn->recv_iv`.
+
+### `mqc.c` — handshake flows
+
+Each of the six `derive_session_keys(shared_secret, c2s_key,
+s2c_key)` call sites (`mqc.c:863, 1075, 1280, 1501, 1776, 1863`)
+becomes:
+
+**Clear-identity mode** (`mqc_connect`, `mqc_accept`):
+
+```c
+uint8_t th_full[WC_SHA256_DIGEST_SIZE];
+ret = mqc_transcript_hash_kdf(th_full, MQC_MODE_CLEAR,
+                              encaps_key, encaps_key_sz,
+                              ciphertext, ct_sz,
+                              C_c, C_s);
+if (ret != 0) goto fail;
+ret = derive_data_keys(shared_secret, th_full,
+                       c2s_key, s2c_key, c2s_iv, s2c_iv);
+```
+
+**Encrypted-identity mode** (`mqc_connect_encrypted`,
+`mqc_accept_encrypted`): split into two stages.  After phase-1 KEM
+exchange but before phase-2 identity exchange, derive `early_*`.
+After phase-2 completes (both `C_c` and `C_s` known), derive `data_*`
+and stash them in `conn->send_key`, `conn->recv_key`, `conn->send_iv`,
+`conn->recv_iv`.  The early keys/IVs go out of scope immediately
+(stack lifetime); zeroize before falling out.
+
+### `mqc.c` — sequence numbers
+
+In encrypted-identity mode, the early keys use sequence 0 for the
+single phase-2 frame in each direction; that's a separate counter
+from the data-plane counter.  `conn->send_seq` and `conn->recv_seq`
+both start at **0** in encrypted mode under issue-3 (was `1` under
+issue-1's intermediate state where the same key continued).
+Document this as one of the wire-impacting parts of the issue-3
+cutover even though no JSON field changed.
+
+### Encrypted-identity nonce-uniqueness audit
+
+Under issue-1's intermediate scheme the encrypted-mode handshake
+and data plane share keys; sequence had to continue from 1 to avoid
+nonce reuse.  Under issue-3 the encrypted-mode handshake uses
+`early_*` keys (distinct from `data_*` keys) so sequences can
+restart at 0 in each context.  Verify in code review that no path
+ever uses an `early_*` key with a `data_*` IV or vice-versa — the
+struct-field naming (`conn->send_key` is always `data_*`; the
+phase-2 enc/dec uses local stack variables for `early_*`) is the
+enforcement.
+
+---
+
+## Tests (`socket-level-wrapper-MQC/examples/`)
+
+Add to the harness suite alongside the issue-1 tests:
+
+1. **kat-derive-data** — given a fixed `SS` and a fixed
+   `transcript_hash_full`, assert the four derived outputs
+   (`data_c2s_key`, `data_s2c_key`, `data_c2s_iv`, `data_s2c_iv`)
+   equal precomputed reference values.  KAT generated by running
+   the new code once and pasting the bytes; serves as a
+   regression net for any future `wc_HKDF_*` ABI shift.
+2. **kat-derive-early** — same, for the encrypted-mode
+   `early_*` outputs.
+3. **happy-clear-issue3** — full clear-mode handshake + 1MiB
+   data-plane round-trip, end-to-end.
+4. **happy-encrypted-issue3** — same, encrypted mode.
+5. **neg-transcript-tamper** — alter one byte of the JSON
+   `version` value on the wire after the signature was made (the
+   pre-issue-1 verifier would not catch this; the issue-1
+   verifier rejects it at signature check).  With *signature
+   verification deliberately skipped* in the test, prove the
+   AEAD-on-first-frame catches it because `transcript_hash_full`
+   diverges and keys diverge.  This is the defense-in-depth
+   property issue-3 promises.
+6. **neg-iv-zeroed** — patch one peer to use the pre-issue-3
+   nonce construction (4 zero bytes || counter) while the other
+   uses issue-3's IV-XOR construction.  AEAD must reject from
+   the first data frame.
+7. **neg-early-vs-data-key-confusion** — patch one peer to use
+   `early_c2s_key` for a data-plane frame.  Receiver must reject.
+
+---
+
+## Migration runbook
+
+Same flag-day cutover as issue-1.  Recommendation: land #1, #2,
+and #3 in a single commit on `phase-20`.  All three are wire-
+breaking (issue-3 is *behavior*-breaking: byte-identical wire,
+incompatible derivation), so splitting the cutover gains nothing.
+
+If staging is preferred:
+
+1. Land #1 and #2 first; verify on factsorlie.com.  This puts
+   transcript binding and tagged HKDF info strings in production.
+2. Land #3 in a second cutover; verify.  This switches to
+   Extract+Expand and per-direction IVs.
+
+Each cutover is an `mtc-ca.service` restart on factsorlie.com
+plus a redeploy of the four MTC client tools that link
+`libmqc.a`.  No external-client coordination required (single
+deployment).
+
+---
+
+## Verification
+
+1. **Zero-warning build** (CLAUDE.md guardrail):
+   `make -f Makefile.tools clean && make -f Makefile.tools 2>&1 |
+    grep -cE '(warning|error):'` → `0`.
+2. **`make check`** — clean.
+3. **All issue-3 tests pass** (KAT + happy + 3 negative).
+4. **Service health**: `systemctl is-active mtc-ca.service` →
+   `active` after restart; no MQC handshake failures or AEAD
+   failures in `journalctl` over a 24-hour soak.
+5. **End-to-end**: `echo hi | mqc --encode --env --no-cache |
+   mqc --decode --env --no-cache` → `hi`.
+   `show-tpm --verify` against factsorlie.com:8446 succeeds.
+
+---
+
+## Critical files to modify
+
+Ranked by depth of change:
+
+1. `socket-level-wrapper-MQC/mqc.c` — new derive helpers, new
+   nonce construction, struct field additions, six call-site
+   updates (clear + encrypted handshakes), data-plane
+   send/recv touched.
+2. `socket-level-wrapper-MQC/mqc.h` — eight new info-string
+   `#define`s; delete the two from issue-2.
+3. `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md` —
+   §8 rewrite, §9.2 update, §7 sentence, §12.7 paragraph,
+   §12.2 sentence.
+4. `socket-level-wrapper-MQC/examples/` — seven new tests.
+5. `socket-level-wrapper-MQC/README-mqc-issues.md` — annotate
+   issue #3 as addressed by `mqc-issue-3.plan` (and supersedes
+   issue-2's HKDF-info-string tag).
+
+---
+
+## Out of scope (deliberately deferred)
+
+- **Issue #4 (Finished MAC)** — would derive two more keys
+  (`data_c2s_finished`, `data_s2c_finished`) from `data_secret`
+  using the same Expand pattern.  When issue-4 lands, add two
+  more `MQC_HKDF_INFO_…_FINISHED` macros and two more Expand
+  calls in `derive_data_keys`.  The plumbing is already in
+  place after issue-3; the work is the Finished message itself,
+  not the derivation.
+- **Issue #5 (AEAD AAD)** — orthogonal; the derivation tree
+  doesn't change.  Issue-5 only changes what bytes feed the
+  AAD slot of `wc_AesGcmEncrypt` / `_Decrypt`.
+- **Multi-stage TLS-1.3-style derivation tree** with separate
+  `handshake_secret` → `master_secret` chaining via
+  `Derive-Secret`.  Not needed for MQC since there is one input
+  secret (no PSK, no early data); the single-Extract-with-full-
+  transcript design above is sufficient.
+- **Per-frame nonce randomness** beyond the per-connection IV
+  (i.e., explicit nonce field on the wire).  Not justified —
+  the IV-XOR-counter approach is the same one TLS 1.3 uses and
+  is already best practice.

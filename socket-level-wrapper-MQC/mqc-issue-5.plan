@@ -1,0 +1,383 @@
+# Plan: AEAD must authenticate frame headers (issue #5)
+
+## Status
+
+- Tracks issue #5 of `socket-level-wrapper-MQC/README-mqc-issues.md`.
+- Wire-format unchanged.  Bytes-on-wire are byte-identical to the
+  post-issue-1/3/4 protocol.  AAD bytes are local to each peer.
+- Behavior-breaking: a peer running pre-issue-5 sees AEAD failure
+  on the first frame against a peer running post-issue-5.  Same
+  flag-day cutover as issues #1–#4.
+
+## What's broken today
+
+Every `wc_AesGcmEncrypt` / `wc_AesGcmDecrypt` call site passes
+`NULL, 0` for the AAD argument:
+
+- `mqc.c:1131-1132` — `enc_send` (encrypted-identity phase-2
+  identity blobs).
+- `mqc.c:1174-1175` — `enc_recv` (same, receive side).
+- `mqc.c:1984` — `mqc_send` (data-plane).
+- `mqc.c:2045` — `mqc_recv` (data-plane).
+
+So no frame-level metadata is authenticated by the AEAD beyond
+what's bound by the key and nonce.
+
+## What the reviewer's list of AAD fields actually buys MQC
+
+The reviewer listed: frame type, protocol version, sequence
+number, payload length, direction, and "maybe connection ID."
+Walking each one against MQC's design after issues #1–#4:
+
+| Field | Already bound by | Adding to AAD buys |
+|---|---|---|
+| Sequence number | per-frame nonce (`iv XOR (zeros\|\|seq)`, issue-3) | belt-and-braces only |
+| Direction | per-direction key (`data_c2s_key` ≠ `data_s2c_key`, issue-1+3) | belt-and-braces only |
+| Protocol version | transcript-bound HKDF salt (issue-3) | belt-and-braces only |
+| Suite ID | transcript-bound HKDF salt (issue-3) | belt-and-braces only |
+| Connection ID | (does not exist in MQC) | n/a |
+| Payload length | nothing | turns length-prefix tampering into immediate AEAD failure instead of a timeout / oversize-read |
+| Frame type | nothing (Finished is distinguished only by position — issue-4) | makes Finished-vs-data distinction cryptographic, not positional |
+
+The two real wins are **payload length** and **frame type**.  The
+others are defense-in-depth and effectively free once the AAD
+slot is non-empty, so the plan binds all of them.
+
+### Why the "payload length" win matters
+
+Today an attacker can flip bits in the 4-byte length prefix on
+the wire (the prefix is plaintext, not under AEAD).  Effects:
+
+- Length too small: receiver truncates the ciphertext read; AEAD
+  fails on tag mismatch.  No security issue, modest DoS surface.
+- Length too large: receiver reads `length` bytes from the
+  socket, which may include bytes from the **next** frame.  AEAD
+  fails (truncation of next frame), but now the receiver's
+  framing is desynchronized — recovery requires connection
+  termination.
+
+Binding `length` into AAD doesn't prevent the tampering, but it
+makes the failure surface as "AEAD AUTH_FAIL on this frame"
+instead of "AEAD AUTH_FAIL on this frame *and* whatever frame I
+ate from the next one."  Cleaner diagnostics, better rate-limit
+attribution.
+
+### Why the "frame type" win matters
+
+After issue-4 the protocol has three distinct AEAD-sealed wire
+contexts that all share the same length-prefixed framing:
+
+| Context | Keys | Sequence start | Distinguished by today |
+|---|---|---|---|
+| Encrypted-mode phase-2 identity blobs | `early_*_key` | 0 | position (during handshake) |
+| Finished frame | `data_*_key` | 0 | position (first frame after handshake) |
+| Application data frame | `data_*_key` | ≥ 1 | position (everything after Finished) |
+
+The phase-2 blobs are cryptographically separated from the others
+by the `early_*` vs `data_*` key split.  But Finished and
+application data share keys *and* IVs, distinguished only by
+sequence (Finished is `seq=0`, data is `seq>=1`) and by a state
+flag on the receiver (`finished_verified`).
+
+If a future MQC v0.x ever adds another data-plane control frame
+type (key-update, alert, heartbeat), the position-based
+distinction becomes brittle.  Adding a one-byte frame type now,
+inside AAD, makes the distinction cryptographic and pre-empts any
+future ambiguity.  Cost: one byte in AAD per frame.
+
+### What the plan does NOT add
+
+- **Per-frame protocol version field on the wire**.  The reviewer
+  suggested binding "protocol version" into AAD; for MQC the
+  version is a connection-wide constant established by the
+  handshake and already bound into the keys via issue-3's
+  transcript hash.  Restating it per-frame is pure
+  belt-and-braces.  The plan still puts a single version byte in
+  AAD because doing so costs one byte and lets a v1 frame format
+  declare its version explicitly should the AAD format itself
+  ever evolve.
+- **Connection ID field**.  MQC has no notion of connection ID —
+  the connection is the underlying TCP socket.  Adding one would
+  be a much larger change (multipath/migration semantics) and is
+  out of scope.
+
+## Target design
+
+### AAD format (every AEAD call after issue-5)
+
+Fixed-length 31-byte AAD, identical structure for every frame:
+
+```
+AAD = LABEL                      (16 bytes, "mqc-frame/v1\n\x00")
+   || u8(version)                (1 byte, MQC_PROTOCOL_VERSION = 0)
+   || u8(direction)              (1 byte, MQC_DIR_C2S=0 or MQC_DIR_S2C=1)
+   || u8(frame_type)             (1 byte, see below)
+   || u64be(sequence)            (8 bytes)
+   || u32be(plaintext_length)    (4 bytes)
+```
+
+`LABEL` = `"mqc-frame/v1\n\x00"`, 16 bytes.  Style matches the
+existing handshake-signature label `"mqc-hndshk/v1\n\x00"` and
+the cosigner label `"mtc-subtree/v1\n\x00"`.  The `/v1` here is
+**not** the protocol version — it's the version of *this AAD
+format*.  Bumped only if the AAD bytes themselves change.
+
+Frame types:
+
+```c
+#define MQC_FRAME_TYPE_PHASE2_IDENTITY  0x01  /* early_*, handshake */
+#define MQC_FRAME_TYPE_FINISHED         0x02  /* data_*, seq=0 */
+#define MQC_FRAME_TYPE_APP_DATA         0x03  /* data_*, seq>=1 */
+```
+
+Direction:
+
+```c
+#define MQC_DIR_C2S  0x00
+#define MQC_DIR_S2C  0x01
+```
+
+`direction` is the direction of the frame on the wire from the
+sender's point of view: client→server frames carry `MQC_DIR_C2S`
+in AAD on both peers (the server sets the same byte when
+verifying that it received a client→server frame).
+
+### What this defends against
+
+- **Length-prefix tampering**: the receiver reads N bytes per the
+  prefix, computes AAD with `plaintext_length = N - 16` (subtract
+  tag), AEAD fails immediately if N differs from what the sender
+  computed.  No oversize-read into the next frame's bytes.
+- **Frame-type confusion**: a peer that swaps a Finished frame
+  for an application frame in flight (impossible without breaking
+  the AEAD, but defense in depth) hits AEAD failure because the
+  AAD type byte differs.
+- **Cross-direction replay**: per-direction keys already prevent
+  this, but the AAD direction byte makes "I should have rejected
+  this byte stream because it came from the wrong direction" a
+  cryptographic check rather than a key-derivation property.
+- **Phase-2 vs data-plane confusion**: the `early_*` / `data_*`
+  key split already prevents this; the AAD type byte is
+  belt-and-braces.
+
+## Spec edits (`draft-page-mqc-protocol-00.md`)
+
+1. **Section 8.1 (Finished, added by issue-4)** — note that the
+   AAD for the Finished frame uses `frame_type =
+   MQC_FRAME_TYPE_FINISHED` (`0x02`).
+2. **Section 9.1 (Frame Structure)** — add a new subsection
+   §9.1.1 "AEAD AAD" defining the 31-byte AAD format above.
+   Document the three frame-type values and the direction
+   convention.
+3. **Section 9.2 (Nonce Construction)** — note that the AAD
+   binds `sequence` and `plaintext_length` redundantly (sequence
+   is also in the nonce; length is the wire prefix minus tag
+   size); both bindings are intentional defense in depth.
+4. **Section 7.3 / 7.4 (Encrypted-identity phase-2 blobs)** —
+   note that the AAD for these frames uses `frame_type =
+   MQC_FRAME_TYPE_PHASE2_IDENTITY` (`0x01`).
+5. **Section 12 (Security Considerations)** — add subsection
+   **12.8 Frame-Header Authentication** explaining the design
+   (length-prefix tampering, frame-type distinction,
+   defense-in-depth on already-bound fields).
+
+## Code edits
+
+### `mqc.h`
+
+```c
+#define MQC_AAD_LABEL              "mqc-frame/v1\n\x00"
+#define MQC_AAD_LABEL_LEN          16
+#define MQC_AAD_LEN                31
+
+#define MQC_DIR_C2S                0x00
+#define MQC_DIR_S2C                0x01
+
+#define MQC_FRAME_TYPE_PHASE2_IDENTITY  0x01
+#define MQC_FRAME_TYPE_FINISHED         0x02
+#define MQC_FRAME_TYPE_APP_DATA         0x03
+```
+
+### `mqc.c` — new helper
+
+```c
+/* Build the 31-byte AAD that every AEAD call binds.  out must
+ * point to MQC_AAD_LEN bytes. */
+static void mqc_build_aad(
+    uint8_t out[MQC_AAD_LEN],
+    uint8_t direction,           /* MQC_DIR_C2S or _S2C */
+    uint8_t frame_type,          /* MQC_FRAME_TYPE_* */
+    uint64_t sequence,
+    uint32_t plaintext_length)
+{
+    int i = 0;
+    memcpy(out + i, MQC_AAD_LABEL, MQC_AAD_LABEL_LEN);
+    i += MQC_AAD_LABEL_LEN;
+    out[i++] = (uint8_t)MQC_PROTOCOL_VERSION;
+    out[i++] = direction;
+    out[i++] = frame_type;
+    out[i++] = (uint8_t)(sequence >> 56);
+    out[i++] = (uint8_t)(sequence >> 48);
+    out[i++] = (uint8_t)(sequence >> 40);
+    out[i++] = (uint8_t)(sequence >> 32);
+    out[i++] = (uint8_t)(sequence >> 24);
+    out[i++] = (uint8_t)(sequence >> 16);
+    out[i++] = (uint8_t)(sequence >> 8);
+    out[i++] = (uint8_t)(sequence);
+    out[i++] = (uint8_t)(plaintext_length >> 24);
+    out[i++] = (uint8_t)(plaintext_length >> 16);
+    out[i++] = (uint8_t)(plaintext_length >> 8);
+    out[i++] = (uint8_t)(plaintext_length);
+    /* i == MQC_AAD_LEN == 31 */
+}
+```
+
+### `mqc.c` — extend `enc_send` / `enc_recv`
+
+Add a `frame_type` and `direction` parameter (all callers know
+which is which):
+
+```c
+static int enc_send(int fd, const uint8_t *key, const uint8_t *iv,
+                    uint64_t *seq, uint8_t direction,
+                    uint8_t frame_type,
+                    const void *data, int data_sz);
+
+static int enc_recv(int fd, const uint8_t *key, const uint8_t *iv,
+                    uint64_t *seq, uint8_t direction,
+                    uint8_t frame_type,
+                    void *buf, int bufsz);
+```
+
+(The `iv` parameter was added by issue-3.)  Inside the function:
+
+```c
+uint8_t aad[MQC_AAD_LEN];
+mqc_build_aad(aad, direction, frame_type,
+              (*seq), (uint32_t)data_sz);
+ret = wc_AesGcmEncrypt(&aes, ct, data, data_sz,
+                       nonce, MQC_GCM_IV_SZ,
+                       tag, MQC_GCM_TAG_SZ,
+                       aad, MQC_AAD_LEN);     /* was NULL, 0 */
+```
+
+`enc_recv` symmetrically: build AAD with the *expected*
+`plaintext_length = total_len - MQC_GCM_TAG_SZ`; AEAD verifies.
+
+### `mqc.c` — extend `mqc_send` / `mqc_recv`
+
+```c
+int mqc_send(mqc_conn_t *conn, const void *data, int data_sz)
+{
+    /* ...existing setup (Finished gate, key/iv lookup)... */
+    uint8_t aad[MQC_AAD_LEN];
+    uint8_t direction = conn->is_client ? MQC_DIR_C2S : MQC_DIR_S2C;
+    mqc_build_aad(aad, direction, MQC_FRAME_TYPE_APP_DATA,
+                  conn->send_seq, (uint32_t)data_sz);
+    /* ...AEAD seal with aad... */
+}
+```
+
+`mqc_recv` symmetrically.  `direction` for receive is the
+*peer's* direction — server receives c2s frames, client receives
+s2c frames.
+
+The `mqc_conn_t` struct gains an `is_client` byte (zero-cost; can
+be packed alongside `finished_verified`).  Set at handshake exit.
+
+### `mqc.c` — Finished helpers (issue-4)
+
+`mqc_send_finished` and `mqc_recv_finished` (added by issue-4)
+call into the same `enc_send` / `enc_recv` family with
+`frame_type = MQC_FRAME_TYPE_FINISHED`, sequence 0.
+
+### `mqc.c` — encrypted-mode phase-2 identity blobs
+
+The four sites that currently call `enc_send` / `enc_recv` for
+phase-2 identity blobs (`mqc.c:1310, 1320, 1508, 1601` after
+issue-1's restructuring) pass `frame_type =
+MQC_FRAME_TYPE_PHASE2_IDENTITY`, sequence 0 (each direction's
+early-key sequence starts at 0 per issue-3).
+
+## Tests (`socket-level-wrapper-MQC/examples/`)
+
+Add to the harness alongside earlier issues:
+
+1. **happy-aad-clear** — end-to-end clear-mode handshake +
+   Finished + 1 MiB data-plane round-trip.
+2. **happy-aad-encrypted** — same, encrypted mode.
+3. **neg-aad-length-tamper** — patch a peer to send a frame with
+   a length-prefix that's off by one (sender computes AAD with
+   the original length but writes a tampered prefix on the wire).
+   Receiver computes AAD with the on-wire length, AEAD fails
+   immediately.  Verify diagnostic in `journalctl` is "AEAD
+   AUTH_FAIL" tagged with the frame's sequence.
+4. **neg-aad-direction-flip** — patch a peer to put `MQC_DIR_S2C`
+   in AAD when it should be `MQC_DIR_C2S` (or vice versa).  AEAD
+   fails on receive.  Confirms direction is bound.
+5. **neg-aad-frame-type-confusion** — sender labels an
+   application data frame as `MQC_FRAME_TYPE_FINISHED` in AAD.
+   Receiver expects `_APP_DATA` for the second-and-later frames;
+   AEAD fails.
+6. **neg-aad-sequence-skew** — sender computes AAD with
+   `sequence = N + 1` but uses nonce `N`.  AEAD fails.  (This is
+   functionally redundant with the nonce binding the sequence,
+   but proves the AAD encoding is consistent.)
+7. **neg-aad-cross-protocol-replay** — strip the `MQC_AAD_LABEL`
+   prefix from the AAD on one side; AEAD fails.  Confirms the
+   label is load-bearing.
+
+## Migration runbook
+
+Same flag-day cutover as issues #1–#4.  Recommendation: bundle
+issues #1–#5 in a single commit on `phase-20` and execute one
+factsorlie.com restart.  Issue-5 alone is the smallest delta of
+any issue plan: ~50 LoC added, four call sites touched.
+
+## Verification
+
+1. **Zero-warning build** (CLAUDE.md guardrail).
+2. **`make check`** clean.
+3. **All issue-5 tests pass** (2 happy + 5 negative).
+4. **Service health**: `systemctl is-active mtc-ca.service` →
+   `active`; no AEAD AUTH_FAIL log lines in `journalctl` over a
+   24-hour soak.
+5. **End-to-end**: `echo hi | mqc --encode --env --no-cache |
+   mqc --decode --env --no-cache` → `hi`.
+   `show-tpm --verify` against factsorlie.com:8446 succeeds.
+
+## Critical files to modify
+
+Ranked by depth of change:
+
+1. `socket-level-wrapper-MQC/mqc.c` — `mqc_build_aad` helper,
+   `enc_send` / `enc_recv` / `mqc_send` / `mqc_recv` signatures
+   and bodies, `mqc_conn` struct gains `is_client` byte, all
+   AEAD call sites updated.
+2. `socket-level-wrapper-MQC/mqc.h` — AAD label, length, frame
+   type, and direction constants.
+3. `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md` —
+   §8.1, §9.1.1 (new), §9.2, §7.3/7.4, §12.8 (new).
+4. `socket-level-wrapper-MQC/examples/` — 7 new tests.
+5. `socket-level-wrapper-MQC/README-mqc-issues.md` — annotate
+   issue #5 as addressed by `mqc-issue-5.plan`.
+
+## Out of scope (deliberately deferred)
+
+- **Connection ID field** — would require defining session-
+  resumption / migration semantics that MQC v0 does not have.
+  The spec's "no multiplexing, one connection = one TCP socket"
+  rule (§3.1) makes connection IDs unnecessary today.
+- **Per-frame version negotiation** — the AAD includes a
+  `version` byte for forward-compat, but actual cross-version
+  negotiation (sender advertises supported versions, receiver
+  picks one) is a separate spec change with handshake
+  implications.
+- **Variable-length AAD** — AAD is a fixed 31 bytes per frame.
+  If future control-frame types need additional fields (e.g., a
+  reason code), bump `MQC_AAD_LABEL` to `"mqc-frame/v2\n\x00"`
+  and define the new format in §9.1.1.  v1 → v2 would be
+  another flag-day cutover, deferred until needed.
+- **Issue #6 (encrypted-identity authentication gaps)** —
+  partially closed by issues #1 and #4; remaining gaps deferred
+  to that issue's own plan.

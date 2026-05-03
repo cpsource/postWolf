@@ -1,0 +1,111 @@
+# Plan: downgrade protection on identity-mode selection (issue #10)
+
+## Status
+
+- Tracks issue #10 of `socket-level-wrapper-MQC/README-mqc-issues.md`.
+- **Fully subsumed by `mqc-issue-1.plan`.**  No separate code,
+  spec, or test work needed beyond what issue-1 already specifies.
+- This file exists for trail-completeness so the
+  `mqc-issue-N.plan` series is gap-free.
+
+## What the reviewer asked for
+
+> Clear vs encrypted identity mode is selected by the shape of
+> JSON.  Bind selected mode into transcript and signatures, or
+> an active attacker may be able to force clear mode or create
+> confusion.
+
+Two specific requirements:
+
+1. The mode marker should be on the wire as an explicit field,
+   not inferred from JSON shape.
+2. The mode marker should be bound into the handshake signatures
+   so an attacker cannot strip or substitute it.
+
+## How `mqc-issue-1.plan` already addresses each item
+
+### Explicit mode field on the wire
+
+Issue-1 adds three new top-level handshake JSON fields to every
+ClientHello and ServerHello: `version`, `suite`, and **`mode`**.
+The `mode` value is one of `"clear"` or `"encrypted"`.  The
+JSON-shape inspection from spec §7.1 is replaced with explicit
+field reading.
+
+### Mode bound into signature
+
+Issue-1's transcript construction includes a `u8(mode_id)` byte
+(0x00 for clear, 0x01 for encrypted):
+
+```
+SHA-256(
+      LABEL                              (16 bytes "mqc-hndshk/v1\n\x00")
+   || u8(version=0)                      (1 byte)
+   || u8(mode_id)                        (1 byte)        ← (2) mode bound
+   || SUITE_ID                           (32 bytes)
+   || u32be(len(EK_c)) || EK_c
+   || u32be(len(CT_s)) || CT_s
+   || s32be(C_c)
+   || s32be(C_s)
+   || role                               (6 bytes)
+)
+```
+
+The handshake signature covers this hash.  An attacker who flips
+the `mode` field on the wire causes the receiver's transcript
+hash to diverge from the sender's, signature verification fails,
+handshake aborts.
+
+### Mode-shape consistency check
+
+Issue-1 also adds a sanity check in `auto_accept_detect`:
+distinguish modes by the explicit `mode` field, and **reject as
+malformed** if the field's value contradicts the JSON shape
+(e.g., `mode="clear"` but no `cert_index`, or `mode="encrypted"`
+with `cert_index` present).  This catches both attacker
+substitution and implementation bugs.
+
+## What's left for issue #10 specifically
+
+Nothing.  The explicit field + transcript-hash binding +
+shape-vs-value consistency check together close the
+mode-confusion / mode-downgrade attack surface.  The two
+specific reviewer requirements are both satisfied by issue-1's
+existing design.
+
+When `mqc-issue-1.plan` lands, issue #10 closes automatically.
+Annotate `README-mqc-issues.md` issue #10 as "addressed by
+mqc-issue-1.plan."
+
+## Migration runbook
+
+N/A — runbook is `mqc-issue-1.plan`'s.
+
+## Verification
+
+The issue-1 verification checklist already covers issue-10's
+concerns.  Specifically:
+
+- Test 10 from issue-1's coverage (`neg-mode-downgrade`):
+  capture an encrypted-mode ClientHello, strip `mode`, present
+  to server as clear-mode; server must reject because `mode`
+  field is absent and the JSON has no `cert_index` either.
+- Test 8 from issue-1's coverage (`neg-version-mismatch`) and
+  test 9 (`neg-suite-mismatch`) prove the same transcript-hash
+  binding mechanism works for sibling fields; the `mode` field
+  is bound by the same code path and the same SHA-256 input.
+
+If a dedicated regression test for "tamper with mode value while
+keeping JSON shape consistent" is desired beyond issue-1's
+coverage, add it as a one-liner to the issue-1 test harness:
+`mode="encrypted"` on the wire but compute the transcript hash
+and signature with `mode_id = MQC_MODE_CLEAR`; verify must
+reject.
+
+## Critical files to modify
+
+None new beyond `mqc-issue-1.plan`.
+
+## Out of scope
+
+Everything that was already out of scope for `mqc-issue-1.plan`.

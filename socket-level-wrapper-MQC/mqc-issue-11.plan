@@ -1,0 +1,336 @@
+# Plan: strict JSON parsing on the handshake (issue #11)
+
+## Status
+
+- Tracks issue #11 of `socket-level-wrapper-MQC/README-mqc-issues.md`.
+- Wire-format unchanged.  Parser is tightened to reject inputs
+  that the spec allows in spirit but the json-c default flags
+  silently accept.
+- Independent of issues #1–#10.  No flag day required.
+- The issue-1 plan mentions strict-mode tokener flags as a "small
+  bonus"; this plan does the full treatment.
+
+## What's broken today
+
+Every handshake JSON parse uses the json-c default tokener
+(`json_tokener_parse(json_buf)` — see `mqc.c:795, 961, 1260,
+1336, 1456, 1516`).  json-c defaults are permissive:
+
+- **Duplicate keys** are accepted; later keys silently overwrite
+  earlier ones.  An attacker with the ability to modify one byte
+  in flight could append a duplicated `cert_index` with a
+  different value (since the original `cert_index` is small,
+  total payload growth is negligible) and the parser would use
+  the second one.  Whether the signature catches this depends on
+  *which* `cert_index` value the verifier hashes into the
+  transcript — and the verifier today reads via
+  `json_object_object_get_ex`, which json-c documents as
+  returning the **last** value for duplicated keys, but the
+  signer might serialize the **first**.  Mismatch surface.
+- **Trailing garbage** after the closing `}` is silently ignored
+  (`json_tokener_parse` stops at the first complete object).  An
+  attacker can append bytes that some downstream tool (logger,
+  audit pipeline) parses differently.
+- **Numeric overflow** — `cert_index` is read via
+  `json_object_get_int`, which silently saturates oversized
+  values at `INT_MAX`.  A peer that signs `cert_index =
+  9999999999` (overflow into INT_MAX) and a verifier that hashes
+  the signed string vs the parsed int will diverge.
+- **Unicode escape ambiguity** — `A` and `A` are byte-
+  identical after parsing but byte-different on the wire.  Issue-1's
+  transcript hashes the field VALUES (post-parse), so this is
+  not directly exploitable for transcript divergence, but it
+  matters if any code path hashes the raw JSON bytes (e.g., a
+  future audit-log feature).
+- **Whitespace** — accepted everywhere by spec §5.2.  Hash of
+  raw JSON bytes would diverge; hash of parsed values doesn't.
+  Same caveat as Unicode escapes.
+- **Comments** — `/* ... */` is a json-c-only extension.  Not
+  in JSON spec; should be rejected.
+
+## Target design
+
+Use json-c's strict tokener and add a few per-field validators.
+
+### Strict tokener flags
+
+```c
+struct json_tokener *tok = json_tokener_new();
+if (!tok) return -1;
+json_tokener_set_flags(tok,
+    JSON_TOKENER_STRICT |              /* reject json-c extensions */
+    JSON_TOKENER_VALIDATE_UTF8);       /* reject malformed UTF-8 */
+
+obj = json_tokener_parse_ex(tok, json_buf, json_len);
+if (json_tokener_get_error(tok) != json_tokener_success ||
+    json_tokener_get_parse_end(tok) != json_len) {
+    /* Malformed or trailing-garbage. */
+    json_tokener_free(tok);
+    return -1;
+}
+json_tokener_free(tok);
+```
+
+Two important properties enforced:
+
+1. `JSON_TOKENER_STRICT` rejects: comments, leading zeros, single
+   quotes, unquoted keys, trailing commas.
+2. The `parse_end == json_len` check rejects trailing garbage
+   beyond the first complete object.
+
+`JSON_TOKENER_VALIDATE_UTF8` is added because handshake JSON
+SHOULD be ASCII (per spec §5.2 hex-encoded fields + ASCII labels);
+malformed UTF-8 in any field is suspicious.
+
+### Duplicate-key rejection
+
+json-c's default object representation silently overwrites on
+duplicate keys.  json-c does not natively provide
+duplicate-rejection mode (as of the version pinned by postWolf).
+The fix:
+
+After parsing, walk the JSON object and confirm each expected
+field appears **exactly once**.  Implemented via a small helper
+that scans the raw input string for occurrences of `"<field>":`
+and counts them — cheap, deterministic, doesn't need a custom
+tokener.
+
+```c
+/* Returns 1 if the literal pattern "<field>": appears exactly
+ * once in json_buf (length json_len), 0 otherwise.  Skips
+ * occurrences inside string literals via a tiny state machine. */
+static int mqc_json_field_appears_once(
+    const char *json_buf, int json_len,
+    const char *field);
+```
+
+The check applies to every field MQC reads from the handshake:
+`version`, `suite`, `mode`, `kem_pub`, `cert_index`, `signature`
+(plus the encrypted-mode `encrypted` field).
+
+### Per-field range / format validators
+
+Each field gets a strict reader:
+
+```c
+static int mqc_json_get_int_strict(
+    struct json_object *obj, const char *field,
+    int min, int max, int *out_val);
+
+static int mqc_json_get_hex_strict(
+    struct json_object *obj, const char *field,
+    int expected_byte_len,
+    uint8_t *out_buf);
+
+static int mqc_json_get_string_strict(
+    struct json_object *obj, const char *field,
+    int max_len, char *out_buf);
+```
+
+Specifically:
+
+- `cert_index`: `mqc_json_get_int_strict(…, 0, INT32_MAX, …)`.
+  Reject negative, reject `INT_MAX` saturation (json-c sets
+  `errno = ERANGE` on overflow; check via the strtol path
+  rather than `json_object_get_int`).
+- `kem_pub`: `mqc_json_get_hex_strict(…, MQC_MLKEM768_PUB_SZ
+  or MQC_MLKEM768_CT_SZ, …)`.  Exact byte length per direction
+  (issue-12 also calls this out as the cheap pre-crypto
+  filter).
+- `signature`: `mqc_json_get_hex_strict(…, MQC_MLDSA87_SIG_SZ,
+  …)`.  Exact byte length.
+- `version`: integer, must equal `MQC_PROTOCOL_VERSION` (0).
+- `suite`: string, must equal `MQC_SUITE_STRING`.
+- `mode`: string, must equal `"clear"` or `"encrypted"`.
+
+A field that fails any of these checks → return -1, log
+`MQC_SECURITY "JSON_FIELD_INVALID field=<name> reason=<…>"`,
+abort handshake.
+
+### Field-set validation
+
+After all expected fields are read, ensure no **unexpected**
+fields are present.  Strict-mode JSON allows future-version
+extensions in principle, but for v0 with no negotiated extensions
+and no extension registry, any unknown field is suspicious.
+Walk the object, compare each key against the allowlist; reject
+on any unknown.
+
+### Spec edits (`draft-page-mqc-protocol-00.md`)
+
+§5.2 (Handshake JSON) — add:
+
+> Implementations MUST parse handshake JSON in strict mode:
+> reject comments, leading zeros on numbers, unquoted keys,
+> single-quoted strings, trailing commas, malformed UTF-8, and
+> trailing bytes beyond the first complete object.  Each
+> field defined in this section MUST appear exactly once in
+> the object; duplicate keys MUST cause the handshake to be
+> rejected.  Unknown top-level fields MUST cause the handshake
+> to be rejected (no silent forward-compatibility).
+>
+> The hex string for `kem_pub`, `signature`, and the encrypted
+> blob MUST be lowercase, MUST contain no separators, and MUST
+> have exactly the byte length defined for that field by the
+> chosen suite (Section 4): 1184 bytes for the ML-KEM-768
+> public key, 1088 bytes for the ML-KEM-768 ciphertext, 4627
+> bytes for the ML-DSA-87 signature.
+
+§12 — extend with §12.10 (JSON Parsing Hardening):
+
+> The handshake JSON parser is a security-sensitive component.
+> Implementations MUST follow Section 5.2's strict-parsing
+> rules to prevent:
+> - duplicate-key smuggling (a second `cert_index` overriding
+>   the first);
+> - trailing-garbage smuggling (bytes after `}` that are
+>   ignored by MQC but parsed by some downstream tool);
+> - integer-overflow desynchronization (signer hashes a string
+>   that the verifier parses to a different integer);
+> - parser-extension fingerprinting (json-c-style comments
+>   accepted by some implementations but not others, used to
+>   distinguish endpoints).
+
+## Code edits
+
+### `socket-level-wrapper-MQC/mqc.c` — new helpers
+
+Add a small parsing-helper section (~150 LoC):
+
+```c
+static struct json_object *mqc_json_parse_strict(
+    const char *json_buf, int json_len);
+
+static int mqc_json_field_appears_once(
+    const char *json_buf, int json_len, const char *field);
+
+static int mqc_json_get_int_strict(
+    struct json_object *obj, const char *field,
+    int min, int max, int *out);
+
+static int mqc_json_get_hex_strict(
+    struct json_object *obj, const char *field,
+    int expected_byte_len, uint8_t *out_buf);
+
+static int mqc_json_get_string_strict(
+    struct json_object *obj, const char *field,
+    const char *expected_value);   /* exact match */
+
+static int mqc_json_no_unknown_keys(
+    struct json_object *obj, const char *const *allowed_keys,
+    int n_allowed);
+```
+
+### `socket-level-wrapper-MQC/mqc.c` — call-site replacement
+
+Every `json_tokener_parse(json_buf)` call site (six of them per
+the grep above) becomes `mqc_json_parse_strict(json_buf,
+json_len)`.
+
+Every `json_object_object_get_ex(req, "<field>", &val);
+... json_object_get_int(val) / get_string(val)` pattern becomes
+the appropriate `mqc_json_get_*_strict` call.
+
+After all fields are read, call
+`mqc_json_no_unknown_keys(obj, allowed, n_allowed)` to enforce
+"no unknown fields."
+
+The `mqc_json_field_appears_once` check happens after
+`mqc_json_parse_strict` succeeds, before any field is used.
+
+### Defensive: clamp `read_json_block` to known byte limit
+
+`read_json_block` (`mqc.c`, called from each accept path) already
+respects `MQC_MAX_HANDSHAKE`.  Add an explicit assertion:
+
+```c
+if (json_len <= 0 || json_len > MQC_MAX_HANDSHAKE) {
+    MQC_SECURITY("JSON_LEN_INVALID len=%d", json_len);
+    return -1;
+}
+```
+
+Belt-and-braces — already enforced at the read layer, but
+asserting here means a refactor that breaks the read-layer
+invariant doesn't silently lose enforcement.
+
+## Tests (`socket-level-wrapper-MQC/examples/`)
+
+1. **happy-strict-roundtrip** — full handshake under strict
+   parsing; all fields exactly once, all values valid; succeeds.
+2. **neg-duplicate-cert-index** — handshake with two
+   `"cert_index":` keys; rejected.
+3. **neg-trailing-garbage** — `{"cert_index":1,…}garbage`;
+   rejected.
+4. **neg-c-comment** — `{"cert_index":/*comment*/1, …}`;
+   rejected (json-c extension, strict mode rejects).
+5. **neg-leading-zero** — `{"cert_index":01, …}`; rejected.
+6. **neg-trailing-comma** — `{"cert_index":1,}`; rejected.
+7. **neg-int-overflow** — `{"cert_index": 9999999999, …}`;
+   rejected at the strtol-overflow check.
+8. **neg-unknown-field** — `{"cert_index":1, "extra":"x", …}`;
+   rejected as unknown key.
+9. **neg-bad-utf8** — handshake with a literal 0xFF byte inside
+   a string value; rejected by `JSON_TOKENER_VALIDATE_UTF8`.
+10. **neg-wrong-hex-length** — `kem_pub` hex string is one byte
+    short of `MQC_MLKEM768_PUB_SZ`; rejected by
+    `mqc_json_get_hex_strict` before any crypto runs.
+11. **neg-uppercase-hex** — `kem_pub` contains uppercase hex
+    characters; rejected.
+
+## Migration runbook
+
+Wire-quiet, behavior-conservative for legitimate peers (a peer
+that produces valid spec-conformant JSON keeps working).  A peer
+that today produces non-strict JSON (duplicate keys, trailing
+garbage, comments) starts failing — and that's the point.
+
+For factsorlie.com:
+
+1. Build + install: `./make-all.sh`.
+2. `sudo systemctl restart mtc-ca.service`.
+3. Smoke test: `echo hi | mqc --encode --env --no-cache | mqc
+   --decode --env --no-cache` → `hi`.
+4. `journalctl -u mtc-ca.service -f` over a soak window:
+   verify no `JSON_FIELD_INVALID` or `JSON_LEN_INVALID` lines
+   from legitimate clients.  If any appear, the issuing client's
+   JSON serialization is non-strict and needs a fix (likely
+   trivial since postWolf controls all clients).
+
+## Verification
+
+1. **Zero-warning build**.
+2. **`make check`** clean.
+3. **All issue-11 tests pass** (1 happy + 10 negative).
+4. **Service health**: `systemctl is-active mtc-ca.service` →
+   `active`.
+5. **End-to-end**: smoke test passes; `show-tpm --verify`
+   succeeds.
+
+## Critical files to modify
+
+1. `socket-level-wrapper-MQC/mqc.c` — six call-site
+   replacements + ~150 LoC of new strict-parser helpers.
+2. `socket-level-wrapper-MQC/mqc.h` — exposed sizes
+   (`MQC_MLKEM768_PUB_SZ`, `_CT_SZ`, `MQC_MLDSA87_SIG_SZ`) for
+   the hex-length checks.
+3. `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md` —
+   §5.2 strict-parsing paragraph; new §12.10.
+4. `socket-level-wrapper-MQC/examples/` — 11 new tests.
+
+## Out of scope (deliberately deferred)
+
+- **Canonical JSON serialization** (RFC 8785).  Not needed —
+  issue-1's transcript hash binds field values, not the raw JSON
+  bytes, so canonicalization is not a load-bearing property.  If
+  a future feature hashes raw JSON (audit log signing), revisit.
+- **JSON schema validation** as a separate step.  The
+  per-field strict readers above are the lightweight equivalent;
+  a full JSON Schema engine is overkill for ~6 fields.
+- **Forward-compat for unknown extension fields.**  V0 doesn't
+  have a registry, so unknown = malicious.  When an extension
+  registry exists, this rule relaxes for registered prefixes
+  (e.g., `x-`).
+- **Charset / encoding for the `subject` field of the cert** —
+  cert parsing is not in the handshake; covered by issue #8 and
+  #9.

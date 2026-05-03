@@ -1,0 +1,950 @@
+# Master plan: MQC security hardening (issues #1–#12 + #6a)
+
+## Status
+
+- Consolidates all 13 issue plans in
+  `socket-level-wrapper-MQC/mqc-issue-*.plan` into a single
+  ship order.
+- This file is the **orchestration** document.  Per-issue plans
+  remain authoritative for what each change does and how each
+  test runs; this file is "in what order, in what cutover, with
+  what dependency."
+
+## End-state vision
+
+After all phases land, MQC v0 has:
+
+- Full handshake-transcript binding (every byte, every signature,
+  every derived key).
+- Mandatory mutual revocation enforcement, fail-closed by default.
+- Cert objects validated as self-verifying (cosignature, inclusion
+  proof, validity window, cosigner-fingerprint pinning).
+- Client-side expected-identity enforcement (TLS-style hostname
+  binding to the dialed name).
+- Strict JSON parsing on every handshake field with cheap
+  pre-crypto length filtering.
+- Layered DoS defenses (per-IP, per-cert, per-handshake-bytes,
+  bounded cert cache).
+- Operationally tunable knobs in `/etc/postWolf/config` for every
+  parameter that should be reachable without recompile.
+
+The protocol stays at draft-page-mqc-protocol-**00**; spec edits
+land within that draft.  Per the deployment-model note at the top
+of [`README-plans.md`](./README-plans.md), no backwards-compat
+shims are needed — server and clients always upgrade together.
+
+## Execution mode (read this before starting)
+
+When a Claude Code session is opened to execute this master plan,
+the operator (the user) will start it in a high-permission mode
+(`bypassPermissions` or equivalent).  Within that session, Claude
+should take **full latitude on every action** — file edits, bash
+commands, builds, test runs, service restarts on factsorlie.com,
+config edits, redeploys — without pausing to confirm each step.
+
+The **single exception** is `git commit` (and by extension
+`git push`).  Per `CLAUDE.md` and the existing
+`feedback_commit_granularity.md` memory entry, commit boundaries
+remain explicitly user-controlled: at each commit boundary in the
+"Suggested commit boundaries" table below, Claude **stops and
+asks** before running `git commit`.  The user reviews the staged
+diff, confirms the commit message and granularity, and then
+authorizes the commit.
+
+This applies for the duration of the plan's execution.  After the
+plan is fully landed (Phase 6 exit criteria met), this mode lapses
+and normal interactive defaults resume.
+
+Rationale: the plan is large (10 commits, ~5 KLoC of code + tests
++ docs across 6 phases), and pausing for permission on every
+file edit would multiply the wall-clock cost without gaining
+review fidelity (the user reviews at commit boundaries, not
+at every Edit call).  Commits remain gated because that's the
+durable artifact in the repo and the unit the user wants
+explicit control over.
+
+## Phase ordering (TL;DR)
+
+```
+P0 ─► P1 (flag day) ─► P2 ─► P3 ─► P4 ─► P5 ─► P6
+6a    1,2,3,4,5         7,8,9 11,12 system spec   user-
+      6+10 close                    testing cleanup facing
+      automatically                                docs
+```
+
+- Phases 0–3 are **implementation** (per-issue plans, per-issue code).
+- Phase 4 is **integration testing** (cross-issue, system-level).
+- Phase 5 is **spec consolidation** (technical reference for
+  implementers).
+- Phase 6 is **user-facing documentation** (operators, CLI users,
+  future Claude Code sessions).
+
+## Phase 0 — Operability foundation (ship-anytime)
+
+**Plan**: [`mqc-issue-6a.plan`](./mqc-issue-6a.plan)
+
+**What changes**: nothing on the wire.  Adds a runtime-config
+loader (`read_config_long` next to the existing
+`read_config_url`), promotes ten operational constants
+(handshake timeouts, frame-size ceilings, rate-limit buckets,
+cache TTLs, signature freshness window) to optional `[global]`
+keys in `/etc/postWolf/config`.
+
+**Why first**: zero-coordination, behavior-conservative
+(absent keys = today's behavior), and provides the config
+infrastructure that Phase 2's `mqc-revocation-policy` plugs into.
+
+**Cutover**: none.  Build, install, restart, optionally edit
+`/etc/postWolf/config`.  No client coordination.
+
+**Exit criteria**:
+- Build is warning-clean.
+- `make check` is green.
+- `journalctl` shows no per-key config lines if no keys were set
+  (i.e., default behavior preserved exactly).
+- Setting one knob (e.g., `mqc-handshake-stall-sec 1`) is
+  observable both in `journalctl` startup output and in actual
+  behavior change.
+
+---
+
+## Phase 1 — Handshake hardening (one flag-day cutover)
+
+**Plans (bundled into one commit and one cutover)**:
+
+| Plan | What it adds | Wire impact |
+|---|---|---|
+| [`mqc-issue-1.plan`](./mqc-issue-1.plan) | Full transcript binding; `version`, `suite`, `mode` fields; `kem_pub` field rename; ML-DSA `ctx` label | Wire-format break (new fields, renamed fields, new signature semantics) |
+| [`mqc-issue-2.plan`](./mqc-issue-2.plan) | HKDF info strings tag version + suite | Wire-quiet, behavior-breaking |
+| [`mqc-issue-3.plan`](./mqc-issue-3.plan) | `HKDF-Extract(transcript_hash, SS)` + per-direction IVs | Wire-quiet, behavior-breaking |
+| [`mqc-issue-4.plan`](./mqc-issue-4.plan) | Finished MAC frame each direction post-handshake | Wire-impact (new frames after handshake) |
+| [`mqc-issue-5.plan`](./mqc-issue-5.plan) | 31-byte AAD on every AEAD call (label, version, direction, frame_type, seq, length) | Wire-quiet, behavior-breaking |
+
+**Auto-close** (no separate work):
+
+- [`mqc-issue-6.plan`](./mqc-issue-6.plan) — encrypted-identity auth
+  gaps; closed by issue-1's transcript construction including
+  EK_c, CT_s, mode, role, both `cert_index` values, version, suite.
+- [`mqc-issue-10.plan`](./mqc-issue-10.plan) — mode downgrade;
+  closed by issue-1's explicit `mode` field bound into the
+  transcript.
+
+**Why bundled**: every plan in this phase is wire-breaking or
+behavior-breaking, every plan touches the same `mqc.c` handshake
+functions, and the dependency chain (#1 ⇒ #3 ⇒ #4) has no
+intermediate state worth being in production for.  Splitting into
+multiple flag days serves no one and just multiplies cutover
+windows.
+
+**Why issue-2 is in the bundle even though it's largely subsumed
+by #3**: the info-string tagging is two `#define` edits;
+shipping it separately is more overhead than just landing it
+with #1.  Once #3 lands, the version+suite tag in the info
+string is no longer load-bearing for security but stays for
+debugging readability.
+
+**Cutover sequence**:
+
+1. Single combined commit on `phase-20`.
+2. Build + install on the dev box; verify all positive tests
+   from each plan pass.  Verify all negative tests reject.
+   Verify zero compiler warnings.
+3. SSH to factsorlie.com:
+   - `git pull`.
+   - `./make-all.sh`.
+   - `sudo systemctl restart mtc-ca.service`.
+4. Redeploy the four MTC client tools (`show-tpm`, `bootstrap_ca`,
+   `bootstrap_leaf`, `admin_recosign`) by relink — they all link
+   `libmqc.a` and pick up the new behavior automatically.
+5. Smoke test: `echo hi | mqc --encode --env --no-cache | mqc
+   --decode --env --no-cache` → `hi`.
+6. End-to-end: `show-tpm --verify` against factsorlie.com:8446
+   succeeds.
+
+**Window**: A few minutes.  In-flight TCP connections that span
+the cutover fail at the next handshake; jobs are short and
+re-runnable.
+
+**Exit criteria**:
+- All zero-warning build / `make check` / per-plan test gates pass.
+- 24-hour soak after restart shows no MQC handshake or AEAD
+  failures in `journalctl` for legitimate clients.
+- Sequence-number contract is unified: data plane begins at
+  `seq=1` in both modes (Finished consumed `seq=0`).
+
+---
+
+## Phase 2 — Verification-policy hardening (incremental, after Phase 1)
+
+These three plans are independent of each other and can ship in
+any order.  Each is a separate commit and a separate (small)
+restart.  All three depend on Phase 1 having landed because
+their security properties are meaningful only when the handshake
+identity itself is unsubstitutable.  Plan #7 additionally depends
+on Phase 0's config-file infrastructure.
+
+### Phase 2a — [`mqc-issue-7.plan`](./mqc-issue-7.plan): mandatory revocation
+
+**What changes**: revocation queries become mandatory by default
+on **both** sides of the handshake (today only the server
+checks); fail-closed on log-query failure.  New runtime knob
+`mqc-revocation-policy` with values `mandatory` (default),
+`cache-only`, `disabled`.
+
+**Cutover**: rebuild + restart `mtc-ca.service`; redeploy client
+tools.  No wire change.
+
+### Phase 2b — [`mqc-issue-8.plan`](./mqc-issue-8.plan): cert self-verification audit + tightening
+
+**What changes**: spec §10.1 rewrite making "untrusted transport"
+explicit; new §10.6 cert validity window check
+(`not_before`/`not_after` with ±300 s skew); cosigner-fingerprint
+file alongside each cached cert so cosigner rotation invalidates
+stale verified entries; 8 negative tests proving each §10 check
+actually triggers.
+
+**Cutover**: rebuild + restart; redeploy client tools.  No wire
+change.
+
+### Phase 2c — [`mqc-issue-9.plan`](./mqc-issue-9.plan): server-name / expected-identity check
+
+**What changes**: client-side `mqc_cert_name_matches` check
+gating the handshake on "the cert at this `cert_index` lists the
+hostname I dialed."  New CLI flags `--expected-name` and
+`--no-name-check`; fail-closed for IP literals.  Spec §10.7 +
+§12.9.
+
+**Pre-deploy audit**: confirm every deployed peer's cert lists
+its public hostname (`show-tpm --list-peers`).  For
+factsorlie.com, the audit before cutover.
+
+**Cutover**: rebuild + restart; redeploy client tools.  No wire
+change.
+
+### Phase 2 exit criteria
+
+- All three sub-phases land without regressions.
+- 24-hour soak after each shows zero false-positive aborts on
+  legitimate traffic.
+- `mqc-revocation-policy` in operator's `/etc/postWolf/config`
+  takes effect (verifiable via `journalctl`).
+
+---
+
+## Phase 3 — Input hardening + DoS (incremental, can ship-anytime)
+
+These two plans share helpers and ship in order: #11 first
+(introduces the strict-parser helpers), then #12 (consumes them).
+
+### Phase 3a — [`mqc-issue-11.plan`](./mqc-issue-11.plan): strict JSON parsing
+
+**What changes**: every handshake JSON parse uses
+`JSON_TOKENER_STRICT` + `JSON_TOKENER_VALIDATE_UTF8`; trailing
+garbage rejected; duplicate keys rejected; unknown top-level
+fields rejected; per-field strict readers
+(`mqc_json_get_int_strict`, `mqc_json_get_hex_strict`,
+`mqc_json_get_string_strict`) replace bare `json_object_get_*`
+calls.  Spec §5.2 strict-parsing paragraph; new §12.10.
+
+**Cutover**: rebuild + restart; redeploy client tools.  No wire
+change.  Wire-quiet AND behavior-conservative for legitimate
+peers (postWolf controls all clients; their JSON is conformant).
+
+### Phase 3b — [`mqc-issue-12.plan`](./mqc-issue-12.plan): cheap pre-crypto filters + DoS budgets
+
+**What changes**: pre-crypto byte-length validation on `kem_pub`
+and `signature` (rejects garbage before the ~400 µs ML-DSA
+verify), per-(IP, cert_index) throttling, total
+handshake-bytes-in-flight cap with atomic counter, bounded LRU
+on cert-verify cache.  Four new runtime knobs:
+`mqc-rl-cert-per-min`, `mqc-rl-cert-per-hour`,
+`mqc-handshake-bytes-total-cap`, `mqc-cert-cache-max-entries`.
+Spec §11.2 extension; §12.6 strengthening.
+
+**Depends on**: 3a's `mqc_json_get_hex_strict(…, expected_byte_len,
+…)` helper.
+
+**Cutover**: rebuild + restart; redeploy client tools.
+
+### Phase 3 exit criteria
+
+- Strict-parsing rejections trigger only on attacker-shaped or
+  malformed input, never on legitimate clients.
+- Pre-crypto length checks block malformed handshakes before any
+  ML-DSA call (verify with the per-test counter probe in 12).
+- 24-hour soak shows clean logs.
+
+---
+
+## Phase 4 — System-level testing (after all code lands)
+
+Each per-issue plan ships its own positive/negative unit-and-
+harness tests; those are the load-bearing per-feature regression
+nets.  Phase 4 is the **system-level** layer above that: the
+suite-of-suites pass that proves the 13 plans compose correctly,
+not just that each works in isolation.
+
+### 4a — Aggregate regression suite
+
+Bundle the per-plan tests into one harness target:
+
+```
+make -f Makefile.tools test-mqc-all
+```
+
+Runs every test from issues #1, #3, #4, #5, #6a, #7, #8, #9, #11,
+#12 in one pass.  Total ~75 tests.  Must complete in under 10
+minutes on a single dev box and exit zero.
+
+### 4b — Cross-tool round-trip matrix
+
+Every MQC client tool against the server, in every mode (clear /
+encrypted), with every revocation policy (mandatory / cache-only /
+disabled), with valid + expected-name-mismatch + revoked + expired
+peer fixtures.  Matrix entries:
+
+```
+clients × {clear, enc} × {mandatory, cache-only, disabled}
+        × {valid, mismatch, revoked, expired}
+```
+
+= 4 tools × 2 × 3 × 4 = **96 cells**.  Driver script enumerates
+each, captures the expected pass/fail, asserts the actual outcome.
+A regression in any cell = abort.
+
+### 4c — Concurrent-handshake stress
+
+Open N parallel handshake attempts against the server; verify:
+
+- Below `mqc-handshake-bytes-total-cap`: all succeed.
+- Above the cap: excess attempts hit `HANDSHAKE_BYTES_CAP` cleanly,
+  no crashes, no leaked file descriptors.
+- After the cap-hitting clients disconnect: the in-flight counter
+  returns to 0 and new handshakes succeed.
+
+Drives issue-12's atomic counter under realistic concurrency
+pressure.
+
+### 4d — Cosigner-rotation drill
+
+End-to-end test of issue-8's cosigner-fingerprint cache invalidation
+against the real `admin_recosign` workflow:
+
+1. Run a baseline handshake; verify `~/.TPM/peers/<index>/cosigner-fingerprint.txt`
+   exists and matches the current cosigner.
+2. Run `admin_recosign` to rotate.
+3. Run another handshake against the same peer; verify the cached
+   cert is invalidated, re-fetched, and re-verified under the new
+   cosigner pubkey.
+4. Confirm in `journalctl` the cache-eviction reason was
+   "cosigner fingerprint mismatch."
+
+### 4e — Revocation drill (fail-closed under simulated outage)
+
+Tests issue-7's `mandatory` policy against simulated log failures:
+
+1. Block outbound HTTP from the dev client to the log endpoint
+   (iptables rule).
+2. With cache cold for a peer, attempt handshake; must abort with
+   `REVOCATION_QUERY_FAILED`.
+3. With cache warm, attempt handshake; must succeed (cache hit
+   doesn't need the network).
+4. Switch policy to `cache-only`, repeat with cold cache; must
+   abort with `REVOCATION_CACHE_MISS`.
+5. Restore network; cleanup.
+
+### 4f — Attack-simulation pack
+
+Run the negative-test scenarios from across the plans as a
+single pen-test pass:
+
+| From plan | Attack |
+|---|---|
+| #1 | role-swap, cert-swap, KEM-substitution, empty-ctx replay, version-mismatch, suite-mismatch |
+| #1 | mqc-id constant-blob replay (encrypted-mode old-style server signature) |
+| #4 | Finished MAC tamper, key-mismatch, AEAD tamper, data-before-Finished, replay |
+| #5 | length-tamper, direction-flip, frame-type confusion, sequence-skew, label-removal |
+| #8 | HTTP MITM substitute / corrupt, expired cert, cosigner stale-cache |
+| #9 | name-mismatch, substituted-server, IP-no-override |
+| #11 | duplicate-key, trailing-garbage, comments, leading-zero, int-overflow, unknown-field |
+| #12 | wrong KEM length, wrong sig length, cert-rate-limit, handshake-bytes-cap |
+
+Driver harnesses these into one `make test-attack-pack` target.
+Every attack must produce the documented `MQC_SECURITY` log line
+and the connection must abort.  A pass is "100% of attacks
+correctly rejected"; anything less is a Phase-4 fail.
+
+### 4g — Performance baseline
+
+Capture handshake latency before and after Phase 1's rollout
+(against a known-good baseline pulled before the cutover):
+
+- Median + p95 + p99 latency for clear-mode handshake.
+- Same for encrypted-mode handshake.
+- Throughput (handshakes/sec) under saturating load with a single
+  client, on the dev box.
+
+Acceptable regression: ≤ 50 % increase in median latency (the
+new transcript hash, two ML-DSA calls per handshake under issue-1's
+both-sides-sign, plus Finished MAC, plus AAD computation, plus
+strict JSON parsing should add a few ms but not double the
+wall-clock).  Anything beyond 50 % triggers a profile pass to
+identify the regression.
+
+### 4h — 7-day production soak on factsorlie.com
+
+After Phases 0–3 land in production, run for one week with normal
+traffic patterns.  Daily review of `journalctl` for:
+
+- Any `MQC_SECURITY` line that indicates a legitimate-client
+  failure (i.e., expected-to-pass that didn't).  Any such line
+  means a real bug to fix.
+- Counter checks: per-IP and per-cert rate-limit triggers should
+  fire only on known scanners, not on real clients.
+- Crash count: zero.
+- Memory drift: stable, no leak suggested by `ps aux`.
+
+### Phase 4 exit criteria
+
+- 4a: aggregate regression suite passes 100 %.
+- 4b: 96-cell round-trip matrix passes 100 %.
+- 4c: concurrency stress passes; counter returns to baseline after
+  load drops.
+- 4d, 4e: drills pass.
+- 4f: 100 % of attack scenarios rejected with documented
+  diagnostics.
+- 4g: latency regression within budget.
+- 4h: 7-day production soak with zero legitimate-client failures
+  and zero crashes.
+
+Only after all 4a–4h pass can Phase 5 begin.
+
+---
+
+## Phase 5 — Spec consolidation (after testing)
+
+Each per-issue plan ships its own targeted spec edits to
+`socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md`.  Phase
+5 is the **editorial** pass that turns those piecemeal edits
+into a coherent revision.
+
+The spec stays at draft-page-mqc-protocol-**00**.  Per the
+deployment-model rule (no published -01, single deployment,
+nothing requires draft-number coordination with anyone), iterating
+in -00 is the right move.  Bumping to -01 would be appropriate
+only if the draft were submitted to IETF for tracking; that is
+not happening.
+
+### 5a — Coherence pass
+
+Read the cumulative spec end-to-end as if for the first time.
+Look for:
+
+- **Cross-reference rot**: a §10.5 sentence that points at "see
+  Section 11.2" still resolves to the right content after the
+  per-phase edits added/renumbered subsections.
+- **Terminology drift**: pick one of "data plane" / "application
+  data" / "post-handshake traffic" and use it uniformly.  Same
+  for "frame" / "record" / "message" / "blob."  The per-phase
+  edits used different terms in different places; consolidate.
+- **Style consistency**: capitalization of MUST/SHOULD/MAY per
+  RFC 2119, formatting of pseudocode blocks, table styles for
+  IANA-style registries.
+- **Hash inputs everywhere identical**: the transcript construction
+  appears in §6, §7, §8, §10.2, and Appendix A.  Make sure all
+  four references describe the exact same byte string, character-
+  for-character.
+
+### 5b — Refresh Appendix A worked example
+
+Appendix A today shows a clear-mode handshake with truncated hex.
+The old example is wrong after Phase 1 (no `version`/`suite`/`mode`
+fields, signature over wrong bytes).  Regenerate from the new
+implementation:
+
+1. Run a real clear-mode handshake against factsorlie.com with
+   trace-level logging.
+2. Capture EK_c, CT_s, both `cert_index` values, both signatures,
+   the transcript hash bytes.
+3. Truncate to 32 hex chars + `…` per the existing convention.
+4. Replace Appendix A with the new dump.
+5. Add a parallel encrypted-mode worked example showing the 4-frame
+   sequence.
+6. Add a third worked example showing the Finished MAC computation
+   (the inputs to `HMAC-SHA256(finished_key, transcript_hash_full)`
+   and the resulting tag).
+
+### 5c — Add "Changes from prior text" appendix
+
+A short appendix listing every substantive change the cumulative
+edits introduced, organized by section:
+
+```
+Appendix C.  Changes (informative)
+
+This revision of draft-page-mqc-protocol-00 differs from the
+text published initially as follows:
+
+§4   — Suite ID row added.
+§5.2 — version, suite, mode fields added; strict parsing rules.
+§6   — Handshake signature redefined as transcript-binding.
+§7   — Encrypted mode resequenced from 3 to 4 frames.
+§8   — HKDF Extract+Expand split; new §8.1 Finished frame.
+§9.1 — New §9.1.1 AEAD AAD definition.
+§9.2 — IV-XOR-counter nonce; data plane begins at seq=1.
+§10  — §10.1 transport-untrust; §10.5 mandatory revocation;
+       §10.6 validity window; §10.7 expected identity.
+§11  — Operational tunables list; per-(IP, cert) throttling.
+§12  — New subsections 12.7, 12.8, 12.9, 12.10.
+```
+
+This is the change log a future reader needs to understand "what
+moved" without diffing two large versions of the same draft.
+
+### 5d — Render and validate
+
+```
+cd socket-level-wrapper-MQC
+python3 render-draft.py        # produces draft-page-mqc-protocol-00.txt
+```
+
+Check the rendered text:
+
+- Section numbering is contiguous (no §10.5 followed by §10.7).
+- Pseudocode blocks render without losing leading whitespace.
+- Tables are aligned.
+- No markdown leftovers (`**bold**` in the .txt).
+- ASCII-only (no smart quotes / em-dashes from editor auto-replace).
+
+### 5e — Index update
+
+The reference list (§14) gains [FIPS204] / [RFC8446] / [RFC8174]
+references that the per-phase edits implicitly cite.  Walk the
+final body, collect every `[…]`, ensure each is in §14.1 or §14.2.
+
+### Phase 5 exit criteria
+
+- Coherent end-to-end read with no cross-reference rot.
+- Appendix A reflects the implemented protocol byte-for-byte.
+- Appendix C "Changes" is complete.
+- `render-draft.py` produces a clean .txt that matches the .md.
+- Spec is the source of truth for any future implementer trying
+  to write a second MQC client from scratch.
+
+---
+
+## Phase 6 — User-facing documentation (after spec)
+
+The spec (Phase 5) is for implementers writing a second MQC.
+Phase 6 is for **operators** running postWolf and **callers** of
+the existing MQC tools, plus the **Claude Code instructions** that
+future agentic sessions inherit.
+
+### 6a — CLI tool help text + man pages
+
+Every MQC client tool gains new flags during Phases 1–3:
+
+| Tool | New flags | From |
+|---|---|---|
+| `show-tpm` | `--expected-name`, `--no-name-check` | issue 9 |
+| `bootstrap_ca` | `--expected-name`, `--no-name-check` | issue 9 |
+| `bootstrap_leaf` | `--expected-name`, `--no-name-check` | issue 9 |
+| `admin_recosign` | `--expected-name`, `--no-name-check` | issue 9 |
+| `mqc` | `--expected-name`, `--no-name-check` | issue 9 |
+
+Update each tool's `--help` output and the corresponding
+`mtc-keymaster/tools/c/*.1` man page (or create the man page if
+none exists yet) to include:
+
+- The new flags with one-line descriptions.
+- A "Common usage" example showing the most common dial pattern.
+- A "Security notes" section pointing operators at
+  `--no-name-check` only as a deliberate opt-out, not a casual
+  workaround for cert misconfiguration.
+
+Each tool's `--help` should also surface the operator knobs that
+affect its behavior, e.g.:
+
+```
+$ show-tpm --help
+...
+SECURITY KNOBS (set in /etc/postWolf/config under [global]):
+  mqc-revocation-policy   {mandatory, cache-only, disabled}
+                          default: mandatory.  See README-mqc.md.
+  mqc-revoked-cache-ttl-sec   default: 86400.
+  ...
+```
+
+### 6b — Top-level README updates
+
+| File | What to add |
+|---|---|
+| `mtc-keymaster/README.md` | Section on MQC v0 security properties post-Phase-1: transcript binding, mandatory revocation, name binding.  One-paragraph summary per property + pointer to the relevant per-issue plan for detail. |
+| `mtc-keymaster/server2/c/README-using-mtc-server.md` | New "MQC tunables" section listing every `[global]` key the server reads from `/etc/postWolf/config` (the 14 keys across issues 6a, 7, 12).  Per-key: meaning, default, when to tune, sanity ceiling. |
+| `socket-level-wrapper-MQC/README.md` (create if absent) | "Calling MQC from C" section: the `mqc_ctx_t` API, when to call `mqc_ctx_set_expected_name`, what `MQC_SECURITY` log lines mean and how to interpret them. |
+| `mtc-keymaster/README-bugsandtodo.md` | Close issues #6 and #10 (subsumed by #1).  Add a pointer from the existing TODO #9b (cosigner TOFU) to the master plan's "Out of scope" note. |
+| `socket-level-wrapper-MQC/README-mqc-issues.md` | Annotate each of the 12 reviewer issues with the per-issue plan that addressed it.  E.g., "Issue #1 — addressed by `mqc-issue-1.plan`, landed in commit ABC under Phase 1." |
+
+### 6c — Operator runbook
+
+Create `mtc-keymaster/server2/c/README-mqc-operator-runbook.md`
+(or extend `README-using-mtc-server.md`) with:
+
+- **Routine procedures**:
+  - Tightening or loosening rate limits.
+  - Switching `mqc-revocation-policy` between modes (with the
+    "when each is appropriate" framing from the issue-7 plan).
+  - Lowering `mqc-revoked-cache-ttl-sec` for compliance drills.
+- **Incident playbooks**:
+  - Log endpoint unreachable: switch to `cache-only`, then
+    `disabled` only as last resort.  How to revert.
+  - Cosigner pubkey rotation: run `admin_recosign`, expect cache
+    invalidations across all peers, monitor for failures.
+  - Suspected DoS: how to read the per-IP and per-cert
+    rate-limit log lines, where Redis stores the buckets, how
+    to manually unban.
+- **Log-line decoder**: every `MQC_SECURITY` log line the
+  Phase-1–3 changes can emit, with the cause and remediation.
+  This becomes the operator's grep target when something goes
+  wrong.
+
+### 6d — `/etc/postWolf/config` example
+
+`mtc-keymaster/read-config/config.server` is currently the
+operator's reference for what keys exist.  After Phases 0–3 it
+needs to grow to include every new tunable, all commented out
+with the default value shown:
+
+```
+[global]
+
+# --- URLs (existing) ---
+url-bootstrap     https://factsorlie.com:8445
+url-server        https://factsorlie.com:8446
+url-local         https://factsorlie.com:8444
+
+# --- MQC handshake budgets (issue 6a) ---
+# mqc-handshake-stall-sec       3
+# mqc-handshake-total-sec       5
+
+# --- MQC frame-size ceilings (issue 6a) ---
+#   Spec §11.3: MAY lower, MUST NOT raise.
+# mqc-max-handshake-bytes       131072
+# mqc-max-msg-bytes             1048576
+
+# --- MQC rate limits (issues 6a, 12) ---
+# mqc-rl-connect-per-min        100
+# mqc-rl-connect-per-hour       1000
+# mqc-rl-fail-per-min           10
+# mqc-rl-fail-per-hour          100
+# mqc-rl-cert-per-min           10
+# mqc-rl-cert-per-hour          100
+
+# --- MQC caches + skew (issues 6a, 12) ---
+# mqc-revoked-cache-ttl-sec     86400
+# mqc-sig-freshness-sec         300
+# mqc-cert-cache-max-entries    1024
+# mqc-handshake-bytes-total-cap 16777216
+
+# --- MQC revocation policy (issue 7) ---
+#   mandatory   = query log on cache miss; abort on query failure.
+#   cache-only  = use cache; abort on cache miss.
+#   disabled    = skip revocation (UNSAFE; emergency use only).
+# mqc-revocation-policy        mandatory
+```
+
+Each key commented out + default shown so operators can see what
+exists without changing behavior.  Uncommenting any line is the
+explicit opt-in to a non-default value.
+
+### 6e — `CLAUDE.md` updates
+
+The project guide at `/home/ubuntu/postWolf/CLAUDE.md` tells
+future Claude Code sessions how postWolf is structured.  It
+currently mentions MQC at a high level but doesn't capture the
+post-Phase-1 properties.  Add to CLAUDE.md:
+
+- **Under "Three keys at a glance"**: no change (the keys are
+  unchanged), but update the table footer note: the cosigner
+  key now also signs the bootstrap response in the leaf branch
+  per the snoopy-rivest plan; that's separate from the
+  per-handshake transcript signature added by Phase 1.
+- **New section "MQC v0 security properties"** (after the keys
+  table): one paragraph per property — transcript binding,
+  Finished MAC, mandatory revocation, name binding, AAD,
+  pre-crypto length filtering, strict JSON, bounded caches.
+  Each with a one-line "controlled by" pointer to the relevant
+  config key or compile constant.
+- **Under "Guardrails"**: add a bullet — "MQC protocol invariants
+  (`MQC_PROTOCOL_VERSION`, `MQC_SUITE_STRING`,
+  `MQC_HANDSHAKE_LABEL`, `MQC_AAD_LABEL`, the HKDF info strings,
+  the AAD format, the role tags) are NOT operator-tunable.  See
+  the deployment-model rule at the top of
+  `socket-level-wrapper-MQC/README-plans.md`."
+- **Memory-system note**: the existing `project_mqc_no_backwards_compat.md`
+  memory entry already captures the deployment-model rule for
+  future Claude sessions; no further memory-file action needed
+  in Phase 6.
+
+### 6f — Spec landing page in the repo
+
+The spec at `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md`
+is the technical reference but it's a long read.  Add (or update)
+a short README in `socket-level-wrapper-MQC/README.md` (or
+`socket-level-wrapper-MQC/README-MQC.plan` if the latter is
+already serving this role) that:
+
+- Explains what MQC is in 2 paragraphs (not just the spec
+  Abstract).
+- Lists the 14 spec sections with one-line summaries.
+- Points readers at: the spec for the wire format; the master
+  plan for "what changed and when"; the per-issue plans for
+  "why each design decision was made."
+
+### Phase 6 exit criteria
+
+- Every CLI tool's `--help` includes the new flags + the
+  knob-pointer block.
+- Every README listed in 6b has the post-Phase-1 sections.
+- The operator runbook exists and covers the playbooks listed.
+- `config.server` reflects every new tunable.
+- `CLAUDE.md` has the new "MQC v0 security properties" section
+  and the new guardrail bullet.
+- A new operator joining the team can deploy postWolf, tune the
+  knobs, and respond to incidents using only the docs in the
+  repo (no code-reading required).
+
+---
+
+## Dependency graph
+
+```
+                  ┌─────────────┐
+                  │ Phase 0:    │
+                  │ Issue 6a    │
+                  │ (config-    │
+                  │  file       │
+                  │  loader)    │
+                  └──────┬──────┘
+                         │ (provides read_config_*)
+                         │
+                         ▼
+                  ┌──────────────────────────────┐
+                  │ Phase 1: ONE commit, ONE     │
+                  │ flag day                     │
+                  │                              │
+                  │   Issue 1  (transcript)      │
+                  │   Issue 2  (info-string tag) │
+                  │   Issue 3  (HKDF Extract)    │
+                  │   Issue 4  (Finished MAC)    │
+                  │   Issue 5  (AAD)             │
+                  │                              │
+                  │   Issue 6  ←─ closes via 1   │
+                  │   Issue 10 ←─ closes via 1   │
+                  └─────────────┬────────────────┘
+                                │
+                                │ (verification-policy
+                                │  meaningful only after
+                                │  identity is bound)
+                                │
+                ┌───────────────┼───────────────┐
+                ▼               ▼               ▼
+         ┌────────────┐  ┌────────────┐  ┌────────────┐
+         │ Phase 2a:  │  │ Phase 2b:  │  │ Phase 2c:  │
+         │ Issue 7    │  │ Issue 8    │  │ Issue 9    │
+         │ (revoke)   │  │ (cert      │  │ (server-   │
+         │            │  │  audit)    │  │  name)     │
+         └────────────┘  └────────────┘  └────────────┘
+                                │
+                                │
+                                ▼
+                       ┌────────────────┐
+                       │ Phase 3a:      │
+                       │ Issue 11       │
+                       │ (strict JSON,  │
+                       │  hex helpers)  │
+                       └───────┬────────┘
+                               │
+                               │ (provides
+                               │  hex-length helper)
+                               │
+                               ▼
+                       ┌────────────────┐
+                       │ Phase 3b:      │
+                       │ Issue 12       │
+                       │ (DoS pre-      │
+                       │  filters)      │
+                       └────────┬───────┘
+                                │
+                                │ (all code complete;
+                                │  no further wire/behavior
+                                │  changes from this point)
+                                │
+                                ▼
+                       ┌────────────────────┐
+                       │ Phase 4:           │
+                       │ System testing     │
+                       │   4a regression    │
+                       │   4b matrix        │
+                       │   4c stress        │
+                       │   4d cosigner drill│
+                       │   4e revoke drill  │
+                       │   4f attack pack   │
+                       │   4g performance   │
+                       │   4h 7-day soak    │
+                       └────────┬───────────┘
+                                │
+                                │ (testing surfaces any
+                                │  remaining spec
+                                │  ambiguity)
+                                │
+                                ▼
+                       ┌────────────────────┐
+                       │ Phase 5:           │
+                       │ Spec consolidation │
+                       │   5a coherence     │
+                       │   5b Appendix A    │
+                       │   5c Appendix C    │
+                       │   5d render+lint   │
+                       │   5e refs          │
+                       └────────┬───────────┘
+                                │
+                                │ (spec stable; user-
+                                │  facing docs catch up)
+                                │
+                                ▼
+                       ┌────────────────────┐
+                       │ Phase 6:           │
+                       │ User-facing docs   │
+                       │   6a CLI/man       │
+                       │   6b READMEs       │
+                       │   6c runbook       │
+                       │   6d config.server │
+                       │   6e CLAUDE.md     │
+                       │   6f spec landing  │
+                       └────────────────────┘
+```
+
+Phase 3 doesn't strictly require Phase 1 or Phase 2, but
+shipping it before Phase 1 would harden a protocol whose
+identity binding is still broken — defense in depth on a
+broken core is rarely worth the disruption.  Recommended order
+is the linear flow shown.
+
+Phases 4–6 are sequential by construction: testing finds bugs
+that need code or spec fixes; spec consolidation reads the as-
+shipped behavior, not the as-planned behavior; user docs reference
+the consolidated spec.  Don't start Phase 5 with Phase 4 still
+finding issues; don't start Phase 6 until the spec stops moving.
+
+## Suggested commit boundaries
+
+| # | Branch | Plans / phase | Rough delta |
+|---|---|---|---|
+| 1 | `phase-20` | Phase 0: 6a | ~250 LoC |
+| 2 | `phase-20` | Phase 1: 1+2+3+4+5 (bundled) | ~1500 LoC |
+| 3 | `phase-20` | Phase 2a: 7 | ~250 LoC |
+| 4 | `phase-20` | Phase 2b: 8 | ~400 LoC |
+| 5 | `phase-20` | Phase 2c: 9 | ~300 LoC |
+| 6 | `phase-20` | Phase 3a: 11 | ~300 LoC |
+| 7 | `phase-20` | Phase 3b: 12 | ~350 LoC |
+| 8 | `phase-20` | Phase 4: test harness + suite-of-suites | ~600 LoC of test code |
+| 9 | `phase-20` | Phase 5: spec consolidation | ~150 LoC of `.md` |
+| 10 | `phase-20` | Phase 6: user-facing docs | ~800 LoC of `.md` + `.1` |
+
+All on `phase-20` per the existing branch convention.  Per the
+"Commit granularity" memory entry, the user's default is to
+bundle, but Phase 1 is the only place where the bundling is
+load-bearing (everything else is meaningful as an independent
+incremental hardening).  Operator may choose to bundle Phase 2
+or Phase 3 commits if they prefer a single restart per phase.
+
+Phases 4–6 are documentation/test commits, not behavior changes;
+they're still on `phase-20` for trail consistency.
+
+## Verification milestones (across phases)
+
+Each phase has its per-plan verification list; the milestones at
+the master level:
+
+1. **Post-Phase 0**: server binary respects `[global]` knobs in
+   `/etc/postWolf/config` (or runs at compiled defaults if
+   absent).
+2. **Post-Phase 1**: handshake transcript is fully bound; AEAD
+   frames carry AAD; Finished verifies; data plane works under
+   the new wire format.  No legitimate-client failures in 24-hour
+   soak.
+3. **Post-Phase 2**: revocation is mandatory (visible in
+   `journalctl` as one revocation query per peer per cache TTL);
+   cert validity window checked; server-name binding enforced.
+4. **Post-Phase 3**: malformed JSON rejected pre-crypto; per-cert
+   rate limit triggers under index-rotation; handshake-bytes cap
+   triggers under concurrency stress.
+5. **Post-Phase 4**: every per-issue test passes in the aggregate
+   harness; the 96-cell client/mode/policy/fixture matrix is
+   green; attack-pack rejects 100 % of documented attacks; 7-day
+   production soak shows zero legitimate-client failures.
+6. **Post-Phase 5**: spec reads coherently end-to-end; Appendix A
+   reflects the implemented protocol; Appendix C "Changes" log
+   is complete; `render-draft.py` produces a clean .txt.
+7. **Post-Phase 6**: a new operator can deploy postWolf, tune the
+   knobs, and respond to incidents using only the docs in the
+   repo; `--help` on every CLI tool surfaces the new flags;
+   `CLAUDE.md` reflects the new MQC properties.
+
+## Spec-edit accumulation
+
+After all phases the spec
+(`socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md`)
+gains:
+
+- §4 — Suite ID row.
+- §5.2 — `version`/`suite`/`mode` fields, strict-parsing
+  paragraph, exact-byte-length rule for hex fields.
+- §6 — clear-mode handshake redefined around full transcript.
+- §7 — encrypted-mode resequenced from 3 to 4 frames.
+- §8 — full HKDF-Extract+Expand derivation; new §8.1 Finished
+  Frame.
+- §9.1 — new §9.1.1 AEAD AAD definition.
+- §9.2 — IV-XOR-counter nonce; data plane starts at `seq=1`
+  (consolidated rule).
+- §10.1 — "untrusted transport" rewrite.
+- §10.2 — handshake signature redefined over transcript.
+- §10.5 — revocation MUST not MAY; fail-closed default.
+- §10.6 (new) — cert validity window.
+- §10.7 (new) — expected-identity check.
+- §11 — `mqc-revocation-policy` and 6a/12 tunables documented
+  as informative.
+- §11.2 — per-(IP, cert) throttling rule.
+- §12 — new subsections 12.7 (transcript binding), 12.8
+  (frame-header AAD), 12.9 (identity vs authority), 12.10
+  (JSON parsing hardening).
+
+The cumulative spec change is substantial but stays inside
+draft-00.  No -01 needed unless a future protocol break
+requires one.
+
+## Out of scope (across all phases)
+
+The 13 issue plans plus this master plan address the entire
+content of [`README-mqc-issues.md`](./README-mqc-issues.md).
+Items deliberately deferred across plans:
+
+- **Cosigner-pubkey TOFU bootstrap** — tracked under
+  `mtc-keymaster/README-bugsandtodo.md` TODO #9b.  Addressed by
+  the leaf-bootstrap and CA-bootstrap plan branches in
+  `/home/ubuntu/.claude/plans/lets-plan-to-implement-snoopy-rivest.md`.
+  This master plan assumes the cosigner pubkey is already a
+  trusted local file.
+- **PSK / session resumption / 0-RTT** — not in MQC v0; the
+  Finished-doesn't-extend-the-transcript decision in #4 is the
+  thing that would change if these were added.
+- **Exporter keys** (TLS RFC 8446 §7.5).
+- **Re-keying / KeyUpdate** post-handshake.
+- **Connection IDs / migration** — MQC has none.
+- **Wildcard subjects, IDNA hostnames** in #9.
+- **Client puzzles / proof-of-work** in #12.
+- **ML-KEM-768 → larger KEM migration** (e.g., for higher
+  category targets).
+- **Equivalent runtime-config plumbing for SLC and MQCP** — same
+  pattern as 6a, separate plans.

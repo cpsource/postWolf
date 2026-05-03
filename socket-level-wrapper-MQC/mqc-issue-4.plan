@@ -1,0 +1,427 @@
+# Plan: Finished MAC over the handshake transcript (issue #4)
+
+## Status
+
+- Tracks issue #4 of `socket-level-wrapper-MQC/README-mqc-issues.md`.
+- Depends on `mqc-issue-1.plan` (transcript construction) and
+  `mqc-issue-3.plan` (`data_secret` and the Extract+Expand
+  derivation tree — `data_*_finished` is the seventh and eighth
+  Expand off the same PRK).
+- Wire-format affecting: adds one frame per direction immediately
+  after the handshake.  Wire bytes are AEAD-sealed; the JSON
+  envelopes from issues #1–#3 are unchanged.  Same flag-day
+  cutover.
+
+## What's broken today
+
+After issue-1 + issue-3, the handshake authenticates both peers'
+identities and binds the session keys to the transcript.  That
+catches an active attacker who tampers with bytes the signatures
+cover.  It does **not** catch:
+
+- A peer that mis-implements the transcript construction itself
+  (e.g., disagrees on the byte ordering of `transcript_input_kdf`,
+  the length of the role tag, or the SUITE_ID precomputation).
+- A peer that derives the data-plane keys correctly but skips one
+  of the issue-1 verification steps (e.g., signature-verify path
+  has a control-flow bug that returns success without calling
+  `wc_dilithium_verify_ctx_msg`).
+- An on-path attacker who corrupts a handshake field that neither
+  side bothered to check (defense in depth).
+
+A Finished MAC closes all three: each side commits, after the
+handshake, to its view of the entire transcript via a MAC keyed by
+material derived from that same transcript.  If either side's view
+diverges, the Finished MAC verification fails and the connection
+terminates *before* any application bytes flow.
+
+## Target design
+
+### Two new derived secrets
+
+Extend `derive_data_keys` (added by `mqc-issue-3.plan`) with two
+more `HKDF-Expand` outputs:
+
+```
+data_c2s_finished = HKDF-Expand(SHA-256, PRK = data_secret,
+                                info = "mqc/v0/.../data-c2s-finished",
+                                L = 32)
+data_s2c_finished = HKDF-Expand(SHA-256, PRK = data_secret,
+                                info = "mqc/v0/.../data-s2c-finished",
+                                L = 32)
+```
+
+`data_secret` is the `HKDF-Extract(transcript_hash_full, SS)`
+output already defined by issue-3.
+
+### Finished frame
+
+The first frame in each direction after the handshake is a
+**Finished frame**.  It is AEAD-sealed exactly like a data-plane
+frame (using `data_*_key`, `data_*_iv`, sequence `0`), and its
+plaintext is exactly **32 bytes**:
+
+```
+finished_mac_role = HMAC-SHA256(
+                       key = data_<role>_finished,
+                       msg = transcript_hash_full)
+```
+
+where `<role>` is `c2s` for the client→server Finished and `s2c`
+for the server→client Finished.
+
+The receiver:
+
+1. Reads the next frame (length-prefixed AEAD payload, same wire
+   format as a data-plane frame).
+2. AEAD-decrypts it under `data_<recv_role>_key`,
+   `data_<recv_role>_iv`, sequence `0`.  AEAD failure → terminate.
+3. Asserts plaintext length == 32.  Length mismatch → terminate.
+4. Computes the expected MAC using its own copy of
+   `data_<sender_role>_finished` and `transcript_hash_full`.
+5. Constant-time compares received vs expected.  Mismatch →
+   terminate.
+6. Marks the connection as Finished-verified.  The next received
+   frame is application data.
+
+The Finished frame consumes sequence `0` in each direction.  The
+first **application** frame in each direction therefore uses
+sequence `1`.  (This differs from issue-3's "data plane starts at
+0" contract; issue-4 supersedes that boundary.)
+
+### Send/receive ordering
+
+Symmetric: each side **sends** its Finished frame as soon as it
+has computed `transcript_hash_full` and derived
+`data_<send_role>_finished`.  Each side **receives** the peer's
+Finished before allowing application traffic.
+
+Concretely, `mqc_send()` and `mqc_recv()` both gate on
+`conn->finished_verified == 1`.  The handshake function performs
+both the send and the receive of Finished before returning the
+`mqc_conn_t *` to the caller.  From the caller's perspective the
+handshake "completes" only after Finished is verified — the
+caller never sees a `mqc_conn_t *` in the half-open state.
+
+### Why encrypt the Finished MAC at all
+
+The MAC is already an HMAC, which is integrity-providing on its
+own.  Sealing it with the data-plane AEAD adds two properties:
+
+1. **Key-mismatch detection precedes MAC-mismatch detection.**  If
+   either side computed the wrong `data_*_key`, the AEAD tag
+   fails first; the receiver gets a clear "wrong key" diagnostic
+   rather than a misleading "wrong transcript" one.
+2. **One frame format for everything past handshake.**  The data
+   plane already does length-prefixed AEAD frames; Finished
+   reusing that format means no new frame parser, no new state
+   machine, just a one-frame "first frame after handshake" hook.
+
+These are also the reasons TLS 1.3 encrypts Finished
+(RFC 8446 §4.4.4).
+
+### Why no transcript extension past Finished
+
+TLS 1.3 extends the transcript to include the Finished messages
+themselves so that post-handshake derivations
+(`resumption_master_secret`, exporter keys) commit to them.  MQC
+v0 has no PSK resumption and no exporter; nothing is derived from
+the transcript after Finished.  The transcript stops at the end
+of the handshake.
+
+## Spec edits (`draft-page-mqc-protocol-00.md`)
+
+1. **Section 6.3 (Client Key Derivation)** and **Section 6.2
+   (Server → Client)** — add a final step:
+
+   > After deriving the session keys the endpoint MUST send a
+   > Finished frame as the first frame on the data plane and MUST
+   > verify the peer's Finished frame before delivering any
+   > application data to the caller.  See Section 8.1.
+
+2. **Section 7.4 / 7.5 (encrypted-identity)** — same insertion:
+   the Finished frame follows the encrypted phase-2 identity
+   blobs.
+
+3. **Section 8 (Key Derivation)** — extend the `Expand` list with
+   `data_c2s_finished` and `data_s2c_finished` (32 bytes each).
+
+4. **Section 8.1 (new) — Finished Frame** — full description:
+
+   > Each endpoint MUST send a Finished frame as the first AEAD
+   > frame in its sending direction.  The frame is constructed
+   > using the same wire format as a data-plane frame (Section
+   > 9.1), with sequence number 0, key `data_<role>_key`, and IV
+   > `data_<role>_iv`.  The plaintext is exactly 32 bytes:
+   >
+   > ```
+   >   finished_mac = HMAC-SHA256(
+   >                    key = data_<role>_finished,
+   >                    msg = transcript_hash_full)
+   > ```
+   >
+   > A receiver MUST decrypt the first AEAD frame in each
+   > direction, MUST verify that the plaintext is exactly 32
+   > bytes, MUST recompute the expected MAC under its own copy of
+   > `data_<sender_role>_finished` and `transcript_hash_full`,
+   > and MUST constant-time-compare.  Any failure MUST cause the
+   > connection to be terminated and SHOULD be recorded against
+   > the rate-limit bucket for failed handshakes (Section 11.2).
+
+5. **Section 9.2 (Nonce Construction)** — note that the data-plane
+   sequence counter starts at **1** in both directions (the
+   Finished frame consumed sequence 0).
+
+6. **Section 12.7 (Transcript Binding)** — add a paragraph:
+
+   > Even with transcript-bound HKDF (Section 8), an
+   > implementation bug that produced a divergent transcript on
+   > one side could still complete the handshake apparently-
+   > successfully and only surface as opaque AEAD failures later.
+   > The Finished MAC (Section 8.1) makes such divergence
+   > explicit at the moment it is detectable: each side commits
+   > to its view of the transcript via a MAC the peer can verify
+   > directly.  Treat Finished failures as cryptographically
+   > equivalent to handshake-signature failures.
+
+## Code edits
+
+### `mqc.h`
+
+```c
+#define MQC_HKDF_INFO_DATA_C2S_FINISHED \
+    "mqc/v0/" MQC_SUITE_STRING "/data-c2s-finished"
+#define MQC_HKDF_INFO_DATA_S2C_FINISHED \
+    "mqc/v0/" MQC_SUITE_STRING "/data-s2c-finished"
+
+#define MQC_FINISHED_MAC_SZ  32   /* SHA-256 output */
+```
+
+### `mqc.c` — `mqc_conn` struct
+
+Add three fields:
+
+```c
+struct mqc_conn {
+    int       fd;
+    uint8_t   send_key[MQC_AES_KEY_SZ];
+    uint8_t   recv_key[MQC_AES_KEY_SZ];
+    uint8_t   send_iv[MQC_GCM_IV_SZ];
+    uint8_t   recv_iv[MQC_GCM_IV_SZ];
+    uint64_t  send_seq;
+    uint64_t  recv_seq;
+    int       peer_index;
+    /* NEW for issue-4: */
+    uint8_t   send_finished_key[MQC_FINISHED_MAC_SZ];
+    uint8_t   recv_finished_key[MQC_FINISHED_MAC_SZ];
+    uint8_t   transcript_hash_full[WC_SHA256_DIGEST_SIZE];
+    int       finished_verified;   /* 0 until peer's Finished checks out */
+};
+```
+
+Zero `send_finished_key` and `recv_finished_key` immediately after
+they are used (each is consumed exactly once per connection — once
+to compute our outgoing Finished, once to verify the peer's
+incoming Finished).  The transcript hash is kept for the lifetime
+of the connection only as required by debugging hooks; clear it
+once Finished is verified if no debug hook needs it.
+
+### `mqc.c` — extend `derive_data_keys`
+
+Currently (after issue-3):
+
+```c
+static int derive_data_keys(
+    const uint8_t *shared_secret,
+    const uint8_t  transcript_hash[WC_SHA256_DIGEST_SIZE],
+    uint8_t c2s_key[MQC_AES_KEY_SZ],
+    uint8_t s2c_key[MQC_AES_KEY_SZ],
+    uint8_t c2s_iv [MQC_GCM_IV_SZ],
+    uint8_t s2c_iv [MQC_GCM_IV_SZ]);
+```
+
+After issue-4:
+
+```c
+static int derive_data_keys(
+    const uint8_t *shared_secret,
+    const uint8_t  transcript_hash[WC_SHA256_DIGEST_SIZE],
+    uint8_t c2s_key     [MQC_AES_KEY_SZ],
+    uint8_t s2c_key     [MQC_AES_KEY_SZ],
+    uint8_t c2s_iv      [MQC_GCM_IV_SZ],
+    uint8_t s2c_iv      [MQC_GCM_IV_SZ],
+    uint8_t c2s_finished[MQC_FINISHED_MAC_SZ],
+    uint8_t s2c_finished[MQC_FINISHED_MAC_SZ]);
+```
+
+Two additional `wc_HKDF_Expand` calls inside the function, using
+`MQC_HKDF_INFO_DATA_C2S_FINISHED` / `_S2C_FINISHED`.
+
+### `mqc.c` — new helpers
+
+```c
+/* Compute HMAC-SHA256(finished_key, transcript_hash). */
+static int mqc_compute_finished_mac(
+    const uint8_t finished_key[MQC_FINISHED_MAC_SZ],
+    const uint8_t transcript_hash[WC_SHA256_DIGEST_SIZE],
+    uint8_t out_mac[MQC_FINISHED_MAC_SZ]);
+
+/* Send our Finished frame.  Consumes sequence 0 in the send
+ * direction; on success conn->send_seq == 1 on return. */
+static int mqc_send_finished(mqc_conn_t *conn);
+
+/* Receive and verify the peer's Finished frame.  Consumes
+ * sequence 0 in the recv direction; on success conn->recv_seq
+ * == 1 and conn->finished_verified == 1 on return. */
+static int mqc_recv_finished(mqc_conn_t *conn);
+```
+
+`mqc_compute_finished_mac` uses wolfCrypt `wc_HmacSetKey(WC_SHA256,
+…)` + `wc_HmacUpdate` + `wc_HmacFinal`.
+
+`mqc_send_finished` reuses the existing data-plane send path
+(currently `mqc_send`'s internals around `mqc.c:1964-1984`) by
+factoring the encrypt-and-send loop into a helper that takes
+`(key, iv, seq*, plaintext, plaintext_len)`.  The Finished call
+passes the freshly-computed 32-byte MAC.
+
+`mqc_recv_finished` similarly reuses the data-plane receive path,
+with an extra step: assert `plaintext_len == MQC_FINISHED_MAC_SZ`
+(32), recompute the expected MAC, constant-time compare via
+`ConstantCompare` (wolfCrypt `ConstantCompare` from
+`wolfcrypt/src/misc.c` — in-tree).
+
+### `mqc.c` — handshake-completion sites
+
+After **every** path that derives `data_*_key` / `data_*_iv` /
+`data_*_finished` and constructs `mqc_conn_t *conn`, before
+returning the conn to the caller:
+
+```c
+ret = mqc_send_finished(conn);
+if (ret != 0) goto fail;
+ret = mqc_recv_finished(conn);
+if (ret != 0) goto fail;
+/* conn->finished_verified == 1 here */
+```
+
+Six sites, mirroring the six `derive_session_keys` call sites
+listed in `mqc-issue-3.plan` (`mqc.c:863, 1075, 1280, 1501, 1776,
+1863` after issue-3's restructuring).
+
+### `mqc.c` — gate `mqc_send` / `mqc_recv` on the flag
+
+`mqc_send` (`mqc.c:1964`) and `mqc_recv` (`mqc.c:2005`):
+
+```c
+if (!conn->finished_verified) {
+    MQC_SECURITY("mqc_send/recv called before Finished verified");
+    return -1;
+}
+```
+
+Defense-in-depth.  The handshake function won't return a
+non-Finished-verified `mqc_conn_t *`, so this branch should be
+unreachable in correct callers.  The check exists for the case
+where a future contributor adds a code path that constructs a
+`mqc_conn_t *` outside the handshake helpers.
+
+### Sequence-number contract
+
+After issue-4: the data plane begins at sequence **1** in both
+directions in **both** modes (clear and encrypted).  The Finished
+frame consumed sequence 0.  This replaces issue-1's "encrypted
+mode resumes at 1" rule and issue-3's "data plane resumes at 0
+because early keys are separate" rule.  Document the consolidated
+rule once in spec §9.2.
+
+## Tests (`socket-level-wrapper-MQC/examples/`)
+
+Add to the harness alongside the issue-1, -3 tests:
+
+1. **happy-clear-finished** — full clear-mode handshake + Finished
+   exchange + 1MiB data-plane round-trip.
+2. **happy-encrypted-finished** — same, encrypted mode.
+3. **neg-finished-mac-tamper** — patch one peer to flip a single
+   bit in the computed MAC before sealing.  Receiver must
+   terminate at Finished verify.  (AEAD will succeed since the
+   sealing was honest; HMAC verify will fail.)
+4. **neg-finished-key-mismatch** — patch one peer to derive
+   `data_c2s_finished` from a tweaked transcript hash.  Receiver
+   must terminate at Finished verify.  (Distinguishes from #3:
+   the bug is in the *key*, not the *MAC bytes*.)
+5. **neg-finished-aead-tamper** — patch one peer to seal the
+   correct MAC under a wrong key.  Receiver must terminate at
+   AEAD-decrypt step (before reaching MAC verify).
+6. **neg-data-before-finished** — patch a peer to skip Finished
+   and send an application frame as its first frame.  Receiver
+   must terminate.  (The receiver expects a Finished-shaped
+   plaintext; an application frame likely won't be 32 bytes long
+   *and* won't HMAC-verify.)
+7. **neg-finished-replay** — capture a Finished frame from one
+   handshake, replay it as the first frame of an unrelated
+   handshake (different `SS`).  Receiver must terminate
+   (different `data_*_key` → AEAD fails).
+8. **neg-pre-finished-send-rejected** — directly call
+   `mqc_send(conn, …)` on a `mqc_conn_t *` with
+   `finished_verified == 0` (constructed by hand for the test).
+   Returns the documented error; nothing goes on the wire.
+
+## Migration runbook
+
+Same flag-day cutover as issues #1–#3.  Recommend landing all
+four in a single commit on `phase-20`.  Issue-4 is the smallest
+of the four behaviorally — two HKDF outputs, one helper pair, one
+flag-gated `mqc_send`/`mqc_recv` check, six call-site insertions.
+
+If staging behind issues #1–#3 (already landed), the issue-4
+cutover is still wire-affecting (one new frame each direction
+right after handshake) and old peers will hang on the unexpected
+new frame.  Single-deployment factsorlie.com, no external
+clients, simple flag day.
+
+## Verification
+
+1. **Zero-warning build** (CLAUDE.md guardrail).
+2. **`make check`** clean.
+3. **All issue-4 tests pass** (2 happy + 6 negative).
+4. **Service health**: `systemctl is-active mtc-ca.service` →
+   `active`; no Finished-verify failures in `journalctl` over a
+   24-hour soak.
+5. **End-to-end**: `echo hi | mqc --encode --env --no-cache |
+   mqc --decode --env --no-cache` → `hi`.
+   `show-tpm --verify` against factsorlie.com:8446 succeeds.
+
+## Critical files to modify
+
+Ranked by depth of change:
+
+1. `socket-level-wrapper-MQC/mqc.c` — `derive_data_keys` extended,
+   `mqc_compute_finished_mac` / `_send_finished` / `_recv_finished`
+   added, `mqc_conn` struct extended, six handshake-completion
+   call sites updated, `mqc_send` / `mqc_recv` flag-gated.
+2. `socket-level-wrapper-MQC/mqc.h` — two info-string macros, one
+   size constant.
+3. `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md` —
+   §6.2/6.3 sentence, §7.4/7.5 sentence, §8 list extension, new
+   §8.1, §9.2 update, §12.7 paragraph.
+4. `socket-level-wrapper-MQC/examples/` — eight new tests (or
+   six new + two extensions to the issue-3 happy-path tests).
+5. `socket-level-wrapper-MQC/README-mqc-issues.md` — annotate
+   issue #4 as addressed by `mqc-issue-4.plan`.
+
+## Out of scope (deliberately deferred)
+
+- **PSK resumption** / **session tickets** / **0-RTT**.  None
+  exist in MQC v0; the Finished-doesn't-extend-the-transcript
+  decision above is what would change if they were added.
+- **Exporter keys** (TLS 1.3 RFC 8446 §7.5).  Same reason: not
+  used by any layer above MQC today.
+- **Post-handshake re-keying / key updates**.  MQC connections
+  are short-lived; no key-update mechanism in v0.  If added
+  later, the Finished MAC over the original transcript serves as
+  the anchor for the rekey derivation.
+- **Issue #5 (AEAD AAD on every frame)** — orthogonal.  Issue-5
+  binds metadata into each frame's AAD; issue-4 binds the
+  transcript into a one-shot MAC at handshake completion.  Both
+  changes can land independently.

@@ -1,0 +1,479 @@
+# Plan: bind the full handshake transcript (issue #1)
+
+## Status
+
+- Tracks issue #1 of `socket-level-wrapper-MQC/README-mqc-issues.md`.
+- Wire-format breaking.  We are at draft-page-mqc-protocol-**00**;
+  no backward-compat shim needed.
+
+## What's broken today
+
+### Clear-identity mode
+
+`mqc.c:753`, `mqc.c:840`, `mqc.c:1006`, `mqc.c:1050`:
+
+- Client signs **only** `EK_c` (its own ML-KEM encapsulation key).
+- Server signs **only** `CT_s` (its own ML-KEM ciphertext).
+- ML-DSA `ctx` is empty (`NULL, 0`) — no domain separation between
+  MQC handshake signatures and any other ML-DSA signature the same
+  identity key could ever produce.
+
+Nothing in either signature commits to: protocol version, suite ID,
+mode, the peer's `cert_index`, the peer's KEM contribution, or a
+role label.
+
+### Encrypted-identity mode (worse than the spec describes)
+
+`mqc.c:1295`, `mqc.c:1371`, `mqc.c:1556`, `mqc.c:1586`:
+
+- Client side: signs the encaps key it sent — same weakness as clear
+  mode.
+- **Server side: signs the literal string `"mqc-id:<cert_index>"`.**
+  That is a *constant per identity*.  Any past server signature for
+  cert_index N is replayable for any future encrypted-identity
+  handshake claiming to be cert_index N.  The encrypted-identity
+  ServerHello provides effectively zero handshake binding today.
+- The spec (Section 7.3) says the server's encrypted blob carries a
+  `Sig_s` over `CT_s` (matching clear mode); the implementation does
+  not do this.  Spec/code are both broken, but in different ways.
+
+### Spec/code field-name drift
+
+| Spec field | Wire field |
+|---|---|
+| `kem_pub` | `mlkem_encaps_key` (client) / `mlkem_ciphertext` (server) |
+
+Fix while we're touching the wire.
+
+### Missing fields entirely
+
+- No `version` byte/field on the wire.
+- No `suite` ID on the wire.
+- Mode (clear vs encrypted) is selected by JSON-shape inspection
+  (Section 7.1) — completely unauthenticated.
+
+---
+
+## Target design
+
+### Wire format additions (rev 0 → rev 0, breaking)
+
+ClientHello (clear mode), one frame:
+```json
+{
+  "version":    0,
+  "suite":      "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+  "mode":       "clear",
+  "kem_pub":    "<hex(EK_c)>",
+  "cert_index": <int C_c>,
+  "signature":  "<hex(Sig_c)>"
+}
+```
+
+ServerHello (clear mode), one frame:
+```json
+{
+  "version":    0,
+  "suite":      "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+  "mode":       "clear",
+  "kem_pub":    "<hex(CT_s)>",
+  "cert_index": <int C_s>,
+  "signature":  "<hex(Sig_s)>"
+}
+```
+
+ClientHello (encrypted mode), plaintext frame, no identity:
+```json
+{
+  "version":    0,
+  "suite":      "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+  "mode":       "encrypted",
+  "kem_pub":    "<hex(EK_c)>"
+}
+```
+
+ServerHello (encrypted mode), plaintext frame, no identity, no
+signature yet (server doesn't know `C_c` to bind it):
+```json
+{
+  "version":    0,
+  "suite":      "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+  "mode":       "encrypted",
+  "kem_pub":    "<hex(CT_s)>"
+}
+```
+
+Encrypted client identity blob (sealed with `c2s_key`, nonce 0):
+```json
+{
+  "cert_index": <int C_c>,
+  "signature":  "<hex(Sig_c)>"
+}
+```
+
+Encrypted server identity blob (sealed with `s2c_key`, nonce 0):
+```json
+{
+  "cert_index": <int C_s>,
+  "signature":  "<hex(Sig_s)>"
+}
+```
+
+Field-name change: rename `mlkem_encaps_key` and `mlkem_ciphertext`
+to a single `kem_pub` field, semantically distinguished by direction
+(spec already says this; code currently disagrees).
+
+### Transcript definition
+
+Constants:
+
+- `LABEL`     = `"mqc-hndshk/v1\n\x00"` — 16 bytes.  Style matches
+  the existing 16-byte cosigner label `"mtc-subtree/v1\n\x00"`.
+- `SUITE_ID`  = SHA-256 of the ASCII suite-string above (32 bytes).
+- `ROLE_CLI`  = `"client"` (6 bytes).
+- `ROLE_SRV`  = `"server"` (6 bytes).
+- `MODE_CLR`  = `0x00`.
+- `MODE_ENC`  = `0x01`.
+
+`transcript_input(role)` is the SHA-256 of:
+
+```
+LABEL                     (16 bytes)
+|| u8(version=0)          (1 byte)
+|| u8(mode_id)            (1 byte)
+|| SUITE_ID               (32 bytes)
+|| u32be(len(EK_c)) || EK_c
+|| u32be(len(CT_s)) || CT_s
+|| s32be(C_c)             (4 bytes; 0 if not yet known by signer)
+|| s32be(C_s)             (4 bytes; 0 if not yet known by signer)
+|| role                   (6 bytes)
+```
+
+Both peers compute the same SHA-256 of the same byte-string (modulo
+the trailing 6-byte role tag).  The role tag prevents a client
+signature from being mistaken for a server signature on the same
+transcript and vice-versa.
+
+### Signature
+
+```c
+Sig_role = ML-DSA-87.Sign(
+              sk          = own_ml_dsa_sk,
+              ctx         = LABEL,                    /* 16 bytes */
+              ctx_len     = 16,
+              msg         = transcript_input(role),   /* 32 bytes */
+              msg_len     = 32);
+```
+
+Both the embedded `LABEL` (inside the transcript) and the ML-DSA
+`ctx` carry the same 16-byte string.  The ML-DSA `ctx` provides
+cryptographic domain separation per FIPS 204; the embedded `LABEL`
+is in-message belt-and-braces.
+
+### When does each side know `C_c` / `C_s`?
+
+| Mode | Signer | Knows `C_c`? | Knows `C_s`? | Action |
+|---|---|---|---|---|
+| Clear | client (in ClientHello) | yes | **no** | sign with `C_s = 0` |
+| Clear | server (in ServerHello) | yes (from ClientHello) | yes | sign with both populated |
+| Encrypted | client (phase-2 blob, after recv ServerHello) | yes | **no** (still hidden) | sign with `C_s = 0` |
+| Encrypted | server (phase-2 blob, after recv client's phase-2) | yes (just learned) | yes | sign with both populated |
+
+The asymmetry is deliberate.  The client's signature commits to what
+it knew at the time (TLS 1.3 has the same property for
+CertificateVerify before Finished).  The server's signature commits
+to *everything*, closing UKS in the client→server direction.  A
+follow-up "Finished" MAC after key derivation (issue #4) would close
+the symmetry; not in this plan.
+
+### Encrypted-identity mode round-trip count
+
+Spec today: 3 frames (CH plain, SH plain+enc-blob, client enc-blob).
+
+After this plan: **4 frames** — phase 1 plain (CH, SH), phase 2
+encrypted (client identity, server identity).  The server's identity
+blob now sits *after* the client's identity blob because the server
+needs `C_c` in scope to sign the full transcript.
+
+This adds one wall-clock round trip in encrypted-identity mode.  Cost
+accepted: the alternative is a weaker transcript binding.  Clear-mode
+round trips are unchanged (still 2 frames).
+
+---
+
+## Spec edits (`draft-page-mqc-protocol-00.md`)
+
+1. **Section 4 (Cryptographic Primitives)** — add a `Suite` row
+   binding `SUITE_ID` to the primitive set.
+2. **Section 5.2 (Handshake JSON)** — add `version`, `suite`, `mode`
+   to the field table.  Define `kem_pub` as the spec already does
+   (current code uses `mlkem_encaps_key` / `mlkem_ciphertext`; the
+   code is wrong; fix the code).
+3. **Section 6 (Handshake clear-identity)** — replace the
+   "signature is over `kem_pub`" wording with the full transcript
+   construction; show new ClientHello / ServerHello JSON examples
+   with the asymmetric `(C_c, C_s)` knowledge.
+4. **Section 7 (Handshake encrypted-identity)** — re-sequence:
+     - phase-1 frames carry `version`, `suite`, `mode`, `kem_pub`
+       only (no signature);
+     - phase-2 frames are encrypted, contain `{cert_index, signature}`,
+       client-first then server (4 frames total);
+     - server signs only after learning `C_c`.
+   Bump the 3-frame tally to 4 frames; document the extra round trip.
+5. **Section 9.2 (Nonce construction)** — encrypted-identity mode now
+   consumes two nonces per direction during handshake (both phase-2
+   frames are AEAD-sealed).  Data plane resumes at the next sequence
+   on each side: `send_seq = 2, recv_seq = 2`.
+6. **Section 10.2 (ML-DSA-87 Signature on the Handshake)** — replace
+   "over the sender's `kem_pub`" with the transcript definition.
+   State the ML-DSA `ctx` label `"mqc-hndshk/v1\n\x00"` and its
+   16-byte length.
+7. **Section 12 (Security Considerations)** — add subsection
+   **12.7 Transcript Binding and Cross-Protocol Domain Separation**
+   explaining what each transcript field defends against:
+     - `version` / `suite` → version- and suite-rollback;
+     - `mode` → clear/encrypted-mode confusion;
+     - both `cert_index` values → identity substitution;
+     - both `kem_pub` values → KEM-share substitution;
+     - role tag → role confusion;
+     - ML-DSA `ctx` → cross-protocol replay against any other use of
+       the same identity key.
+8. **Appendix A (Worked Example)** — refresh hex dumps to include
+   the new fields.
+
+---
+
+## Code edits
+
+### `mqc.h`
+
+```c
+#define MQC_PROTOCOL_VERSION 0
+#define MQC_SUITE_STRING     "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256"
+#define MQC_HANDSHAKE_LABEL  "mqc-hndshk/v1\n\x00"   /* 16 bytes */
+#define MQC_HANDSHAKE_LABEL_LEN 16
+#define MQC_ROLE_CLIENT      "client"                /* 6 bytes */
+#define MQC_ROLE_SERVER      "server"                /* 6 bytes */
+#define MQC_MODE_CLEAR       0x00
+#define MQC_MODE_ENCRYPTED   0x01
+```
+
+### `mqc.c` — new helper
+
+```c
+/* Compute the SHA-256 transcript hash that the role-side signature
+ * will cover.  ek/ct may be NULL with len 0 if not yet known by the
+ * signer (clear-mode client doesn't know CT yet; encrypted-mode
+ * client doesn't know C_s yet).  Returns 0 on success. */
+static int mqc_compute_transcript_hash(
+    uint8_t out_hash[WC_SHA256_DIGEST_SIZE],
+    int mode_id,                          /* MQC_MODE_CLEAR or _ENCRYPTED */
+    const uint8_t *ek, size_t ek_len,
+    const uint8_t *ct, size_t ct_len,
+    int32_t cert_index_c,                  /* 0 if not yet known */
+    int32_t cert_index_s,                  /* 0 if not yet known */
+    const char *role);                     /* MQC_ROLE_CLIENT/_SERVER */
+```
+
+Implementation: precomputed `SUITE_ID = SHA-256(MQC_SUITE_STRING)`
+(can be a static const populated lazily, or a hard-coded 32-byte
+constant generated once and pasted in with a comment showing the
+input string).  Build the byte string with `wc_Sha256Update` calls,
+finalize with `wc_Sha256Final`.
+
+### `mqc.c` — replace every `wc_dilithium_*_ctx_msg(NULL, 0, …)` call
+
+Sites (already enumerated above): 753, 840, 1006, 1050, 1295, 1371,
+1556, 1586.  Replace with calls that pass:
+
+- `ctx     = (const byte *)MQC_HANDSHAKE_LABEL`
+- `ctx_len = MQC_HANDSHAKE_LABEL_LEN`
+- `msg     = transcript_hash`           (output of helper above)
+- `msg_len = WC_SHA256_DIGEST_SIZE`     (32)
+
+The role argument to the helper is `MQC_ROLE_CLIENT` on lines 753,
+1295 (client signing in either mode) and `MQC_ROLE_SERVER` on lines
+1050, 1586 (server signing in either mode).  For verifies, the role
+argument is the *peer's* role: server-side verify (1006, 1556) uses
+`MQC_ROLE_CLIENT`; client-side verify (840, 1371) uses
+`MQC_ROLE_SERVER`.
+
+### `mqc.c` — clear-mode `mqc_connect`
+
+- Build ClientHello JSON with `version`, `suite`, `mode="clear"`,
+  rename `mlkem_encaps_key` → `kem_pub`.
+- Compute transcript hash with `(ek=EK_c, ct=NULL, C_c=our, C_s=0,
+  role=client)`.
+- Sign over the hash with the new ctx label.
+- After receiving ServerHello, recompute transcript hash with
+  `(ek=EK_c, ct=CT_s, C_c=our, C_s=peer, role=server)`.  Verify
+  server's signature against that hash.
+- Reject if `version != 0`, `suite != MQC_SUITE_STRING`, or
+  `mode != "clear"`.
+
+### `mqc.c` — clear-mode `mqc_accept`
+
+- Receive ClientHello.  Validate `version`, `suite`, `mode="clear"`.
+  Reject `mlkem_encaps_key` / `mlkem_ciphertext` (old field names)
+  with a clear diagnostic.
+- Compute transcript hash with `(EK_c, NULL, C_c=peer, C_s=0,
+  role=client)`.  Verify client signature.
+- Encapsulate, build ServerHello with the same new fields, rename
+  `mlkem_ciphertext` → `kem_pub`.
+- Compute transcript hash with `(EK_c, CT_s, C_c=peer, C_s=our,
+  role=server)`.  Sign.
+
+### `mqc.c` — encrypted-mode `mqc_connect_encrypted`
+
+- Phase 1 ClientHello: add `version`, `suite`, `mode="encrypted"`,
+  `kem_pub`.
+- Phase 1 ServerHello receive: validate version/suite/mode; extract
+  `kem_pub` (= CT_s).  Decapsulate, derive keys.
+- Phase 2 client identity (encrypted, c2s_key, nonce=0): compute
+  transcript hash `(EK_c, CT_s, C_c=our, C_s=0, role=client)`.  Sign.
+  Send `{cert_index, signature}` sealed.
+- Phase 2 server identity (encrypted, s2c_key, nonce=0): receive,
+  parse `cert_index` (= C_s), `signature`.  Recompute transcript
+  hash `(EK_c, CT_s, C_c=our, C_s=peer, role=server)`.  Verify.
+- Data-plane: `send_seq = recv_seq = 2`.
+
+### `mqc.c` — encrypted-mode `mqc_accept_encrypted`
+
+- Phase 1 ClientHello receive: validate version/suite/mode; extract
+  `kem_pub` (= EK_c).
+- Phase 1 ServerHello: send `version`, `suite`, `mode="encrypted"`,
+  `kem_pub` (= CT_s).
+- Phase 2 client identity receive (c2s_key, nonce=0): parse
+  `cert_index` (= C_c), `signature`.  Recompute transcript hash
+  `(EK_c, CT_s, C_c=peer, C_s=our, role=client)`.  Verify.
+- Phase 2 server identity send (s2c_key, nonce=0): compute transcript
+  hash `(EK_c, CT_s, C_c=peer, C_s=our, role=server)`.  Sign.  Send
+  sealed.
+- Data-plane: `send_seq = recv_seq = 2`.
+
+### `mqc.c` — `auto_accept_detect`
+
+- Distinguish modes by the new explicit `mode` field, not by the
+  presence/absence of `cert_index`.  Reject as malformed if `mode`
+  is missing OR if `mode`'s value contradicts the actual JSON shape
+  (e.g., `mode="clear"` but no `cert_index`, or `mode="encrypted"`
+  with `cert_index` present).
+
+### `mqc.c` — strict JSON parsing (small bonus)
+
+`json_tokener_set_flags(tok, JSON_TOKENER_STRICT)` on the handshake
+parser so duplicate keys and non-strict UTF-8 are rejected.  Issue
+#11 wants the full treatment; this is the minimum.
+
+### `mqc_peer.c` — no changes
+
+Peer verification is independent of handshake transcript binding.
+
+---
+
+## Test coverage (`socket-level-wrapper-MQC/examples/`)
+
+New tests under the existing `examples/` harness, runnable via
+`make -f Makefile.tools test`:
+
+1. **happy-clear** — connect/accept clear mode end-to-end, verify
+   data-plane echo round-trip.
+2. **happy-encrypted** — same, encrypted mode.
+3. **neg-role-swap** — capture a client ClientHello, replay it as
+   a ServerHello (swap field positions); verifier must reject
+   because the role tag in the transcript hash differs.
+4. **neg-cert-swap** — alter `cert_index` after the signature was
+   made; verify must fail (transcript binds it).
+5. **neg-kem-swap** — swap `kem_pub` after sign; verify must fail.
+6. **neg-empty-ctx-replay** — sign a transcript with the correct
+   bytes but `ctx=NULL,0` (the old protocol); the new verifier with
+   `ctx="mqc-hndshk/v1\n\x00"` must reject.  Proves domain
+   separation works.
+7. **neg-mqc-id-replay** — present the pre-fix encrypted-mode
+   server-side blob (literal `"mqc-id:N"` signature) to the new
+   verifier; must be rejected.
+8. **neg-version-mismatch** — `version=1` in JSON but signature
+   computed over `version=0`; verify must fail.
+9. **neg-suite-mismatch** — `suite="OTHER"`; verify must fail.
+10. **neg-mode-downgrade** — capture an encrypted-mode ClientHello,
+    strip `mode`, present to server; reject.
+
+---
+
+## Migration runbook (factsorlie.com, port 8446)
+
+Single deployment, single MTC log, no external 8446 clients.
+
+1. On the dev box: build, install, `make -f Makefile.tools test`
+   (all 10 tests above must pass), `make -f Makefile.tools` clean
+   (zero warnings, per CLAUDE.md guardrail).
+2. Spec edits committed to the same branch as the code.
+3. SSH to factsorlie.com:
+   - `git pull` the new branch.
+   - `./make-all.sh`.
+   - `sudo systemctl restart mtc-ca.service`.
+   - `journalctl -u mtc-ca.service -f` — verify clean restart, no
+     MQC handshake errors against itself for the recosign / loopback
+     paths.
+4. The MTC client tools (`show-tpm`, `bootstrap_ca`, `bootstrap_leaf`,
+   `admin_recosign`) all link the same updated `libmqc.a`.  Once
+   redeployed they all speak new-MQC.
+5. Smoke test from the dev box (which has now also been upgraded):
+   `echo hi | mqc --encode --env --no-cache | mqc --decode --env
+   --no-cache` should print `hi`.
+6. End-to-end: `show-tpm --verify` against factsorlie.com:8446
+   succeeds.
+
+If a CA-internal job is mid-run during the cutover its existing TCP
+connection holds the old protocol bytes in flight and will fail at
+the next handshake; this is acceptable (the jobs are short and
+re-runnable).
+
+---
+
+## Verification
+
+1. **Zero-warning build** (CLAUDE.md guardrail):
+   `make -f Makefile.tools clean && make -f Makefile.tools 2>&1 |
+    grep -cE '(warning|error):'` → `0`.
+2. **`make check`** — clean.
+3. **All 10 transcript-binding tests pass** (positive + 8 negatives).
+4. **Service health**: `systemctl is-active mtc-ca.service` → `active`
+   after restart; no MQC handshake failures in `journalctl` over a
+   24-hour soak.
+5. **End-to-end**: per migration runbook steps 5 and 6.
+
+---
+
+## Critical files to modify
+
+Ranked by depth of change:
+
+1. `socket-level-wrapper-MQC/mqc.c` — all four handshake flows,
+   transcript helper, ctx-label sign/verify, field rename, mode
+   detection.
+2. `socket-level-wrapper-MQC/mqc.h` — new constants.
+3. `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md` — spec
+   edits per the list above.
+4. `socket-level-wrapper-MQC/examples/` — new tests (likely 1-2 new
+   .c files plus harness wiring).
+5. `socket-level-wrapper-MQC/README-mqc-issues.md` — annotate
+   issue #1 as addressed by `mqc-issue-1.plan`.
+
+---
+
+## Out of scope (deliberately deferred)
+
+- **Issue #2** (version + suite ID) — absorbed here as a prerequisite
+  for the transcript binding.
+- **Issue #3** (transcript-bound HKDF — `HKDF-Extract(transcript_hash,
+  SS)`) — separate plan.
+- **Issue #4** (Finished MAC) — separate plan.  Closing this would
+  symmetrize the client→server signature's "doesn't know `C_s` yet"
+  asymmetry called out above.
+- **Issue #5** (AEAD AAD on data-plane frames) — separate plan.
+- **Issue #6** (encrypted-identity authentication gaps) — partially
+  closed here as a side effect: the `"mqc-id:N"` constant-string
+  hole is fixed, and EK_c, CT_s, mode, role are all bound into the
+  encrypted server-identity transcript.
+- **Issues #7–#12** — separate plans.

@@ -1,0 +1,401 @@
+# Plan: cheap pre-crypto filters and tighter DoS budgets (issue #12)
+
+## Status
+
+- Tracks issue #12 of `socket-level-wrapper-MQC/README-mqc-issues.md`.
+- Wire-format unchanged.  Adds cheap byte-level checks before
+  expensive ML-DSA-87 verification, plus per-cert throttling and
+  a memory cap.
+- Independent of issues #1–#11.  Layers on top of `mqc-issue-6a.plan`
+  (the existing rate-limit knobs become operationally tunable; #12
+  adds two more knobs).
+- No flag day required.  All changes are additional rejections,
+  not new accepted inputs.
+
+## What's already in place
+
+The MQC accept path already has substantial DoS defenses:
+
+- **Per-IP rate limits** (`mqc.c:364, 395`) — Redis-backed
+  per-minute and per-hour buckets for both connect attempts and
+  handshake failures.  Tuned to 100/min, 1000/hr connect; 10/min,
+  100/hr fail.  Issue 6a exposes these as runtime knobs.
+- **AbuseIPDB integration** (`mqc.c:435+`) — optional external
+  reputation check on inbound IPs.
+- **Handshake timeouts** — per-read 3s and total-handshake 5s
+  budgets (`MQC_HANDSHAKE_STALL_SEC`, `MQC_HANDSHAKE_TOTAL_SEC`).
+- **Maximum handshake frame** — 128 KiB cap on JSON read.
+- **Per-direction keys + per-direction nonces** — prevents
+  amplification across connections.
+
+So the gross DoS surface (slowloris, IP flooding) is already
+addressed.  What's left:
+
+## What's still missing
+
+### 1. Pre-crypto byte-length validation
+
+Today the accept path:
+
+1. Reads the JSON.
+2. Hex-decodes `kem_pub` and `signature`.
+3. Calls `wc_dilithium_verify_ctx_msg` (~10–20 ms of compute).
+4. Calls `wc_MlKemKey_DecodePublicKey` (cheaper but still
+   non-trivial).
+
+If the attacker sends garbage of the right shape (parseable JSON,
+parseable hex, wrong byte counts), the server burns the ML-DSA
+verification budget before noticing.  ML-DSA-87 verification is
+~400 µs per call on modern x86; at 1000 conn/hr per IP per the
+default rate-limit, an attacker with 100 IP addresses can burn
+~12 CPU-seconds per hour.  Survivable but wasteful.
+
+Cheap fix: assert the hex-decoded byte length matches the exact
+expected size for the field's role **before** calling any
+cryptographic function:
+
+| Field | Expected size |
+|---|---|
+| `kem_pub` (client → server) | 1184 bytes (`MQC_MLKEM768_PUB_SZ`) |
+| `kem_pub` (server → client) | 1088 bytes (`MQC_MLKEM768_CT_SZ`) |
+| `signature` | 4627 bytes (`MQC_MLDSA87_SIG_SZ`) |
+
+If lengths don't match: reject before any HKDF / ML-KEM / ML-DSA
+call.  The cost is one length comparison per field.
+
+This work is also called out as part of `mqc-issue-11.plan`'s
+`mqc_json_get_hex_strict(…, expected_byte_len, …)` helper.  The
+two plans intersect cleanly — issue-11 introduces the helper;
+issue-12 makes it the canonical pre-crypto guard and ties the
+rejection into the per-IP failure rate limiter.
+
+### 2. Per-cert (in addition to per-IP) throttling
+
+A single legitimate IP shouldn't be able to flood with handshakes
+claiming hundreds of different `cert_index` values.  Each fresh
+`cert_index` triggers a cert fetch (HTTP), an inclusion-proof
+verification (~1 ms), and a cosignature verification (~400 µs on
+ML-DSA-87) — so a "rotate cert_index every handshake" attack from
+inside the per-IP limit is more expensive than rotating
+nothing.
+
+Add a **per-(IP, cert_index) bucket**: same Redis pattern as the
+existing per-IP buckets, keyed on `mqc:<ip>:cert:<index>:m` and
+`mqc:<ip>:cert:<index>:h`.  Same default ceilings as the per-IP
+fail buckets (10/min, 100/hr, tuned via 6a-style knobs).
+
+Two new runtime knobs (extending 6a):
+
+| Key in `config.server` | Default | Why |
+|---|---|---|
+| `mqc-rl-cert-per-min` | 10 | per-(IP, cert) per-minute |
+| `mqc-rl-cert-per-hour` | 100 | per-(IP, cert) per-hour |
+
+### 3. Memory cap per concurrent connection
+
+`mqc_accept` reads up to 128 KiB of handshake JSON into a stack
+buffer (`json_buf[64000]` per current code).  64 KB on the stack
+is fine for one connection; under high concurrency it stresses
+the per-thread stack limit (default 8 MiB on Linux → ~128
+concurrent handshakes before stack pressure).
+
+For the server side, factor the 64 KB buffer onto the heap with
+a tracked allocation counter:
+
+```c
+static atomic_int s_handshake_bytes_in_flight = 0;
+#define MQC_HANDSHAKE_BYTES_TOTAL_CAP  (16 * 1024 * 1024)   /* 16 MiB */
+
+if (atomic_load(&s_handshake_bytes_in_flight) + json_bufsz >
+    MQC_HANDSHAKE_BYTES_TOTAL_CAP) {
+    MQC_SECURITY("HANDSHAKE_BYTES_CAP rejected (in_flight=%d)",
+                 atomic_load(&s_handshake_bytes_in_flight));
+    return -1;
+}
+atomic_fetch_add(&s_handshake_bytes_in_flight, json_bufsz);
+/* ... use buf, free at the end (success or fail) ... */
+atomic_fetch_sub(&s_handshake_bytes_in_flight, json_bufsz);
+```
+
+The 16 MiB total cap allows ~256 concurrent handshakes at the
+default 64 KiB per buffer.  Tunable via 6a-style knob:
+`mqc-handshake-bytes-total-cap` (default 16777216 = 16 MiB).
+
+### 4. Per-cert verify-cache (free win)
+
+Once a peer's cert+pubkey is verified (cosignature ok, inclusion
+proof ok, validity window ok per issue-8), cache the verified
+pubkey keyed by `cert_index`.  Subsequent handshakes for the
+same `cert_index` skip the inclusion proof and cosignature
+re-verification (per spec §10.5 still query revocation per
+issue-7's policy).
+
+This is *already* described in spec §10.1 ("Implementations
+SHOULD cache verified certificates locally") and the reference
+implementation already does it.  The audit work here is to
+confirm:
+
+- The cache key is `cert_index`, not anything else.
+- The cache value includes the cosigner-pubkey fingerprint
+  (per issue-8) so a cosigner rotation invalidates the cache.
+- The cache size is bounded to prevent the cache itself from
+  becoming a memory-DoS vector.
+
+Cap the cache at e.g. 1024 entries (LRU); add a knob
+`mqc-cert-cache-max-entries` (default 1024).  At 4 KiB per
+verified cert (cosigner pubkey + DER-encoded leaf pubkey + a
+few flags), 1024 entries is ~4 MiB — bounded and predictable.
+
+## What the plan does NOT add
+
+- **Client puzzles / proof-of-work tokens.**  The reviewer
+  suggests these as optional.  For postWolf v0 with a single
+  deployment behind a normal cloud-provider WAF, the marginal
+  benefit doesn't justify the wire-format change (would require
+  a new handshake field and a server-issued token before the
+  first ClientHello — round-trip cost) or the operator burden
+  (PoW difficulty tuning).  Revisit if the basic rate limits +
+  pre-crypto filters prove insufficient under real traffic.
+- **TCP-level rate limits** (`iptables --hitcount`, fail2ban,
+  cloud WAF) — already RECOMMENDED in spec §12.6 and orthogonal
+  to MQC code; an operator deployment concern.
+- **Compute budget per connection** beyond the existing
+  handshake timeout — would require interrupting in-progress
+  ML-DSA verification, which wolfCrypt doesn't support.
+
+## Spec edits (`draft-page-mqc-protocol-00.md`)
+
+§5.2 (Handshake JSON) — already gets the exact-byte-length
+language from issue-11.  Cross-reference here.
+
+§11.2 (Rate Limiting) — extend the existing list:
+
+> Servers SHOULD additionally enforce per-(source-IP,
+> cert_index) rate limits to prevent a single IP from
+> exhausting the cert-verification cache via index-rotation
+> attacks.  RECOMMENDED defaults: 10 fresh `cert_index` values
+> per source IP per minute, 100 per hour.
+
+§11 (Operational Parameters) — add three new tunables to the 6a
+list:
+
+- `mqc-rl-cert-per-min`
+- `mqc-rl-cert-per-hour`
+- `mqc-handshake-bytes-total-cap`
+- `mqc-cert-cache-max-entries`
+
+§12.6 (Denial of Service) — extend:
+
+> Implementations MUST validate the byte length of every hex-
+> encoded field (`kem_pub`, `signature`, encrypted-mode `encrypted`)
+> against the exact size defined for that field by the chosen
+> suite (Section 4) before invoking any cryptographic primitive
+> on the field's contents.  Rejections at this stage SHOULD
+> count against the per-IP failure rate-limit bucket (Section
+> 11.2).
+
+## Code edits
+
+### `socket-level-wrapper-MQC/mqc.c` — pre-crypto length guards
+
+Issue-11's `mqc_json_get_hex_strict(…, expected_byte_len, …)`
+helper is the implementation; this plan is the wiring.  Every
+place that reads `kem_pub` or `signature` from JSON must pass
+the role-appropriate `expected_byte_len`:
+
+- `mqc_accept` (clear-mode server-side): `kem_pub` size =
+  `MQC_MLKEM768_PUB_SZ` (1184), `signature` size =
+  `MQC_MLDSA87_SIG_SZ` (4627).
+- `mqc_connect` (clear-mode client-side, parsing the
+  ServerHello): `kem_pub` size = `MQC_MLKEM768_CT_SZ` (1088).
+- Encrypted-mode equivalents in `mqc_accept_encrypted` /
+  `mqc_connect_encrypted`.
+
+A length mismatch returns -1 from the helper; the call site
+calls `mqc_ratelimit_fail_record(client_ip)` and aborts.
+
+### `socket-level-wrapper-MQC/mqc.c` — per-cert throttling
+
+Add helpers parallel to the existing per-IP ones:
+
+```c
+/* Returns 0 = OK to proceed, -1 = throttled. */
+static int mqc_ratelimit_cert_check(const char *ip, int cert_index);
+
+/* Increments fresh-cert-index counters. */
+static void mqc_ratelimit_cert_record(const char *ip, int cert_index);
+```
+
+Call site: in `mqc_peer_verify` (or whoever consumes
+`cert_index` first), after the per-IP check passes but **before**
+the cert fetch / verification:
+
+```c
+if (mqc_ratelimit_cert_check(client_ip, peer_index) != 0) {
+    MQC_SECURITY("CERT_RATE_LIMITED ip=%s cert_index=%d",
+                 client_ip, peer_index);
+    return -1;
+}
+mqc_ratelimit_cert_record(client_ip, peer_index);
+```
+
+Use the 6a `mqc_rt_cfg()` cache for the thresholds.
+
+### `socket-level-wrapper-MQC/mqc.c` — memory cap
+
+Replace the 64 KiB stack buffer with a heap-allocated buffer
+guarded by an atomic counter:
+
+```c
+size_t json_bufsz = MQC_MAX_HANDSHAKE;     /* or runtime cfg */
+size_t in_flight = atomic_fetch_add(
+    &s_handshake_bytes_in_flight, json_bufsz);
+if (in_flight + json_bufsz > mqc_rt_cfg()->handshake_bytes_total_cap) {
+    atomic_fetch_sub(&s_handshake_bytes_in_flight, json_bufsz);
+    MQC_SECURITY("HANDSHAKE_BYTES_CAP rejected ip=%s in_flight=%zu",
+                 client_ip, in_flight);
+    close(fd);
+    return NULL;
+}
+
+char *json_buf = malloc(json_bufsz);
+if (!json_buf) {
+    atomic_fetch_sub(&s_handshake_bytes_in_flight, json_bufsz);
+    close(fd);
+    return NULL;
+}
+/* ...handshake... */
+free(json_buf);
+atomic_fetch_sub(&s_handshake_bytes_in_flight, json_bufsz);
+```
+
+Apply to all four accept paths (clear/encrypted × send/recv —
+six call sites total per the existing 64 KiB buffer audit).
+
+### `socket-level-wrapper-MQC/mqc_peer.c` — bounded cert cache
+
+If the existing cert cache is unbounded, add an LRU eviction at
+`mqc-cert-cache-max-entries`.  The cache lookup-and-insert
+becomes:
+
+```c
+struct cached_cert *c = lru_lookup(&s_cert_cache, cert_index);
+if (c) {
+    if (cosigner_fingerprint_matches(c)) return c;
+    lru_remove(&s_cert_cache, c);   /* stale on cosigner rotation */
+}
+/* fetch + verify ... */
+lru_insert(&s_cert_cache, cert_index, verified_data,
+           mqc_rt_cfg()->cert_cache_max_entries);
+```
+
+If no LRU is in place today, add a small one (~80 LoC of pure
+data-structure code; no third-party dep needed for 1024-entry
+scale).
+
+### Knob plumbing (extends 6a)
+
+Three new fields in `mqc_runtime_cfg`:
+
+```c
+long rl_cert_per_min;
+long rl_cert_per_hour;
+long handshake_bytes_total_cap;
+long cert_cache_max_entries;
+```
+
+Loaded from `/etc/postWolf/config` per the 6a pattern, with
+compiled-in defaults.
+
+## Tests (`socket-level-wrapper-MQC/examples/`)
+
+1. **happy-pre-crypto-pass** — handshake with all field lengths
+   exactly right; succeeds; trace shows length-check passed.
+2. **neg-kem-pub-too-short** — `kem_pub` is 1183 bytes; reject
+   *before* any ML-KEM call.  Verify in trace that no
+   `wc_MlKem*` function was invoked (instrument with a counter
+   for the test).
+3. **neg-kem-pub-too-long** — 1185 bytes; reject pre-crypto.
+4. **neg-signature-wrong-length** — 4626 bytes; reject before
+   `wc_dilithium_verify_ctx_msg`.
+5. **neg-cert-rate-limit** — same IP submits 11 distinct
+   `cert_index` values within 60 s under the default
+   `mqc-rl-cert-per-min = 10`; 11th rejected with
+   `CERT_RATE_LIMITED`.
+6. **neg-handshake-bytes-cap** — open enough concurrent
+   half-open handshakes to exceed
+   `mqc-handshake-bytes-total-cap`; new connection attempts
+   rejected with `HANDSHAKE_BYTES_CAP`.
+7. **neg-cert-cache-eviction** — fill the cert cache to its
+   `mqc-cert-cache-max-entries` cap, then verify a new
+   `cert_index`; assert the LRU evicts the oldest entry (test
+   probes the cache state via a debug accessor).
+
+## Migration runbook
+
+Wire-quiet, behavior-conservative for legitimate peers (correct
+field lengths + low cert-rotation rate per IP).  Pathological
+clients (broken implementations, scanners, attackers) start
+hitting the new rejections.
+
+For factsorlie.com:
+
+1. Build + install: `./make-all.sh`.
+2. Optional: tune the new 6a-style knobs in `/etc/postWolf/config`
+   if defaults are wrong for your traffic profile.
+3. `sudo systemctl restart mtc-ca.service`.
+4. Soak monitoring (24 h):
+   - `journalctl -u mtc-ca.service -f | grep -E
+     "PRE_CRYPTO_LEN_FAIL|CERT_RATE_LIMITED|HANDSHAKE_BYTES_CAP"`
+   - Should be 0 for known-good clients.  Any hit means a
+     legitimate client has a non-conformant implementation
+     (likely a fix for that client).
+5. Negative test from a separate box: send a malformed handshake
+   (`kem_pub` length wrong); confirm rejection in journalctl
+   and confirm `mqc_ratelimit_fail_record` increments.
+
+## Verification
+
+1. **Zero-warning build**.
+2. **`make check`** clean.
+3. **All issue-12 tests pass** (1 happy + 6 negative).
+4. **Service health**: `systemctl is-active mtc-ca.service` →
+   `active`; soak monitoring per runbook step 4 produces clean
+   logs over 24 h.
+5. **End-to-end**: `show-tpm --verify` against
+   factsorlie.com:8446 succeeds.
+
+## Critical files to modify
+
+1. `socket-level-wrapper-MQC/mqc.c` — pre-crypto length guards
+   at every `kem_pub` / `signature` decode site (6 sites);
+   per-cert rate-limit helpers; memory-cap atomic counter +
+   buffer plumbing across 4 accept paths.
+2. `socket-level-wrapper-MQC/mqc_peer.c` — LRU cap on the
+   per-cert verify cache.
+3. `socket-level-wrapper-MQC/mqc.h` — exposed sizes
+   (`MQC_MLKEM768_PUB_SZ`, `_CT_SZ`, `MQC_MLDSA87_SIG_SZ`)
+   shared with issue-11.
+4. `socket-level-wrapper-MQC/config.h` — defaults for the
+   four new tunables.
+5. `mtc-keymaster/read-config/config.server` — commented-out
+   examples for the four new tunables.
+6. `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md` —
+   §11.2 extension; §12.6 strengthening; §11 list updates;
+   cross-reference §5.2 hex-length rule from issue-11.
+7. `socket-level-wrapper-MQC/examples/` — 7 new tests.
+
+## Out of scope (deliberately deferred)
+
+- **Client puzzles / proof-of-work** — wire-format-affecting,
+  not justified for v0.
+- **TCP-level rate limiting** (iptables/WAF) — operator
+  responsibility, not MQC code.
+- **Adaptive thresholds** (tighten limits when CPU > 80%) —
+  feedback-loop complexity not justified for current scale.
+- **Cert-cache sharing across server processes** (Redis-backed
+  cache) — single-process server design today; revisit if
+  multi-process or multi-host MQC fronting is added.
+- **Memory pool for per-connection buffers** instead of malloc
+  per connect.  Pool would help allocation cost; latency
+  measurements don't show malloc as a hot spot today.
