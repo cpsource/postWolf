@@ -78,10 +78,13 @@ P0 ─► P1 (flag day) ─► P2 ─► P3 ─► P4 ─► P5 ─► P6 ─►
   implementers).
 - Phase 6 is **user-facing documentation** (operators, CLI users,
   future Claude Code sessions).
-- Phase 7 is the **encrypted-identity mode rewrite** (deferred —
-  pre-Phase-1 implementation was deleted; clear mode is the
-  default; encrypted mode is opt-in for callers that need
-  traffic-analysis resistance).
+- Phase 7 is the **encrypted-identity mode rewrite** (DONE —
+  shipped in commits `de0ff9d60` (file-split refactor) and
+  `a287aa8d0` (4-frame handshake bodies + auto-detect
+  dispatcher).  Clear mode remains the default; encrypted mode
+  is opt-in via `cfg.encrypt_identity = 1` or `show-tpm
+  --encrypted` for callers that need traffic-analysis
+  resistance).
 
 ## Phase 0 — Operability foundation (ship-anytime)
 
@@ -720,7 +723,7 @@ already serving this role) that:
 
 ---
 
-## Phase 7 — Encrypted-identity mode rewrite (deferred)
+## Phase 7 — Encrypted-identity mode rewrite (DONE)
 
 ### What this is
 
@@ -746,18 +749,40 @@ The cost is one extra round trip (~1.5x latency) and a second key
 schedule.  It's an opt-in mode for callers who want
 traffic-analysis resistance; clear mode remains the default.
 
-### Why this is deferred
+### Status — DONE
 
-The pre-Phase-1 implementation of `mqc_connect_encrypted` /
-`mqc_accept_encrypted` was **deleted** during Phase 1's wire-format
-change (it didn't compose with the new transcript / HKDF / Finished
-/ AAD architecture).  The two entry points are 3-line stubs that
-return NULL with a clear MQC_SECURITY log line.  Every production
-MQC client (`mqc`, `show-tpm`, `bootstrap_ca`, `bootstrap_leaf`,
-`admin_recosign`, the renew/revoke/issue tools) uses clear mode, so
-no caller currently requires encrypted mode.
+Both commits shipped on `phase-21` (later merged to `master`):
 
-The recovery is non-trivial:
+- **Commit 1:** `de0ff9d60` — file-split refactor.  Reorganised
+  the 2378-line monolithic `mqc.c` into a 70-line dispatcher +
+  `mqc_internal.h` + `mqc_common.c` + `mqc_clear.c` +
+  `mqc_encrypted.c` (stubs at end of commit 1).  Zero behavior
+  change; aggregate test suite still 4/4.
+- **Commit 2:** `a287aa8d0` — encrypted-mode handshake bodies +
+  auto-detect dispatcher + `show-tpm --encrypted`.  Resurrected
+  `derive_early_keys` from the pre-Phase-1 design (commit
+  `6b4c380b6` era), rewrote it as `mqc_derive_early_keys` to
+  match the post-Phase-1 HKDF-Extract+Expand schedule.  Wrote
+  the 4-frame handshake bodies (phase 1: anonymous KEM, phase 2:
+  AEAD-sealed identity under early keys).  Refactored
+  `mqc_accept_clear` / `mqc_accept_encrypted` to expose
+  post-accept continuations so `mqc_accept_auto` can do
+  `accept() + MSG_PEEK on first JSON + dispatch by mode`.
+  Verified live against factsorlie:8446 with `show-tpm --verify
+  --encrypted --cnt 1` (all per-entry checks passed).
+
+### Original deferral rationale (historical)
+
+Below is the deferral note from before commit 2 shipped, kept
+for context.  The pre-Phase-1 implementation of
+`mqc_connect_encrypted` / `mqc_accept_encrypted` was deleted
+during Phase 1's wire-format change (it didn't compose with the
+new transcript / HKDF / Finished / AAD architecture).  The two
+entry points were 3-line stubs that returned NULL with a clear
+MQC_SECURITY log line.  Every production MQC client used clear
+mode, so no caller required encrypted mode at the time.
+
+The recovery turned out non-trivial:
 - Pull the pre-Phase-1 bodies from git history (commit 6b4c380b6
   era).
 - Port to the new transcript / HKDF-Extract+Expand / Finished /
@@ -765,8 +790,8 @@ The recovery is non-trivial:
   mode, plus the early-secret split for the two pre-identity
   frames).
 - Rewrite spec §7 (encrypted handshake) to match — most of §7's
-  current text already describes the 4-frame variant, but the key
-  schedule and AAD definitions need to align with §6 / §8 / §9.1.
+  current text already described the 4-frame variant, but the key
+  schedule and AAD definitions had to align with §6 / §8 / §9.1.
 
 ### Strategy (locked in 2026-05-03)
 

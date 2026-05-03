@@ -59,7 +59,7 @@ was subsumed by another issue's binding.  Status as of phase-20:
 | #3 — transcript-bound HKDF | (subsumed by #1) | `6b4c380b6` | HKDF-Extract salt is `transcript_hash_full`; full Extract+Expand schedule |
 | #4 — Finished messages | (subsumed by #1) | `6b4c380b6` | New §8.1; HMAC-SHA256 over the transcript, sent as the first AEAD frame each direction |
 | #5 — AEAD authenticates frame headers | (subsumed by #1) | `6b4c380b6` | New §9.1.1; 31-byte AAD covers label, version, direction, frame_type, sequence, plaintext_length |
-| #6 — encrypted-mode auth gaps | (closes automatically with #1) | `6b4c380b6` | The full-transcript binding from #1 also binds encrypted-mode signatures over the right inputs.  Encrypted mode itself is stubbed — see Phase 7 |
+| #6 — encrypted-mode auth gaps | (closes automatically with #1) | `6b4c380b6`, `a287aa8d0` | The full-transcript binding from #1 also binds encrypted-mode signatures over the right inputs.  Encrypted-mode handshake bodies were stubs through Phase 6 and shipped end-to-end in Phase 7 commit 2 (`a287aa8d0`); both peers sign / verify the FULL transcript including `EK_c`, `CT_s`, `MODE_ID=0x01`, and both `cert_index` values.  Auto-detect dispatcher in `mqc.c` lets one listener serve both modes |
 | #7 — mandatory revocation | [`mqc-issue-7.plan`](./mqc-issue-7.plan) | `04ad93f5f` | `mqc-revocation-policy` knob; default `mandatory` fail-closed; `cache-only` and `disabled` opt-outs |
 | #8 — cert self-verification audit | [`mqc-issue-8.plan`](./mqc-issue-8.plan) | `089a3966a` | Tightened cert-validity window enforcement + cosigner-fingerprint cache invariant |
 | #9 — server-name / expected identity | [`mqc-issue-9.plan`](./mqc-issue-9.plan) | `890e27137` | New §10.7; client-side check against verified subject; dial-by-IP fails closed |
@@ -67,19 +67,22 @@ was subsumed by another issue's binding.  Status as of phase-20:
 | #11 — strict JSON parsing | [`mqc-issue-11.plan`](./mqc-issue-11.plan) | `ee9977b71` | New §5.2 / §12.10; rejects parser extensions, duplicates, trailing bytes, unknown fields, integer overflow |
 | #12 — DoS pre-crypto filters | [`mqc-issue-12.plan`](./mqc-issue-12.plan) | `615d0e9ba` | Per-(IP, distinct-`cert_index`) throttle (#12) + pre-crypto length filter (already shipped via #11) |
 
-Two cross-cutting plans extended the operational surface but
+Three cross-cutting plans extended the operational surface but
 weren't on the reviewer list:
 
 | Plan | Commit | Notes |
 |---|---|---|
 | [`mqc-issue-6a.plan`](./mqc-issue-6a.plan) | `292c07bcc` | Operational tunables in `/etc/postWolf/config` — the foundation Phases 1–3 build on |
 | (server fork backpressure) | `86e924fb3` | `mqc-max-children` (default 20) — defends against fork-storm OOM observed during Phase-4 stress testing.  Spec §11.6 |
+| Phase 7 — encrypted-identity mode | `de0ff9d60`, `a287aa8d0` | Two-commit rewrite (file-split refactor + 4-frame handshake bodies + auto-detect dispatcher).  `show-tpm --verify --encrypted` exercises the new code path end-to-end against the live server |
 
 System-level testing for the cumulative pass landed under
 [`mqc-master.plan`](./mqc-master.plan) Phase 4 — see
 `make -f Makefile.tools test-mqc-all` for the aggregate suite.
 
-The deferred work (encrypted-identity mode rewrite) is captured
-under Phase 7 of the master plan; opt-in for callers that need
-traffic-analysis resistance, no production caller currently
-needs it.
+Encrypted-identity mode shipped in Phase 7 (commits `de0ff9d60`
+and `a287aa8d0`) and is opt-in for callers that want
+traffic-analysis resistance.  Set `cfg.encrypt_identity = 1`
+before `mqc_ctx_new` (or pass `--encrypted` to `show-tpm`) to
+exercise the 4-frame path; the server listener auto-detects per
+connection so a single port serves both kinds of peer.

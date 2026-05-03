@@ -26,16 +26,19 @@ mode** (the default; both `cert_index` values appear in the wire
 JSON) or a 4-frame exchange in **encrypted-identity mode** (the
 identity frames are AEAD-sealed under an "early secret" derived
 from an anonymous KEM phase, so a passive observer learns
-neither endpoint's identity).  Encrypted mode is currently a
-stub in the reference implementation; clear mode is the
-production path.  The full key schedule (per-direction keys,
-per-direction IVs, per-direction Finished MAC keys) is HKDF-
-Expand'd from a single Extract whose salt is the SHA-256
-**transcript hash** that covers every byte both peers exchanged,
-so any divergence (signer vs verifier view of the bytes,
-on-path tampering of metadata) surfaces as a clean Finished MAC
-failure rather than as an opaque AEAD failure deep into
-application traffic.
+neither endpoint's identity).  Both modes are implemented and
+production-tested as of Phase 7; clients pick a mode by setting
+`cfg.encrypt_identity` on the `mqc_ctx_t` (or via `--encrypted`
+on the CLI tools that expose it, e.g. `show-tpm`).  The server's
+listener auto-detects mode by peeking the first JSON frame's
+`mode` field, so a single port serves both kinds of peer.  The
+full key schedule (per-direction keys, per-direction IVs,
+per-direction Finished MAC keys) is HKDF-Expand'd from a single
+Extract whose salt is the SHA-256 **transcript hash** that
+covers every byte both peers exchanged, so any divergence
+(signer vs verifier view of the bytes, on-path tampering of
+metadata) surfaces as a clean Finished MAC failure rather than
+as an opaque AEAD failure deep into application traffic.
 
 ## Where to look
 
@@ -46,8 +49,13 @@ application traffic.
 | [`mqc-issue-{1,2,3,4,5,6,6a,7,8,9,11,12}.plan`](./) | **Why each design decision was made** — per-issue plans that document the threat the change addresses, the alternative designs considered, and the migration runbook. |
 | [`README-mqc-issues.md`](./README-mqc-issues.md) | The original external security-review issue list (12 items) that drove the Phase 1–3 hardening. |
 | [`README-plans.md`](./README-plans.md) | Per-issue analyses: deployment model, wire-format-break categorization, the "this is a single-deployment protocol so flag days are fine" rule. |
-| [`mqc.h`](./mqc.h), [`mqc.c`](./mqc.c) | Public API + clear-mode handshake implementation.  See `mqc_connect`, `mqc_accept`, `mqc_ctx_set_expected_name`. |
-| [`mqc_peer.h`](./mqc_peer.h), [`mqc_peer.c`](./mqc_peer.c) | Peer-verification chain: cert fetch, Merkle inclusion proof, ML-DSA cosignature verify, revocation check, validity-window check.  See `mqc_peer_verify`. |
+| [`mqc.h`](./mqc.h) | Public API.  Opaque handles, `mqc_connect`, `mqc_accept`, `mqc_ctx_set_expected_name`, `cfg.encrypt_identity` for mode selection. |
+| [`mqc.c`](./mqc.c) | Dispatcher (~70 lines).  Routes `mqc_connect` / `mqc_accept` to the clear or encrypted bodies based on `cfg.encrypt_identity`; `mqc_accept_auto` peeks the wire to choose mode per connection. |
+| [`mqc_internal.h`](./mqc_internal.h) | Private cross-file API: opaque-handle struct definitions + prototypes for everything `mqc_common.c` exports to the two mode-specific files. |
+| [`mqc_common.c`](./mqc_common.c) | Mode-agnostic machinery: strict JSON parsers, transcript hash, both key schedules (`mqc_derive_data_keys`, `mqc_derive_early_keys`), AEAD send/recv, Finished frame, Redis rate limits, AbuseIPDB, runtime cfg cache. |
+| [`mqc_clear.c`](./mqc_clear.c) | Clear-mode 2-frame handshake bodies (`mqc_connect_clear`, `mqc_accept_clear`, `mqc_accept_clear_post`). |
+| [`mqc_encrypted.c`](./mqc_encrypted.c) | Encrypted-mode 4-frame handshake bodies (`mqc_connect_encrypted`, `mqc_accept_encrypted`, `mqc_accept_encrypted_post`).  Phase 1: anonymous KEM only; phase 2: AEAD-sealed identity under early keys. |
+| [`mqc_peer.h`](./mqc_peer.h), [`mqc_peer.c`](./mqc_peer.c) | Peer-verification chain: cert fetch, Merkle inclusion proof, ML-DSA cosignature verify, revocation check, validity-window check.  See `mqc_peer_verify`.  Mode-agnostic — same code paths run for clear and encrypted. |
 | [`tests/test_name_check.c`](./tests/) | Issue-#9 expected-identity-check regression test. |
 
 ## Spec sections at a glance
@@ -60,7 +68,7 @@ The 14-section spec (post-Phase-5 cumulative edit) is organized:
 4. **Cryptographic Primitives** — algorithm table + suite identifier.
 5. **Wire Format** — common framing, handshake JSON shape, strict-parsing rules.
 6. **Handshake (clear-identity mode)** — transcript construction, frame definitions, signature inputs.
-7. **Handshake (encrypted-identity mode)** — 4-frame variant; impl-status note.
+7. **Handshake (encrypted-identity mode)** — 4-frame variant; phase 1 anonymous KEM, phase 2 AEAD-sealed identity under an early secret derived from the phase-1 transcript.
 8. **Key Derivation** — HKDF-Extract+Expand schedule, Finished frame.
 9. **Data Plane** — frame structure, AEAD AAD, nonce construction.
 10. **Peer Verification** — cert retrieval, signature verify, Merkle proof, cosignature, revocation, validity, expected-identity.
@@ -83,8 +91,14 @@ prior text — section-by-section changelog of the Phase 1–5 edits).
 sudo systemctl restart mtc-ca.service
 sudo journalctl -u mtc-ca.service -n 10 | grep -E "max-children|MQC listener"
 
-# End-to-end roundtrip:
+# End-to-end roundtrip (clear mode, default):
 echo hi | mqc --encode --env --no-cache | mqc --decode --env --no-cache
+
+# Verify the local TPM store via clear-mode MQC handshakes:
+show-tpm --verify
+
+# Same, but exercise the encrypted-mode 4-frame handshake instead:
+show-tpm --verify --encrypted
 
 # Aggregate regression suite:
 make -f Makefile.tools test-mqc-all

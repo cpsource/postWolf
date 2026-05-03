@@ -50,6 +50,58 @@ The init log emits the resolved value of every knob it reads:
 ...
 ```
 
+### Choose between clear- and encrypted-identity mode
+
+Both handshake modes are production-ready as of Phase 7.  The
+server listener auto-detects per connection — no server-side
+configuration is required to support both.
+
+Client side, callers opt in by either:
+
+| Approach | How |
+|---|---|
+| C library | Set `cfg.encrypt_identity = 1` on the `mqc_cfg_t` before `mqc_ctx_new`.  The dispatcher in `mqc.c` routes `mqc_connect` / `mqc_accept` to the encrypted bodies. |
+| `show-tpm` | Pass `--encrypted` to `show-tpm --verify`.  The flag sets `cfg.encrypt_identity` for that invocation. |
+
+Smoke test both paths:
+
+```sh
+show-tpm --verify              # 2-frame clear-mode handshake
+show-tpm --verify --encrypted  # 4-frame encrypted-mode handshake
+```
+
+Both should produce the same `Verify: server=OK revoked=no
+proof=OK time=OK pubkey_db=OK` per-entry verdict.  The
+encrypted-mode path adds one extra round trip per handshake plus
+the early-secret derivation; under normal operating conditions
+the wall-clock difference is single-digit ms per `show-tpm
+--verify` (each invocation makes ~6 handshakes, so the cumulative
+visible delta is ~30-60 ms).
+
+When to opt in to encrypted mode:
+
+- The operator deployment is on shared infrastructure (cloud
+  provider, transit network) where a passive observer reading
+  TCP headers can map the trust graph from clear-mode
+  `cert_index` values.
+- The threat model requires hiding which leaves talk to which
+  CAs, even though both peers are still post-quantum
+  authenticated either way.
+
+When clear mode is fine:
+
+- Single-host deployment where the `cert_index` graph is
+  already locally observable (the server's own logs already
+  reveal the same metadata the wire would).
+- CI / integration testing where extra latency matters more
+  than identity privacy.
+
+The two modes are NOT compatible at the connection level — a
+clear-mode client to encrypted-mode-only server (or vice versa)
+fails fast at the strict-parser `mode` check on the first
+frame.  Since the server auto-detects, a mixed-client
+deployment is fine: each connection picks its own mode.
+
 ### Switch `mqc-revocation-policy`
 
 Three legal values; pick by operational context:

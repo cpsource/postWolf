@@ -243,8 +243,24 @@ The server's MQC identity comes from `--tpm-path` (e.g.,
 `~/.TPM/factsorlie.com-ca`), which must contain `certificate.json` and
 `private_key.pem` (ML-DSA-87).
 
-The server auto-detects whether a client uses clear or encrypted identity
-mode (no configuration needed).
+The server auto-detects whether a client uses clear- or
+encrypted-identity mode (no per-server configuration needed).
+Internally, `mqc_accept_auto` calls `accept()`, then peeks the
+first JSON frame's `mode` field via `MSG_PEEK`, and dispatches
+to `mqc_accept_clear_post` or `mqc_accept_encrypted_post`
+accordingly.  Both modes are production-ready as of Phase 7
+(see the master plan in
+`socket-level-wrapper-MQC/mqc-master.plan`).
+
+Smoke-test both paths from a client:
+
+```sh
+show-tpm --verify              # clear-mode 2-frame handshake
+show-tpm --verify --encrypted  # encrypted-mode 4-frame handshake
+```
+
+Both should report `Verify: server=OK revoked=no proof=OK
+time=OK pubkey_db=OK` against a healthy server.
 
 ### MQC Tunables (`/etc/postWolf/config`)
 

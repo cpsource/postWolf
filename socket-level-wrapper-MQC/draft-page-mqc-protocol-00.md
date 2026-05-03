@@ -501,17 +501,23 @@ Encrypted-identity mode hides both `cert_index` values from a
 passive observer at the cost of one additional round trip.
 
 > **Implementation status note (informative).** The reference
-> implementation in `socket-level-wrapper-MQC/mqc.c` ships
-> encrypted-identity entry points (`mqc_connect_encrypted` and
-> `mqc_accept_encrypted`) as **stubs** that return failure with a
-> clear log line.  No production caller in the postWolf tree
-> exercises encrypted mode; every MQC client uses
-> `mqc_connect` (clear).  Restoring the encrypted-mode handshake
-> with the post-Phase-1 transcript / HKDF-Extract+Expand /
-> Finished / AAD architecture is tracked under
-> `mqc-master.plan` **Phase 7**.  The wire-format and cryptographic
-> requirements below are normative; implementations MUST
-> implement them if they offer encrypted mode at all.
+> implementation in `socket-level-wrapper-MQC/mqc_encrypted.c`
+> ships the full encrypted-mode handshake as of Phase 7 (commits
+> `de0ff9d60` and `a287aa8d0` on the postWolf tree).  Both
+> `mqc_connect_encrypted` and `mqc_accept_encrypted` route
+> through the post-Phase-1 transcript / HKDF-Extract+Expand /
+> Finished / AAD architecture defined elsewhere in this
+> document.  Callers opt in by setting
+> `cfg.encrypt_identity = 1` on the `mqc_ctx_t` (or via
+> `--encrypted` on CLI tools that surface it, e.g.
+> `show-tpm`).  The `mqc_accept_auto` listener-side dispatcher
+> peeks the first JSON frame's `mode` field and routes to the
+> clear or encrypted continuation per connection, so a single
+> server port handles both modes.  Earlier drafts of this
+> document described the entry points as stubs; that text is
+> obsolete.  The wire-format and cryptographic requirements
+> below are normative; implementations MUST follow them if they
+> offer encrypted mode at all.
 
 ### 7.1. Distinguishing the Mode
 

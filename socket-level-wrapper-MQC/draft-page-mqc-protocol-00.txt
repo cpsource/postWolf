@@ -544,23 +544,27 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    observer at the cost of one additional round trip.
 
    > Implementation status note (informative). The reference >
-   implementation in socket-level-wrapper-MQC/mqc.c ships >
-   encrypted-identity entry points (mqc_connect_encrypted and >
-   mqc_accept_encrypted) as stubs that return failure with a > clear log
-   line.  No production caller in the postWolf tree > exercises
-   encrypted mode; every MQC client uses > mqc_connect (clear).
-   Restoring the encrypted-mode handshake > with the post-Phase-1
-   transcript / HKDF-Extract+Expand / > Finished / AAD architecture is
-   tracked under > mqc-master.plan Phase 7.  The wire-format and
-   cryptographic > requirements below are normative; implementations
-   MUST > implement them if they offer encrypted mode at all.
-
-
+   implementation in socket-level-wrapper-MQC/mqc_encrypted.c > ships
+   the full encrypted-mode handshake as of Phase 7 (commits > de0ff9d60
+   and a287aa8d0 on the postWolf tree).  Both > mqc_connect_encrypted
+   and mqc_accept_encrypted route > through the post-Phase-1 transcript
+   / HKDF-Extract+Expand / > Finished / AAD architecture defined
+   elsewhere in this > document.  Callers opt in by setting >
+   cfg.encrypt_identity = 1 on the mqc_ctx_t (or via > --encrypted on
+   CLI tools that surface it, e.g. > show-tpm).  The mqc_accept_auto
+   listener-side dispatcher > peeks the first JSON frame's mode field
+   and routes to the > clear or encrypted continuation per connection,
+   so a single > server port handles both modes.  Earlier drafts of this
+   > document described the entry points as stubs; that text is >
 
 Page, Ed.             Expires 23 October 2026               [Page 10]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
+
+   obsolete.  The wire-format and cryptographic requirements > below are
+   normative; implementations MUST follow them if they > offer encrypted
+   mode at all.
 
 7.1. Distinguishing the Mode
 
@@ -608,16 +612,16 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    (transcript_hash_sig(role="client") per Section 6.0) with its own
    cert_index populated and C_s=0 (still unknown), then seals the
    resulting {cert_index, signature} JSON object with early_c2s_key /
-   early_c2s_iv at sequence 0:
-
-   AEAD-Seal(early_c2s_key, nonce(early_c2s_iv, 0),
-             aad(C2S, PHASE2_IDENTITY, 0, plaintext_len),
 
 Page, Ed.             Expires 23 October 2026               [Page 11]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+   early_c2s_iv at sequence 0:
+
+   AEAD-Seal(early_c2s_key, nonce(early_c2s_iv, 0),
+             aad(C2S, PHASE2_IDENTITY, 0, plaintext_len),
              {"cert_index": C_c, "signature": Sig_c})
 
 7.5. Encrypted-Identity Phase 2 (Server → Client)
@@ -664,15 +668,15 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    transcript_hash_full is the KDF-variant transcript with both
    cert_index values populated — known to both peers after clear-mode
    ServerHello or after encrypted-mode phase 2. transcript_hash_phase1
-   is the KDF-variant transcript with C_c=C_s=0 — known after
-   encrypted-mode plaintext exchange, needed to seal the phase-2
-   identity frames.
-
 
 Page, Ed.             Expires 23 October 2026               [Page 12]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
+
+   is the KDF-variant transcript with C_c=C_s=0 — known after
+   encrypted-mode plaintext exchange, needed to seal the phase-2
+   identity frames.
 
    Per-direction keys, IVs, and Finished MAC keys are produced by
    HKDF-Expand off the appropriate PRK.  All info strings are
@@ -720,16 +724,16 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    The Finished frame uses the same wire format as a data-plane frame
    (Section 9.1).  It is sealed with data_<role>_key and data_<role>_iv
    at sequence number 0; its 31-byte AAD (Section 9.1.1) carries
-   frame_type = 0x02 (Finished) and plaintext_length = 32.  The
-   plaintext is exactly 32 bytes:
-
-    finished_mac = HMAC-SHA256(
 
 Page, Ed.             Expires 23 October 2026               [Page 13]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+   frame_type = 0x02 (Finished) and plaintext_length = 32.  The
+   plaintext is exactly 32 bytes:
+
+    finished_mac = HMAC-SHA256(
                        key = data_<role>_finished,
                        msg = transcript_hash_full)
 
@@ -776,16 +780,16 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    is sealed with a fixed 31-byte AAD:
 
    AAD = LABEL                       (16 bytes "mqc-frame/v01\n\x00")
-      || u8(version)                 (1 byte; v0 = 0)
-      || u8(direction)               (1 byte; 0 = c2s, 1 = s2c)
-      || u8(frame_type)              (1 byte; see below)
-      || u64be(sequence)             (8 bytes)
 
 Page, Ed.             Expires 23 October 2026               [Page 14]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+      || u8(version)                 (1 byte; v0 = 0)
+      || u8(direction)               (1 byte; 0 = c2s, 1 = s2c)
+      || u8(frame_type)              (1 byte; see below)
+      || u64be(sequence)             (8 bytes)
       || u32be(plaintext_length)     (4 bytes)
 
    LABEL is "mqc-frame/v01\n\x00" — 16 bytes including the implicit
@@ -832,15 +836,15 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    Each endpoint maintains two 64-bit unsigned sequence counters,
    send_seq and recv_seq.  Both initialize to 0 immediately after key
    derivation, are consumed (set to 1) by the Finished frame in each
-   direction (Section 8.1), and proceed to 2, 3, ... for application
-   data.  Application data therefore begins at sequence 1 in both
-   directions and in both modes.
-
 
 Page, Ed.             Expires 23 October 2026               [Page 15]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
+
+   direction (Section 8.1), and proceed to 2, 3, ... for application
+   data.  Application data therefore begins at sequence 1 in both
+   directions and in both modes.
 
    A send operation forms the nonce, AEAD-seals (plaintext, AAD =
    mqc_build_aad(direction, frame_type, send_seq, len(plaintext))),
@@ -888,16 +892,16 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    under the cosigner key in effect at cache-write time, and a key
    rotation (e.g., via admin_recosign in the postWolf reference
    implementation) means subsequent cosignature checks against the new
-   key would fail.  The reference implementation stores
-   ~/.TPM/peers/<index>/cosigner-fp.hex alongside each cached cert
-   (lowercase hex SHA-256 of the cosigner pubkey at verification time)
-   and treats a fingerprint mismatch as a cache miss, triggering a
 
 Page, Ed.             Expires 23 October 2026               [Page 16]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+   key would fail.  The reference implementation stores
+   ~/.TPM/peers/<index>/cosigner-fp.hex alongside each cached cert
+   (lowercase hex SHA-256 of the cosigner pubkey at verification time)
+   and treats a fingerprint mismatch as a cache miss, triggering a
    re-fetch + re-verify under the current cosigner.
 
    Retrieval MAY be performed over the same MQC connection if the peer
@@ -944,16 +948,16 @@ Internet-Draft          Merkle Quantum Connect          April 2026
       a server signature on otherwise-identical data).
 
    The asymmetry in the "knowledge available at signing time" — client
-   signs with C_s = 0 and len(CT_s) = 0 because the client doesn't yet
-   know those — is intentional.  The server signs with everything
-   populated, which closes Unknown Key Share in the client→server
-   direction.  A "Finished" MAC over the full transcript (Section 8.1)
 
 Page, Ed.             Expires 23 October 2026               [Page 17]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+   signs with C_s = 0 and len(CT_s) = 0 because the client doesn't yet
+   know those — is intentional.  The server signs with everything
+   populated, which closes Unknown Key Share in the client→server
+   direction.  A "Finished" MAC over the full transcript (Section 8.1)
    closes the residual asymmetry by committing both peers to their view
    of the same transcript at handshake completion.
 
@@ -1000,16 +1004,16 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    covers that index.  A positive revocation answer MUST cause the
    handshake to be aborted.  Implementations MAY cache negative ("not
    revoked") answers for a bounded TTL (default 24 hours; tunable via
-   the mqc-revoked-cache-ttl-sec operational parameter, Section 11).
-
-   Implementations MUST treat a query failure (network error, HTTP
-   error, malformed response, invalid signature on the response) as
 
 Page, Ed.             Expires 23 October 2026               [Page 18]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+   the mqc-revoked-cache-ttl-sec operational parameter, Section 11).
+
+   Implementations MUST treat a query failure (network error, HTTP
+   error, malformed response, invalid signature on the response) as
    equivalent to an unknown revocation status: the handshake MUST be
    aborted.  This is the fail-closed default.
 
@@ -1056,16 +1060,16 @@ Internet-Draft          Merkle Quantum Connect          April 2026
 10.7. Expected-Identity Check
 
    The cryptographic checks in 10.1–10.6 prove that the peer holds the
-   private key bound to a verified, in-log, unrevoked, and
-   currently-valid certificate.  They do NOT prove that the verified
-   certificate names the identity the caller intended to talk to.
-   Without an expected-identity check, a hostile name resolver (DNS,
 
 Page, Ed.             Expires 23 October 2026               [Page 19]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+   private key bound to a verified, in-log, unrevoked, and
+   currently-valid certificate.  They do NOT prove that the verified
+   certificate names the identity the caller intended to talk to.
+   Without an expected-identity check, a hostile name resolver (DNS,
    hosts file, configuration error, or a cert_index supplied by an
    attacker-controlled lookup) can route the connection to a DIFFERENT
    in-log identity that satisfies every cryptographic check while not
@@ -1112,15 +1116,16 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    implementation via /etc/postWolf/config under the [global] section,
    read once at process startup.  An implementation MAY substitute any
    equivalent configuration mechanism; the parameter *names* below are
-   normative for cross-implementation interoperability, the *transport*
-   is not.
-
-   Parameter                   Default     Section   What it controls
 
 Page, Ed.             Expires 23 October 2026               [Page 20]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
+
+   normative for cross-implementation interoperability, the *transport*
+   is not.
+
+   Parameter                   Default     Section   What it controls
 
    mqc-handshake-stall-sec     3           11.1      Per-read timeout
                                                      during the
@@ -1167,17 +1172,17 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    mqc-revoked-cache-ttl-sec   86400       10.5      Revocation-cache
                                                      TTL
 
-   mqc-sig-freshness-sec       300         10.6      Cert-validity skew
-                                                     tolerance
-
-   mqc-revocation-policy       mandatory   11.5      One of mandatory /
-                                                     cache-only /
 
 Page, Ed.             Expires 23 October 2026               [Page 21]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+   mqc-sig-freshness-sec       300         10.6      Cert-validity skew
+                                                     tolerance
+
+   mqc-revocation-policy       mandatory   11.5      One of mandatory /
+                                                     cache-only /
                                                      disabled
 
    The defaults above are suitable for a single-host deployment serving
@@ -1223,17 +1228,17 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    indices per minute and 100 per hour, exposed via the operational
    parameters mqc-rl-cert-per-min and mqc-rl-cert-per-hour. Rejections
    under this cap SHOULD count against the per-IP failure bucket (so a
-   single attacker IP rotating cert_index also burns its
-   handshake-failure budget).
-
-   A typical bucket structure keys on <operation>:<ip>:<window> and is
-   persisted in a local key-value store (e.g., Redis) for cross-process
 
 Page, Ed.             Expires 23 October 2026               [Page 22]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+   single attacker IP rotating cert_index also burns its
+   handshake-failure budget).
+
+   A typical bucket structure keys on <operation>:<ip>:<window> and is
+   persisted in a local key-value store (e.g., Redis) for cross-process
    aggregation within a single host.
 
 11.3. Maximum Message Sizes
@@ -1279,16 +1284,15 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    in-flight handshake worker threads.  An implementation that admits
    multiple concurrent handshakes per process (whether via threads or
    async I/O) MAY additionally cap total in-flight handshake-buffer
-   memory directly (per Section 12.6).
-
-12. Security Considerations
-
-
 
 Page, Ed.             Expires 23 October 2026               [Page 23]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
+
+   memory directly (per Section 12.6).
+
+12. Security Considerations
 
 12.1. Quantum Resistance of Components
 
@@ -1336,15 +1340,15 @@ Internet-Draft          Merkle Quantum Connect          April 2026
 
    In clear-identity mode, a passive observer learns both endpoints'
    cert_index values.  An observer who can query the same MTC log can
-   therefore learn both identities by name.  If hiding the identities
-   from passive observers is a requirement, implementations MUST use
-   encrypted-identity mode (Section 7).
-
 
 Page, Ed.             Expires 23 October 2026               [Page 24]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
+
+   therefore learn both identities by name.  If hiding the identities
+   from passive observers is a requirement, implementations MUST use
+   encrypted-identity mode (Section 7).
 
 12.4. Revocation-Cache Staleness
 
@@ -1392,15 +1396,14 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    handshake-sized JSON buffer is ever in flight per listener.  An
    implementation that uses a thread pool (or otherwise admits multiple
    in-flight handshakes per process) SHOULD additionally cap total
-   in-flight handshake-buffer memory and reject new accepts when the cap
-   is exceeded.
-
-
 
 Page, Ed.             Expires 23 October 2026               [Page 25]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
+
+   in-flight handshake-buffer memory and reject new accepts when the cap
+   is exceeded.
 
 12.7. Transcript Binding and Cross-Protocol Domain Separation
 
@@ -1449,15 +1452,15 @@ Internet-Draft          Merkle Quantum Connect          April 2026
       affected frame, rather than letting a tampered prefix spill into
       the next frame's bytes and desynchronize framing.
    o  Distinguishes Finished frames (frame_type = 0x02) from application
-      data frames (frame_type = 0x03) cryptographically, even though
-      they share the same data_*_key / data_*_iv. A peer that swapped
-      one for the other in flight (impossible without breaking
 
 Page, Ed.             Expires 23 October 2026               [Page 26]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+      data frames (frame_type = 0x03) cryptographically, even though
+      they share the same data_*_key / data_*_iv. A peer that swapped
+      one for the other in flight (impossible without breaking
       AES-256-GCM, but defense in depth) hits AEAD failure on the
       type-byte mismatch.
    o  Provides defense in depth on fields already bound by other means:
@@ -1505,15 +1508,15 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    Both are intentional: an implicit "trust whatever the log says" mode
    would re-open the gap this section closes.
 
-12.10. JSON Parsing Hardening
-
-   The handshake JSON parser is a security-sensitive component because
 
 Page, Ed.             Expires 23 October 2026               [Page 27]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+12.10. JSON Parsing Hardening
+
+   The handshake JSON parser is a security-sensitive component because
    the bytes on the wire are bound into the transcript hash by both
    parties; any divergence between what the signer serialised and what
    the verifier parsed lets an attacker force one side to authenticate
@@ -1561,15 +1564,15 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    and a malformed cert_index cannot exercise the certificate-fetch
    path.
 
-13. IANA Considerations
-
-   This document requests IANA to register TCP port 8446 in the "Service
 
 Page, Ed.             Expires 23 October 2026               [Page 28]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+13. IANA Considerations
+
+   This document requests IANA to register TCP port 8446 in the "Service
    Name and Transport Protocol Port Number Registry" for the service
    name mqc.  The assignment category is "User" (not "System"); the
    contact is the author of this document.
@@ -1616,15 +1619,17 @@ Internet-Draft          Merkle Quantum Connect          April 2026
       substrate.  See the postWolf source tree,
       socket-level-wrapper-QUIC/.
 
-15. Author's Address
 
-   Cal Page (editor) factsorlie.com Email: cal@factsorlie.com URI:
-   https://factsorlie.com/
 
 Page, Ed.             Expires 23 October 2026               [Page 29]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
+
+15. Author's Address
+
+   Cal Page (editor) factsorlie.com Email: cal@factsorlie.com URI:
+   https://factsorlie.com/
 
 Appendix A. Worked Example (informative)
 
@@ -1671,16 +1676,16 @@ Appendix A. Worked Example (informative)
      "kem_pub":    "b47d82e1e7a29f97288ee05b9902a63e…",
      "cert_index": 73,
      "signature":  "e687babbe0a6b37e626accf82798d101…"
-   }
-
-   Now both peers know (EK_c, CT_s, C_c, C_s) and derive the session key
-   schedule.
-
 
 Page, Ed.             Expires 23 October 2026               [Page 30]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
+
+   }
+
+   Now both peers know (EK_c, CT_s, C_c, C_s) and derive the session key
+   schedule.
 
    ML-KEM shared secret (32 bytes; client decapsulates, server already
    holds it from encapsulation):
@@ -1727,17 +1732,17 @@ Internet-Draft          Merkle Quantum Connect          April 2026
      = 1d25a23644649c060a89f31c7cece15a…
 
    The Finished frame is sealed with data_c2s_key, IV constructed per
-   Section 9.2 from data_c2s_iv XOR (0x00 × 4 || u64be(0)) (sequence 0),
-   and the 31-byte AAD (Section 9.1.1):
-
-   AAD[0:16]  = "mqc-frame/v01\n\x00"
-   AAD[16]    = 0x00              (version)
 
 Page, Ed.             Expires 23 October 2026               [Page 31]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+   Section 9.2 from data_c2s_iv XOR (0x00 × 4 || u64be(0)) (sequence 0),
+   and the 31-byte AAD (Section 9.1.1):
+
+   AAD[0:16]  = "mqc-frame/v01\n\x00"
+   AAD[16]    = 0x00              (version)
    AAD[17]    = 0x00              (direction = c2s)
    AAD[18]    = 0x02              (frame_type = Finished)
    AAD[19:27] = 0x00 × 8          (sequence = 0)
@@ -1783,16 +1788,17 @@ Appendix C. Changes from Prior Text (informative)
 
 Section 4 — Cryptographic Primitives
 
-   o  Added the SUITE_ID = SHA-256(SUITE) mixing rule (the suite
-      identifier is now bound into the transcript hash, not just echoed
-      in the wire JSON).
-
-Section 5.2 — Handshake JSON
 
 Page, Ed.             Expires 23 October 2026               [Page 32]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
+
+   o  Added the SUITE_ID = SHA-256(SUITE) mixing rule (the suite
+      identifier is now bound into the transcript hash, not just echoed
+      in the wire JSON).
+
+Section 5.2 — Handshake JSON
 
    o  Added required fields: version, suite, mode.
    o  Added the strict-parsing requirements: no parser extensions, no
@@ -1838,18 +1844,18 @@ Section 8 — Key Derivation
 Section 9 — Data Plane
 
    o  New §9.1.1 "AEAD AAD": every AEAD-sealed frame binds a 31-byte AAD
-      (`LABEL || version || direction || frame_type || u64be(sequence)
-      || u32be(plaintext_length)`) into its GCM tag.  Previously the AAD
-      was empty.
-   o  §9.2 Nonce construction now uses TLS-1.3-style `iv XOR (zero4 ||
-      u64be(seq))` on the per-direction IV.  Previously the nonce was
-      the raw sequence counter padded with zeros, predictable across
 
 Page, Ed.             Expires 23 October 2026               [Page 33]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+      (`LABEL || version || direction || frame_type || u64be(sequence)
+      || u32be(plaintext_length)`) into its GCM tag.  Previously the AAD
+      was empty.
+   o  §9.2 Nonce construction now uses TLS-1.3-style `iv XOR (zero4 ||
+      u64be(seq))` on the per-direction IV.  Previously the nonce was
+      the raw sequence counter padded with zeros, predictable across
       connections.
    o  §9.2 application-data sequence numbering starts at 1 in both
       directions because the Finished frame consumes sequence 0.
@@ -1894,18 +1900,18 @@ Section 12 — Security Considerations
    o  New §12.7 "Transcript Binding and Cross-Protocol Domain
       Separation": describes which attack classes each transcript field
       defeats.
-   o  New §12.8 "Frame-Header Authentication": describes how the AAD
-      turns frame-header tampering into immediate AEAD failure.
-   o  New §12.9 "Identity vs Authority": explains the confused-deputy
-      attack that §10.7 closes.
-   o  New §12.10 "JSON Parsing Hardening": describes the four attack
-      classes the §5.2 strict-parsing rules close.
 
 Page, Ed.             Expires 23 October 2026               [Page 34]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
+   o  New §12.8 "Frame-Header Authentication": describes how the AAD
+      turns frame-header tampering into immediate AEAD failure.
+   o  New §12.9 "Identity vs Authority": explains the confused-deputy
+      attack that §10.7 closes.
+   o  New §12.10 "JSON Parsing Hardening": describes the four attack
+      classes the §5.2 strict-parsing rules close.
    o  §12.6 strengthened: pre-crypto byte-length validation is
       load-bearing for DoS resistance.
 
@@ -1951,12 +1957,6 @@ Cumulative scope
 
 
 
-
-
-
-
-
-
 Page, Ed.             Expires 23 October 2026               [Page 35]
 warning: 1 output line(s) exceed 72 columns; .md source needs editing:
-  line 1613: 106 cols
+  line 1616: 106 cols
