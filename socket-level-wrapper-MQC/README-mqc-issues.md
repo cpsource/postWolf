@@ -52,29 +52,37 @@ recorded in [`mqc-master.plan`](./mqc-master.plan).  Every item
 either has its own per-issue plan (the design discussion) or
 was subsumed by another issue's binding.  Status as of phase-20:
 
-| Issue | Plan | Commit | Notes |
-|---|---|---|---|
-| #1 — sign full transcript | [`mqc-issue-1.plan`](./mqc-issue-1.plan) | `6b4c380b6` | Bind transcript + HKDF Extract + Finished + AAD (one flag-day cutover, Phase 1) |
-| #2 — version + suite ID | (subsumed by #1) | `6b4c380b6` | Both fields added to handshake JSON and bound into the transcript hash |
-| #3 — transcript-bound HKDF | (subsumed by #1) | `6b4c380b6` | HKDF-Extract salt is `transcript_hash_full`; full Extract+Expand schedule |
-| #4 — Finished messages | (subsumed by #1) | `6b4c380b6` | New §8.1; HMAC-SHA256 over the transcript, sent as the first AEAD frame each direction |
-| #5 — AEAD authenticates frame headers | (subsumed by #1) | `6b4c380b6` | New §9.1.1; 31-byte AAD covers label, version, direction, frame_type, sequence, plaintext_length |
-| #6 — encrypted-mode auth gaps | (closes automatically with #1) | `6b4c380b6`, `a287aa8d0` | The full-transcript binding from #1 also binds encrypted-mode signatures over the right inputs.  Encrypted-mode handshake bodies were stubs through Phase 6 and shipped end-to-end in Phase 7 commit 2 (`a287aa8d0`); both peers sign / verify the FULL transcript including `EK_c`, `CT_s`, `MODE_ID=0x01`, and both `cert_index` values.  Auto-detect dispatcher in `mqc.c` lets one listener serve both modes |
-| #7 — mandatory revocation | [`mqc-issue-7.plan`](./mqc-issue-7.plan) | `04ad93f5f` | `mqc-revocation-policy` knob; default `mandatory` fail-closed; `cache-only` and `disabled` opt-outs |
-| #8 — cert self-verification audit | [`mqc-issue-8.plan`](./mqc-issue-8.plan) | `089a3966a` | Tightened cert-validity window enforcement + cosigner-fingerprint cache invariant |
-| #9 — server-name / expected identity | [`mqc-issue-9.plan`](./mqc-issue-9.plan) | `890e27137` | New §10.7; client-side check against verified subject; dial-by-IP fails closed |
-| #10 — downgrade protection | (closes automatically with #1) | `6b4c380b6` | `mode` field is bound into the transcript via `MODE_ID` byte in §6.0 |
-| #11 — strict JSON parsing | [`mqc-issue-11.plan`](./mqc-issue-11.plan) | `ee9977b71` | New §5.2 / §12.10; rejects parser extensions, duplicates, trailing bytes, unknown fields, integer overflow |
-| #12 — DoS pre-crypto filters | [`mqc-issue-12.plan`](./mqc-issue-12.plan) | `615d0e9ba` | Per-(IP, distinct-`cert_index`) throttle (#12) + pre-crypto length filter (already shipped via #11) |
+| Issue | Commit | Notes |
+|---|---|---|
+| #1 — sign full transcript | `6b4c380b6` | Bind transcript + HKDF Extract + Finished + AAD (one flag-day cutover, Phase 1) |
+| #2 — version + suite ID | `6b4c380b6` (subsumed by #1) | Both fields added to handshake JSON and bound into the transcript hash |
+| #3 — transcript-bound HKDF | `6b4c380b6` (subsumed by #1) | HKDF-Extract salt is `transcript_hash_full`; full Extract+Expand schedule |
+| #4 — Finished messages | `6b4c380b6` (subsumed by #1) | New §8.1; HMAC-SHA256 over the transcript, sent as the first AEAD frame each direction |
+| #5 — AEAD authenticates frame headers | `6b4c380b6` (subsumed by #1) | New §9.1.1; 31-byte AAD covers label, version, direction, frame_type, sequence, plaintext_length |
+| #6 — encrypted-mode auth gaps | `6b4c380b6`, `a287aa8d0` | Full-transcript binding from #1 also binds encrypted-mode signatures over the right inputs.  Encrypted-mode handshake bodies were stubs through Phase 6 and shipped end-to-end in Phase 7 commit 2 (`a287aa8d0`); both peers sign / verify the FULL transcript including `EK_c`, `CT_s`, `MODE_ID=0x01`, and both `cert_index` values.  Auto-detect dispatcher in `mqc.c` lets one listener serve both modes |
+| #7 — mandatory revocation | `04ad93f5f` | `mqc-revocation-policy` knob; default `mandatory` fail-closed; `cache-only` and `disabled` opt-outs |
+| #8 — cert self-verification audit | `089a3966a` | Tightened cert-validity window enforcement + cosigner-fingerprint cache invariant |
+| #9 — server-name / expected identity | `890e27137` | New §10.7; client-side check against verified subject; dial-by-IP fails closed |
+| #10 — downgrade protection | `6b4c380b6` (subsumed by #1) | `mode` field is bound into the transcript via `MODE_ID` byte in §6.0 |
+| #11 — strict JSON parsing | `ee9977b71` | New §5.2 / §12.10; rejects parser extensions, duplicates, trailing bytes, unknown fields, integer overflow |
+| #12 — DoS pre-crypto filters | `615d0e9ba` | Per-(IP, distinct-`cert_index`) throttle (#12) + pre-crypto length filter (already shipped via #11) |
 
-Three cross-cutting plans extended the operational surface but
+Three cross-cutting changes extended the operational surface but
 weren't on the reviewer list:
 
-| Plan | Commit | Notes |
+| Change | Commit | Notes |
 |---|---|---|
-| [`mqc-issue-6a.plan`](./mqc-issue-6a.plan) | `292c07bcc` | Operational tunables in `/etc/postWolf/config` — the foundation Phases 1–3 build on |
-| (server fork backpressure) | `86e924fb3` | `mqc-max-children` (default 20) — defends against fork-storm OOM observed during Phase-4 stress testing.  Spec §11.6 |
+| Operational tunables in `/etc/postWolf/config` | `292c07bcc` | The foundation Phases 1–3 build on; per-knob docs in `config.server` and spec §11 |
+| Server fork backpressure | `86e924fb3` | `mqc-max-children` (default 20) — defends against fork-storm OOM observed during Phase-4 stress testing.  Spec §11.6 |
 | Phase 7 — encrypted-identity mode | `de0ff9d60`, `a287aa8d0` | Two-commit rewrite (file-split refactor + 4-frame handshake bodies + auto-detect dispatcher).  `show-tpm --verify --encrypted` exercises the new code path end-to-end against the live server |
+
+The per-issue `mqc-issue-N.plan` files that originally accompanied
+each row have been removed from the tree now that the work has
+shipped (commit `git log --diff-filter=D --name-only -- 'socket-level-wrapper-MQC/mqc-issue-*.plan'`
+shows when).  The narrative orchestration across all 7 phases lives
+in [`mqc-master.plan`](./mqc-master.plan); the design rationale for
+each change lives in the corresponding commit message + the spec
+edits.
 
 System-level testing for the cumulative pass landed under
 [`mqc-master.plan`](./mqc-master.plan) Phase 4 — see

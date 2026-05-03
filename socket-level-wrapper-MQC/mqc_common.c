@@ -134,7 +134,8 @@ long mqc_now_ms(void)
  * to the compiled-in defaults above and in config.h for keys that
  * aren't set.  Caches the result in s_rt_cfg under pthread_once so the
  * per-key Augeas init/get/close cycles happen exactly once.  See
- * socket-level-wrapper-MQC/mqc-issue-6a.plan for the design. */
+ * spec §11 for the knob registry; commit `292c07bcc` introduced this
+ * runtime-cfg layer (originally tracked as issue #6a). */
 static struct mqc_runtime_cfg s_rt_cfg;
 static pthread_once_t          s_rt_cfg_once = PTHREAD_ONCE_INIT;
 

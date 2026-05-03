@@ -2,13 +2,21 @@
 
 ## Status
 
-- Consolidates all 13 issue plans in
-  `socket-level-wrapper-MQC/mqc-issue-*.plan` into a single
-  ship order.
-- This file is the **orchestration** document.  Per-issue plans
-  remain authoritative for what each change does and how each
-  test runs; this file is "in what order, in what cutover, with
-  what dependency."
+- All seven phases shipped on `phase-21` (and merged to
+  `master`).  This file is now the historical orchestration
+  record: what changed, in what order, with what dependencies.
+- The 13 per-issue plans (`mqc-issue-1.plan` … `mqc-issue-12.plan`
+  + `mqc-issue-6a.plan`) that originally accompanied each phase
+  have been removed from the tree now that the work has shipped.
+  Their design rationale is captured in the corresponding commit
+  messages and in the spec edits at
+  [`draft-page-mqc-protocol-00.md`](./draft-page-mqc-protocol-00.md);
+  the per-issue analyses survive at
+  [`README-plans.md`](./README-plans.md).  Where this file
+  references e.g. **issue #7**, the issue number is the durable
+  handle — see
+  [`README-mqc-issues.md`](./README-mqc-issues.md) for the
+  status table mapping each issue to the commit that closed it.
 
 ## End-state vision
 
@@ -88,7 +96,7 @@ P0 ─► P1 (flag day) ─► P2 ─► P3 ─► P4 ─► P5 ─► P6 ─►
 
 ## Phase 0 — Operability foundation (ship-anytime)
 
-**Plan**: [`mqc-issue-6a.plan`](./mqc-issue-6a.plan)
+**Plan**: **issue #6a**
 
 **What changes**: nothing on the wire.  Adds a runtime-config
 loader (`read_config_long` next to the existing
@@ -121,18 +129,18 @@ infrastructure that Phase 2's `mqc-revocation-policy` plugs into.
 
 | Plan | What it adds | Wire impact |
 |---|---|---|
-| [`mqc-issue-1.plan`](./mqc-issue-1.plan) | Full transcript binding; `version`, `suite`, `mode` fields; `kem_pub` field rename; ML-DSA `ctx` label | Wire-format break (new fields, renamed fields, new signature semantics) |
-| [`mqc-issue-2.plan`](./mqc-issue-2.plan) | HKDF info strings tag version + suite | Wire-quiet, behavior-breaking |
-| [`mqc-issue-3.plan`](./mqc-issue-3.plan) | `HKDF-Extract(transcript_hash, SS)` + per-direction IVs | Wire-quiet, behavior-breaking |
-| [`mqc-issue-4.plan`](./mqc-issue-4.plan) | Finished MAC frame each direction post-handshake | Wire-impact (new frames after handshake) |
-| [`mqc-issue-5.plan`](./mqc-issue-5.plan) | 31-byte AAD on every AEAD call (label, version, direction, frame_type, seq, length) | Wire-quiet, behavior-breaking |
+| **issue #1** | Full transcript binding; `version`, `suite`, `mode` fields; `kem_pub` field rename; ML-DSA `ctx` label | Wire-format break (new fields, renamed fields, new signature semantics) |
+| **issue #2** | HKDF info strings tag version + suite | Wire-quiet, behavior-breaking |
+| **issue #3** | `HKDF-Extract(transcript_hash, SS)` + per-direction IVs | Wire-quiet, behavior-breaking |
+| **issue #4** | Finished MAC frame each direction post-handshake | Wire-impact (new frames after handshake) |
+| **issue #5** | 31-byte AAD on every AEAD call (label, version, direction, frame_type, seq, length) | Wire-quiet, behavior-breaking |
 
 **Auto-close** (no separate work):
 
-- [`mqc-issue-6.plan`](./mqc-issue-6.plan) — encrypted-identity auth
+- **issue #6** — encrypted-identity auth
   gaps; closed by issue-1's transcript construction including
   EK_c, CT_s, mode, role, both `cert_index` values, version, suite.
-- [`mqc-issue-10.plan`](./mqc-issue-10.plan) — mode downgrade;
+- **issue #10** — mode downgrade;
   closed by issue-1's explicit `mode` field bound into the
   transcript.
 
@@ -190,7 +198,7 @@ their security properties are meaningful only when the handshake
 identity itself is unsubstitutable.  Plan #7 additionally depends
 on Phase 0's config-file infrastructure.
 
-### Phase 2a — [`mqc-issue-7.plan`](./mqc-issue-7.plan): mandatory revocation
+### Phase 2a — **issue #7**: mandatory revocation
 
 **What changes**: revocation queries become mandatory by default
 on **both** sides of the handshake (today only the server
@@ -201,7 +209,7 @@ checks); fail-closed on log-query failure.  New runtime knob
 **Cutover**: rebuild + restart `mtc-ca.service`; redeploy client
 tools.  No wire change.
 
-### Phase 2b — [`mqc-issue-8.plan`](./mqc-issue-8.plan): cert self-verification audit + tightening
+### Phase 2b — **issue #8**: cert self-verification audit + tightening
 
 **What changes**: spec §10.1 rewrite making "untrusted transport"
 explicit; new §10.6 cert validity window check
@@ -213,7 +221,7 @@ actually triggers.
 **Cutover**: rebuild + restart; redeploy client tools.  No wire
 change.
 
-### Phase 2c — [`mqc-issue-9.plan`](./mqc-issue-9.plan): server-name / expected-identity check
+### Phase 2c — **issue #9**: server-name / expected-identity check
 
 **What changes**: client-side `mqc_cert_name_matches` check
 gating the handshake on "the cert at this `cert_index` lists the
@@ -243,7 +251,7 @@ change.
 These two plans share helpers and ship in order: #11 first
 (introduces the strict-parser helpers), then #12 (consumes them).
 
-### Phase 3a — [`mqc-issue-11.plan`](./mqc-issue-11.plan): strict JSON parsing
+### Phase 3a — **issue #11**: strict JSON parsing
 
 **What changes**: every handshake JSON parse uses
 `JSON_TOKENER_STRICT` + `JSON_TOKENER_VALIDATE_UTF8`; trailing
@@ -257,7 +265,7 @@ calls.  Spec §5.2 strict-parsing paragraph; new §12.10.
 change.  Wire-quiet AND behavior-conservative for legitimate
 peers (postWolf controls all clients; their JSON is conformant).
 
-### Phase 3b — [`mqc-issue-12.plan`](./mqc-issue-12.plan): cheap pre-crypto filters + DoS budgets
+### Phase 3b — **issue #12**: cheap pre-crypto filters + DoS budgets
 
 **What changes**: pre-crypto byte-length validation on `kem_pub`
 and `signature` (rejects garbage before the ~400 µs ML-DSA
@@ -590,7 +598,7 @@ SECURITY KNOBS (set in /etc/postWolf/config under [global]):
 | `mtc-keymaster/server2/c/README-using-mtc-server.md` | New "MQC tunables" section listing every `[global]` key the server reads from `/etc/postWolf/config` (the 14 keys across issues 6a, 7, 12).  Per-key: meaning, default, when to tune, sanity ceiling. |
 | `socket-level-wrapper-MQC/README.md` (create if absent) | "Calling MQC from C" section: the `mqc_ctx_t` API, when to call `mqc_ctx_set_expected_name`, what `MQC_SECURITY` log lines mean and how to interpret them. |
 | `mtc-keymaster/README-bugsandtodo.md` | Close issues #6 and #10 (subsumed by #1).  Add a pointer from the existing TODO #9b (cosigner TOFU) to the master plan's "Out of scope" note. |
-| `socket-level-wrapper-MQC/README-mqc-issues.md` | Annotate each of the 12 reviewer issues with the per-issue plan that addressed it.  E.g., "Issue #1 — addressed by `mqc-issue-1.plan`, landed in commit ABC under Phase 1." |
+| `socket-level-wrapper-MQC/README-mqc-issues.md` | Annotate each of the 12 reviewer issues with the per-issue plan that addressed it.  E.g., "Issue #1 — addressed by issue #1, landed in commit ABC under Phase 1." |
 
 ### 6c — Operator runbook
 
@@ -697,9 +705,7 @@ post-Phase-1 properties.  Add to CLAUDE.md:
 
 The spec at `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md`
 is the technical reference but it's a long read.  Add (or update)
-a short README in `socket-level-wrapper-MQC/README.md` (or
-`socket-level-wrapper-MQC/README-MQC.plan` if the latter is
-already serving this role) that:
+a short `socket-level-wrapper-MQC/README.md` that:
 
 - Explains what MQC is in 2 paragraphs (not just the spec
   Abstract).

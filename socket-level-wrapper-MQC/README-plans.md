@@ -30,7 +30,7 @@ already accepted.
 
 ## Issue #1 — Sign the full transcript
 
-Plan: [`mqc-issue-1.plan`](./mqc-issue-1.plan).
+Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #1.
 Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 1.
 
 ### Verdict
@@ -156,7 +156,7 @@ in the wild.  The plan's runbook is a single-host flag-day cutover.
 
 ## Issue #2 — Add a real protocol version and suite ID
 
-Plan: [`mqc-issue-2.plan`](./mqc-issue-2.plan).
+Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #2.
 Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 2.
 
 ### Verdict
@@ -169,13 +169,13 @@ issue-1's plan.**  The reviewer's three asks were:
 3. Bind both into signatures *and* HKDF.
 
 Items 1, 2, and the signature-binding portion of 3 are all in
-`mqc-issue-1.plan` because transcript binding is meaningless without
+issue #1 because transcript binding is meaningless without
 something to bind.  The HKDF-binding portion of item 3 is the only
 non-trivial residual, and it splits further into:
 
-- The cheap version (this plan, `mqc-issue-2.plan`): tag `version`
+- The cheap version (this plan, issue #2): tag `version`
   and `suite` into the existing HKDF *info* strings.
-- The real version (`mqc-issue-3.plan`, when written): full
+- The real version (issue #3, when written): full
   transcript-bound `HKDF-Extract(transcript_hash, SS)` per the
   reviewer's item #3.
 
@@ -238,7 +238,7 @@ clarity, but the implementation is one commit.
 
 ## Issue #3 — Use transcript-bound HKDF
 
-Plan: [`mqc-issue-3.plan`](./mqc-issue-3.plan).
+Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #3.
 Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 3.
 
 ### Verdict
@@ -344,7 +344,7 @@ any post-cutover bug), land #1+#2 first and #3 second.
 
 ## Issue #4 — Add Finished messages
 
-Plan: [`mqc-issue-4.plan`](./mqc-issue-4.plan).
+Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #4.
 Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 4.
 
 ### Verdict
@@ -468,7 +468,7 @@ smallest of the four and a fine "second cutover" after #1+#2+#3.
 
 ## Issue #5 — AEAD must authenticate frame headers
 
-Plan: [`mqc-issue-5.plan`](./mqc-issue-5.plan).
+Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #5.
 Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 5.
 
 ### Verdict
@@ -558,7 +558,7 @@ after #1–#4 land.
 
 ## Issue #6 — Encrypted-identity authentication gaps
 
-Plan: [`mqc-issue-6.plan`](./mqc-issue-6.plan) (stub — fully
+Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #6.
 subsumed by issue #1).
 Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 6.
 
@@ -566,7 +566,7 @@ Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 6.
 
 **Agree, but no separate work.**  Every binding the reviewer asked
 for — `EK_c`, `CT_s`, mode, server role — is in the transcript
-construction defined by `mqc-issue-1.plan`.  All four code sites
+construction defined by issue #1.  All four code sites
 that need editing are in issue-1's code-edit list.  The
 `neg-mqc-id-replay` test that proves the constant-blob hole is
 closed is in issue-1's test coverage.  When issue-1 lands, issue
@@ -603,7 +603,7 @@ ambiguity of a missing file.
 
 ## Issue #6a — Expose operational tunables in /etc/postWolf/config
 
-Plan: [`mqc-issue-6a.plan`](./mqc-issue-6a.plan).
+Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #6a.
 Source: side-track raised during issue #6 review (not in
 [`README-mqc-issues.md`](./README-mqc-issues.md)).
 
@@ -696,7 +696,7 @@ ten operational knobs and the read-config accessor.
 
 ## Issue #7 — Revocation should be mandatory
 
-Plan: [`mqc-issue-7.plan`](./mqc-issue-7.plan).
+Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #7.
 Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 7.
 
 ### Verdict
@@ -751,7 +751,7 @@ policy = lower-load mode for stable steady state.
 
 ## Issue #8 — Cert retrieval is self-verifying, not transport-trusted
 
-Plan: [`mqc-issue-8.plan`](./mqc-issue-8.plan).
+Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #8.
 Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 8.
 
 ### Verdict
@@ -812,7 +812,7 @@ demonstrated; with them, every check becomes regression-tested.
 
 ## Issue #9 — Server-name / expected-identity check
 
-Plan: [`mqc-issue-9.plan`](./mqc-issue-9.plan).
+Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #9.
 Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 9.
 
 ### Verdict
@@ -875,7 +875,7 @@ cutover is part of the runbook.
 
 ## Issue #10 — Downgrade protection on identity-mode selection
 
-Plan: [`mqc-issue-10.plan`](./mqc-issue-10.plan) (stub — fully
+Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #10.
 subsumed by issue #1).
 Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 10.
 
@@ -883,7 +883,7 @@ Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 10.
 
 **Agree, but no separate work.**  The reviewer's two specific
 requirements — explicit mode field on the wire and mode bound
-into signatures — are both already in `mqc-issue-1.plan`.
+into signatures — are both already in issue #1.
 
 Issue-1 adds `mode` as a top-level handshake JSON field and
 includes its `mode_id` byte (0x00 for clear, 0x01 for encrypted)
@@ -902,7 +902,7 @@ issue-6 stub.
 
 ## Issue #11 — Strict JSON parsing on the handshake
 
-Plan: [`mqc-issue-11.plan`](./mqc-issue-11.plan).
+Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #11.
 Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 11.
 
 ### Verdict
@@ -970,7 +970,7 @@ equivalent.
 
 ## Issue #12 — Cheap pre-crypto filters and tighter DoS budgets
 
-Plan: [`mqc-issue-12.plan`](./mqc-issue-12.plan).
+Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #12.
 Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 12.
 
 ### Verdict
