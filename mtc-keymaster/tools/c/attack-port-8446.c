@@ -635,6 +635,167 @@ static void a_p3a_uppercase_hex(const char *h, int p)
     send_json("p3a-uppercase-hex", h, p, body);
 }
 
+/* ----------------------------------------------------------------------
+ * P3c — encrypted-identity-mode (spec §7) wire attacks.  These probe
+ * the encrypted-mode handshake bodies in mqc_encrypted.c that landed
+ * in Phase 7 commit 2 (`a287aa8d0`).  Server-side dispatch is
+ * mqc_accept_auto: peeks the first JSON for `"mode":"encrypted"` and
+ * routes to mqc_accept_encrypted_post.
+ *
+ * What we CAN attack here without crypto knowledge of the server:
+ *   - Phase-1 strict-parse rejection (mode shape, field set, hex
+ *     length, etc.) -- caught at JSON-parse layer, before any KEM.
+ *   - Phase-1 OK + phase-2 garbage -- server processes phase-1
+ *     normally (ML-KEM encapsulate against attacker-supplied bytes),
+ *     sends its phase-1 reply, then tries to AEAD-open our garbage
+ *     phase-2 frame; GCM auth MUST fail.
+ *
+ * What we CANNOT attack from here:
+ *   - Producing valid AEAD-sealed phase-2 frames -- would require
+ *     deriving the early-secret schedule from the server's actual
+ *     ML-KEM ciphertext, i.e., running ML-KEM-768 in this binary.
+ *     Out of scope for the wire-attack pack.
+ * -------------------------------------------------------------------- */
+
+/* Phase-1 with mode="encrypted" but NO kem_pub field.  Strict parser
+ * at mqc_json_no_duplicates / no_unknown_keys MUST reject. */
+static void a_p3c_enc_phase1_no_kem(const char *h, int p)
+{
+    send_json("p3c-enc-phase1-no-kem", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"encrypted\"}");
+}
+
+/* Phase-1 with mode="encrypted" AND a clear-mode cert_index field
+ * tucked in.  Encrypted phase-1 has 4 fields; cert_index is unknown
+ * and MUST be rejected by mqc_json_no_unknown_keys.  Defends against
+ * a "best of both modes" smuggling attempt. */
+static void a_p3c_enc_phase1_extra_cert_index(const char *h, int p)
+{
+    send_json("p3c-enc-phase1-extra-cert_index", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"encrypted\",\"kem_pub\":\"00\","
+        "\"cert_index\":1}");
+}
+
+/* Phase-1 with mode="encrypted" AND a clear-mode signature field.
+ * Same rejection class as cert_index above. */
+static void a_p3c_enc_phase1_extra_signature(const char *h, int p)
+{
+    send_json("p3c-enc-phase1-extra-signature", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"encrypted\",\"kem_pub\":\"00\","
+        "\"signature\":\"00\"}");
+}
+
+/* Mode-shape mismatch: clear-mode "shape" (4 fields, no signature)
+ * with mode literally set to "clear".  Auto-detect routes to
+ * mqc_accept_clear_post, which then rejects on missing
+ * cert_index / signature.  Confirms the strict-parser rejection
+ * fires symmetrically across modes. */
+static void a_p3c_enc_clear_shape_with_clear_label(const char *h, int p)
+{
+    send_json("p3c-enc-clear-shape-with-clear-label", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"clear\",\"kem_pub\":\"00\"}");
+}
+
+/* Phase-1 with kem_pub of the wrong length (1 byte instead of
+ * 1184).  Hits mqc_json_get_hex_strict's pre-crypto length filter
+ * before any ML-KEM call. */
+static void a_p3c_enc_phase1_kem_short(const char *h, int p)
+{
+    send_json("p3c-enc-phase1-kem-too-short", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"encrypted\",\"kem_pub\":\"ab\"}");
+}
+
+/* Phase-1 with mode literal misspelled as "encryptd".  Auto-detect
+ * sees no `"mode":"encrypted"` substring and falls through to
+ * clear-mode dispatch; the clear-mode strict parser then rejects
+ * because mode != "clear". */
+static void a_p3c_enc_phase1_mode_typo(const char *h, int p)
+{
+    send_json("p3c-enc-phase1-mode-typo", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"encryptd\",\"kem_pub\":\"00\"}");
+}
+
+/* Phase-1 OK (1184-byte kem_pub of zeros, server runs ML-KEM
+ * encapsulate against it and replies with its CT_s) followed by 100
+ * bytes of garbage as "phase 2".  No length prefix, just bytes -- so
+ * the server's mqc_enc_recv reads 4 bytes as the length prefix
+ * (which decodes to whatever junk happens to be in the first 4
+ * bytes) and then either rejects on length-out-of-range OR reads N
+ * more bytes and AEAD-fails.  Either way it's a clean rejection.
+ * This exercises the post-phase-1-OK error path in
+ * mqc_accept_encrypted_post. */
+static void a_p3c_enc_phase1_ok_then_junk(const char *h, int p)
+{
+    static char kem_pub[2 * 1184 + 1];
+    char body[6000];
+    int n;
+    int fd;
+    char rbuf[RECV_BUF_SZ];
+    int got;
+    struct timeval t0, t1;
+    double elapsed;
+    unsigned char garbage[100];
+    size_t i;
+
+    if (kem_pub[0] == '\0') {
+        memset(kem_pub, '0', sizeof(kem_pub) - 1);
+    }
+    n = snprintf(body, sizeof(body),
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"encrypted\",\"kem_pub\":\"%s\"}", kem_pub);
+    if (n < 0 || n >= (int)sizeof(body)) return;
+
+    for (i = 0; i < sizeof(garbage); i++) garbage[i] = (unsigned char)rand();
+
+    gettimeofday(&t0, NULL);
+    fd = open_socket(h, p, RECV_TIMEOUT_MS);
+    if (fd < 0) {
+        report("p3c-enc-phase1-ok-then-junk", 0, 0, NULL, 0, 0.0);
+        return;
+    }
+    /* Send phase-1 (server should reply with its own phase-1) */
+    send_all(fd, body, (size_t)n);
+    /* Read whatever the server sends back (its phase-1 ServerHello,
+     * roughly 2400 bytes of JSON) — we don't parse it; we just
+     * blindly send garbage as the "phase-2" frame. */
+    got = recv_all(fd, rbuf, sizeof(rbuf));
+    (void)got;
+    /* Now send 100 random bytes as phase 2 */
+    send_all(fd, garbage, sizeof(garbage));
+    shutdown(fd, SHUT_WR);
+    /* Drain any final close-handshake bytes */
+    got = recv_all(fd, rbuf, sizeof(rbuf));
+    close(fd);
+    gettimeofday(&t1, NULL);
+    elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_usec - t0.tv_usec) / 1e6;
+    report("p3c-enc-phase1-ok-then-junk",
+           (int)(n + sizeof(garbage)), got, rbuf, 1, elapsed);
+}
+
+/* Phase-1 OK + immediate close — server sends its phase-1 reply,
+ * then waits for phase-2; the close arrives and the read times
+ * out.  Tests the slow-loris deadline on the encrypted path. */
+static void a_p3c_enc_phase1_ok_then_close(const char *h, int p)
+{
+    static char kem_pub[2 * 1184 + 1];
+    char body[6000];
+    int n;
+    if (kem_pub[0] == '\0') {
+        memset(kem_pub, '0', sizeof(kem_pub) - 1);
+    }
+    n = snprintf(body, sizeof(body),
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"encrypted\",\"kem_pub\":\"%s\"}", kem_pub);
+    if (n > 0 && n < (int)sizeof(body))
+        attack_raw("p3c-enc-phase1-ok-then-close", h, p, body, (size_t)n);
+}
+
 static void a_slow_loris(const char *host, int port)
 {
     const char *p = "{\"cert_index\":1,\"proto\":\"mqc-v1\"}";
@@ -1363,6 +1524,15 @@ int main(int argc, char **argv)
     a_p3a_uppercase_hex(host, port);
     /* Phase 3b per-cert throttle (P3b.7, issue #12) */
     a_p3b_cert_rotation(host, port);
+    /* Phase 7 / P3c encrypted-mode wire attacks */
+    a_p3c_enc_phase1_no_kem(host, port);
+    a_p3c_enc_phase1_extra_cert_index(host, port);
+    a_p3c_enc_phase1_extra_signature(host, port);
+    a_p3c_enc_clear_shape_with_clear_label(host, port);
+    a_p3c_enc_phase1_kem_short(host, port);
+    a_p3c_enc_phase1_mode_typo(host, port);
+    a_p3c_enc_phase1_ok_then_junk(host, port);
+    a_p3c_enc_phase1_ok_then_close(host, port);
     a_slow_loris(host, port);
     a_fragment_burst(host, port);
 
