@@ -1,0 +1,428 @@
+# Master plan: MQC v0 hardening pass #2
+
+## Status
+
+Second external security review of `socket-level-wrapper-MQC/`.
+Source review at
+[`README-mqc-2-issues.md`](./README-mqc-2-issues.md).  This file
+is the orchestration document for addressing the actionable
+findings.
+
+The first hardening pass (`mqc-master.plan`, now trimmed to
+deferred-items only) closed the original 12-issue reviewer pack
+plus two cross-cutting plans (#6a operational tunables, fork
+backpressure) plus the Phase-7 encrypted-mode rewrite.  This
+second pass is narrower: 7 actionable findings, ~3 of them
+trivial, ~3 substantive, ~1 deferred.
+
+## Triage of the 10 findings
+
+| # | Reviewer claim | Verdict | Phase |
+|---|---|---|---|
+| 1 | Handshake JSON is not length-prefixed | **Agree, fix.** Spec §5.1 requires it; current code reads byte-by-byte via `mqc_read_json_block`. | Phase 1 |
+| 2 | Brace-count reader is string-literal-unaware | **Agree, fix.**  `{"k":"}"}` desynchronises framing.  Same fix as #1. | Phase 1 |
+| 3 | Cosigner-key TOFU at first contact | **Agree, fix.**  Already tracked as `mtc-keymaster/README-bugsandtodo.md` TODO #9b with design branches in `~/.claude/plans/lets-plan-to-implement-snoopy-rivest.md`. | Phase 5 |
+| 4 | Peer pubkey not verified against `subject_public_key_hash` | **Agree, fix — highest severity.**  `extract_pubkey_from_cert` reads PEM from local files, never SHA-256s it and compares.  Anyone with write access to `~/.TPM/peers/<n>/public_key.pem` can substitute the verifier pubkey while keeping the cert hash unchanged → identity-substitution. | Phase 2 |
+| 5 | Revocation "mandatory" drops first contact | **Partial disagree.**  Real behavior, but per-(IP, cert) throttle (issue #12) already mitigates the DoS amplification path.  Consider improving the UX but not security-critical. | Phase 6 (may defer) |
+| 6 | Transcript binds fields, not raw frame bytes | **Disagree.**  Field-based transcript is by design (spec §6.0), same pattern TLS 1.3 uses.  Reviewer's actual concern is doc clarity around "frame" terminology — fix #1 resolves this. | Closed by Phase 1 |
+| 7 | AEAD recv increments seq before auth | **Agree, trivial fix.**  `(*seq)++` at `mqc_common.c:1420` before `wc_AesGcmDecrypt` at line 1425.  Same pattern at `mqc_read:1591`. | Phase 3 |
+| 8 | Stale "encrypted is stubbed" comments | **Agree, trivial.**  Three locations: `mqc_internal.h:7`, `mqc.c:15`, `mqc.c:27`. | Phase 4 |
+| 9 | `mqc_accept_auto` uses MSG_PEEK + strstr | **Partial agree.**  Workable today (strict-parser fallback catches false positives) but architecturally inelegant.  Fix #1 enables a clean replacement: read framed first frame, parse strict, dispatch from parsed `mode`. | Closed by Phase 1 |
+| 10 | No build/test verification | (meta, no action) | n/a |
+
+## End-state vision
+
+After all phases land, MQC v0 has:
+
+- Length-prefixed framing for **every** unit on the wire,
+  handshake and data plane alike (spec §5.1 honored).
+- No string-literal-unaware framing parser anywhere.
+- `mqc_accept_auto` reads a length-prefixed first frame, strict-
+  parses it, dispatches from the parsed `mode` field — no
+  MSG_PEEK substring search.
+- Peer pubkey verified against the cert's
+  `subject_public_key_hash` before any signature verification.
+  Cache poisoning / local-file substitution can no longer route
+  a verifier to an attacker pubkey.
+- AEAD receive sequence counter incremented only after a
+  successful GCM verify.
+- Documentation says what the code does (no "stubbed encrypted
+  mode" claims in a tree where encrypted mode is shipped).
+- Cosigner-key bootstrap is no longer pure TOFU — operator-
+  pinned out-of-band, with a verifiable enrollment path
+  (snoopy-rivest plan branches).
+
+The protocol stays at draft-page-mqc-protocol-**00**; spec edits
+land within that draft.  Same flag-day deployment model as the
+first pass — server and clients always upgrade together.
+
+---
+
+## Phase 1 — Length-prefixed handshake frames (one flag-day cutover)
+
+Closes findings #1, #2, #6, #9 — all of which derive from the
+same design choice (or oversight) about handshake framing.
+
+**What changes on the wire:**
+
+Pre-Phase-1 handshake (Phase-1-of-mqc-2, that is — the original
+mqc-1 Phase 1 was different):
+
+```
+client → server:  raw JSON bytes, no length prefix, read by
+                   mqc_read_json_block byte-by-byte
+```
+
+Post-Phase-1:
+
+```
+client → server:  4-byte big-endian length prefix
+                || JSON bytes (exactly as many as the prefix says)
+```
+
+Same shape spec §5.1 already mandates for data-plane frames.
+The handshake JSON content itself is unchanged — just the
+framing wrapper.
+
+**Code changes:**
+
+- `mqc_common.c`:
+  - New `mqc_write_handshake_frame(fd, buf, len)`: writes
+    `htonl(len)` + `len` bytes via `mqc_write_all`.
+  - New `mqc_read_handshake_frame(fd, buf, max_len)`: reads
+    4 bytes, decodes length, validates against
+    `mqc-max-handshake-bytes`, reads exactly that many bytes
+    via `mqc_read_all`.  Returns the body length on success,
+    -1 on error.  Replaces every call site of
+    `mqc_read_json_block`.
+  - **Delete** `mqc_read_json_block` and its forward decl in
+    `mqc_internal.h`.  Three call sites currently reference
+    it; all become `mqc_read_handshake_frame`.
+
+- `mqc_clear.c` (both bodies): replace each
+  `mqc_write_all(fd, json_buf, json_len)` followed by send
+  with `mqc_write_handshake_frame(fd, json_buf, json_len)`.
+  Replace each `mqc_read_json_block(fd, json_buf, sizeof(json_buf))`
+  with `mqc_read_handshake_frame(fd, json_buf, sizeof(json_buf))`.
+
+- `mqc_encrypted.c` (both bodies + both phase-1 frames):
+  same replacement pattern.  Phase-2 already uses `mqc_enc_send`
+  / `mqc_enc_recv` which are length-prefixed; no change there.
+
+- `mqc.c` `mqc_accept_auto`:
+  - Drop the MSG_PEEK substring search.
+  - Read the length-prefixed first frame via the new
+    `mqc_read_handshake_frame`.
+  - `mqc_json_parse_strict` it.
+  - Read the `mode` field via `mqc_json_get_string_exact`
+    matching against `"clear"` or `"encrypted"`.
+  - Dispatch to `mqc_accept_clear_post_with_buf(ctx, fd,
+    client_ip, json_buf, json_len, parsed_obj)` or the
+    encrypted equivalent.  **Both sub-handlers must take the
+    already-read first frame as input** (parallel to the
+    existing `_post` factoring) — this is the load-bearing
+    refactor of Phase 1.
+
+- `mqc_clear.c` / `mqc_encrypted.c`: refactor each `_post`
+  variant so that the FIRST `mqc_read_handshake_frame` call
+  is now optional (skipped if the caller passed the
+  already-read first frame).  Cleanest API: introduce
+  `mqc_accept_clear_with_first_frame(ctx, fd, client_ip,
+  buf, len, parsed_obj)` and have `mqc_accept_clear_post`
+  be a thin wrapper that reads the first frame itself then
+  calls the new function.  Same for encrypted.
+
+- `mtc-keymaster/tools/c/attack-port-8446.c`: every existing
+  attack that sends raw JSON now needs a 4-byte length prefix
+  prepended.  Update `send_json` (currently a thin wrapper
+  around `attack_raw`) to prepend `htonl(strlen(body))`.  The
+  raw-bytes attacks (`a_random*`, `a_all_zeros`, etc.) stay
+  unchanged — they're testing what happens when the framing
+  itself is malformed.  Add new attacks targeting the
+  length-prefix layer specifically:
+    - `p3d-frame-len-zero`        (length prefix = 0)
+    - `p3d-frame-len-too-large`   (length prefix > max-handshake-bytes)
+    - `p3d-frame-len-truncated`   (only 2 bytes of the length
+                                   prefix, then close)
+    - `p3d-frame-tail-bytes`      (length prefix says N, send N
+                                   bytes of valid JSON, then keep
+                                   sending more bytes — server
+                                   should consume exactly N and
+                                   ignore the rest until the next
+                                   frame boundary)
+
+**Spec changes:**
+
+- §5.1: tighten the existing "every unit … is a length-prefixed
+  frame" sentence to remove any ambiguity.  Add a note that
+  the handshake JSON's `payload length` excludes the length
+  prefix itself (matches data-plane convention).
+- §6 / §7: each describes the handshake JSON content; add a
+  one-line note that frame layout is per §5.1.  No JSON
+  content change.
+- Appendix A worked example: prepend the 4-byte length prefix
+  to each ClientHello / ServerHello bytes shown.  Length
+  numbers will need recalculating from a fresh capture.
+
+**Cutover:**
+
+Single flag-day commit (server + all clients).  Same pattern
+as the original Phase 1.  Smoke test: `show-tpm --verify`
+(clear) and `show-tpm --verify --encrypted` both succeed
+post-restart.
+
+**Exit criteria:**
+
+- Zero-warning build.
+- `make -f Makefile.tools test-mqc-all` passes 4/4.
+- `mqc_read_json_block` is gone from the tree (`grep -r
+  mqc_read_json_block` returns nothing).
+- A handshake JSON containing a literal `}` inside a string
+  value (e.g., `"signature":"abcd..}xx.."`) is correctly
+  framed and parsed — add a regression test.
+- attack-port-8446 includes the new `p3d-frame-*` probes; all
+  produce clean rejections in the journal.
+
+---
+
+## Phase 2 — Peer pubkey hash binding (issue #4 — most important)
+
+Closes finding #4.  This is the highest-severity item from the
+reviewer.
+
+**What's broken:**
+
+`extract_pubkey_from_cert` (`mqc_peer.c:502`) reads the peer's
+ML-DSA-87 public key PEM from local files
+(`~/.TPM/peers/<n>/public_key.pem` or
+`~/.TPM/<subject>/public_key.pem`).  It never SHA-256s the
+loaded pubkey bytes and compares to the cert's
+`subject_public_key_hash` field.
+
+Anyone who can write to those local paths (e.g., a co-tenant on
+the same UID, a tampered backup-restore, a mis-configured
+sync-daemon) can substitute the pubkey used for handshake
+signature verification while leaving the cert content
+unchanged.  Result: signature-substitution under a real,
+verified, in-log cert — the attack surface that issue #1's
+transcript binding was supposed to close, re-opened by a local-
+file-trust gap.
+
+**Fix:**
+
+After every successful pubkey extraction (every code path that
+returns a `pubkey_pem` / `pubkey_der`):
+
+1. Extract the cert's `subject_public_key_hash` (already-parsed
+   field in `cert_json`).  It's a hex string of a SHA-256.
+2. Decode the loaded pubkey to its canonical byte form (DER for
+   ML-DSA-87 — or raw, depending on what the cert says is hashed;
+   the spec / MTC RFC needs to be consulted to confirm).
+3. SHA-256 it.
+4. Constant-time compare against the cert's hash field.  Mismatch
+   → return -1, log
+   `MQC_SECURITY("PUBKEY_HASH_MISMATCH: cert=%d expected=%.16s... got=%.16s...")`.
+5. Update spec §10.2 to document this as a normative MUST.
+
+**Scope check:**
+
+The fix lives entirely in `mqc_peer.c`'s
+`extract_pubkey_from_cert` (and any other code path that
+loads a peer pubkey for verification — audit needed).  No wire-
+format change, no behavioral change for the happy path
+(matching hash → proceed).  Mismatching hash → reject with a
+new log line.
+
+**Code changes:**
+
+- `mqc_peer.c`: add `mqc_verify_pubkey_hash(cert_json, pubkey,
+  pubkey_sz)` static helper.  Call it at the end of
+  `extract_pubkey_from_cert` before returning the pubkey to
+  the caller.  Also call it from anywhere else that loads a
+  pubkey (e.g., `mqc_peer_get_cached_pubkey`).
+- Determine canonical byte form: read MTC spec / postWolf
+  reference impl to confirm whether `subject_public_key_hash`
+  is over the DER, the raw, or some structured encoding.
+  Match the implementation accordingly.
+- Add a regression test in `tests/`: corrupt
+  `~/.TPM/peers/<n>/public_key.pem` to a different valid PEM
+  (e.g., a freshly-generated keypair), run a connection,
+  confirm `PUBKEY_HASH_MISMATCH` fires and the connection
+  aborts.  Then restore + verify recovery.
+
+**Spec changes:**
+
+- §10.2 (signature verification): add a new MUST clause
+  immediately before the signature-verify step:
+  `Implementations MUST verify that SHA-256 of the loaded
+  ML-DSA-87 public key (in canonical form per Section 4)
+  equals the cert's subject_public_key_hash before invoking
+  signature verification.`
+- §12.x (security considerations): new subsection 12.11
+  "Pubkey-Hash Binding" explaining the attack class this
+  closes (local-file substitution / cache poisoning).
+
+**Cutover:**
+
+Wire-quiet; no spec-version bump needed.  Existing peers with
+correctly-cached pubkeys keep working; peers whose local
+`~/.TPM/peers/<n>/public_key.pem` has somehow drifted from the
+cert's hash get a clean diagnostic.
+
+**Exit criteria:**
+
+- Zero-warning build, aggregate suite still 4/4.
+- Negative test: corrupted pubkey file → `PUBKEY_HASH_MISMATCH`
+  in journal, connection aborts.
+- Positive: untouched pubkey file → no new log lines, normal
+  handshake.
+- Spec §10.2 + §12.11 reviewed and committed.
+
+---
+
+## Phase 3 — AEAD seq increment after verify (issue #7)
+
+Closes finding #7.  Trivial.
+
+**What changes:**
+
+In `mqc_common.c` `mqc_enc_recv` (line 1420) and `mqc_read`
+(line 1591), move the `(*seq)++` / `conn->recv_seq++` line to
+**after** the `wc_AesGcmDecrypt` call returns success.  On
+failure, leave `recv_seq` untouched (the connection will be
+torn down anyway, but the spec says "increments on success"
+and behavior should match).
+
+**Spec changes:** none — §9.2 already says "AEAD-decrypts with
+the matching AAD, increments `recv_seq` on success."  This
+brings code in line with spec wording.
+
+**Tests:**
+
+- Aggregate suite still passes (no behavior change for the
+  happy path).
+- Add an attack-port-8446 probe that sends a tampered AEAD
+  frame; verify the reject log line names the correct sequence
+  (the one that was being checked, not the one after).
+
+---
+
+## Phase 4 — Stale-doc cleanup (issue #8)
+
+Closes finding #8.  Three comments still describe encrypted
+mode as stubbed:
+
+- `mqc_internal.h:7` — "currently stubs; bodies arrive in
+  Phase 7 commit 2"
+- `mqc.c:15` — "(currently stubs; bodies arrive in Phase 7
+  commit 2)"
+- `mqc.c:27` — "the (NULL-returning) encrypted stub until
+  commit 2 lands"
+
+Update each to past-tense and flip the "will arrive" claim to
+"shipped in commit a287aa8d0."
+
+**Tests:** none required; doc-only change.
+
+---
+
+## Phase 5 — Cosigner-key bootstrap hardening (issue #3)
+
+Closes finding #3.  Picks up the existing TODO #9b design
+captured in
+`/home/ubuntu/.claude/plans/lets-plan-to-implement-snoopy-rivest.md`.
+
+**Out of scope for this master plan:** the actual design.  The
+snoopy-rivest plan has two branches (leaf-bootstrap path,
+CA-bootstrap path) that are themselves substantial — pick one
+and write a per-branch plan when ready.
+
+**Recommended path:** start with the leaf-bootstrap branch
+because it has a natural OOB channel (the operator-issued
+enrollment nonce) that the CA-bootstrap branch lacks.
+
+**Phase 5 of THIS plan is just the trigger:** copy the
+snoopy-rivest plan branches into a new
+`mqc-2-issue-tofu.plan` in this directory, decide on
+ordering, and proceed.
+
+---
+
+## Phase 6 — Revocation first-contact UX (issue #5, may defer)
+
+Closes finding #5.  Current behavior (cache miss → fetch +
+write cache + return failure → caller retries) is correct but
+operationally surprising — every fresh peer gets a "first
+connection always fails" experience.
+
+**Possible improvement:** complete the handshake on the first
+contact when the freshly-fetched revocation status is "not
+revoked," instead of dropping.  This requires plumbing the
+fetched status through the rest of `mqc_peer_verify` instead
+of setting it aside for the next call.
+
+**Decision deferred.**  May land if Phase 1+2 expose
+documentation / regression hooks that make this easy.  May
+defer indefinitely if the per-(IP, cert) throttle from #12
+proves to fully mitigate the DoS concern (it has, in practice,
+during Phase-4 stress testing).
+
+---
+
+## Phase ordering
+
+```
+Phase 1  ─►  Phase 2  ─►  Phase 3  ─►  Phase 4  ─►  Phase 5
+flag-day     pubkey-      seq-fix      doc          TOFU
+framing      hash-bind    (1 line)     cleanup      design
+                                                    (snoopy-
+                                                     rivest)
+
+                                       Phase 6 (deferred)
+                                       revocation UX
+```
+
+Phase 1 first because it's a flag day — bundling other changes
+into it is operationally cheap (one cutover window).  Phase 2
+right after because it's the highest-severity finding but is
+wire-quiet (can ship any time).  Phases 3 + 4 are
+trivial cleanup.  Phase 5 is its own substantial project.
+Phase 6 may never land.
+
+## Suggested commit boundaries
+
+| Commit | Phase | Scope |
+|---|---|---|
+| `mqc-2-1` | Phase 1 | Length-prefixed handshake frames + drop brace-count reader + auto-detect refactor + p3d-frame-* attacks + spec §5.1/§6/§7/Appendix A edits |
+| `mqc-2-2` | Phase 2 | Pubkey-hash binding in extract_pubkey_from_cert + regression test + spec §10.2 / §12.11 edits |
+| `mqc-2-3` | Phase 3 | AEAD recv seq increment after verify (mqc_common.c lines 1420 + 1591) |
+| `mqc-2-4` | Phase 4 | Stale "stubbed" comments in mqc_internal.h:7, mqc.c:15, mqc.c:27 |
+| `mqc-2-5` | Phase 5 | Triggers a new `mqc-2-issue-tofu.plan` (leaf-bootstrap branch first) |
+| `mqc-2-6` | (deferred) | Revocation first-contact UX (only if motivated) |
+
+## Verification milestones
+
+- After Phase 1: `make -f Makefile.tools test-mqc-all` 4/4
+  with the new framing.  attack-port-8446 includes p3d-frame-*
+  attacks; all produce clean rejections.  show-tpm --verify
+  and show-tpm --verify --encrypted both succeed.
+- After Phase 2: attempting a connection with a corrupted
+  `~/.TPM/peers/<n>/public_key.pem` produces
+  `PUBKEY_HASH_MISMATCH` and aborts.
+- After Phase 3: aggregate suite unchanged.  No measurable
+  perf change.
+- After Phase 4: `grep -rn "stubbed encrypted\|encrypted.*stub\|Phase 7 commit 2"
+  socket-level-wrapper-MQC/` returns only the historical
+  comments in mqc_encrypted.c's file header (which is
+  retrospective, not stale).
+- Phase 5: separate plan, separate exit criteria.
+
+## Out of scope (across all phases)
+
+- Replacing JSON wire format with CBOR / TLV.  JSON is
+  workable; the framing fix in Phase 1 makes it spec-compliant.
+- Revisiting the field-based vs raw-bytes transcript decision
+  (reviewer finding #6).  Field-based is intentional and
+  TLS-1.3-aligned.
+- Anything from the original mqc-master.plan's "Out of scope"
+  list (those remain deferred).
