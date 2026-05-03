@@ -264,6 +264,36 @@ static int peer_leaf_hash_path(int cert_index, char *out, int outsz)
     return 0;
 }
 
+/* Path to a cached hex-encoded SHA-256 fingerprint of the cosigner
+ * pubkey that was used to verify this cached cert (issue #8).  When
+ * admin_recosign rotates the cosigner key, the fingerprint stored
+ * here no longer matches the current cosigner — that mismatch is
+ * how mqc_peer_verify detects a stale cache and triggers a
+ * re-fetch + re-verify under the new cosigner. */
+static int peer_cosigner_fp_path(int cert_index, char *out, int outsz)
+{
+    const char *home = getenv("HOME");
+    if (!home) return -1;
+    snprintf(out, (size_t)outsz, "%s/.TPM/%s/%d/cosigner-fp.hex",
+             home, PEER_CACHE_DIR, cert_index);
+    return 0;
+}
+
+/* Compute the SHA-256 fingerprint of the cosigner pubkey, lowercase
+ * hex, NUL-terminated.  out must be >= 65 bytes. */
+static int compute_cosigner_fp(const byte *pubkey, int pubkey_sz,
+                               char out[65])
+{
+    byte hash[WC_SHA256_DIGEST_SIZE];
+    int i;
+    if (wc_Sha256Hash(pubkey, (word32)pubkey_sz, hash) != 0)
+        return -1;
+    for (i = 0; i < WC_SHA256_DIGEST_SIZE; i++)
+        snprintf(out + i*2, 3, "%02x", hash[i]);
+    out[64] = '\0';
+    return 0;
+}
+
 /******************************************************************************
  * Function:    read_file_str
  *
@@ -1078,23 +1108,64 @@ int mqc_peer_verify(const char *mtc_server,
 {
     struct json_object *cert_json = NULL;
     char cache_path[512];
+    char fp_path[512];
+    char current_fp[65];
+    int have_current_fp = 0;
     int ret = -1;
-
-    (void)ca_pubkey;
-    (void)ca_pubkey_sz;
 
     *pubkey_out = NULL;
     *pubkey_sz_out = 0;
 
-    /* 1. Check cache */
-    if (peer_cache_path(cert_index, cache_path, sizeof(cache_path)) == 0) {
+    /* Compute the current cosigner's fingerprint up front so we can
+     * (a) gate cache hits on it and (b) write it next to a freshly-
+     * verified cert.  Issue #8 cosigner-rotation invariant: a cached
+     * cert verified under cosigner key A must NOT be silently
+     * trusted after admin_recosign rotates to cosigner key B. */
+    if (ca_pubkey && ca_pubkey_sz > 0 &&
+        compute_cosigner_fp(ca_pubkey, ca_pubkey_sz, current_fp) == 0) {
+        have_current_fp = 1;
+    }
+
+    /* 1. Check cache (with cosigner-fingerprint gate). */
+    if (peer_cache_path(cert_index, cache_path, sizeof(cache_path)) == 0 &&
+        peer_cosigner_fp_path(cert_index, fp_path, sizeof(fp_path)) == 0) {
         char *cached = read_file_str(cache_path);
         if (cached) {
-            cert_json = json_tokener_parse(cached);
+            int cache_usable = 1;
+            /* If we know the current cosigner fp AND the cache has a
+             * stored fp, both must match.  Mismatch (or missing
+             * stored fp) → drop the cache and re-fetch. */
+            if (have_current_fp) {
+                char *stored_fp = read_file_str(fp_path);
+                if (stored_fp) {
+                    /* Trim trailing whitespace. */
+                    size_t n = strlen(stored_fp);
+                    while (n > 0 && (stored_fp[n-1] == '\n' ||
+                                     stored_fp[n-1] == '\r' ||
+                                     stored_fp[n-1] == ' ')) {
+                        stored_fp[--n] = '\0';
+                    }
+                    if (strcmp(stored_fp, current_fp) != 0) {
+                        cache_usable = 0;
+                        MQC_SECURITY("COSIGNER_ROTATED: cert %d cache "
+                                     "fp=%.16s... current fp=%.16s... — "
+                                     "dropping cache, re-fetching",
+                                     cert_index, stored_fp, current_fp);
+                    }
+                    free(stored_fp);
+                } else {
+                    /* Cached cert without a stored fp — pre-issue-8
+                     * cache or partial write.  Re-fetch to be safe. */
+                    cache_usable = 0;
+                }
+            }
+            if (cache_usable) {
+                cert_json = json_tokener_parse(cached);
+                if (cert_json && mqc_get_verbose())
+                    fprintf(stderr, "[mqc-peer] cache hit for cert %d\n",
+                            cert_index);
+            }
             free(cached);
-            if (cert_json && mqc_get_verbose())
-                fprintf(stderr, "[mqc-peer] cache hit for cert %d\n",
-                        cert_index);
         }
     }
 
@@ -1376,6 +1447,14 @@ int mqc_peer_verify(const char *mtc_server,
         if (mqc_get_verbose())
             fprintf(stderr, "[mqc-peer] cosignature OK for cert %d\n",
                     cert_index);
+
+        /* Persist the cosigner fingerprint next to the cached cert
+         * (issue #8).  Subsequent verifications use this to detect
+         * cosigner rotation and drop the stale cache eagerly rather
+         * than failing the cosig check on every connection. */
+        if (have_current_fp) {
+            write_file_str(fp_path, current_fp);
+        }
     }
 
     /* 5. Check revocation (issue #7).
@@ -1419,27 +1498,56 @@ int mqc_peer_verify(const char *mtc_server,
         /* rev == 0 → cached "not revoked", proceed. */
     }
 
-    /* 6. Check validity */
+    /* 6. Check validity window (issue #8 / spec §10.6).
+     *
+     * Pre-issue-8 the check silently skipped if either timestamp was
+     * missing or zero — that's fail-open on a malformed cert.  Now
+     * both fields are required, the comparison applies a ±skew
+     * tolerance equal to mqc-sig-freshness-sec (default 300 s) so a
+     * peer with a slightly off NTP clock isn't immediately rejected,
+     * and the log distinguishes "not yet valid" from "expired" so an
+     * operator can tell which clock is wrong. */
     {
         struct json_object *sc, *tbs, *val;
         double not_before = 0, not_after = 0;
+        int have_nb = 0, have_na = 0;
         double now = (double)time(NULL);
+        double skew = (double)mqc_rt_cfg()->sig_freshness_sec;
 
         if (json_object_object_get_ex(cert_json, "standalone_certificate", &sc) &&
             json_object_object_get_ex(sc, "tbs_entry", &tbs)) {
-            if (json_object_object_get_ex(tbs, "not_before", &val))
+            if (json_object_object_get_ex(tbs, "not_before", &val)) {
                 not_before = json_object_get_double(val);
-            if (json_object_object_get_ex(tbs, "not_after", &val))
+                have_nb = 1;
+            }
+            if (json_object_object_get_ex(tbs, "not_after", &val)) {
                 not_after = json_object_get_double(val);
+                have_na = 1;
+            }
         }
 
-        if (not_before > 0 && not_after > 0) {
-            if (now < not_before || now > not_after) {
-                MQC_SECURITY("CERT_EXPIRED: cert %d expired or not yet valid",
-                        cert_index);
-                json_object_put(cert_json);
-                return -1;
-            }
+        if (!have_nb || !have_na || not_before <= 0 || not_after <= 0) {
+            MQC_SECURITY("CERT_VALIDITY_MISSING: cert %d "
+                         "(have_nb=%d have_na=%d nb=%.0f na=%.0f)",
+                         cert_index, have_nb, have_na,
+                         not_before, not_after);
+            json_object_put(cert_json);
+            return -1;
+        }
+
+        if (now < not_before - skew) {
+            MQC_SECURITY("CERT_NOT_YET_VALID: cert %d not_before=%.0f "
+                         "now=%.0f skew=%.0fs", cert_index,
+                         not_before, now, skew);
+            json_object_put(cert_json);
+            return -1;
+        }
+        if (now > not_after + skew) {
+            MQC_SECURITY("CERT_EXPIRED: cert %d not_after=%.0f "
+                         "now=%.0f skew=%.0fs", cert_index,
+                         not_after, now, skew);
+            json_object_put(cert_json);
+            return -1;
         }
     }
 

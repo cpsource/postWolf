@@ -788,10 +788,27 @@ handshake to be aborted.
 ### 10.1. MTC Certificate Retrieval
 
 Given `cert_index`, the verifier retrieves the full MTC
-certificate.  Implementations SHOULD cache verified certificates
-locally to avoid repeated log queries; a typical cache structure
-stores one file per `cert_index` under a path such as
-`~/.TPM/peers/<index>/certificate.json`.
+certificate.  The retrieval transport (HTTP, MQC, or a local
+filesystem cache) MUST NOT be relied on for trust.  The verifier
+MUST perform every check in §10.2 through §10.6 on the bytes the
+transport returns, regardless of source; a cert that fails any
+of those checks MUST be rejected even if the transport reported
+success.
+
+Implementations SHOULD cache verified certificates locally to
+avoid repeated log queries; a typical cache structure stores one
+file per `cert_index` under a path such as
+`~/.TPM/peers/<index>/certificate.json`.  Cache entries MUST be
+invalidated when the cosigner key rotates: a cached cert was
+verified under the cosigner key in effect at cache-write time,
+and a key rotation (e.g., via `admin_recosign` in the postWolf
+reference implementation) means subsequent cosignature checks
+against the new key would fail.  The reference implementation
+stores `~/.TPM/peers/<index>/cosigner-fp.hex` alongside each
+cached cert (lowercase hex SHA-256 of the cosigner pubkey at
+verification time) and treats a fingerprint mismatch as a cache
+miss, triggering a re-fetch + re-verify under the current
+cosigner.
 
 Retrieval MAY be performed over the same MQC connection if the
 peer is the log itself, or out of band via HTTP against a known
@@ -919,6 +936,27 @@ of:
   indicating that revocation enforcement is disabled.  This
   setting is intended only for emergency recovery (catastrophic
   log loss) and MUST NOT be the steady-state operational mode.
+
+### 10.6. Validity Window
+
+Each MTC certificate carries `not_before` and `not_after`
+Unix-epoch timestamps in its `tbs_entry`.  The verifier MUST
+require both fields and MUST reject the cert if:
+
+- either field is missing or zero (a malformed cert that the
+  verifier cannot bound), or
+- the verifier's clock indicates `now < not_before - skew`
+  (the cert is not yet valid), or
+- the verifier's clock indicates `now > not_after + skew`
+  (the cert has expired).
+
+`skew` is the operational parameter `mqc-sig-freshness-sec`
+(Section 11; default 300 s).  This tolerance accommodates
+peers with modest NTP drift without indefinitely accepting
+expired certs.  Implementations SHOULD log distinct
+`CERT_NOT_YET_VALID` and `CERT_EXPIRED` lines (rather than a
+generic "validity failed") so an operator can tell which
+clock is wrong.
 
 ---
 
