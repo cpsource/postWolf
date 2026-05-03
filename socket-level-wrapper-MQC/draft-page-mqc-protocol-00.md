@@ -1195,13 +1195,13 @@ handshake-buffer memory directly (per Section 12.6).
 - **SHA-256** provides 128 bits of post-quantum collision
   resistance (Grover gives a quadratic speedup on preimage search
   but not on collision search in the birthday-attack regime).
-- **Every wire primitive targets at least NIST Category 3 against
-  a quantum adversary.**  The log cosigner (Section 10.4) uses
-  ML-DSA-87 — identical to peer identity — so there is no
-  pre-quantum hedge remaining in the chain of trust.  An operator
-  migrating from an earlier draft that used Ed25519 for the
-  cosigner should refer to the `migrate-cosigner` tool in the
-  reference implementation for the one-shot rotation procedure.
+- **Every wire primitive targets at least NIST Category 3 against a quantum adversary.**
+  The log cosigner (Section 10.4) uses ML-DSA-87 — identical to
+  peer identity — so there is no pre-quantum hedge remaining in
+  the chain of trust.  An operator migrating from an earlier
+  draft that used Ed25519 for the cosigner should refer to the
+  `migrate-cosigner` tool in the reference implementation for
+  the one-shot rotation procedure.
 
 ### 12.2. Nonce Management
 
@@ -1471,6 +1471,8 @@ such negotiation is actually introduced.
 - **[MTC]**      Birgisson, Messeri, et al., *Merkle Tree
   Certificates*, draft-ietf-plants-merkle-tree-certs, work in
   progress.
+- **[RFC2104]**  Krawczyk, Bellare, and Canetti, *HMAC: Keyed-
+  Hashing for Message Authentication*, RFC 2104, February 1997.
 - **[RFC2119]**  Bradner, *Key words for use in RFCs to Indicate
   Requirement Levels*, BCP 14, RFC 2119, March 1997.
 - **[RFC5869]**  Krawczyk and Eronen, *HMAC-based Extract-and-
@@ -1505,62 +1507,148 @@ such negotiation is actually introduced.
 
 ## Appendix A. Worked Example (informative)
 
-The following is a single clear-identity mode handshake, captured
-from the reference implementation.  All values are truncated for
-brevity; hex strings have been shortened to 32 characters and
-followed by `...`.
+The following is a single clear-identity-mode handshake captured
+live from the reference implementation against
+`factsorlie.com:8446` on 2026-05-03.  Both peers in this trace
+share the same `cert_index` (the client and server happen to be
+the same MTC-CA identity at index 73); this is unusual in
+deployment but is what factsorlie's loopback test produces and
+exercises the byte layout fully.
 
-**TCP SYN → ACK** complete.
+All hex strings on the wire are 1184-byte (`EK_c`), 1088-byte
+(`CT_s`), or 4627-byte (signatures) blobs; the worked example
+shows the first 16 bytes of each as 32 hex chars followed by
+`…`.  Where the spec text below shows a 32-byte value (transcript
+hash, MAC tag), the full value is given.
 
-ClientHello frame:
-```
-     0x00 0x00 0x04 0x92        ; payload length = 1170 bytes
-     {                          ; JSON payload
-       "kem_pub":
-         "b3f07a1cde23... (1184 hex chars total)",
-       "signature":
-         "5a90...  (9256 hex chars total)",
-       "cert_index": 74
-     }
-```
+**TCP SYN → SYN/ACK → ACK** complete.
 
-ServerHello frame:
-```
-     0x00 0x00 0x04 0x8e        ; payload length = 1166 bytes
-     {
-       "kem_pub":
-         "2e5471cc... (2176 hex chars total, ML-KEM CT)",
-       "signature":
-         "91b2...  (9256 hex chars total)",
-       "cert_index": 12
-     }
+ClientHello frame on the wire (after the 4-byte length prefix):
+
+```json
+   {
+     "version":    0,
+     "suite":      "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+     "mode":       "clear",
+     "kem_pub":    "63146e9dbba2f4897c6c2ac0e46801f3…",
+     "cert_index": 73,
+     "signature":  "6bda001d26890c898bbf53beab9b228f…"
+   }
 ```
 
-Both sides now derive:
+The signature is over `transcript_hash_sig(role="client")` per
+Section 6.0, with `(EK_c, len=1184; CT_s, len=0; C_s=0)`:
 
 ```
-    shared_secret = MLKEM-Decap(DK_c, CT_s)     // on client
-                  = MLKEM-Encap-Result(EK_c)     // on server (already held)
-    c2s_key       = HKDF-SHA256(shared_secret,
-                                salt="",
-                                info="mqc-session-c2s",
-                                L=32)
-    s2c_key       = HKDF-SHA256(shared_secret,
-                                salt="",
-                                info="mqc-session-s2c",
-                                L=32)
+   transcript_hash_sig(client)[0:16] = 5b5cf695a45f881bcca7ea80ca217737
 ```
 
-The first data-plane frame from client to server uses `c2s_key`
-with GCM nonce:
+The signature itself is generated via
+`MLDSA-Sign-CtxMsg(SK_c, ctx=LABEL, msg=that 32-byte hash)`.
+
+ServerHello frame on the wire:
+
+```json
+   {
+     "version":    0,
+     "suite":      "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+     "mode":       "clear",
+     "kem_pub":    "b47d82e1e7a29f97288ee05b9902a63e…",
+     "cert_index": 73,
+     "signature":  "e687babbe0a6b37e626accf82798d101…"
+   }
+```
+
+Now both peers know `(EK_c, CT_s, C_c, C_s)` and derive the
+session key schedule.
+
+ML-KEM shared secret (32 bytes; client decapsulates, server
+already holds it from encapsulation):
 
 ```
-     00 00 00 00  00 00 00 00 00 00 00 00
+   SS[0:16] = c5b38efc9430a398befe96549732ca82…
 ```
 
-and increments `client.send_seq` to 1 after encryption.  The
-first server→client frame uses `s2c_key` with the same nonce —
-safe, because the keys differ.
+Full 32-byte transcript hash for KDF salt
+(`transcript_hash_full`, Section 6.0 KDF variant — same input
+as the signature transcript MINUS the 6-byte ROLE tag):
+
+```
+   transcript_hash_full =
+       17c5ff609e48f85604a87e2e4657a024
+       024209861dffddb6b2c5f29411d93546
+```
+
+HKDF-Extract (Section 8):
+
+```
+   data_secret = HKDF-Extract(SHA-256,
+                              salt = transcript_hash_full,
+                              IKM  = SS)
+```
+
+HKDF-Expand off `data_secret` produces the per-direction key set
+(info strings abbreviated; the full prefix is
+`"mqc/v0/MQC_MLKEM768_MLDSA87_AES256GCM_SHA256/"`):
+
+```
+   data_c2s_key       = HKDF-Expand(.../data-c2s-key,       L=32)
+                      = 6a3113cb4cda8decf34c9789f933d63b…
+   data_s2c_key       = HKDF-Expand(.../data-s2c-key,       L=32)
+                      = 3898947d60028fe295f1ca3a219b0d11…
+   data_c2s_iv        = HKDF-Expand(.../data-c2s-iv,        L=12)
+                      = e035254d24c497c7aa05c0d6
+   data_s2c_iv        = HKDF-Expand(.../data-s2c-iv,        L=12)
+                      = af9e82995e5a28fa1b468fa9
+   data_c2s_finished  = HKDF-Expand(.../data-c2s-finished,  L=32)
+                      = e7b904a3ed1709df5e314e0a18ff0e76…
+   data_s2c_finished  = HKDF-Expand(.../data-s2c-finished,  L=32)
+                      = 527ace3e7da04cd6492cb7e6fa815b4c…
+```
+
+The client computes its Finished MAC (Section 8.1) over the same
+`transcript_hash_full` shown above, keyed by
+`data_c2s_finished`:
+
+```
+   finished_mac_c2s =
+       HMAC-SHA256(data_c2s_finished, transcript_hash_full)
+                 [0:16]
+     = 1d25a23644649c060a89f31c7cece15a…
+```
+
+The Finished frame is sealed with `data_c2s_key`, IV constructed
+per Section 9.2 from `data_c2s_iv` XOR `(0x00 × 4 || u64be(0))`
+(sequence 0), and the 31-byte AAD (Section 9.1.1):
+
+```
+   AAD[0:16]  = "mqc-frame/v01\n\x00"
+   AAD[16]    = 0x00              (version)
+   AAD[17]    = 0x00              (direction = c2s)
+   AAD[18]    = 0x02              (frame_type = Finished)
+   AAD[19:27] = 0x00 × 8          (sequence = 0)
+   AAD[27:31] = 0x00 0x00 0x00 0x20  (plaintext_length = 32)
+```
+
+The plaintext sealed under those parameters is exactly the
+32-byte `finished_mac_c2s` value shown above.  After the seal,
+`client.send_seq` advances to 1.  The first application data
+frame uses `data_c2s_key` / `data_c2s_iv` at sequence 1 with
+`frame_type = 0x03` in the AAD.
+
+The server's Finished frame (sealed with `data_s2c_key`,
+sequence 0, `frame_type = 0x02`, `direction = 0x01`) carries:
+
+```
+   finished_mac_s2c =
+       HMAC-SHA256(data_s2c_finished, transcript_hash_full)
+```
+
+Each peer constant-time-compares the received MAC against its
+locally recomputed copy.  Match → connection ready for
+application data.  Mismatch → terminate with a Finished MAC
+failure (distinct from any earlier handshake-signature or AEAD
+failure).
 
 ## Appendix B. Reference Implementation (informative)
 
@@ -1575,3 +1663,145 @@ The reference implementation has been in continuous deployment on
 since February 2026.  All CA enrollments, leaf enrollments, cert
 renewals, and revocations at that deployment transit MQC in
 production.
+
+## Appendix C. Changes from Prior Text (informative)
+
+This revision of `draft-page-mqc-protocol-00` differs from the
+text published initially as follows.  The changes were
+accumulated during the postWolf reference implementation's Phase
+1-3 hardening pass against an external security review of the
+codebase.  No formal `-01` was issued; the cumulative edits land
+in `-00` because no draft consumer exists outside the reference
+deployment.
+
+### Section 4 — Cryptographic Primitives
+
+- Added the `SUITE_ID = SHA-256(SUITE)` mixing rule (the suite
+  identifier is now bound into the transcript hash, not just
+  echoed in the wire JSON).
+
+### Section 5.2 — Handshake JSON
+
+- Added required fields: `version`, `suite`, `mode`.
+- Added the strict-parsing requirements: no parser extensions,
+  no trailing bytes, valid UTF-8, each defined field exactly
+  once, no unknown top-level fields, lowercase-hex with exact
+  byte length per field, integer fields bounded with explicit
+  overflow rejection.
+
+### Section 6 — Handshake (clear-identity mode)
+
+- Added §6.0 "Transcript Construction": both ML-DSA signatures
+  and the HKDF-Extract salt are now computed over a structured
+  transcript hash with the explicit `LABEL`, version,
+  `MODE_ID`, `SUITE_ID`, both KEM contributions (with
+  byte-length prefixes), both `cert_index` values, and a 6-byte
+  ROLE tag.  Previously each signature was over a single field.
+- §6.3 client-side flow now requires sending and verifying the
+  Finished frame before the connection is considered complete.
+
+### Section 7 — Handshake (encrypted-identity mode)
+
+- Resequenced from 3 frames to 4 frames: phase 1 carries only
+  ML-KEM material (plaintext), phase 2 carries the AEAD-sealed
+  identity frames keyed by an early secret derived from the
+  phase-1 transcript.
+- Reference-implementation status note: encrypted-mode entry
+  points are stubs in the post-Phase-1 codebase; restoration is
+  tracked under `mqc-master.plan` Phase 7.
+
+### Section 8 — Key Derivation
+
+- HKDF in its full Extract+Expand form (RFC 5869), not a single
+  Expand off an empty salt.  The Extract salt is the transcript
+  hash, so all derived material is bound to every byte both
+  peers exchanged.
+- Six derived secrets per direction set: `data_<role>_key`
+  (32 B), `data_<role>_iv` (12 B), `data_<role>_finished`
+  (32 B).  Previously a single 32-byte session key without
+  explicit IV or Finished material.
+- New §8.1 "Finished Frame": HMAC-SHA256 over the full
+  transcript hash, sealed as the first AEAD frame in each
+  direction at sequence 0.
+
+### Section 9 — Data Plane
+
+- New §9.1.1 "AEAD AAD": every AEAD-sealed frame binds a
+  31-byte AAD (`LABEL || version || direction || frame_type ||
+  u64be(sequence) || u32be(plaintext_length)`) into its GCM
+  tag.  Previously the AAD was empty.
+- §9.2 Nonce construction now uses TLS-1.3-style `iv XOR
+  (zero4 || u64be(seq))` on the per-direction IV.  Previously
+  the nonce was the raw sequence counter padded with zeros,
+  predictable across connections.
+- §9.2 application-data sequence numbering starts at **1** in
+  both directions because the Finished frame consumes
+  sequence 0.
+
+### Section 10 — Peer Verification
+
+- §10.1 rewritten to make the "transport is untrusted"
+  assumption explicit: every check in §10.2-§10.6 runs on
+  whatever the transport returned, regardless of source.  Added
+  the cosigner-fingerprint cache invariant
+  (`~/.TPM/peers/<index>/cosigner-fp.hex`) that triggers a
+  re-fetch + re-verify when the operator rotates the cosigner.
+- §10.2 signature is over the transcript hash (per §6.0), not
+  over a single field; the ML-DSA `ctx` is the 16-byte `LABEL`.
+- §10.5 revocation upgraded from MAY to MUST, fail-closed by
+  default; new operational parameter `mqc-revocation-policy`
+  with three values (`mandatory`, `cache-only`, `disabled`).
+- New §10.6 "Validity Window": both `not_before` and
+  `not_after` MUST be present and within ±`mqc-sig-freshness-sec`
+  of the verifier's clock.
+- New §10.7 "Expected-Identity Check": after the cryptographic
+  chain succeeds, the client MUST compare the verified subject
+  string to a caller-supplied expected name (case-insensitive
+  exact match OR `<expected>-` prefix); dial-by-IP without an
+  explicit expected name fails closed.
+
+### Section 11 — Operational Parameters
+
+- Added a unified knob registry table at the top of §11
+  listing 14 tunables and which section governs each.
+- §11.1 RECOMMENDED handshake-stall and handshake-total
+  timeouts tightened to 3 s / 5 s (from a hand-wave 30 s).
+- §11.2 added per-(IP, `cert_index`) rate-limit recommendation
+  with two new tunables (`mqc-rl-cert-per-min`,
+  `mqc-rl-cert-per-hour`) defending against `cert_index`
+  rotation attacks.
+- §11.5 documents `mqc-revocation-policy`.
+- New §11.6 "Server Concurrency Cap": fork-per-connection
+  servers SHOULD cap concurrent children via
+  `mqc-max-children` (RECOMMENDED 20).
+
+### Section 12 — Security Considerations
+
+- New §12.7 "Transcript Binding and Cross-Protocol Domain
+  Separation": describes which attack classes each transcript
+  field defeats.
+- New §12.8 "Frame-Header Authentication": describes how the
+  AAD turns frame-header tampering into immediate AEAD failure.
+- New §12.9 "Identity vs Authority": explains the
+  confused-deputy attack that §10.7 closes.
+- New §12.10 "JSON Parsing Hardening": describes the four
+  attack classes the §5.2 strict-parsing rules close.
+- §12.6 strengthened: pre-crypto byte-length validation is
+  load-bearing for DoS resistance.
+
+### Appendix A — Worked Example
+
+- Rewritten end-to-end against the post-Phase-1 wire format
+  using bytes captured live from the reference implementation
+  on 2026-05-03.  Previous version showed the pre-Phase-1
+  3-field JSON, the single-key HKDF derivation, and a
+  zero-padded nonce — all wrong relative to current text.
+
+### Cumulative scope
+
+The numerical impact is: the .md source grew from ~810 lines
+(initial draft) to ~1700 lines (post-edit), with the bulk in
+the new transcript-construction text (§6.0), the four new
+§12.x security-considerations subsections, the AAD definition
+(§9.1.1), the Finished frame (§8.1), and the §10.6/§10.7 peer-
+verification additions.
