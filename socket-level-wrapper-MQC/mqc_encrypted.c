@@ -144,13 +144,13 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
             "\"kem_pub\":\"%s\"}",
             MQC_PROTOCOL_VERSION, MQC_SUITE_STRING, ek_hex);
         free(ek_hex);
-        if (mqc_write_all(fd, (unsigned char *)json_buf,
-                          (unsigned int)json_len) != 0) goto fail;
+        if (mqc_write_handshake_frame(fd, json_buf,
+                                      (unsigned int)json_len) != 0) goto fail;
     }
     MQC_TRACE("[mqc-enc] sent phase-1 ClientHello\n");
 
     /* ---- Phase 1: receive ServerHello (KEM only, no signature) -- */
-    ret = mqc_read_json_block(fd, json_buf, sizeof(json_buf));
+    ret = mqc_read_handshake_frame(fd, json_buf, sizeof(json_buf));
     if (ret <= 0) goto fail;
     {
         struct json_object *resp = NULL;
@@ -432,12 +432,16 @@ fail:
     return NULL;
 }
 
-/* Internal continuation called from mqc_accept_encrypted OR from
- * mqc_accept_auto after the latter has already accept()ed and
- * peeked the wire to determine mode.  Same contract as
- * mqc_accept_clear_post: fd MUST be a connected socket; client_ip
- * MUST be filled in.  Owns the fd from this point. */
-mqc_conn_t *mqc_accept_encrypted_post(mqc_ctx_t *ctx, int fd, const char *client_ip)
+/* Continuation: caller has already done the prologue (abuse / RL /
+ * RL_fail / socket timeout), armed HANDSHAKE_DEADLINE_ACTIVE, and
+ * read the FIRST handshake frame (the phase-1 ClientHello with KEM
+ * pubkey).  We own the fd from here; close it on any failure path.
+ * Direct entry: mqc_accept_encrypted (this file).  Mode-dispatched
+ * entry: mqc_accept_auto in mqc.c. */
+mqc_conn_t *mqc_accept_encrypted_continue(mqc_ctx_t *ctx, int fd,
+                                           const char *client_ip,
+                                           const char *first_frame,
+                                           int first_frame_len)
 {
     MlKemKey mlkem;
     dilithium_key dil;
@@ -466,24 +470,19 @@ mqc_conn_t *mqc_accept_encrypted_post(mqc_ctx_t *ctx, int fd, const char *client
     int peer_index = -1;
     MQC_LOG("encrypted-mode handshake from %s", client_ip);
 
-    /* Same pre-handshake checks as clear-mode (abuse / per-IP RL /
-     * per-IP fail RL / RNG init).  Charge the setup to startup, not
-     * to the slow-loris budget. */
-    if (mqc_abuse_check(client_ip)        != 0) { close(fd); return NULL; }
-    if (mqc_ratelimit_check(client_ip)    != 0) { close(fd); return NULL; }
-    if (mqc_ratelimit_fail_check(client_ip) != 0) { close(fd); return NULL; }
-    mqc_set_socket_timeout(fd, mqc_rt_cfg()->handshake_stall_sec);
     if (wc_InitRng(&rng) != 0) { close(fd); return NULL; }
     rng_ok = 1;
 
-    HANDSHAKE_DEADLINE_ACTIVE();
-
-    /* ---- Phase 1: receive ClientHello (KEM only) --------------- */
-    ret = mqc_read_json_block(fd, json_buf, sizeof(json_buf));
-    if (ret <= 0) { MQC_SECURITY("phase-1 read failed"); goto fail; }
-    if (ret > mqc_rt_cfg()->max_handshake_bytes) {
-        MQC_SECURITY("phase-1 too large: %d bytes", ret); goto fail;
+    /* ---- Phase 1 ClientHello already read by caller ------------ */
+    if (first_frame_len <= 0 ||
+        first_frame_len > (int)sizeof(json_buf) - 1) {
+        MQC_SECURITY("encrypted continuation: invalid first_frame_len=%d",
+                     first_frame_len);
+        goto fail;
     }
+    memcpy(json_buf, first_frame, (size_t)first_frame_len);
+    json_buf[first_frame_len] = '\0';
+    ret = first_frame_len;
     {
         struct json_object *req = NULL;
         int dummy_version;
@@ -546,8 +545,8 @@ mqc_conn_t *mqc_accept_encrypted_post(mqc_ctx_t *ctx, int fd, const char *client
             "\"kem_pub\":\"%s\"}",
             MQC_PROTOCOL_VERSION, MQC_SUITE_STRING, ct_hex);
         free(ct_hex);
-        if (mqc_write_all(fd, (unsigned char *)json_buf,
-                          (unsigned int)json_len) != 0) goto fail;
+        if (mqc_write_handshake_frame(fd, json_buf,
+                                      (unsigned int)json_len) != 0) goto fail;
     }
     MQC_TRACE("[mqc-enc] sent phase-1 ServerHello\n");
 
@@ -764,19 +763,37 @@ fail:
     return NULL;
 }
 
-/* Public API: same shape as before — does the accept itself, then
- * calls into the post-accept continuation.  Used by callers that
- * have made an explicit encrypted-mode commitment
- * (cfg.encrypt_identity == 1) and don't want the auto-detect. */
+/* Public API: callers with an explicit encrypted-mode commitment
+ * (cfg.encrypt_identity == 1) call this directly, bypassing the
+ * mqc_accept_auto mode-dispatch.  Drives accept + prologue + slow-
+ * loris deadline + first-frame read itself, then hands off to
+ * mqc_accept_encrypted_continue. */
 mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
 {
     struct sockaddr_in cli_addr;
     socklen_t cli_len = sizeof(cli_addr);
     char client_ip[64] = "unknown";
-    int fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
+    char first_frame[64000];
+    int  first_frame_len;
+    int  fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
     if (fd < 0) return NULL;
     inet_ntop(AF_INET, &cli_addr.sin_addr, client_ip, sizeof(client_ip));
     MQC_LOG("accepted encrypted-mode connection from %s:%d",
             client_ip, ntohs(cli_addr.sin_port));
-    return mqc_accept_encrypted_post(ctx, fd, client_ip);
+
+    if (mqc_accept_prologue(fd, client_ip) != 0) {
+        close(fd); return NULL;
+    }
+
+    HANDSHAKE_DEADLINE_ACTIVE();
+
+    first_frame_len = mqc_read_handshake_frame(fd, first_frame,
+                                               sizeof(first_frame));
+    if (first_frame_len <= 0) {
+        MQC_SECURITY("encrypted-mode first-frame read failed (fd=%d)", fd);
+        mqc_ratelimit_fail_record(client_ip);
+        close(fd); return NULL;
+    }
+    return mqc_accept_encrypted_continue(ctx, fd, client_ip,
+                                         first_frame, first_frame_len);
 }

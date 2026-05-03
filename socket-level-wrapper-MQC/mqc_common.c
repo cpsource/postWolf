@@ -56,13 +56,12 @@
 #define MQC_HANDSHAKE_TIMEOUT  MQC_HANDSHAKE_STALL_SEC
 
 /* Wall-clock deadline for the current accept-side handshake.  Set by
- * each mqc_accept* function at entry, consulted inside mqc_read_all /
- * mqc_read_json_block to kill slow-loris drip attacks that stay under
- * SO_RCVTIMEO per read.  0 means "no deadline" (client side / any
- * path that isn't the accept handshake).  Safe as a file-static
- * because mqc_common.c is used in single-connection-per-process
- * contexts — the server forks per accept, clients run one
- * mqc_connect at a time. */
+ * each mqc_accept* function at entry, consulted inside mqc_read_all
+ * to kill slow-loris drip attacks that stay under SO_RCVTIMEO per
+ * read.  0 means "no deadline" (client side / any path that isn't
+ * the accept handshake).  Safe as a file-static because mqc_common.c
+ * is used in single-connection-per-process contexts — the server
+ * forks per accept, clients run one mqc_connect at a time. */
 static time_t s_handshake_deadline = 0;
 
 /* Stashed peer IP from the most recent accept-side handshake.  Lets
@@ -518,27 +517,127 @@ int mqc_json_get_string_exact(const char *what,
     return 0;
 }
 
-int mqc_read_json_block(int fd, char *buf, int bufsz)
+/* ----------------------------------------------------------------------
+ * Length-prefixed handshake framing (mqc-2 Phase 1, issue #1 + #2)
+ *
+ * Spec §5.1 mandates that EVERY unit on the wire — handshake and
+ * data-plane alike — is a length-prefixed frame: 4-byte big-endian
+ * payload length, followed by exactly that many payload bytes.
+ *
+ * Pre-mqc-2 Phase-1, the handshake JSON was sent as raw bytes and
+ * read by a brace-counting parser (mqc_read_json_block, removed in
+ * P1.5) that (a) wasn't string-literal aware — a `}` inside a JSON
+ * string value would desynchronise framing — and (b) violated §5.1.
+ * These two helpers replace that path:
+ *
+ *   - mqc_write_handshake_frame: prepend htonl(len), then body.
+ *   - mqc_read_handshake_frame:  read 4 bytes, decode length,
+ *     validate against mqc-max-handshake-bytes ceiling, then read
+ *     EXACTLY that many body bytes.  Returns the body length on
+ *     success, -1 on any error.  NUL-terminates the body in-place
+ *     so callers can still hand the buffer to JSON parsers that
+ *     want a C string.
+ *
+ * The slow-loris deadline (HANDSHAKE_DEADLINE_ACTIVE) propagates
+ * naturally because both helpers go through mqc_read_all /
+ * mqc_write_all, which already check the deadline.
+ * ==================================================================*/
+
+int mqc_write_handshake_frame(int fd, const void *body, unsigned int len)
 {
-    int pos = 0, depth = 0, started = 0;
-    while (pos < bufsz - 1) {
-        ssize_t n;
-        if (mqc_handshake_deadline_exceeded()) {
-            MQC_LOG("mqc_read_json_block: handshake deadline exceeded "
-                    "(pos=%d depth=%d) — slow-loris?", pos, depth);
-            return -1;
-        }
-        n = read(fd, buf + pos, 1);
-        if (n <= 0) return -1;
-        if (buf[pos] == '{') { depth++; started = 1; }
-        else if (buf[pos] == '}') { depth--; }
-        pos++;
-        if (started && depth == 0) {
-            buf[pos] = '\0';
-            return pos;
-        }
+    uint32_t net_len;
+    if (len > (unsigned int)mqc_rt_cfg()->max_handshake_bytes) {
+        MQC_SECURITY("write_handshake_frame: body %u > max_handshake_bytes %ld",
+                     len, mqc_rt_cfg()->max_handshake_bytes);
+        return -1;
     }
-    return -1;
+    net_len = htonl((uint32_t)len);
+    if (mqc_write_all(fd, (const unsigned char *)&net_len, 4) != 0)
+        return -1;
+    if (len > 0 &&
+        mqc_write_all(fd, (const unsigned char *)body, len) != 0)
+        return -1;
+    return 0;
+}
+
+int mqc_read_handshake_frame(int fd, char *buf, int bufsz)
+{
+    uint32_t net_len, body_len;
+    long max;
+
+    if (bufsz <= 1) return -1;
+
+    if (mqc_read_all(fd, (unsigned char *)&net_len, 4) != 0) {
+        MQC_LOG("read_handshake_frame: short read on length prefix");
+        return -1;
+    }
+    body_len = ntohl(net_len);
+    max = mqc_rt_cfg()->max_handshake_bytes;
+    if (body_len == 0) {
+        MQC_SECURITY("read_handshake_frame: zero-length frame");
+        return -1;
+    }
+    if (body_len > (uint32_t)max) {
+        MQC_SECURITY("read_handshake_frame: frame_len=%u > max=%ld",
+                     body_len, max);
+        return -1;
+    }
+    if ((int)body_len > bufsz - 1) {
+        MQC_SECURITY("read_handshake_frame: frame_len=%u > buf=%d",
+                     body_len, bufsz);
+        return -1;
+    }
+    if (mqc_read_all(fd, (unsigned char *)buf, body_len) != 0) {
+        MQC_LOG("read_handshake_frame: short read on body (claimed %u)",
+                body_len);
+        return -1;
+    }
+    buf[body_len] = '\0';
+    return (int)body_len;
+}
+
+/* Shared prologue for an accepted MQC connection (mqc-2 P1.3).
+ *
+ * Both the per-mode direct entry points (mqc_accept_clear /
+ * mqc_accept_encrypted) and the auto-detect dispatcher
+ * (mqc_accept_auto) need to do the same pre-handshake work BEFORE
+ * any byte of the wire is read: AbuseIPDB check, per-IP rate limit,
+ * per-IP fail-rate limit, and the per-syscall socket timeout that
+ * caps single-call stalls.  Centralising it here means the auto-
+ * detect path can run the prologue, do its own length-prefixed read
+ * + parse to learn the mode, and dispatch into the mode-specific
+ * continuation without that continuation re-doing the checks.
+ *
+ * Returns 0 on success — caller continues with the handshake.
+ * Returns -1 if the connection should be dropped — caller is
+ * responsible for close(fd) and returning NULL.
+ *
+ * The slow-loris HANDSHAKE_DEADLINE_ACTIVE() macro stays the
+ * caller's responsibility because it relies on cleanup-attribute
+ * scope: arm it in the function whose lifetime should bound the
+ * deadline. */
+int mqc_accept_prologue(int fd, const char *client_ip)
+{
+    long _t_total = mqc_now_ms();
+
+    MQC_TIME_BEGIN(abuse);
+    if (mqc_abuse_check(client_ip) != 0) return -1;
+    MQC_TIME_END(abuse);
+
+    MQC_TIME_BEGIN(rl_check);
+    if (mqc_ratelimit_check(client_ip) != 0) return -1;
+    MQC_TIME_END(rl_check);
+
+    MQC_TIME_BEGIN(rl_fail);
+    if (mqc_ratelimit_fail_check(client_ip) != 0) return -1;
+    MQC_TIME_END(rl_fail);
+
+    mqc_set_socket_timeout(fd, mqc_rt_cfg()->handshake_stall_sec);
+
+    if (mqc_get_time_enabled())
+        fprintf(stderr, "[MQC-TIME] setup_total = %ld ms\n",
+                mqc_now_ms() - _t_total);
+    return 0;
 }
 
 static int read_file_bytes(const char *path, uint8_t **out, int *out_sz)

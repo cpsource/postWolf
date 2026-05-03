@@ -38,6 +38,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include <json-c/json.h>
+
 mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
 {
     if (!ctx) return NULL;
@@ -54,38 +56,41 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
          : mqc_accept_clear    (ctx, listen_fd);
 }
 
-/* --- Auto-detecting accept (Phase 7 commit 2) ---------------------
+/* --- Auto-detecting accept (mqc-2 P1.4) ---------------------------
  *
- * Determines handshake mode by peeking at the first JSON frame's
- * `mode` field BEFORE the chosen sub-handler consumes any bytes.
- * This lets a single listener accept both clear- and encrypted-mode
- * clients in a deployment without the server's ctx needing to know
- * in advance which one a given peer will use.
+ * A single listener that accepts both clear- and encrypted-mode
+ * clients in a deployment whose server ctx didn't commit in advance
+ * to one mode.
  *
- * Implementation: accept() ourselves, getpeername() for the
- * client_ip, then MSG_PEEK enough bytes to see whether the first
- * JSON contains `"mode":"encrypted"`.  Dispatch to the
- * mode-specific post-accept continuation (which expects an
- * already-accepted fd).  The peeked bytes stay in the socket
- * buffer; the sub-handler's own mqc_read_json_block() reads them
- * normally.
+ * Pre-mqc-2 used MSG_PEEK + strstr("mode\":\"encrypted") on a 256-
+ * byte prefix.  Reviewer issue #9 flagged that as brittle (no JSON
+ * structure awareness).  Now that handshake frames are length-
+ * prefixed (spec §5.1, P1.1/P1.2), we can read the FULL first frame
+ * here, parse it strict-JSON, look at the parsed `mode` field, and
+ * dispatch to the chosen continuation with the already-read frame
+ * passed in.
  *
- * Peek size: 256 bytes is enough to see `"mode":"..."` in any
- * valid frame.  The full ClientHello is ~12 KiB (mostly the
- * 4627-byte signature in hex); a 256-byte prefix lands well
- * inside the JSON header.  If the peek returns less than 256
- * bytes the wire is broken and the sub-handler will reject. */
-
-#define MQC_MODE_PEEK_BYTES   256
+ * Order of operations (matches the per-mode public entry points):
+ *   1. accept(), inet_ntop client IP
+ *   2. mqc_accept_prologue: AbuseIPDB, per-IP RL, per-IP fail RL,
+ *      socket per-syscall timeout
+ *   3. arm HANDSHAKE_DEADLINE_ACTIVE in this scope (propagates
+ *      through the continuation via the static deadline)
+ *   4. mqc_read_handshake_frame — strict 4-byte length + body
+ *   5. mqc_json_parse_strict on the body, extract `mode`
+ *   6. dispatch to mqc_accept_clear_continue or mqc_accept_encrypted_continue */
 
 mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
 {
     struct sockaddr_in cli_addr;
     socklen_t cli_len = sizeof(cli_addr);
     char client_ip[64] = "unknown";
-    int fd;
-    char peek_buf[MQC_MODE_PEEK_BYTES + 1];
-    ssize_t n;
+    char first_frame[64000];
+    int  first_frame_len;
+    int  fd;
+    struct json_object *first_obj = NULL;
+    struct json_object *mode_obj  = NULL;
+    const char *mode_str;
     int encrypted = 0;
 
     if (!ctx) return NULL;
@@ -93,24 +98,58 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
     fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
     if (fd < 0) return NULL;
     inet_ntop(AF_INET, &cli_addr.sin_addr, client_ip, sizeof(client_ip));
+    MQC_LOG("auto-detect accept from %s:%d",
+            client_ip, ntohs(cli_addr.sin_port));
 
-    /* MSG_PEEK reads from the socket buffer without consuming the
-     * bytes.  The sub-handler's own mqc_read_json_block() will read
-     * them normally a few microseconds later. */
-    n = recv(fd, peek_buf, MQC_MODE_PEEK_BYTES, MSG_PEEK);
-    if (n > 0) {
-        peek_buf[n] = '\0';
-        if (strstr(peek_buf, "\"mode\":\"encrypted\""))
-            encrypted = 1;
+    if (mqc_accept_prologue(fd, client_ip) != 0) {
+        close(fd); return NULL;
     }
-    /* If the peek returned 0 / -1 / no recognisable mode field, we
-     * fall through as clear-mode.  The sub-handler's strict parser
-     * will surface a clean rejection on whatever malformed bytes
-     * the client actually sent.  This is the same failure mode the
-     * dispatcher would produce for a direct mqc_accept_clear call
-     * against malformed input. */
+
+    HANDSHAKE_DEADLINE_ACTIVE();
+
+    first_frame_len = mqc_read_handshake_frame(fd, first_frame,
+                                               sizeof(first_frame));
+    if (first_frame_len <= 0) {
+        MQC_SECURITY("auto-detect: first-frame read failed (fd=%d)", fd);
+        mqc_ratelimit_fail_record(client_ip);
+        close(fd); return NULL;
+    }
+
+    /* Strict JSON parse just to learn `mode`.  The chosen
+     * continuation re-parses the same buffer with full field
+     * checks; we only need `mode` here for dispatch.  Doing a real
+     * parse (not strstr) means a `mode` value buried in a string
+     * literal can't fool us. */
+    first_obj = mqc_json_parse_strict("auto-first-frame",
+                                      first_frame, first_frame_len);
+    if (!first_obj) {
+        MQC_SECURITY("auto-detect: first frame is not strict JSON");
+        mqc_ratelimit_fail_record(client_ip);
+        close(fd); return NULL;
+    }
+    if (!json_object_object_get_ex(first_obj, "mode", &mode_obj) ||
+        !json_object_is_type(mode_obj, json_type_string)) {
+        MQC_SECURITY("auto-detect: first frame has no string `mode` field");
+        json_object_put(first_obj);
+        mqc_ratelimit_fail_record(client_ip);
+        close(fd); return NULL;
+    }
+    mode_str = json_object_get_string(mode_obj);
+    if (strcmp(mode_str, "encrypted") == 0) {
+        encrypted = 1;
+    } else if (strcmp(mode_str, "clear") == 0) {
+        encrypted = 0;
+    } else {
+        MQC_SECURITY("auto-detect: unknown mode '%s'", mode_str);
+        json_object_put(first_obj);
+        mqc_ratelimit_fail_record(client_ip);
+        close(fd); return NULL;
+    }
+    json_object_put(first_obj);
 
     return encrypted
-         ? mqc_accept_encrypted_post(ctx, fd, client_ip)
-         : mqc_accept_clear_post    (ctx, fd, client_ip);
+         ? mqc_accept_encrypted_continue(ctx, fd, client_ip,
+                                         first_frame, first_frame_len)
+         : mqc_accept_clear_continue    (ctx, fd, client_ip,
+                                         first_frame, first_frame_len);
 }

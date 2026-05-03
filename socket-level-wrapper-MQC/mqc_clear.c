@@ -140,13 +140,13 @@ mqc_conn_t *mqc_connect_clear(mqc_ctx_t *ctx, const char *host, int port)
             MQC_PROTOCOL_VERSION, MQC_SUITE_STRING,
             ek_hex, ctx->our_cert_index, sig_hex);
         free(ek_hex); free(sig_hex);
-        if (mqc_write_all(fd, (unsigned char *)json_buf, (unsigned int)json_len) != 0)
+        if (mqc_write_handshake_frame(fd, json_buf, (unsigned int)json_len) != 0)
             goto fail;
     }
 
     MQC_TRACE("[mqc] sent ClientHello (cert_index=%d)\n", ctx->our_cert_index);
 
-    ret = mqc_read_json_block(fd, json_buf, sizeof(json_buf));
+    ret = mqc_read_handshake_frame(fd, json_buf, sizeof(json_buf));
     if (ret <= 0) goto fail;
 
     {
@@ -350,13 +350,21 @@ fail:
     return NULL;
 }
 
-/* Internal continuation called from mqc_accept_clear OR from
- * mqc_accept_auto after the latter has already accept()ed and
- * peeked the wire to determine mode.  The fd MUST be a connected
- * socket; client_ip MUST be filled in (mqc_accept_auto's caller is
- * responsible for both).  Owns the fd from this point — frees on
- * any failure path. */
-mqc_conn_t *mqc_accept_clear_post(mqc_ctx_t *ctx, int fd, const char *client_ip)
+/* Continuation: the prologue (abuse / RL / RL_fail / socket
+ * timeout), HANDSHAKE_DEADLINE_ACTIVE, and the FIRST handshake
+ * frame have all been done by the caller.  We own the fd from
+ * here, parse the pre-read frame as the ClientHello, run the rest
+ * of the handshake, and close fd on any failure.  See
+ * mqc_internal.h for the full contract.
+ *
+ * Direct callers: mqc_accept_clear (this file) drives prologue +
+ * first read itself before calling here.  mqc_accept_auto in mqc.c
+ * does the same, plus a length-prefixed peek of the JSON body's
+ * `mode` field to dispatch encrypted-vs-clear. */
+mqc_conn_t *mqc_accept_clear_continue(mqc_ctx_t *ctx, int fd,
+                                       const char *client_ip,
+                                       const char *first_frame,
+                                       int first_frame_len)
 {
     MlKemKey mlkem;
     dilithium_key dil;
@@ -377,63 +385,30 @@ mqc_conn_t *mqc_accept_clear_post(mqc_ctx_t *ctx, int fd, const char *client_ip)
     mqc_conn_t *conn = NULL;
     int mlkem_ok = 0, dil_ok = 0, rng_ok = 0;
 
-    /* Pre-handshake setup BEFORE arming the slow-loris deadline.
-     * mqc_abuse_check makes an HTTPS curl call to AbuseIPDB whose
-     * cold-start cost (DNS+TLS+request) easily eats 5 seconds the
-     * first time it runs.  ratelimit checks hit Redis.  wc_InitRng
-     * may seed from /dev/random.  All of these are best-effort
-     * server-side setup, NOT the slow-loris attack surface the
-     * deadline defends against; charge them to startup, not the
-     * client's handshake budget. */
-    {
-        long _t_total = mqc_now_ms();
-        MQC_TIME_BEGIN(abuse);
-        if (mqc_abuse_check(client_ip) != 0) { close(fd); return NULL; }
-        MQC_TIME_END(abuse);
-        MQC_TIME_BEGIN(rl_check);
-        if (mqc_ratelimit_check(client_ip) != 0) { close(fd); return NULL; }
-        MQC_TIME_END(rl_check);
-        MQC_TIME_BEGIN(rl_fail);
-        if (mqc_ratelimit_fail_check(client_ip) != 0) { close(fd); return NULL; }
-        MQC_TIME_END(rl_fail);
+    /* RNG init runs here (post-prologue, post-first-frame-read).
+     * It is cheap (microseconds in the warm case) and the RNG isn't
+     * used until ML-KEM encapsulate / ML-DSA sign later in the
+     * function.  Kept inside MQC_TIME_BEGIN/END to preserve the
+     * cold-start diagnostic that landed in Phase 2a. */
+    MQC_TIME_BEGIN(rng);
+    if (wc_InitRng(&rng) != 0) { close(fd); return NULL; }
+    MQC_TIME_END(rng);
+    rng_ok = 1;
 
-        mqc_set_socket_timeout(fd, mqc_rt_cfg()->handshake_stall_sec);
-
-        MQC_TIME_BEGIN(rng);
-        if (wc_InitRng(&rng) != 0) { close(fd); return NULL; }
-        MQC_TIME_END(rng);
-        rng_ok = 1;
-        if (mqc_get_time_enabled())
-            fprintf(stderr, "[MQC-TIME] setup_total = %ld ms\n",
-                    mqc_now_ms() - _t_total);
-    }
-
-    /* Now that all server-side setup is done, arm the deadline that
-     * bounds the time the server WAITS for the CLIENT.  This covers
-     * mqc_read_json_block (ClientHello), mqc_enc_recv (Finished), and the
-     * mqc_read_all loops they call into.  Server-side compute (ML-KEM
-     * encapsulate, ML-DSA sign, HKDF, Finished MAC) runs between
-     * those reads; if it takes longer than handshake_total_sec the
-     * deadline still fires correctly because the next mqc_read_all
-     * checks it.
-     *
-     * Pre-Phase-1 the deadline was armed BEFORE accept() (catastrophic;
-     * fixed in commit 1ef4699d3 to fire after accept).  Phase-2a smoke
-     * testing then surfaced the cold-start issue described above:
-     * the abuse-check HTTPS call ate the budget before any handshake
-     * byte arrived.  Move-after-setup is the right semantic. */
-    HANDSHAKE_DEADLINE_ACTIVE();
-
-    ret = mqc_read_json_block(fd, json_buf, sizeof(json_buf));
-    if (ret <= 0) {
-        MQC_SECURITY("handshake read failed (empty or malformed, fd=%d)", fd);
+    /* The first frame was read by the caller; copy into json_buf so
+     * the existing parse path is unchanged.  Length is bounded by
+     * mqc_read_handshake_frame's max_handshake_bytes ceiling +
+     * sizeof(json_buf), so the bounds check is a belt-and-braces
+     * sanity rather than a security gate. */
+    if (first_frame_len <= 0 ||
+        first_frame_len > (int)sizeof(json_buf) - 1) {
+        MQC_SECURITY("clear continuation: invalid first_frame_len=%d",
+                     first_frame_len);
         goto fail;
     }
-    if (ret > mqc_rt_cfg()->max_handshake_bytes) {
-        MQC_SECURITY("handshake too large: %d bytes (max %ld)",
-                     ret, mqc_rt_cfg()->max_handshake_bytes);
-        goto fail;
-    }
+    memcpy(json_buf, first_frame, (size_t)first_frame_len);
+    json_buf[first_frame_len] = '\0';
+    ret = first_frame_len;
 
     {
         struct json_object *req = NULL;
@@ -589,7 +564,7 @@ mqc_conn_t *mqc_accept_clear_post(mqc_ctx_t *ctx, int fd, const char *client_ip)
                 MQC_PROTOCOL_VERSION, MQC_SUITE_STRING,
                 ct_hex_str, ctx->our_cert_index, sig_hex_str);
             free(ct_hex_str); free(sig_hex_str);
-            if (mqc_write_all(fd, (unsigned char *)json_buf, (unsigned int)json_len) != 0)
+            if (mqc_write_handshake_frame(fd, json_buf, (unsigned int)json_len) != 0)
                 goto fail;
         }
         MQC_TIME_END(server_send);
@@ -667,20 +642,41 @@ fail:
     return NULL;
 }
 
-/* Public API: same shape as before — does the accept itself, then
- * calls into the post-accept continuation.  Exists so callers that
- * have made an explicit clear-mode commitment (cfg.encrypt_identity
- * == 0) can call this directly without going through the
- * mqc_accept_auto peek+dispatch path. */
+/* Public API: callers with an explicit clear-mode commitment
+ * (cfg.encrypt_identity == 0) call this directly, bypassing the
+ * mqc_accept_auto mode-dispatch.  Drives accept + prologue + slow-
+ * loris deadline + first-frame read itself, then hands off to
+ * mqc_accept_clear_continue.
+ *
+ * Note: mqc_accept_auto in mqc.c does the same flow but with the
+ * additional length-prefixed JSON parse + `mode` peek before the
+ * dispatch.  Both paths converge on the same continuation. */
 mqc_conn_t *mqc_accept_clear(mqc_ctx_t *ctx, int listen_fd)
 {
     struct sockaddr_in cli_addr;
     socklen_t cli_len = sizeof(cli_addr);
     char client_ip[64] = "unknown";
-    int fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
+    char first_frame[64000];
+    int  first_frame_len;
+    int  fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
     if (fd < 0) return NULL;
     inet_ntop(AF_INET, &cli_addr.sin_addr, client_ip, sizeof(client_ip));
     MQC_LOG("accepted connection from %s:%d",
             client_ip, ntohs(cli_addr.sin_port));
-    return mqc_accept_clear_post(ctx, fd, client_ip);
+
+    if (mqc_accept_prologue(fd, client_ip) != 0) {
+        close(fd); return NULL;
+    }
+
+    HANDSHAKE_DEADLINE_ACTIVE();
+
+    first_frame_len = mqc_read_handshake_frame(fd, first_frame,
+                                               sizeof(first_frame));
+    if (first_frame_len <= 0) {
+        MQC_SECURITY("clear-mode first-frame read failed (fd=%d)", fd);
+        mqc_ratelimit_fail_record(client_ip);
+        close(fd); return NULL;
+    }
+    return mqc_accept_clear_continue(ctx, fd, client_ip,
+                                     first_frame, first_frame_len);
 }

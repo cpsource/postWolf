@@ -361,6 +361,78 @@ static void a_huge_claim_tiny_body(const char *h, int p)
     attack_raw("huge-claim-tiny-body",    h, p, buf, sizeof(buf));
 }
 
+/* --- mqc-2 P1.7: handshake-layer length-prefix probes ---------------
+ *
+ * Handshake reads now go through mqc_read_handshake_frame, which
+ * enforces the spec §5.1 [u32 len][body] format BEFORE any JSON
+ * parser sees a byte.  These attacks exercise the prefix-validation
+ * path that previously didn't exist (the brace-counting reader had no
+ * concept of a length).  Pass criterion is the same as elsewhere:
+ * quick close, MQC_SECURITY log line, no slow-loris hang.  See
+ * mqc_common.c:mqc_read_handshake_frame for the gates being tested. */
+
+/* Claim exactly mqc-max-handshake-bytes (default 128 KiB; we use the
+ * spec ceiling so the test is stable across tuning).  Server should
+ * accept the prefix, read the body, then strict-parse-JSON-fail on
+ * 128 KiB of garbage. */
+static void a_p3d_frame_len_at_max(const char *h, int p)
+{
+    enum { CAP = 128 * 1024 };
+    size_t total = 4 + (size_t)CAP;
+    unsigned char *buf = malloc(total);
+    int i;
+    if (!buf) return;
+    buf[0] = (unsigned char)((CAP >> 24) & 0xff);
+    buf[1] = (unsigned char)((CAP >> 16) & 0xff);
+    buf[2] = (unsigned char)((CAP >>  8) & 0xff);
+    buf[3] = (unsigned char)( CAP        & 0xff);
+    for (i = 0; i < CAP; i++) buf[4 + i] = (unsigned char)('A' + (i & 0x1f));
+    attack_raw("p3d-frame-len-at-max",   h, p, buf, total);
+    free(buf);
+}
+
+/* Claim mqc-max-handshake-bytes + 1.  Server should reject pre-read
+ * (no body bytes consumed beyond the 4-byte prefix). */
+static void a_p3d_frame_len_just_over_max(const char *h, int p)
+{
+    enum { CAP = 128 * 1024 + 1 };
+    unsigned char buf[4];
+    buf[0] = (unsigned char)((CAP >> 24) & 0xff);
+    buf[1] = (unsigned char)((CAP >> 16) & 0xff);
+    buf[2] = (unsigned char)((CAP >>  8) & 0xff);
+    buf[3] = (unsigned char)( CAP        & 0xff);
+    attack_raw("p3d-frame-len-over-max", h, p, buf, sizeof(buf));
+}
+
+/* Trickle the 4-byte length prefix one byte every 200 ms, then
+ * close.  The slow-loris deadline (HANDSHAKE_DEADLINE_ACTIVE in the
+ * accept path) should cap total time even if SO_RCVTIMEO would
+ * otherwise reset on each byte.  Distinct from a_slow_loris which
+ * trickles BODY bytes after a complete prefix. */
+static void a_p3d_prefix_trickle(const char *host, int port)
+{
+    unsigned char buf[4] = { 0x00, 0x00, 0x00, 0x10 };  /* claim 16 */
+    int fd, got;
+    char rbuf[RECV_BUF_SZ];
+    struct timeval t0, t1;
+    double elapsed;
+    int i;
+
+    gettimeofday(&t0, NULL);
+    fd = open_socket(host, port, RECV_TIMEOUT_MS);
+    if (fd < 0) { report("p3d-prefix-trickle", 0, 0, NULL, 0, 0.0); return; }
+    for (i = 0; i < 4; i++) {
+        if (send_all(fd, buf + i, 1) != 0) break;
+        usleep(200 * 1000);
+    }
+    shutdown(fd, SHUT_WR);
+    got = recv_all(fd, rbuf, sizeof(rbuf));
+    close(fd);
+    gettimeofday(&t1, NULL);
+    elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_usec - t0.tv_usec) / 1e6;
+    report("p3d-prefix-trickle", 4, got, rbuf, 1, elapsed);
+}
+
 static void a_json_wrong_fields(const char *h, int p)
 {
     /* Plausible-looking outer frame: 4-byte length prefix + JSON body. */
@@ -409,12 +481,28 @@ static void a_cert_index_huge(const char *h, int p)
  * violation and expects the server to reject with an MQC_SECURITY
  * log line and a quick disconnect. */
 
-/* Send a bare JSON ClientHello (no length prefix — read_json_block
- * reads byte-by-byte tracking {} depth). */
+/* Send a JSON ClientHello as a spec-§5.1 length-prefixed frame
+ * (4-byte big-endian payload length + body bytes).  Pre-mqc-2-Phase-1
+ * the wire used a brace-counting reader so this helper sent the body
+ * raw; mqc_read_handshake_frame now requires the prefix.  Updated in
+ * mqc-2 P1.6 — every send_json caller is testing FIELD-level
+ * rejection, so the prefix is correct (matches body length); the
+ * length-layer attacks live separately as a_frame_len_* / a_small_
+ * claim_huge_body / a_huge_claim_tiny_body above. */
 static void send_json(const char *name, const char *host, int port,
                       const char *body)
 {
-    attack_raw(name, host, port, body, strlen(body));
+    size_t blen = strlen(body);
+    size_t total = 4 + blen;
+    unsigned char *buf = malloc(total);
+    if (!buf) { report(name, 0, 0, NULL, 0, 0.0); return; }
+    buf[0] = (unsigned char)((blen >> 24) & 0xff);
+    buf[1] = (unsigned char)((blen >> 16) & 0xff);
+    buf[2] = (unsigned char)((blen >>  8) & 0xff);
+    buf[3] = (unsigned char)( blen        & 0xff);
+    memcpy(buf + 4, body, blen);
+    attack_raw(name, host, port, buf, total);
+    free(buf);
 }
 
 static void a_p1_no_version(const char *h, int p)
@@ -1501,6 +1589,10 @@ int main(int argc, char **argv)
     a_frame_len_trunc(host, port);
     a_small_claim_huge_body(host, port);
     a_huge_claim_tiny_body(host, port);
+    /* mqc-2 P1.7 — handshake-layer length-prefix gates */
+    a_p3d_frame_len_at_max(host, port);
+    a_p3d_frame_len_just_over_max(host, port);
+    a_p3d_prefix_trickle(host, port);
     a_json_wrong_fields(host, port);
     a_cert_index_neg(host, port);
     a_cert_index_huge(host, port);

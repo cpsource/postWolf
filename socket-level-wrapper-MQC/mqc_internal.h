@@ -154,7 +154,14 @@ void mqc_put_u32be(uint8_t out[4], uint32_t v);
 
 int  mqc_write_all(int fd, const unsigned char *buf, unsigned int len);
 int  mqc_read_all(int fd, unsigned char *buf, unsigned int len);
-int  mqc_read_json_block(int fd, char *buf, int bufsz);
+
+/* Length-prefixed handshake framing per spec §5.1 (mqc-2 Phase 1).
+ * 4-byte big-endian payload length on the wire, then exactly that
+ * many payload bytes.  Replaced the brace-counting reader that
+ * landed pre-mqc-2 (deleted in P1.5). */
+int  mqc_write_handshake_frame(int fd, const void *body, unsigned int len);
+int  mqc_read_handshake_frame (int fd, char *buf, int bufsz);
+
 void mqc_set_socket_timeout(int fd, int seconds);
 void mqc_clear_socket_timeout(int fd);
 
@@ -294,15 +301,35 @@ int mqc_abuse_check(const char *ip);
 mqc_conn_t *mqc_connect_clear(mqc_ctx_t *ctx, const char *host, int port);
 mqc_conn_t *mqc_accept_clear (mqc_ctx_t *ctx, int listen_fd);
 
-/* Post-accept continuations.  Take an already-accepted, connected fd
- * plus the client_ip string the caller already extracted via
- * inet_ntop on the accept's cli_addr.  Used by mqc_accept_auto in
- * mqc.c so it can peek the wire to choose mode without re-doing the
- * accept (which would be impossible — it's already happened). */
-mqc_conn_t *mqc_accept_clear_post    (mqc_ctx_t *ctx, int fd,
-                                      const char *client_ip);
-mqc_conn_t *mqc_accept_encrypted_post(mqc_ctx_t *ctx, int fd,
-                                      const char *client_ip);
+/* Mode-specific handshake continuations (mqc-2 P1.3).
+ *
+ * Take an already-accepted, connected fd, the client_ip string the
+ * caller extracted via inet_ntop, and the FIRST handshake frame
+ * already read off the wire (length-prefix consumed; body_len is
+ * the JSON body length).  The caller is responsible for:
+ *   - mqc_accept_prologue() (abuse / RL / RL_fail / socket timeout)
+ *   - HANDSHAKE_DEADLINE_ACTIVE() in its own scope
+ *   - mqc_read_handshake_frame() of the first frame
+ *
+ * The continuation owns the fd from this point: it parses the
+ * pre-read frame as the ClientHello (clear) or phase-1 ClientHello
+ * (encrypted) and runs the rest of the handshake, closing the fd
+ * on any failure.
+ *
+ * Used by mqc_accept_auto in mqc.c so it can read + parse the first
+ * frame once to choose mode, without the chosen sub-handler having
+ * to re-do that work, AND by the per-mode public entry points
+ * mqc_accept_clear / mqc_accept_encrypted in their respective .c
+ * files which now drive prologue + first-read themselves. */
+int mqc_accept_prologue(int fd, const char *client_ip);
+mqc_conn_t *mqc_accept_clear_continue    (mqc_ctx_t *ctx, int fd,
+                                          const char *client_ip,
+                                          const char *first_frame,
+                                          int first_frame_len);
+mqc_conn_t *mqc_accept_encrypted_continue(mqc_ctx_t *ctx, int fd,
+                                          const char *client_ip,
+                                          const char *first_frame,
+                                          int first_frame_len);
 
 /* mqc_connect_encrypted / mqc_accept_encrypted are public (declared in
  * mqc.h); their bodies live in mqc_encrypted.c. */

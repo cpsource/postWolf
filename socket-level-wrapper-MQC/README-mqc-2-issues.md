@@ -109,3 +109,55 @@ Disagree:
 **Key insight:** findings #1/#2/#6/#9 cluster into ONE underlying
 fix (length-prefix the handshake).  Once Phase 1 lands, four
 reviewer items close together.
+
+---
+
+## Appendix B — Phase 1 status (2026-05-03)
+
+Phase 1 is implemented in the working tree but not yet
+committed (commit boundary is the next step).  Live-verified on
+factsorlie.com after install + `systemctl restart mtc-ca`.
+
+### Findings closed
+
+- **#1** Handshake JSON length-prefixed — DONE.
+  `mqc_write_handshake_frame` / `mqc_read_handshake_frame` in
+  `mqc_common.c` emit/consume the §5.1 4-byte big-endian
+  prefix.  All 8 handshake call sites in `mqc_clear.c` /
+  `mqc_encrypted.c` swapped.
+- **#2** Brace-counting reader fragility — DONE.
+  `mqc_read_json_block` deleted along with its prototype.  No
+  call sites remain (`grep -rn mqc_read_json_block` returns
+  nothing in the source).
+- **#6** Frame-vs-field transcript wording — DONE by
+  documentation: §5.1 already mandated length-prefixed framing;
+  the reviewer's complaint was code/spec mismatch which Phase 1
+  closes.  Field-based transcript construction stays as
+  designed (TLS-1.3-aligned).
+- **#9** `mqc_accept_auto` MSG_PEEK + strstr — DONE.
+  Dispatcher now reads the first length-prefixed frame, strict-
+  parses the JSON, and dispatches on the parsed `mode` field
+  via `json_object_get_string`.  Spec §7 implementation note
+  rewritten.
+
+### Verification
+
+- 79/79 `attack-port-8446` probes pass (`closed silent` or
+  short reply, no long-hangs).  Three new `p3d-frame-*` probes
+  exercise the new prefix-validation path.
+- Journal shows `mqc_read_handshake_frame: frame_len=N >
+  max=131072` rejections for random-bytes attacks — proof the
+  pre-read length gate fires before any body byte is consumed.
+- Clear-mode `mqc --encode | mqc --decode` round-trip succeeds.
+- `show-tpm` and `show-tpm --encrypted` both succeed through
+  the auto-detect dispatcher.
+- Zero-warning build at `make -f Makefile.tools clean && make
+  -f Makefile.tools`.
+
+### Remaining
+
+- Findings **#4** (Phase 2, highest severity), **#7** (Phase 3,
+  trivial), **#8** (Phase 4, doc cleanup), **#3** (Phase 5,
+  substantial — snoopy-rivest), **#5** (Phase 6, deferred).
+  Each is its own commit/cutover; ordering and scope per
+  [`mqc-2-master.plan`](./mqc-2-master.plan).

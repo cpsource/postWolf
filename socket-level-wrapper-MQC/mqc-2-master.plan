@@ -15,6 +15,17 @@ backpressure) plus the Phase-7 encrypted-mode rewrite.  This
 second pass is narrower: 7 actionable findings, ~3 of them
 trivial, ~3 substantive, ~1 deferred.
 
+### Progress
+
+| Phase | Status | Closes findings |
+|---|---|---|
+| 1 — length-prefixed handshake frames | **DONE** (in working tree, 2026-05-03; live-verified, NOT yet committed) | #1, #2, #6, #9 |
+| 2 — pubkey-hash binding | pending | #4 |
+| 3 — AEAD seq after verify | pending | #7 |
+| 4 — stale-doc cleanup | pending | #8 |
+| 5 — cosigner TOFU hardening | pending | #3 |
+| 6 — revocation UX | deferred | #5 |
+
 ## Triage of the 10 findings
 
 | # | Reviewer claim | Verdict | Phase |
@@ -58,10 +69,47 @@ first pass — server and clients always upgrade together.
 
 ---
 
-## Phase 1 — Length-prefixed handshake frames (one flag-day cutover)
+## Phase 1 — Length-prefixed handshake frames (one flag-day cutover)  **— DONE 2026-05-03**
 
 Closes findings #1, #2, #6, #9 — all of which derive from the
 same design choice (or oversight) about handshake framing.
+
+**Implementation summary.**  All sub-tasks landed in the working
+tree on 2026-05-03 and were live-verified against
+`mtc-ca.service` on factsorlie.com:
+- `mqc_write_handshake_frame` / `mqc_read_handshake_frame` added
+  in `mqc_common.c` with §5.1 4-byte big-endian framing and
+  pre-read `mqc-max-handshake-bytes` enforcement.
+- All 8 handshake send/recv call sites in `mqc_clear.c` and
+  `mqc_encrypted.c` swapped to the new helpers.
+- Shared `mqc_accept_prologue` helper extracted to
+  `mqc_common.c`; `_post` continuations refactored to
+  `_continue` with new signature `(ctx, fd, client_ip,
+  first_frame, first_frame_len)` so the auto-detect dispatcher
+  can hand them an already-read frame.
+- `mqc_accept_auto` rewritten: prologue + length-prefixed read +
+  strict-JSON parse + dispatch on parsed `mode` field
+  (replaces MSG_PEEK + strstr).
+- `mqc_read_json_block` deleted, prototype removed.
+- `attack-port-8446`'s `send_json` now prepends the §5.1 length
+  prefix; three new `p3d-frame-*` probes added (len-at-max,
+  len-just-over-max, prefix-trickle).
+- Spec §7 implementation note rewritten to describe the new
+  dispatch path; new entry added to Appendix C.
+
+**Live verification.**  After install + service restart:
+- `echo hi | mqc --encode --env --no-cache | mqc --decode --env
+  --no-cache` round-trip succeeds (clear mode).
+- `show-tpm` (clear) and `show-tpm --encrypted` both succeed
+  through the auto-detect dispatcher.
+- `attack-port-8446 -s factsorlie.com -p 8446` → 79/79 attacks
+  produced clean `closed silent` rejections; no long hangs.
+  Journal confirms `mqc_read_handshake_frame` rejecting random
+  bytes pre-read with `frame_len=N > max=131072` lines.
+
+The design and exit-criteria text below is preserved for
+reference; everything ASIDE from the actual phase-2-and-beyond
+work is now historical.
 
 **What changes on the wire:**
 

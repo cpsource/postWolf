@@ -511,11 +511,13 @@ passive observer at the cost of one additional round trip.
 > `cfg.encrypt_identity = 1` on the `mqc_ctx_t` (or via
 > `--encrypted` on CLI tools that surface it, e.g.
 > `show-tpm`).  The `mqc_accept_auto` listener-side dispatcher
-> peeks the first JSON frame's `mode` field and routes to the
-> clear or encrypted continuation per connection, so a single
-> server port handles both modes.  Earlier drafts of this
-> document described the entry points as stubs; that text is
-> obsolete.  The wire-format and cryptographic requirements
+> reads the first length-prefixed handshake frame, strict-parses
+> the JSON, looks at the `mode` field, and routes to the clear
+> or encrypted continuation per connection, so a single server
+> port handles both modes.  (The pre-mqc-2-P1 implementation
+> used `MSG_PEEK + strstr` on a 256-byte prefix; it was
+> replaced once §5.1 length-prefix framing extended into the
+> handshake.)  The wire-format and cryptographic requirements
 > below are normative; implementations MUST follow them if they
 > offer encrypted mode at all.
 
@@ -1802,6 +1804,43 @@ deployment.
   on 2026-05-03.  Previous version showed the pre-Phase-1
   3-field JSON, the single-key HKDF derivation, and a
   zero-padded nonce — all wrong relative to current text.
+
+### mqc-2 Phase 1 — handshake length-prefix conformance
+
+The mqc-1 hardening pass left the wire-format text correct
+(§5.1 mandates length-prefixed framing for every unit) but the
+reference implementation's handshake path reached the JSON via
+a brace-counting reader (`mqc_read_json_block`) that consumed
+the body byte-by-byte tracking `{`/`}` depth without string-
+literal awareness.  Both legs were §5.1-non-compliant.  mqc-2
+Phase 1 (commits TBD on the postWolf tree) closes the gap:
+
+- All handshake send/receive paths now go through
+  `mqc_write_handshake_frame` / `mqc_read_handshake_frame`
+  helpers that emit/consume the 4-byte big-endian length
+  prefix and validate the body length against the
+  `mqc-max-handshake-bytes` ceiling BEFORE reading any payload
+  byte.
+- The `mqc_accept_auto` mode dispatcher reads the first
+  length-prefixed frame, strict-parses the JSON, and dispatches
+  on the parsed `mode` field (`json_object_get_string`).  The
+  pre-mqc-2-P1 `MSG_PEEK + strstr("\"mode\":\"encrypted\"")`
+  path was structurally fragile: a `mode` substring buried in
+  another field's value could confuse it.  The §7 implementation
+  note has been updated accordingly.
+- The brace-counting `mqc_read_json_block` was deleted along
+  with its prototype.
+- `attack-port-8446`'s `send_json` helper (and three new
+  `p3d-frame-*` probes) prepends the §5.1 length prefix so the
+  field-rejection regression tests still reach the strict
+  parser.
+
+This change closes reviewer findings #1 (wire-format mismatch),
+#2 (brace-counting fragility), and #9 (MSG_PEEK + strstr mode
+detection) from `README-mqc-2-issues.md`.  No spec text needed
+to change — §5.1 was already correct — but the §7 informative
+note was rewritten to describe the new dispatch path, and this
+appendix entry was added.
 
 ### Cumulative scope
 
