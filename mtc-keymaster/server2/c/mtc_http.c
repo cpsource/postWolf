@@ -53,6 +53,7 @@
 #include "mtc_log.h"
 #include "mtc_ca_validate.h"
 #include "mtc_ratelimit.h"
+#include "mqc.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1564,10 +1565,13 @@ static void handle_revoke(client_io *io, MtcStore *store,
         return;
     }
 
-    /* --- Freshness --- */
+    /* --- Freshness ---
+     * Window is operator-tunable via mqc-sig-freshness-sec in
+     * /etc/postWolf/config (issue 6a); falls back to
+     * MTC_SIG_FRESHNESS_SEC compiled default. */
     now = (long)time(NULL);
-    if (timestamp < now - MTC_SIG_FRESHNESS_SEC ||
-        timestamp > now + MTC_SIG_FRESHNESS_SEC) {
+    if (timestamp < now - mqc_rt_cfg()->sig_freshness_sec ||
+        timestamp > now + mqc_rt_cfg()->sig_freshness_sec) {
         LOG_WARN("revoke: stale/future timestamp %ld (server now=%ld)",
                  timestamp, now);
         http_send_error(io, 400,

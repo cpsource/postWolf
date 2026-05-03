@@ -130,6 +130,25 @@ int mqc_get_peer_index(mqc_conn_t *conn);
 void mqc_set_verbose(int level);
 int  mqc_get_verbose(void);
 
+/* --- Runtime configuration (issue 6a) ------------------------------
+ * Operational tunables resolved once per process from
+ * /etc/postWolf/config (Augeas-parsed) with compiled-in defaults from
+ * config.h and mqc.c.  Read-only view — modify only by editing the
+ * config file and restarting the process. */
+struct mqc_runtime_cfg {
+    long handshake_stall_sec;
+    long handshake_total_sec;
+    long max_msg_bytes;
+    long max_handshake_bytes;
+    long rl_connect_per_min;
+    long rl_connect_per_hour;
+    long rl_fail_per_min;
+    long rl_fail_per_hour;
+    long revoked_cache_ttl_sec;
+    long sig_freshness_sec;
+};
+const struct mqc_runtime_cfg *mqc_rt_cfg(void);
+
 #ifdef __cplusplus
 }
 #endif

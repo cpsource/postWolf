@@ -7,3 +7,28 @@ url-server https://factsorlie.com:8446
 
 url-local https://factsorlie.com:8444
 
+# --- MQC operational tunables (issue 6a) ---------------------------
+# Each key is optional.  Omitting a key uses the compiled-in default
+# (shown in the comment).  See socket-level-wrapper-MQC/mqc-issue-6a.plan
+# for the design and socket-level-wrapper-MQC/README-plans.md for
+# context.
+
+# Handshake timeouts (seconds).  Bump for very slow links.
+# mqc-handshake-stall-sec       3
+# mqc-handshake-total-sec       5
+
+# Frame-size ceilings (bytes).  Spec §11.3: implementations MAY lower
+# these but MUST NOT raise them; values above the compiled cap are
+# silently clamped.
+# mqc-max-handshake-bytes       131072
+# mqc-max-msg-bytes             1048576
+
+# Per-IP rate limits (Redis-backed).  Tune to deployment threat model.
+# mqc-rl-connect-per-min        100
+# mqc-rl-connect-per-hour       1000
+# mqc-rl-fail-per-min           10
+# mqc-rl-fail-per-hour          100
+
+# Cache + skew windows (seconds).
+# mqc-revoked-cache-ttl-sec     86400
+# mqc-sig-freshness-sec         300

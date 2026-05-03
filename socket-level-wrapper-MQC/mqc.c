@@ -47,6 +47,9 @@
 #include <curl/curl.h>
 #include <json-c/json.h>
 #include <hiredis/hiredis.h>
+#include <pthread.h>
+
+#include "read-config.h"
 
 #define MQC_HKDF_INFO_C2S  "mqc-session-c2s"
 #define MQC_HKDF_INFO_S2C  "mqc-session-s2c"
@@ -86,7 +89,7 @@ static int handshake_deadline_exceeded(void)
 
 static void handshake_deadline_set(void)
 {
-    s_handshake_deadline = time(NULL) + MQC_HANDSHAKE_TOTAL_SEC;
+    s_handshake_deadline = time(NULL) + mqc_rt_cfg()->handshake_total_sec;
 }
 
 static void handshake_deadline_clear(void)
@@ -110,10 +113,73 @@ static void handshake_deadline_cleanup(int *unused)
     (void)_hs_dl
 
 #define MQC_ABUSE_THRESHOLD  25  /* reject if abuse score >= 25% */
+
+/* Compiled-in defaults for the operational tunables.  Each can be
+ * overridden at runtime via [global]/<key> in /etc/postWolf/config
+ * (issue 6a).  See README-plans.md and the per-key documentation in
+ * mtc-keymaster/read-config/config.server. */
 #define MQC_RL_CONNECT_MIN   100   /* max connections per minute per IP */
 #define MQC_RL_CONNECT_HOUR  1000  /* max connections per hour per IP */
 #define MQC_RL_FAIL_MIN       10   /* max failed handshakes per minute per IP */
 #define MQC_RL_FAIL_HOUR     100   /* max failed handshakes per hour per IP */
+
+/* --- Runtime configuration cache (issue 6a) ----------------------------
+ * struct mqc_runtime_cfg is defined in mqc.h so mqc_peer.c can also read
+ * it.  Resolved once per process from /etc/postWolf/config; falls back
+ * to the compiled-in defaults above and in config.h for keys that
+ * aren't set.  Caches the result in s_rt_cfg under pthread_once so the
+ * per-key Augeas init/get/close cycles happen exactly once.  See
+ * socket-level-wrapper-MQC/mqc-issue-6a.plan for the design. */
+static struct mqc_runtime_cfg s_rt_cfg;
+static pthread_once_t          s_rt_cfg_once = PTHREAD_ONCE_INIT;
+
+static void mqc_rt_cfg_init_once(void)
+{
+    s_rt_cfg.handshake_stall_sec =
+        read_config_long("global/mqc-handshake-stall-sec",
+                         MQC_HANDSHAKE_STALL_SEC);
+    s_rt_cfg.handshake_total_sec =
+        read_config_long("global/mqc-handshake-total-sec",
+                         MQC_HANDSHAKE_TOTAL_SEC);
+    s_rt_cfg.max_msg_bytes =
+        read_config_long("global/mqc-max-msg-bytes",
+                         MQC_MAX_MSG);
+    s_rt_cfg.max_handshake_bytes =
+        read_config_long("global/mqc-max-handshake-bytes",
+                         MQC_MAX_HANDSHAKE);
+    s_rt_cfg.rl_connect_per_min =
+        read_config_long("global/mqc-rl-connect-per-min",
+                         MQC_RL_CONNECT_MIN);
+    s_rt_cfg.rl_connect_per_hour =
+        read_config_long("global/mqc-rl-connect-per-hour",
+                         MQC_RL_CONNECT_HOUR);
+    s_rt_cfg.rl_fail_per_min =
+        read_config_long("global/mqc-rl-fail-per-min",
+                         MQC_RL_FAIL_MIN);
+    s_rt_cfg.rl_fail_per_hour =
+        read_config_long("global/mqc-rl-fail-per-hour",
+                         MQC_RL_FAIL_HOUR);
+    s_rt_cfg.revoked_cache_ttl_sec =
+        read_config_long("global/mqc-revoked-cache-ttl-sec",
+                         MQC_REVOKED_CACHE_TTL_SEC);
+    s_rt_cfg.sig_freshness_sec =
+        read_config_long("global/mqc-sig-freshness-sec",
+                         MQC_SIG_FRESHNESS_SEC);
+
+    /* Spec §11.3: implementations MAY lower frame ceilings, MUST NOT
+     * raise them.  Clamp config-file values that exceed the compiled
+     * cap; raising would just produce frames the peer rejects. */
+    if (s_rt_cfg.max_msg_bytes > MQC_MAX_MSG)
+        s_rt_cfg.max_msg_bytes = MQC_MAX_MSG;
+    if (s_rt_cfg.max_handshake_bytes > MQC_MAX_HANDSHAKE)
+        s_rt_cfg.max_handshake_bytes = MQC_MAX_HANDSHAKE;
+}
+
+const struct mqc_runtime_cfg *mqc_rt_cfg(void)
+{
+    pthread_once(&s_rt_cfg_once, mqc_rt_cfg_init_once);
+    return &s_rt_cfg;
+}
 
 /* --- Logging --- */
 
@@ -377,14 +443,14 @@ static int mqc_ratelimit_check(const char *ip)
     snprintf(key, sizeof(key), "mqc:%s:conn:h", ip);
     count_h = redis_incr(key, 3600);
 
-    if (count_m > MQC_RL_CONNECT_MIN) {
-        MQC_SECURITY("RATE_LIMITED: %s connect %d/min (max %d)",
-                     ip, count_m, MQC_RL_CONNECT_MIN);
+    if (count_m > mqc_rt_cfg()->rl_connect_per_min) {
+        MQC_SECURITY("RATE_LIMITED: %s connect %d/min (max %ld)",
+                     ip, count_m, mqc_rt_cfg()->rl_connect_per_min);
         return -1;
     }
-    if (count_h > MQC_RL_CONNECT_HOUR) {
-        MQC_SECURITY("RATE_LIMITED: %s connect %d/hr (max %d)",
-                     ip, count_h, MQC_RL_CONNECT_HOUR);
+    if (count_h > mqc_rt_cfg()->rl_connect_per_hour) {
+        MQC_SECURITY("RATE_LIMITED: %s connect %d/hr (max %ld)",
+                     ip, count_h, mqc_rt_cfg()->rl_connect_per_hour);
         return -1;
     }
     return 0;
@@ -408,7 +474,8 @@ static int mqc_ratelimit_fail_check(const char *ip)
     reply = redisCommand(s_redis, "GET %s", key);
     if (reply) { if (reply->str) count_h = atoi(reply->str); freeReplyObject(reply); }
 
-    if (count_m >= MQC_RL_FAIL_MIN || count_h >= MQC_RL_FAIL_HOUR) {
+    if (count_m >= mqc_rt_cfg()->rl_fail_per_min ||
+        count_h >= mqc_rt_cfg()->rl_fail_per_hour) {
         MQC_SECURITY("FAIL_RATE_LIMITED: %s failures %d/min %d/hr",
                      ip, count_m, count_h);
         return -1;
@@ -931,7 +998,7 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
     if (mqc_ratelimit_fail_check(client_ip) != 0) { close(fd); return NULL; }
 
     /* Handshake timeout — drop slowloris connections */
-    set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
+    set_socket_timeout(fd, mqc_rt_cfg()->handshake_stall_sec);
 
     if (wc_InitRng(&rng) != 0) { close(fd); return NULL; }
     rng_ok = 1;
@@ -942,8 +1009,9 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
         MQC_SECURITY("handshake read failed (empty or malformed, fd=%d)", fd);
         goto fail;
     }
-    if (ret > MQC_MAX_HANDSHAKE) {
-        MQC_SECURITY("handshake too large: %d bytes (max %d)", ret, MQC_MAX_HANDSHAKE);
+    if (ret > mqc_rt_cfg()->max_handshake_bytes) {
+        MQC_SECURITY("handshake too large: %d bytes (max %ld)",
+                     ret, mqc_rt_cfg()->max_handshake_bytes);
         goto fail;
     }
 
@@ -1156,7 +1224,8 @@ static int enc_recv(int fd, const uint8_t *key, uint64_t *seq,
 
     if (read_all(fd, (unsigned char *)&net_len, 4) != 0) return -1;
     total_len = ntohl(net_len);
-    if (total_len < MQC_GCM_TAG_SZ || total_len > MQC_MAX_MSG) return -1;
+    if (total_len < MQC_GCM_TAG_SZ ||
+        total_len > (uint32_t)mqc_rt_cfg()->max_msg_bytes) return -1;
     ct_sz = (int)(total_len - MQC_GCM_TAG_SZ);
     if (ct_sz > bufsz) return -1;
 
@@ -1444,7 +1513,7 @@ mqc_conn_t *mqc_accept_encrypted(mqc_ctx_t *ctx, int listen_fd)
     if (mqc_ratelimit_check(client_ip) != 0) { close(fd); return NULL; }
     if (mqc_ratelimit_fail_check(client_ip) != 0) { close(fd); return NULL; }
 
-    set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
+    set_socket_timeout(fd, mqc_rt_cfg()->handshake_stall_sec);
 
     if (wc_InitRng(&rng) != 0) { close(fd); return NULL; }
     rng_ok = 1;
@@ -1668,7 +1737,7 @@ static int auto_accept_detect(int listen_fd, char *json_buf, int json_bufsz,
         if (mqc_ratelimit_check(ip) != 0) { close(fd); return -1; }
         if (mqc_ratelimit_fail_check(ip) != 0) { close(fd); return -1; }
     }
-    set_socket_timeout(fd, MQC_HANDSHAKE_TIMEOUT);
+    set_socket_timeout(fd, mqc_rt_cfg()->handshake_stall_sec);
 
     ret = read_json_block(fd, json_buf, json_bufsz);
     if (ret <= 0) { close(fd); return -1; }
@@ -2017,7 +2086,8 @@ int mqc_read(mqc_conn_t *conn, void *buf, int sz)
         return 0;  /* connection closed */
 
     total_len = ntohl(net_len);
-    if (total_len < MQC_GCM_TAG_SZ || total_len > MQC_MAX_MSG)
+    if (total_len < MQC_GCM_TAG_SZ ||
+        total_len > (uint32_t)mqc_rt_cfg()->max_msg_bytes)
         return -1;
 
     ct_sz = (int)(total_len - MQC_GCM_TAG_SZ);

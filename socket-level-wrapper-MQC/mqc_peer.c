@@ -218,7 +218,7 @@ static int mqc_hex_to_bytes(const char *hex, byte *out, int out_cap)
 #define CHECKPOINT_CACHE "checkpoint_cache.json"
 #define CHECKPOINT_TTL   300  /* 5 minutes */
 #include "config.h"
-#define REVOKED_TTL      MQC_REVOKED_CACHE_TTL_SEC
+#define REVOKED_TTL      (mqc_rt_cfg()->revoked_cache_ttl_sec)
 
 /* Forward declarations for bootstrap-port helpers (defined below, but
  * referenced by fetch_certificate / check_revoked / peer pubkey lookup
