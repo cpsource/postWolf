@@ -258,8 +258,13 @@ int main(int argc, char *argv[])
      *    of killing the process */
     signal(SIGPIPE, SIG_IGN);
 
-    /* 3a. Auto-reap forked per-connection children (no zombies). */
-    signal(SIGCHLD, SIG_IGN);
+    /* 3a. Reap forked per-connection children + maintain the
+     *     active-child counter that mqc-max-children backpressure
+     *     reads.  Replaces the prior `signal(SIGCHLD, SIG_IGN)` --
+     *     SIG_IGN was kernel-side auto-reap with no visibility, but
+     *     we now need a count so the listener can hold off on
+     *     accept() during a fork-storm. */
+    mtc_install_child_reaper();
 
     /* 4. Initialize Redis-backed rate limiter (non-fatal if unavailable) */
     mtc_ratelimit_init("127.0.0.1", 6379);

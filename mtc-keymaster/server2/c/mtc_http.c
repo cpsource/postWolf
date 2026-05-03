@@ -54,6 +54,7 @@
 #include "mtc_ca_validate.h"
 #include "mtc_ratelimit.h"
 #include "mqc.h"
+#include "../../read-config/read-config.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,6 +64,9 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <time.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <stdatomic.h>
 
 #include <netinet/in.h>
 #include <resolv.h>
@@ -2141,6 +2145,80 @@ static void handle_request(client_io *io, MtcStore *store)
  *   - Sets g_slc_ctx for the /ech/configs endpoint.
  *   - Per-connection: calls mtc_checkendpoint() for AbuseIPDB screening.
  ******************************************************************************/
+/* ----------------------------------------------------------------------
+ * Per-connection fork backpressure
+ *
+ * Each accept on either the TLS/plain listener or the MQC listener
+ * spawns a child via fork().  Without an upper bound, a burst of N
+ * client connects translates directly into N concurrent children --
+ * which has been observed to wedge the host (~70+ children).  Hold
+ * the active-child count below mqc-max-children (default 20); if we
+ * already have that many, sleep(1) and re-check before accepting the
+ * next connection.  Children continue to run; only the *accept rate*
+ * is throttled, so bursts stretch out over time rather than fanning
+ * into an arbitrary fork-storm.
+ *
+ * Counter maintenance: SIGCHLD handler reaps in WNOHANG-loop and
+ * decrements the counter.  Replaces the pre-existing
+ * `signal(SIGCHLD, SIG_IGN)` (auto-reap-without-counter) -- callers
+ * MUST invoke mtc_install_child_reaper() during startup or the
+ * counter will only ever grow.
+ * -------------------------------------------------------------------- */
+
+static atomic_int g_active_children = 0;
+
+static void mtc_sigchld_reap(int sig)
+{
+    (void)sig;
+    int saved_errno = errno;
+    pid_t pid;
+    /* SIGCHLD coalesces — multiple deaths may queue a single signal
+     * delivery, so loop until waitpid drains. */
+    while ((pid = waitpid(-1, NULL, WNOHANG)) > 0) {
+        atomic_fetch_sub(&g_active_children, 1);
+    }
+    errno = saved_errno;
+}
+
+void mtc_install_child_reaper(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = mtc_sigchld_reap;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    if (sigaction(SIGCHLD, &sa, NULL) != 0) {
+        LOG_ERROR("sigaction(SIGCHLD) failed: %s", strerror(errno));
+    }
+}
+
+static long mtc_max_children(void)
+{
+    static long cached = -1;
+    if (cached < 0) {
+        cached = read_config_long("global/mqc-max-children",
+                                  MTC_MAX_CHILDREN_DEFAULT);
+        if (cached <= 0) cached = MTC_MAX_CHILDREN_DEFAULT;
+        LOG_INFO("backpressure: max-children=%ld", cached);
+    }
+    return cached;
+}
+
+static void mtc_wait_for_child_slot(const char *which)
+{
+    int active;
+    int logged = 0;
+    while ((active = atomic_load(&g_active_children)) >= mtc_max_children()) {
+        if (!logged) {
+            LOG_INFO("%s backpressure: %d/%ld active children, "
+                     "sleeping before accept", which, active,
+                     mtc_max_children());
+            logged = 1;
+        }
+        sleep(1);
+    }
+}
+
 int mtc_http_serve(const char *host, int port, MtcStore *store,
                    const mtc_tls_cfg_t *tls_cfg)
 {
@@ -2189,6 +2267,12 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
         memset(&cio, 0, sizeof(cio));
         cio.fd = -1;
 
+        /* Backpressure: if we already have mqc-max-children active
+         * forks, sleep until the SIGCHLD reaper drains some.  Done
+         * BEFORE accept so the kernel just leaves new connections in
+         * the listen backlog instead of letting us fork-storm. */
+        mtc_wait_for_child_slot(use_tls ? "TLS" : "plain");
+
         if (use_tls) {
             /* TLS accept */
             cio.tls = slc_accept(ctx, listen_fd);
@@ -2217,9 +2301,12 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
                 continue;
             }
             if (pid > 0) {
-                /* Parent: drop socket fd — child holds its own ref. */
-                LOG_DEBUG("forked child pid=%d for %s conn",
-                          (int)pid, use_tls ? "TLS" : "plain");
+                /* Parent: drop socket fd — child holds its own ref.
+                 * Bump child counter; SIGCHLD reaper decrements on exit. */
+                atomic_fetch_add(&g_active_children, 1);
+                LOG_DEBUG("forked child pid=%d for %s conn (active=%d)",
+                          (int)pid, use_tls ? "TLS" : "plain",
+                          atomic_load(&g_active_children));
                 close(cio.fd);
                 continue;
             }
@@ -2296,6 +2383,11 @@ static void *mqc_listener_thread(void *arg)
         memset(&cio, 0, sizeof(cio));
         cio.fd = -1;
 
+        /* Backpressure: hold the active-child count below
+         * mqc-max-children before accepting the next connection.
+         * See mtc_wait_for_child_slot() for rationale. */
+        mtc_wait_for_child_slot("MQC");
+
         /* Accept MQC connection (auto-detects clear/encrypted) */
         cio.mqc = mqc_accept_auto(mqc_ctx, listen_fd);
         if (cio.mqc == NULL) {
@@ -2316,8 +2408,11 @@ static void *mqc_listener_thread(void *arg)
                 continue;
             }
             if (pid > 0) {
-                /* Parent: drop socket fd — child holds its own ref. */
-                LOG_DEBUG("forked child pid=%d for MQC conn", (int)pid);
+                /* Parent: drop socket fd — child holds its own ref.
+                 * Bump child counter; SIGCHLD reaper decrements on exit. */
+                atomic_fetch_add(&g_active_children, 1);
+                LOG_DEBUG("forked child pid=%d for MQC conn (active=%d)",
+                          (int)pid, atomic_load(&g_active_children));
                 close(cio.fd);
                 continue;
             }

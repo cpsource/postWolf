@@ -134,4 +134,25 @@ test-attack-pack: tools
 	@SKIP_NAME_CHECK=0 SKIP_ATTACK_PACK=0 \
 	    QUIET=1 ./mtc-keymaster/tools/sh/test-mqc-all.sh
 
-.PHONY: test-mqc-all test-attack-pack
+# Cross-tool matrix (P4b).  Cycles mqc-revocation-policy through
+# {mandatory, cache-only, disabled} and runs each MQC client tool
+# under each policy.  Saves + restores /etc/postWolf/config and
+# restarts mtc-ca.service between cells, so requires sudo without
+# prompt.  Runtime ~30s.
+test-mqc-matrix: tools
+	@./mtc-keymaster/tools/sh/test-mqc-matrix.sh
+
+# Concurrent-handshake stress (P4c).  Spawns N parallel encode|decode
+# roundtrips and asserts the server stays up + fd counts return to
+# baseline.  Knobs: STRESS_N (default 30), STRESS_REPEAT (default 1).
+test-mqc-stress: tools
+	@./mtc-keymaster/tools/sh/test-mqc-stress.sh
+
+# Cosigner-rotation drill (P4d).  Corrupts the local cosigner-fp.hex
+# cache for a peer, runs show-tpm --verify, and asserts the issue-#8
+# invariant detected the mismatch + restored the cache.
+test-cosigner-rotation: tools
+	@./mtc-keymaster/tools/sh/test-cosigner-rotation.sh
+
+.PHONY: test-mqc-all test-attack-pack test-mqc-matrix test-mqc-stress \
+        test-cosigner-rotation

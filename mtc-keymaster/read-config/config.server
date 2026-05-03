@@ -37,6 +37,18 @@ url-local https://factsorlie.com:8444
 # mqc-rl-cert-per-min           10
 # mqc-rl-cert-per-hour          100
 
+# Server-side fork backpressure.  Caps how many concurrent
+# per-connection child processes the listeners (TLS/plain on 8444,
+# MQC on 8446) will keep alive.  Before each accept(), the listener
+# checks the active-child counter; if it's >= this value, sleeps 1s
+# and re-checks.  Defends against fork-storm OOM under bursty load
+# (e.g., a CI stress run that opens dozens of parallel handshakes).
+# Children continue running once spawned; only the *accept rate* is
+# throttled, so bursts stretch out instead of fanning into hundreds
+# of concurrent forks.  Compiled-in default
+# (MTC_MAX_CHILDREN_DEFAULT in mtc_http.h):
+# mqc-max-children              20
+
 # Cache + skew windows (seconds).
 # mqc-revoked-cache-ttl-sec     86400
 # mqc-sig-freshness-sec         300

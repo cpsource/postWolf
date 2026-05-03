@@ -64,6 +64,25 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
                    const mtc_tls_cfg_t *tls_cfg);
 
 /**
+ * @brief  Default cap on concurrent per-connection child processes
+ *         the listeners (TLS/plain on 8444, MQC on 8446) keep alive.
+ *         Override at runtime via /etc/postWolf/config key
+ *         `global/mqc-max-children`.  See config.server for context.
+ */
+#define MTC_MAX_CHILDREN_DEFAULT  20
+
+/**
+ * @brief  Install SIGCHLD handler that reaps dead children and
+ *         decrements the active-child counter.  Replaces the
+ *         pre-existing `signal(SIGCHLD, SIG_IGN)` -- callers MUST
+ *         invoke this during process startup or per-listener
+ *         backpressure (mqc-max-children) will only ever throttle.
+ *
+ * @return Nothing.  Logs to LOG_ERROR on sigaction failure.
+ */
+void mtc_install_child_reaper(void);
+
+/**
  * @brief  Start MQC listener on a background thread.
  *
  * @param[in] host      Bind address (NULL = "0.0.0.0").
