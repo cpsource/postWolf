@@ -246,18 +246,51 @@ The server's MQC identity comes from `--tpm-path` (e.g.,
 The server auto-detects whether a client uses clear or encrypted identity
 mode (no configuration needed).
 
-### MQC Rate Limits
+### MQC Tunables (`/etc/postWolf/config`)
 
-Separate from the HTTP rate limits, the MQC listener has its own
-connection-level rate limiting:
+Every operational knob the MQC listener honors is read from
+`/etc/postWolf/config` under the `[global]` section at process
+startup.  Each key is optional; omitting a key uses the
+compiled-in default.  The table below is the unified registry
+that spec §11 normatively defines:
 
-| Counter | Per-IP/Min | Per-IP/Hour | Description |
-|---------|-----------|------------|-------------|
-| Connect | 10 | 60 | Total MQC connections |
-| Fail | 3 | 10 | Failed handshakes only (incremented on actual failure) |
+| Key | Default | Section | What it controls |
+|---|---|---|---|
+| `mqc-handshake-stall-sec` | 3 | spec §11.1 | Per-read socket timeout during the handshake |
+| `mqc-handshake-total-sec` | 5 | spec §11.1 | Total wall-clock budget for one handshake |
+| `mqc-max-handshake-bytes` | 131072 | spec §11.3 | Cap on a single handshake JSON frame |
+| `mqc-max-msg-bytes` | 1048576 | spec §11.3 | Cap on a single data-plane payload |
+| `mqc-rl-connect-per-min` | 100 | spec §11.2 | Per-IP connection-attempt cap (per minute) |
+| `mqc-rl-connect-per-hour` | 1000 | spec §11.2 | Per-IP connection-attempt cap (per hour) |
+| `mqc-rl-fail-per-min` | 10 | spec §11.2 | Per-IP handshake-failure cap (per minute) |
+| `mqc-rl-fail-per-hour` | 100 | spec §11.2 | Per-IP handshake-failure cap (per hour) |
+| `mqc-rl-cert-per-min` | 10 | spec §11.2 | Per-IP distinct-`cert_index` cap (per minute) — defends against `cert_index`-rotation amplification |
+| `mqc-rl-cert-per-hour` | 100 | spec §11.2 | Per-IP distinct-`cert_index` cap (per hour) |
+| `mqc-max-children` | 20 | spec §11.6 | Per-listener fork backpressure cap |
+| `mqc-revoked-cache-ttl-sec` | 86400 | spec §10.5 | Revocation-cache TTL (24 h) |
+| `mqc-sig-freshness-sec` | 300 | spec §10.6 | Cert-validity skew tolerance (5 min) |
+| `mqc-revocation-policy` | `mandatory` | spec §11.5 | One of `mandatory` / `cache-only` / `disabled` |
 
-Redis keys: `mqc:<ip>:conn:m`, `mqc:<ip>:conn:h`, `mqc:<ip>:fail:m`,
-`mqc:<ip>:fail:h`.
+Redis keys (single-host, port 6379, db 0):
+
+| Key pattern | Window | Counts |
+|---|---|---|
+| `mqc:<ip>:conn:m` | rolling 60 s | per-IP connection attempts |
+| `mqc:<ip>:conn:h` | rolling 1 h | per-IP connection attempts |
+| `mqc:<ip>:fail:m` | rolling 60 s | per-IP handshake failures |
+| `mqc:<ip>:fail:h` | rolling 1 h | per-IP handshake failures |
+| `mqc:<ip>:cert:m` | rolling 60 s | per-IP distinct `cert_index` SET (count = SCARD) |
+| `mqc:<ip>:cert:h` | rolling 1 h | per-IP distinct `cert_index` SET (count = SCARD) |
+
+To manually unban an IP (e.g., a CI runner that tripped the
+fail bucket during a stress test), `redis-cli DEL` the
+`mqc:<ip>:*` keys for that IP.
+
+When tuning, watch `journalctl -u mtc-ca.service` for
+`MQC-SECURITY` lines — every rejection logs a clear reason
+including which knob was hit (e.g., `RATE_LIMITED`,
+`FAIL_RATE_LIMITED`, `CERT_RATE_LIMITED`, `MQC backpressure: N/M
+active children`).
 
 ### Client Tools over MQC
 

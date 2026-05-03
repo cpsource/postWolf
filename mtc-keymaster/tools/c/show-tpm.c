@@ -679,6 +679,27 @@ static void usage(const char *prog)
     printf("  --cnt N          Show only first N entries\n");
     printf("  -d, --dir DIR    TPM directory (default: ~/.TPM)\n");
     printf("  -h, --help       Show this help\n");
+    printf("\n");
+    printf("MQC OPERATIONAL KNOBS (set in /etc/postWolf/config under [global]):\n");
+    printf("  mqc-revocation-policy   {mandatory, cache-only, disabled}\n");
+    printf("                          Default: mandatory.  See spec\n");
+    printf("                          §10.5 + operator runbook.\n");
+    printf("  mqc-revoked-cache-ttl-sec   Default: 86400 (24 h).\n");
+    printf("  mqc-sig-freshness-sec       Default: 300 (cert-validity skew).\n");
+    printf("  mqc-rl-cert-per-min         Default: 10 (per-IP distinct-\n");
+    printf("                              cert_index throttle).\n");
+    printf("\n");
+    printf("Full knob registry: spec §11 + mtc-keymaster/server2/c/\n");
+    printf("README-using-mtc-server.md.  Operator playbooks for tuning\n");
+    printf("and incident response: README-mqc-operator-runbook.md.\n");
+    printf("\n");
+    printf("EXPECTED-IDENTITY CHECK (issue #9):\n");
+    printf("  By default, the verified peer's certificate subject is matched\n");
+    printf("  against the hostname portion of --server (case-insensitive\n");
+    printf("  exact OR \"<host>-\" prefix).  Mismatches abort the connection\n");
+    printf("  with a NAME_CHECK_FAILED log line.  Dialing --server by IP\n");
+    printf("  literal fails closed; use a hostname or set the expected name\n");
+    printf("  via the C API (mqc_ctx_set_expected_name).\n");
 }
 
 int main(int argc, char *argv[])

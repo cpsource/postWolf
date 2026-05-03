@@ -548,6 +548,13 @@ on port 8445** below.  The `show-tpm` first-contact surface remains
 open under #9b until a broader OOB distribution channel (bundled
 binary, DNSSEC, ...) is added.
 
+**Cross-reference:** the MQC master plan
+(`socket-level-wrapper-MQC/mqc-master.plan` § "Out of scope") also
+flags TODO #9b as deferred — Phase 1–3's hardening of the on-the-wire
+MQC handshake assumes the cosigner pubkey is already a trusted local
+file, and TODO #9b is what makes that assumption hold for first-
+contact clients.
+
 **9c. Load CA cosigner pubkey in every MQC client — DONE**
 
 `mqc_load_ca_pubkey(mtc_server, out32)` is now a public API in

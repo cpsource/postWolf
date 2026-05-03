@@ -309,9 +309,67 @@ it corresponds to the real transparency log.
 
 ### Algorithm choices
 
-The log cosigner is ML-DSA-87 per the MTC draft. Per-peer identity keys
-(keys 2 and 3) are ML-DSA-87 for post-quantum resistance. Migrating
-the cosigner to a post-quantum algorithm is a known future step.
+The log cosigner is ML-DSA-87 per the MTC draft. Per-peer identity
+keys (keys 2 and 3) are ML-DSA-87 for post-quantum resistance.
+Every primitive on the wire targets at least NIST Category 3
+against a quantum adversary, with no pre-quantum hedge in the
+chain of trust.
+
+## MQC v0 security properties (post-Phase-1 hardening)
+
+The MQC handshake on port 8446 went through a 3-phase hardening
+pass (Phases 1–3 in
+[`socket-level-wrapper-MQC/mqc-master.plan`](../socket-level-wrapper-MQC/mqc-master.plan))
+against an external security review.  Highlights:
+
+- **Transcript binding.** Both peers' ML-DSA-87 handshake
+  signatures cover a SHA-256 transcript hash that includes
+  protocol version, suite identifier, identity mode, both KEM
+  contributions (with byte-length prefixes), and both
+  `cert_index` values.  The same hash becomes the HKDF-Extract
+  salt for the session key schedule, so any byte-level
+  divergence between peers surfaces immediately rather than
+  three frames into application traffic.
+- **Finished MAC** (per spec §8.1).  Each peer commits to its
+  full transcript view via `HMAC-SHA256(finished_key,
+  transcript_hash_full)` as the first AEAD-sealed frame in
+  each direction, before any application data flows.
+- **Mandatory revocation, fail-closed by default.** Both
+  client and server query `/revoked/<index>` on cache miss and
+  abort the handshake on query failure.  Tunable via
+  `mqc-revocation-policy` (`mandatory` | `cache-only` |
+  `disabled`); see `/etc/postWolf/config`.
+- **Cosigner-fingerprint cache invariant.** Each cached peer
+  cert is tagged with the fingerprint of the cosigner key in
+  effect at verification time; rotating the cosigner via
+  `admin_recosign` invalidates every cache entry the next
+  time it's read, triggering a re-fetch + re-verify under the
+  new cosigner.
+- **Expected-identity check.** The client compares the
+  verified subject string (from the cert's
+  `tbs_entry.subject`) against the dialed hostname (or an
+  explicit `mqc_ctx_set_expected_name` override).  Dial-by-IP
+  fails closed without an explicit name.  Defends against a
+  hostile name resolver or wrong-but-valid-cert_index lookup
+  routing the client to a different in-log identity than
+  intended.
+- **Strict JSON parsing + pre-crypto length filter.** Every
+  handshake JSON parse rejects parser extensions, trailing
+  bytes, malformed UTF-8, duplicate keys, unknown fields, and
+  non-lowercase or wrong-length hex.  Hex fields are
+  length-checked before any ML-KEM / ML-DSA primitive runs,
+  so garbage cannot exercise the asymmetric verifiers.
+- **Fork backpressure** (`mqc-max-children`, default 20).
+  The listener gates `accept()` on an active-child counter so
+  bursts above the cap stretch out over time instead of
+  fanning into hundreds of concurrent forks (a host-wedging
+  failure mode observed in early stress testing).
+
+The full property table with "controlled by" pointers is in
+`/home/ubuntu/postWolf/CLAUDE.md` § "MQC v0 security
+properties".  The normative wire-format and
+verification-chain text is in spec
+[`draft-page-mqc-protocol-00.md`](../socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md).
 
 ## Standards
 

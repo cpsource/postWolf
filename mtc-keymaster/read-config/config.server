@@ -7,11 +7,11 @@ url-server https://factsorlie.com:8446
 
 url-local https://factsorlie.com:8444
 
-# --- MQC operational tunables (issue 6a) ---------------------------
+# --- MQC operational tunables --------------------------------------
 # Each key is optional.  Omitting a key uses the compiled-in default
-# (shown in the comment).  See socket-level-wrapper-MQC/mqc-issue-6a.plan
-# for the design and socket-level-wrapper-MQC/README-plans.md for
-# context.
+# (shown in the comment).  Spec normative reference: §11 of
+# socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md.  Per-issue
+# design discussion: socket-level-wrapper-MQC/mqc-issue-{6a,7,8,12}.plan.
 
 # Handshake timeouts (seconds).  Bump for very slow links.
 # mqc-handshake-stall-sec       3
