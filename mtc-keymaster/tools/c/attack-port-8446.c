@@ -573,6 +573,47 @@ static void a_p3a_bad_utf8(const char *h, int p)
     attack_raw("p3a-bad-utf8", h, p, buf, (size_t)n);
 }
 
+/* ----------------------------------------------------------------------
+ * P3b — per-IP distinct cert_index throttle (issue #12).  Fires 11
+ * ClientHello variants from one IP with distinct cert_index values
+ * inside a 60-second window.  With the default mqc-rl-cert-per-min=10
+ * the 11th attempt MUST be rejected with `CERT_RATE_LIMITED` in the
+ * server log.  Each individual attempt is otherwise wire-valid for
+ * the strict parser (correct field set, correct lengths) so the
+ * rejection MUST come from the per-cert throttle, not the parser.
+ * The signature won't actually verify — that's fine; the throttle
+ * runs BEFORE peer_verify, so we observe the throttle behavior even
+ * with bogus signature bytes.
+ *
+ * The test assumes Redis is reachable from the server and that no
+ * other client is sharing this IP's cert-rotation budget at the same
+ * time.  In CI this is fine.
+ * -------------------------------------------------------------------- */
+static void a_p3b_cert_rotation(const char *h, int p)
+{
+    /* 1184 bytes of '0' for kem_pub, 4627 bytes of '0' for signature. */
+    static char kem_pub[2 * 1184 + 1];
+    static char sig    [2 * 4627 + 1];
+    char body[2 * (1184 + 4627) + 512];
+    int i, n;
+
+    if (kem_pub[0] == '\0') {
+        memset(kem_pub, '0', sizeof(kem_pub) - 1);
+        memset(sig,     '0', sizeof(sig)     - 1);
+    }
+
+    for (i = 9000; i < 9011; i++) {
+        char name[64];
+        snprintf(name, sizeof(name), "p3b-cert-rotation-#%d", i - 8999);
+        n = snprintf(body, sizeof(body),
+            "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+            "\"mode\":\"clear\",\"kem_pub\":\"%s\",\"cert_index\":%d,"
+            "\"signature\":\"%s\"}", kem_pub, i, sig);
+        if (n < 0 || n >= (int)sizeof(body)) return;
+        attack_raw(name, h, p, body, (size_t)n);
+    }
+}
+
 static void a_p3a_uppercase_hex(const char *h, int p)
 {
     /* Right-length kem_pub (2368 hex chars = 1184 B) but with one
@@ -1320,6 +1361,8 @@ int main(int argc, char **argv)
     a_p3a_unknown_field(host, port);
     a_p3a_bad_utf8(host, port);
     a_p3a_uppercase_hex(host, port);
+    /* Phase 3b per-cert throttle (P3b.7, issue #12) */
+    a_p3b_cert_rotation(host, port);
     a_slow_loris(host, port);
     a_fragment_burst(host, port);
 

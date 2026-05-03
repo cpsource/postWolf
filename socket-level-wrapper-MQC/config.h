@@ -87,4 +87,18 @@
 #define MQC_REVOCATION_POLICY_DEFAULT "mandatory"
 #endif
 
+/* -- Per-(IP, cert_index) rate limits (issue #12) --------------------- */
+/* A single legitimate peer rotates cert_index slowly (a fresh leaf
+ * enrollment is rare).  An attacker cycling cert_index every connect
+ * would force a fresh cert fetch + cosignature verify each time —
+ * cheap to send, expensive to handle.  Cap fresh-index attempts per
+ * (source-IP, cert_index) at the same scale as the per-IP fail
+ * bucket (issue #6a). */
+#ifndef MQC_RL_CERT_MIN
+#define MQC_RL_CERT_MIN     10
+#endif
+#ifndef MQC_RL_CERT_HOUR
+#define MQC_RL_CERT_HOUR    100
+#endif
+
 #endif /* MQC_CONFIG_H */

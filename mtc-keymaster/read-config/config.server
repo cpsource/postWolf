@@ -29,6 +29,14 @@ url-local https://factsorlie.com:8444
 # mqc-rl-fail-per-min           10
 # mqc-rl-fail-per-hour          100
 
+# Per-IP distinct-cert_index throttle (issue #12).  Caps how many
+# distinct cert_index values a single source IP can present per
+# minute / per hour.  Defends against an attacker rotating
+# cert_index every connect to force fresh cert fetches +
+# cosignature verifies (each ~ms of asymmetric work).
+# mqc-rl-cert-per-min           10
+# mqc-rl-cert-per-hour          100
+
 # Cache + skew windows (seconds).
 # mqc-revoked-cache-ttl-sec     86400
 # mqc-sig-freshness-sec         300

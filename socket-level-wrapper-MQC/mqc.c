@@ -190,6 +190,12 @@ static void mqc_rt_cfg_init_once(void)
     s_rt_cfg.rl_fail_per_hour =
         read_config_long("global/mqc-rl-fail-per-hour",
                          MQC_RL_FAIL_HOUR);
+    s_rt_cfg.rl_cert_per_min =
+        read_config_long("global/mqc-rl-cert-per-min",
+                         MQC_RL_CERT_MIN);
+    s_rt_cfg.rl_cert_per_hour =
+        read_config_long("global/mqc-rl-cert-per-hour",
+                         MQC_RL_CERT_HOUR);
     s_rt_cfg.revoked_cache_ttl_sec =
         read_config_long("global/mqc-revoked-cache-ttl-sec",
                          MQC_REVOKED_CACHE_TTL_SEC);
@@ -1036,6 +1042,69 @@ static void mqc_ratelimit_fail_record(const char *ip)
     MQC_SECURITY("handshake failure recorded for %s", ip);
 }
 
+/* --- Per-IP distinct-cert_index rate limit (issue #12) ----------------
+ * Inside the per-IP connection budget, an attacker that rotates
+ * cert_index every connect forces a fresh certificate fetch + Merkle
+ * inclusion + cosignature verify per attempt -- ~ms of asymmetric
+ * work per cheap client byte.  This pair of buckets caps how many
+ * DISTINCT cert_index values a single source IP can present per
+ * minute / per hour.
+ *
+ * Implementation note: a SET keyed by IP with cert_index values as
+ * members lets SCARD give us the exact distinct-count.  Per-(IP,
+ * cert_index) counters would only catch repeated hits on the SAME
+ * index -- not what we want here. */
+static int redis_sadd_count(const char *key, int cert_index, int ttl_secs)
+{
+    redisReply *reply;
+    int count = 0;
+
+    if (!s_redis) return 0;
+
+    reply = redisCommand(s_redis, "SADD %s %d", key, cert_index);
+    if (!reply) return 0;
+    freeReplyObject(reply);
+
+    reply = redisCommand(s_redis, "EXPIRE %s %d", key, ttl_secs);
+    if (reply) freeReplyObject(reply);
+
+    reply = redisCommand(s_redis, "SCARD %s", key);
+    if (!reply) return 0;
+    if (reply->type == REDIS_REPLY_INTEGER)
+        count = (int)reply->integer;
+    freeReplyObject(reply);
+    return count;
+}
+
+static int mqc_ratelimit_cert_check(const char *ip, int cert_index)
+{
+    char key[160];
+    int count_m, count_h;
+
+    if (!s_redis) return 0;     /* no Redis = allow */
+
+    snprintf(key, sizeof(key), "mqc:%s:cert:m", ip);
+    count_m = redis_sadd_count(key, cert_index, 60);
+    snprintf(key, sizeof(key), "mqc:%s:cert:h", ip);
+    count_h = redis_sadd_count(key, cert_index, 3600);
+
+    if (count_m > mqc_rt_cfg()->rl_cert_per_min) {
+        MQC_SECURITY("CERT_RATE_LIMITED: %s distinct cert_index "
+                     "%d/min (max %ld); last cert_index=%d",
+                     ip, count_m, mqc_rt_cfg()->rl_cert_per_min,
+                     cert_index);
+        return -1;
+    }
+    if (count_h > mqc_rt_cfg()->rl_cert_per_hour) {
+        MQC_SECURITY("CERT_RATE_LIMITED: %s distinct cert_index "
+                     "%d/hr (max %ld); last cert_index=%d",
+                     ip, count_h, mqc_rt_cfg()->rl_cert_per_hour,
+                     cert_index);
+        return -1;
+    }
+    return 0;
+}
+
 /* --- AbuseIPDB check --- */
 
 struct abuse_buf { char *data; size_t sz; };
@@ -1730,6 +1799,14 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
             goto fail;
         }
         json_object_put(req);
+
+        /* Issue #12: per-(IP, cert_index) throttle.  An attacker
+         * inside the per-IP budget that rotates cert_index every
+         * connect would force a fresh cert fetch + cosignature
+         * verify per handshake.  Cap distinct cert_index values per
+         * IP before that work runs. */
+        if (mqc_ratelimit_cert_check(client_ip, peer_index) != 0)
+            goto fail;
 
         MQC_TIME_BEGIN(peer_verify);
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,

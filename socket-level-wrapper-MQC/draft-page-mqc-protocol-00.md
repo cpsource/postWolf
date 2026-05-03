@@ -1058,6 +1058,20 @@ Servers SHOULD enforce per-source-IP rate limits on:
   application-protocol layer above MQC) using at least a
   per-minute and a per-hour bucket.
 
+Servers SHOULD additionally enforce **per-(source-IP,
+`cert_index`)** rate limits.  A peer that rotates `cert_index`
+on every connect, even within the per-IP connection budget,
+forces a fresh certificate fetch (Section 10.1), inclusion-
+proof verification (Section 10.3), and ML-DSA-87 cosignature
+verification (Section 10.4) per attempt — millisecond-scale
+work per cheap client byte.  Cap distinct `cert_index` values
+per source IP; RECOMMENDED defaults are 10 fresh indices per
+minute and 100 per hour, exposed via the operational
+parameters `mqc-rl-cert-per-min` and `mqc-rl-cert-per-hour`.
+Rejections under this cap SHOULD count against the per-IP
+failure bucket (so a single attacker IP rotating `cert_index`
+also burns its handshake-failure budget).
+
 A typical bucket structure keys on `<operation>:<ip>:<window>`
 and is persisted in a local key-value store (e.g., Redis) for
 cross-process aggregation within a single host.
@@ -1166,6 +1180,29 @@ handshake completes.  The rate-limiting guidance in Section 11.2
 mitigates but does not eliminate this.  Placing MQC behind an
 L4 rate limiter (e.g., `iptables --hitcount` or a cloud-provider
 WAF) is RECOMMENDED for production deployments.
+
+The strict-parsing rules in Section 5.2 are also load-bearing
+for DoS resistance: implementations MUST validate the byte
+length of every hex-encoded field (`kem_pub`, `signature`,
+encrypted-mode `encrypted`) against the exact size defined for
+that field by the chosen suite (Section 4) BEFORE invoking any
+cryptographic primitive on the field's contents.  Without this
+guard, a 1-byte attacker payload of the right shape would still
+trigger a ~400 µs ML-DSA-87 verification — many orders of
+magnitude of asymmetric work per attack byte.  Rejections at
+the length-check stage SHOULD count against the per-IP
+handshake-failure bucket (Section 11.2) so that a peer that
+repeatedly sends malformed input also exhausts its connection
+budget.
+
+The accept loop in the reference implementation runs the entire
+handshake in the listener process before forking off the
+connection-handling child, so handshakes are serialised and
+only one handshake-sized JSON buffer is ever in flight per
+listener.  An implementation that uses a thread pool (or
+otherwise admits multiple in-flight handshakes per process)
+SHOULD additionally cap total in-flight handshake-buffer
+memory and reject new accepts when the cap is exceeded.
 
 ### 12.7. Transcript Binding and Cross-Protocol Domain Separation
 
