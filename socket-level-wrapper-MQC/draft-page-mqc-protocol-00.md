@@ -221,16 +221,23 @@ MQC defines two handshake modes:
 MQC uses the following primitives.  Implementations MUST NOT
 negotiate alternatives; the only negotiable knob in version 0 of
 this protocol is the identity mode (Section 3.2), which is
-distinguished by inspection (Section 7.1).
+declared explicitly by the `mode` field (Section 5.2).
 
 | Role | Algorithm | Spec |
 |---|---|---|
 | KEM (ephemeral key establishment) | ML-KEM-768 | [FIPS203] |
 | Signature (peer identity, handshake binding) | ML-DSA-87 | [FIPS204] |
-| Key derivation | HKDF-SHA256 | [RFC5869] |
-| Hash for HKDF and transcript | SHA-256 | [FIPS180] |
+| Key derivation | HKDF-SHA256 (Extract + Expand) | [RFC5869] |
+| Hash for HKDF salt and transcript | SHA-256 | [FIPS180] |
 | Bulk cipher | AES-256-GCM | [FIPS197] |
+| Handshake-MAC + Finished MAC | HMAC-SHA256 | [FIPS180] + [RFC2104] |
 | Log cosigner | ML-DSA-87 | [FIPS204] |
+
+The version-0 suite is identified by the literal ASCII string
+`MQC_MLKEM768_MLDSA87_AES256GCM_SHA256` (referred to as `SUITE`
+below).  This identifier appears verbatim in the handshake `suite`
+field and a SHA-256 hash of it is mixed into the transcript hash
+as `SUITE_ID` (Section 6).
 
 Implementations MUST use a cryptographically secure RNG for all
 randomness (ML-KEM key generation, ML-KEM encapsulation
@@ -281,23 +288,85 @@ be counted against a rate-limit bucket for failed handshakes.
 ### 5.2. Handshake JSON
 
 All handshake frames are JSON objects.  Byte-valued fields are
-hex-encoded (lowercase, no separators).  The following fields are
-defined:
+hex-encoded (lowercase, no separators) with the exact byte length
+given in the table.  The following fields are defined:
 
 | Field | Type | Description |
 |---|---|---|
-| `kem_pub` | hex string | ML-KEM-768 encapsulation key (client→server) or ciphertext (server→client) |
-| `signature` | hex string | ML-DSA-87 signature, see Section 10 |
-| `cert_index` | integer | MTC log index of the signing identity |
-| `encrypted` | hex string | AEAD-sealed identity blob (encrypted-identity mode only) |
+| `version` | integer | Protocol version.  v0 of this spec uses `0`.  A receiver MUST reject any other value. |
+| `suite` | string | Suite identifier (Section 4).  v0 uses the literal `"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256"`.  A receiver MUST reject any other value. |
+| `mode` | string | Identity mode: `"clear"` or `"encrypted"`.  Bound into the transcript hash. |
+| `kem_pub` | hex string | ML-KEM-768 encapsulation key (1184 B, client→server) or ciphertext (1088 B, server→client). |
+| `signature` | hex string | ML-DSA-87 signature (4627 B), Section 6 / Section 10.2. |
+| `cert_index` | integer | MTC log index of the signing identity. |
+
+Implementations MUST parse handshake JSON in strict mode: reject
+duplicates of any field, reject trailing garbage past the closing
+`}`, reject json-c-style extensions (comments, leading zeros on
+numbers, single-quoted strings, trailing commas).  Hex strings
+MUST be exactly the byte length defined for the field by the
+chosen suite; a length mismatch MUST cause the handshake to be
+aborted before any cryptographic primitive is invoked on the
+field's contents.
 
 An implementation SHOULD serialize the JSON compactly (no
 whitespace) to keep the `payload length` predictable, but MUST NOT
-reject a peer's JSON solely for containing whitespace.
+reject a peer's JSON solely for containing whitespace between
+tokens.
 
 ---
 
 ## 6. Handshake (clear-identity mode)
+
+### 6.0. Transcript Construction
+
+Both ML-DSA signatures and the HKDF-Extract salt (Section 8) are
+computed over a **transcript hash**, never directly over a single
+field.  Two SHA-256 inputs are defined; they share a common prefix
+and differ only by an optional 6-byte role tag.
+
+`LABEL`     = `"mqc-hndshk/v1\n\x00"` (16 bytes; the 16th byte is
+              the explicit `\x00`, NOT the terminating C-string
+              NUL).
+
+`SUITE_ID`  = SHA-256 of the literal ASCII suite string from
+              Section 4 (32 bytes).
+
+`MODE_ID`   = `0x00` for clear-identity, `0x01` for encrypted-
+              identity.
+
+`ROLE`      = `"client"` (6 bytes) or `"server"` (6 bytes).
+
+For the **transcript hash for signatures** (one peer per role):
+
+```
+   transcript_hash_sig(role) = SHA-256(
+       LABEL                                      (16 bytes)
+    || u8(version)                                (1 byte; v0 = 0)
+    || u8(MODE_ID)                                (1 byte)
+    || SUITE_ID                                   (32 bytes)
+    || u32be(len(EK_c)) || EK_c                   (variable)
+    || u32be(len(CT_s)) || CT_s                   (variable;
+                                                   len=0 if not yet
+                                                   known by signer)
+    || s32be(C_c)                                 (4 bytes; 0 if
+                                                   not yet known)
+    || s32be(C_s)                                 (4 bytes; 0 if
+                                                   not yet known)
+    || ROLE                                       (6 bytes))
+```
+
+For the **transcript hash for HKDF-Extract salt** (Section 8): the
+same input MINUS the final 6-byte `ROLE` tag.  Both peers compute
+the identical input.
+
+ML-DSA-87 signatures cover `transcript_hash_sig(role)` with the
+context label set to `LABEL` (16 bytes) — i.e., the call is
+`wc_dilithium_sign_ctx_msg(LABEL, 16, transcript_hash_sig(role),
+32, ...)`.  Verification uses the matching
+`wc_dilithium_verify_ctx_msg`.  The context label provides
+domain separation between MQC handshake signatures and any other
+ML-DSA signature the same identity key might ever produce.
 
 ### 6.1. Client → Server
 
@@ -306,15 +375,21 @@ Upon establishing the TCP connection, the client:
 1. Generates an ephemeral ML-KEM-768 keypair.  Let `EK_c` be the
    encoded public (encapsulation) key and `DK_c` the decoded
    secret (decapsulation) key.
-2. Signs `EK_c` under its long-term ML-DSA-87 private key, yielding
-   signature `Sig_c`.
-3. Sends one handshake frame containing the JSON:
+2. Computes `transcript_hash_sig(role="client")` per Section 6.0
+   with `(EK_c, len=1184; CT_s, len=0; C_s=0)` — the client does
+   not yet know the server's `cert_index` or the ML-KEM ciphertext.
+3. Signs that hash under its long-term ML-DSA-87 private key with
+   the `LABEL` context, yielding signature `Sig_c`.
+4. Sends one handshake frame containing the JSON:
 
 ```json
    {
+     "version":    0,
+     "suite":      "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+     "mode":       "clear",
      "kem_pub":    "<hex(EK_c)>",
-     "signature":  "<hex(Sig_c)>",
-     "cert_index": <int C_c>
+     "cert_index": <int C_c>,
+     "signature":  "<hex(Sig_c)>"
    }
 ```
 
@@ -322,23 +397,31 @@ Upon establishing the TCP connection, the client:
 
 The server, upon receiving the client's handshake frame:
 
-1. Hex-decodes `EK_c` and `Sig_c`; parses `C_c`.
+1. Strict-parses the JSON (Section 5.2); rejects on any field
+   mismatch (`version != 0`, `suite != SUITE`, `mode != "clear"`,
+   wrong hex length on `kem_pub` / `signature`).
 2. Retrieves the MTC certificate at index `C_c` (see Section 10)
    and extracts its ML-DSA-87 public key `PK_c`.
-3. Verifies `Sig_c = MLDSA-Verify(PK_c, EK_c)`.  If verification
-   fails, the server MUST disconnect and SHOULD record the
-   failure.
+3. Recomputes `transcript_hash_sig(role="client")` with the
+   server's just-parsed view of the client fields and `(CT_s,
+   len=0; C_s=0)`.  Verifies `Sig_c` against this hash with
+   ctx=`LABEL`.  Failure → disconnect.
 4. Performs ML-KEM-768 encapsulation against `EK_c`, producing
    ciphertext `CT_s` and shared secret `SS`.
-5. Signs `CT_s` under its long-term ML-DSA-87 private key,
-   yielding signature `Sig_s`.
-6. Sends a handshake frame containing:
+5. Computes `transcript_hash_sig(role="server")` per Section 6.0
+   with `(EK_c, len=1184; CT_s, len=1088; C_c, C_s)` — both
+   `cert_index` values now populated.
+6. Signs that hash with ctx=`LABEL`, yielding `Sig_s`.
+7. Sends a handshake frame:
 
 ```json
    {
+     "version":    0,
+     "suite":      "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+     "mode":       "clear",
      "kem_pub":    "<hex(CT_s)>",
-     "signature":  "<hex(Sig_s)>",
-     "cert_index": <int C_s>
+     "cert_index": <int C_s>,
+     "signature":  "<hex(Sig_s)>"
    }
 ```
 
@@ -346,19 +429,27 @@ The server, upon receiving the client's handshake frame:
 
 The client, upon receiving the server's handshake frame:
 
-1. Hex-decodes `CT_s` and `Sig_s`; parses `C_s`.
+1. Strict-parses the JSON; rejects on field mismatch.
 2. Retrieves the MTC certificate at index `C_s` and extracts its
    ML-DSA-87 public key `PK_s`.
-3. Verifies `Sig_s = MLDSA-Verify(PK_s, CT_s)`.
+3. Recomputes `transcript_hash_sig(role="server")` with both
+   `cert_index` values populated.  Verifies `Sig_s` against this
+   hash with ctx=`LABEL`.  Failure → disconnect.
 4. Decapsulates `SS = MLKEM-Decap(DK_c, CT_s)`.
-5. Derives the session key (Section 8).
+5. Derives the session key set (Section 8).
+6. Sends its Finished frame and verifies the peer's Finished
+   frame (Section 8.1) before the handshake is considered
+   complete.
 
-At this point both parties share `SS` and derive the same 32-byte
-AES-256-GCM session key.  The handshake is complete.
+After a successful Finished exchange both parties share
+identical `data_c2s_key` / `data_s2c_key` / `data_c2s_iv` /
+`data_s2c_iv` and the connection is ready for application data.
 
 Upon handshake completion each endpoint MUST zeroize its
-ephemeral ML-KEM private key material and any intermediate shared-
-secret buffers that are not required post-handshake.
+ephemeral ML-KEM private key material and any intermediate
+shared-secret buffers that are not required post-handshake,
+including the Finished MAC keys (which are consumed exactly once
+each).
 
 ---
 
@@ -367,97 +458,216 @@ secret buffers that are not required post-handshake.
 Encrypted-identity mode hides both `cert_index` values from a
 passive observer at the cost of one additional round trip.
 
+> **Implementation status note (informative).** The reference
+> implementation in `socket-level-wrapper-MQC/mqc.c` ships
+> encrypted-identity entry points (`mqc_connect_encrypted` and
+> `mqc_accept_encrypted`) as **stubs** that return failure with a
+> clear log line.  No production caller in the postWolf tree
+> exercises encrypted mode; every MQC client uses
+> `mqc_connect` (clear).  Restoring the encrypted-mode handshake
+> with the post-Phase-1 transcript / HKDF-Extract+Expand /
+> Finished / AAD architecture is tracked under
+> `mqc-master.plan` Phase 5.  The wire-format and cryptographic
+> requirements below are normative; implementations MUST
+> implement them if they offer encrypted mode at all.
+
 ### 7.1. Distinguishing the Mode
 
-The client selects the mode.  The server distinguishes the two
-modes by inspecting the first handshake frame: if the JSON
-contains a `cert_index` field, the mode is clear-identity; if not,
-the mode is encrypted-identity.
+The client selects the mode and declares it explicitly via the
+`mode` JSON field (Section 5.2).  Receivers MUST use this field
+rather than infer mode from the presence or absence of other
+fields, and MUST reject a frame whose `mode` value contradicts
+its JSON shape (e.g., `mode="clear"` with no `cert_index`, or
+`mode="encrypted"` with `cert_index` present).
 
 ### 7.2. Encrypted-Identity ClientHello
 
-The client sends a first frame containing only:
+The client sends a first plaintext frame containing only the
+mode markers and its ML-KEM public key — no identity, no
+signature:
 
 ```json
    {
-     "kem_pub": "<hex(EK_c)>"
+     "version":  0,
+     "suite":    "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+     "mode":     "encrypted",
+     "kem_pub":  "<hex(EK_c)>"
    }
 ```
-
-Note the absence of `cert_index` and `signature`.
 
 ### 7.3. Encrypted-Identity ServerHello
 
-The server derives a preliminary AEAD key from `SS` (Section 8)
-and sends a frame whose JSON contains:
+The server replies with a parallel plaintext frame carrying
+`CT_s`.  No signature accompanies this frame; the server cannot
+yet sign the full transcript because it does not know `C_c`.
 
 ```json
    {
-     "kem_pub":   "<hex(CT_s)>",
-     "encrypted": "<hex(AEAD-Seal(k, nonce=0, identity_s))>"
+     "version":  0,
+     "suite":    "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+     "mode":     "encrypted",
+     "kem_pub":  "<hex(CT_s)>"
    }
 ```
 
-where `identity_s` is a nested JSON object `{"cert_index": C_s,
-"signature": Sig_s}` serialized to UTF-8.  The AEAD key for this
-server→client frame is `s2c_key`, derived from `SS` via HKDF as
-in Section 8.  The nonce is eight bytes of zero in the counter
-region (Section 9.2) and is consumed exactly once on `s2c_key`.
+After this exchange both peers compute the **phase-1 transcript
+hash** (per Section 6.0 with `C_c=C_s=0`) and derive
+`early_secret = HKDF-Extract(salt=transcript_hash_phase1,
+IKM=SS)`.  HKDF-Expand on `early_secret` produces
+`early_c2s_key`, `early_s2c_key`, `early_c2s_iv`, `early_s2c_iv`
+— used to seal the phase-2 identity blobs only.
 
-### 7.4. Encrypted-Identity Client Identity
+### 7.4. Encrypted-Identity Phase 2 (Client → Server)
 
-After completing key establishment and verifying the server's
-signature (as in Section 6.3), the client sends a second,
-AEAD-sealed frame:
+The client signs the **full** transcript hash
+(`transcript_hash_sig(role="client")` per Section 6.0) with its
+own `cert_index` populated and `C_s=0` (still unknown), then
+seals the resulting `{cert_index, signature}` JSON object with
+`early_c2s_key` / `early_c2s_iv` at sequence 0:
 
-```json
-   {
-     "encrypted": "<hex(AEAD-Seal(c2s_key, nonce=0, identity_c))>"
-   }
+```
+   AEAD-Seal(early_c2s_key, nonce(early_c2s_iv, 0),
+             aad(C2S, PHASE2_IDENTITY, 0, plaintext_len),
+             {"cert_index": C_c, "signature": Sig_c})
 ```
 
-where `identity_c = {"cert_index": C_c, "signature":
-MLDSA-Sign(EK_c)}`.  This frame is sealed with `c2s_key`, an
-independent key from §7.3's `s2c_key`; both directions may use
-nonce counter 0 because the keys differ.
+### 7.5. Encrypted-Identity Phase 2 (Server → Client)
 
-### 7.5. Sequence Starts After Identity Frames
+After receiving and verifying the client's phase-2 frame, the
+server now knows `C_c`.  It computes
+`transcript_hash_sig(role="server")` with both `cert_index`
+values populated, signs it, and seals the
+`{cert_index, signature}` blob with `early_s2c_key` /
+`early_s2c_iv` at sequence 0.
 
-Each direction's nonce counter advances independently because
-each direction has its own key.  In encrypted-identity mode each
-side has consumed nonce 0 on its respective key (one frame), so
-the first data-plane frame in either direction MUST use nonce
-counter 1 (Section 9.2).  In clear-identity mode no AEAD frames
-were exchanged during handshake, so each direction's data-plane
-counter begins at 0.
+This 4-frame total (CH plaintext + SH plaintext + client
+encrypted-identity + server encrypted-identity) is one round
+trip more than clear mode.  After phase 2 both peers compute
+the **full** transcript hash, derive `data_secret =
+HKDF-Extract(salt=transcript_hash_full, IKM=SS)`, and proceed
+to the Finished exchange (Section 8.1) and data plane.
+
+### 7.6. Sequence Numbering
+
+Across both modes the data-plane sequence counter starts at
+**1** in each direction, because the Finished frame (Section
+8.1) consumed sequence 0.  This contract is uniform regardless
+of mode.
 
 ---
 
 ## 8. Key Derivation
 
-Both modes derive **two** 32-byte AES-256-GCM session keys from
-the ML-KEM-768 shared secret — one per direction:
+Key derivation in v0 uses HKDF-SHA256 in its full **Extract +
+Expand** form (RFC 5869).  The salt for `HKDF-Extract` is the
+**transcript hash** (Section 6.0, KDF variant — no role tag), so
+all derived material is bound to every byte both peers
+exchanged.  This goes beyond TLS-1.3-style transcript binding by
+including the `cert_index` of both peers and the suite identifier
+in the salt.
+
+Two derivation contexts exist; they share `IKM = SS` (the 32-byte
+ML-KEM-768 shared secret) and differ by salt:
 
 ```
-    c2s_key = HKDF-SHA256(
-                IKM      = SS,                       // 32 bytes
-                salt     = <empty>,                  // zero-length
-                info     = "mqc-session-c2s",        // ASCII, 15 bytes
-                L        = 32)
+    data_secret  = HKDF-Extract(SHA-256,
+                       salt = transcript_hash_full,
+                       IKM  = SS)
 
-    s2c_key = HKDF-SHA256(
-                IKM      = SS,
-                salt     = <empty>,
-                info     = "mqc-session-s2c",        // ASCII, 15 bytes
-                L        = 32)
+    early_secret = HKDF-Extract(SHA-256,
+                       salt = transcript_hash_phase1,
+                       IKM  = SS)             [encrypted mode only]
 ```
 
-`c2s_key` encrypts every client→server frame; `s2c_key` encrypts
-every server→client frame.  Each direction maintains its own
-nonce counter (Section 9.2).  Per-direction keys eliminate the
-possibility of `(key, nonce)` pair reuse across directions, which
-under AES-256-GCM would leak both plaintexts and the GHASH
-authentication key.
+`transcript_hash_full` is the KDF-variant transcript with both
+`cert_index` values populated — known to both peers after
+clear-mode ServerHello or after encrypted-mode phase 2.
+`transcript_hash_phase1` is the KDF-variant transcript with
+`C_c=C_s=0` — known after encrypted-mode plaintext exchange,
+needed to seal the phase-2 identity blobs.
+
+Per-direction keys, IVs, and Finished MAC keys are produced by
+HKDF-Expand off the appropriate PRK.  All info strings are
+deployment-stable ASCII literals containing the version and
+suite identifier so a peer cannot accidentally agree on key
+material across protocol versions:
+
+```
+    /* Convention: "mqc/v0/<SUITE>/<purpose>" where SUITE is the full
+       suite identifier from Section 4.  Abbreviated as "..." below
+       after the first occurrence. */
+    data_c2s_key      = HKDF-Expand(SHA-256, data_secret,
+        info = "mqc/v0/MQC_MLKEM768_MLDSA87_AES256GCM_SHA256"
+               "/data-c2s-key",                              L = 32)
+    data_s2c_key      = HKDF-Expand(SHA-256, data_secret,
+        info = "mqc/v0/.../data-s2c-key",                L = 32)
+    data_c2s_iv       = HKDF-Expand(SHA-256, data_secret,
+        info = "mqc/v0/.../data-c2s-iv",                 L = 12)
+    data_s2c_iv       = HKDF-Expand(SHA-256, data_secret,
+        info = "mqc/v0/.../data-s2c-iv",                 L = 12)
+    data_c2s_finished = HKDF-Expand(SHA-256, data_secret,
+        info = "mqc/v0/.../data-c2s-finished",           L = 32)
+    data_s2c_finished = HKDF-Expand(SHA-256, data_secret,
+        info = "mqc/v0/.../data-s2c-finished",           L = 32)
+```
+
+In encrypted-identity mode an additional four outputs come from
+`early_secret` (info strings `early-c2s-key`, `early-s2c-key`,
+`early-c2s-iv`, `early-s2c-iv`).  These are used only to seal
+the two phase-2 identity blobs and MUST NOT appear in any other
+frame.
+
+`data_c2s_key` encrypts every client→server data-plane frame
+(Section 9.1); `data_s2c_key` every server→client frame.
+Per-direction keys eliminate `(key, nonce)` pair reuse across
+directions — a property AES-256-GCM requires for confidentiality
+and tag unforgeability.
+
+Implementations MUST zeroize the PRK (`data_secret`,
+`early_secret`) after expansion completes.
+
+### 8.1. Finished Frame
+
+After each peer derives the data-plane key set above (and
+verifies the peer's handshake signature), it sends a **Finished
+frame** as the first AEAD-sealed frame in its sending direction
+and verifies the peer's Finished frame before allowing any
+application data to flow.
+
+The Finished frame uses the same wire format as a data-plane
+frame (Section 9.1).  It is sealed with `data_<role>_key` and
+`data_<role>_iv` at sequence number 0; its 31-byte AAD
+(Section 9.1.1) carries `frame_type = 0x02` (Finished) and
+`plaintext_length = 32`.  The plaintext is exactly **32 bytes**:
+
+```
+    finished_mac = HMAC-SHA256(
+                       key = data_<role>_finished,
+                       msg = transcript_hash_full)
+```
+
+A receiver MUST:
+
+1. AEAD-decrypt the first frame in each direction at sequence 0.
+   Failure → terminate (this surfaces as "wrong key" — distinct
+   from MAC failure).
+2. Assert plaintext length is exactly `MQC_FINISHED_MAC_SZ`
+   (32 bytes).  Mismatch → terminate.
+3. Recompute the expected MAC using its local copy of
+   `data_<sender_role>_finished` and `transcript_hash_full`.
+4. Constant-time compare received vs expected.  Mismatch →
+   terminate.
+5. Mark the connection as Finished-verified.  The next frame on
+   the same key/IV is the first application frame at sequence 1.
+
+Each Finished MAC key is consumed exactly once (one MAC
+computation) and MUST be zeroized after use.
+
+The Finished MAC defends against transcript-construction
+divergence between honest peers and against on-path tampering of
+bytes outside the signature transcript that the receiver
+nevertheless hashes into its own `transcript_hash_full`.  See
+Section 12.7.
 
 ---
 
@@ -472,49 +682,92 @@ After handshake completion, every frame carries:
   `ct` is the AES-256-GCM ciphertext of the application
   plaintext and `tag` is the 16-byte authentication tag.
 
-No additional headers are inserted between the length prefix and
-the AEAD output.
+No additional headers are inserted on the wire between the length
+prefix and the AEAD output.  Frame metadata (direction, type,
+sequence, plaintext length, version) is bound into the AEAD AAD
+(Section 9.1.1) rather than emitted as a separate header.
+
+### 9.1.1. AEAD AAD
+
+Every AEAD-sealed frame on an MQC connection (phase-2 identity
+blobs in encrypted mode, the Finished frame, every application
+data frame) is sealed with a fixed 31-byte AAD:
+
+```
+   AAD = LABEL                       (16 bytes "mqc-frame/v01\n\x00")
+      || u8(version)                 (1 byte; v0 = 0)
+      || u8(direction)               (1 byte; 0 = c2s, 1 = s2c)
+      || u8(frame_type)              (1 byte; see below)
+      || u64be(sequence)             (8 bytes)
+      || u32be(plaintext_length)     (4 bytes)
+```
+
+`LABEL` is `"mqc-frame/v01\n\x00"` — 16 bytes including the
+implicit terminating NUL appended by C's string-literal storage.
+The `/v01` is the AAD-format version, NOT the protocol version;
+it would be bumped only if the AAD bytes themselves changed.
+
+`direction` is the direction of the frame on the wire from the
+sender's point of view: client→server frames carry `0x00` in AAD
+on both peers; server→client frames carry `0x01`.
+
+`frame_type` distinguishes the three AEAD-sealed wire contexts:
+
+| Value | Meaning | Keys used | Sequence |
+|---|---|---|---|
+| `0x01` | Phase-2 identity blob (encrypted mode) | `early_*_key` | 0 |
+| `0x02` | Finished frame | `data_*_key` | 0 |
+| `0x03` | Application data frame | `data_*_key` | ≥ 1 |
+
+`plaintext_length` is the byte length of the plaintext that
+will be sealed (i.e., the on-wire `payload length` minus the
+16-byte GCM tag).  Length-prefix tampering becomes immediate
+AEAD failure: a receiver that read a tampered prefix builds AAD
+with the on-wire length, which differs from what the honest
+sender computed; the GCM tag verification fails on the next
+byte.
 
 ### 9.2. Nonce Construction
 
-Each endpoint maintains two 64-bit unsigned counters:
-
-- `send_seq`, initialized at 0 (clear-identity mode) or 1
-  (encrypted-identity mode, Section 7.5).
-- `recv_seq`, initialized at the same value as `send_seq`.
-
-To send a frame, an endpoint forms a 12-byte GCM nonce:
+Per-direction IVs derived in Section 8 (`data_<role>_iv`,
+`early_<role>_iv`) drive the per-frame nonce via TLS-1.3 §5.3
+construction:
 
 ```
-      nonce[0..4]   = 0x00 0x00 0x00 0x00    (reserved zeros)
-      nonce[4..12]  = htobe64(send_seq)       (8-byte big-endian)
+   nonce = iv  XOR  (0x00 0x00 0x00 0x00 || htobe64(seq))
 ```
 
-and encrypts with:
+The 4-byte zero prefix and 8-byte big-endian sequence form a
+12-byte mask; the 12-byte IV is XOR'd with the mask to produce
+the GCM nonce.  Per-direction IVs make the on-wire nonce
+unpredictable across connections (the IV byte-prefix is per-
+connection secret material), eliminating any nonce-prediction
+analysis surface.
 
-```
-      (ct, tag) = AES-256-GCM-Seal(
-                      key = K_send,
-                      nonce = nonce,
-                      aad = <empty>,
-                      plaintext = application_payload)
-```
+Each endpoint maintains two 64-bit unsigned sequence counters,
+`send_seq` and `recv_seq`.  Both initialize to 0 immediately
+after key derivation, are consumed (set to 1) by the Finished
+frame in each direction (Section 8.1), and proceed to 2, 3, ...
+for application data.  Application data therefore begins at
+sequence 1 in both directions and in both modes.
 
-where `K_send` is `c2s_key` on the client and `s2c_key` on the
-server (Section 8).  It then increments `send_seq` by one.
+A send operation forms the nonce, AEAD-seals
+`(plaintext, AAD = mqc_build_aad(direction, frame_type,
+send_seq, len(plaintext)))`, increments `send_seq`, and writes
+the frame.  A receive operation reads the frame, forms the
+nonce from `recv_iv` and `recv_seq`, AEAD-decrypts with the
+matching AAD, increments `recv_seq` on success.
 
-To receive a frame, an endpoint uses `recv_seq` to form the
-nonce in the same way and decrypts with `K_recv` — `s2c_key` on
-the client, `c2s_key` on the server — then increments `recv_seq`
-on success.  A decryption failure MUST cause the connection to
-be terminated; the endpoint SHOULD record the failure for
-rate-limiting (Section 11.2).
+A decryption failure (AEAD tag mismatch, AAD mismatch, length
+ceiling exceeded) MUST cause the connection to be terminated;
+the endpoint SHOULD record the failure for rate-limiting
+(Section 11.2).
 
-Direction separation is enforced by the **per-direction key**,
-not by the nonce.  Endpoint counters may collide (both sides at
-`send_seq = N` simultaneously) without consequence: an AES-GCM
-collision requires the same `(key, nonce)` pair, and the keys
-differ.
+Direction separation is enforced by the **per-direction key**;
+the per-direction IV is a defense-in-depth bonus that makes
+nonces unguessable.  AES-GCM collision requires the same
+`(key, nonce)` pair, and per-direction keys ensure the keys
+always differ.
 
 ### 9.3. No Reordering or Omission
 
@@ -548,12 +801,52 @@ log-service URL.
 
 The verifier extracts the ML-DSA-87 public key from the retrieved
 certificate and verifies that `signature` in the handshake frame
-is a valid ML-DSA-87 signature, under that public key, over:
+is a valid ML-DSA-87 signature under that public key, with the
+context label `LABEL = "mqc-hndshk/v1\n\x00"` (16 bytes), over
+the **transcript hash** for the appropriate role (Section 6.0):
 
-- the sender's `kem_pub` field value (the ML-KEM-768 encapsulation
-  key for the client; the ML-KEM-768 ciphertext for the server).
+```
+   verified = MLDSA-Verify-CtxMsg(
+                  pk      = peer_PK,
+                  ctx     = LABEL,                  /* 16 bytes */
+                  ctx_len = 16,
+                  msg     = transcript_hash_sig(role),
+                  msg_len = 32,                     /* SHA-256 */
+                  sig     = signature)
+```
 
-This binds the ephemeral KEM exchange to the long-term identity.
+The transcript hash binds:
+
+- the protocol version (`u8(version)`);
+- the suite identifier (`SUITE_ID = SHA-256(SUITE)`);
+- the identity mode (`u8(MODE_ID)`);
+- both peers' ML-KEM contributions (`EK_c`, `CT_s`, with explicit
+  byte-length prefixes — `len=0` if not yet known by the signer);
+- both peers' `cert_index` values (`s32be(C_c)`, `s32be(C_s)` —
+  `0` if not yet known by the signer);
+- the role tag (`"client"` or `"server"`, 6 bytes).
+
+Together with the ML-DSA `ctx` label, this provides cryptographic
+domain separation against any other use of the same identity key
+and prevents:
+
+- identity-substitution attacks (the peer's `cert_index` is
+  signed);
+- KEM-share substitution (both ML-KEM values are signed);
+- cross-protocol replay (the `LABEL` ctx and `LABEL` prefix in
+  the message guarantee a different signed bytestring);
+- mode confusion (the `mode_id` byte is signed);
+- role confusion (the role tag distinguishes a client signature
+  from a server signature on otherwise-identical data).
+
+The asymmetry in the "knowledge available at signing time" —
+client signs with `C_s = 0` and `len(CT_s) = 0` because the
+client doesn't yet know those — is intentional.  The server
+signs with everything populated, which closes Unknown Key Share
+in the client→server direction.  A "Finished" MAC over the full
+transcript (Section 8.1) closes the residual asymmetry by
+committing both peers to their view of the same transcript at
+handshake completion.
 
 ### 10.3. Merkle Inclusion Proof
 
@@ -721,6 +1014,72 @@ handshake completes.  The rate-limiting guidance in Section 11.2
 mitigates but does not eliminate this.  Placing MQC behind an
 L4 rate limiter (e.g., `iptables --hitcount` or a cloud-provider
 WAF) is RECOMMENDED for production deployments.
+
+### 12.7. Transcript Binding and Cross-Protocol Domain Separation
+
+Every byte both peers exchange in the handshake is bound into
+the transcript hash that the ML-DSA signatures cover (Section
+6.0) and that becomes the HKDF-Extract salt for all derived
+session material (Section 8).  Specifically:
+
+- `version`, `suite_id`, and `mode` defeat version, suite, and
+  mode rollback / confusion.
+- Both peers' `cert_index` values defeat identity substitution
+  (an attacker presenting cert A's signature for a connection
+  the client believed was with cert B fails verification because
+  the `cert_index` value the client expected differs from what
+  the signing peer hashed).
+- Both peers' KEM contributions (`EK_c` and `CT_s`, with
+  byte-length prefixes) defeat KEM-share substitution and
+  classic Unknown Key Share attacks where an attacker forwards
+  one peer's KEM value to a different peer.
+- The 6-byte role tag (`"client"` vs `"server"`) prevents a
+  client signature from being mistaken for a server signature
+  on otherwise-identical data.
+
+The ML-DSA `ctx` label `"mqc-hndshk/v1\n\x00"` and its
+in-message `LABEL` prefix together provide cross-protocol
+domain separation: an MQC handshake signature is not a valid
+signature for any other use of the same ML-DSA-87 identity
+key, including the cosigner's checkpoint signature (which uses
+a different label `"mtc-subtree/v1\n\x00"`).
+
+The Finished MAC (Section 8.1) closes the residual gap left by
+the asymmetric "knowledge available at signing time" in §6.0
+(client signs without knowing `C_s`; server signs knowing
+both).  By committing both peers via HMAC-SHA256 to their view
+of the full transcript at handshake completion, transcript-
+construction divergence between honest implementations and
+on-path tampering of bytes outside the signature transcript
+both surface as a clean Finished failure rather than as opaque
+AEAD failures three frames into application traffic.
+
+### 12.8. Frame-Header Authentication
+
+Every AEAD-sealed frame past the unauthenticated handshake
+fields binds the same 31-byte AAD (Section 9.1.1) into its GCM
+authentication tag.  This:
+
+- Turns length-prefix tampering into immediate AEAD failure on
+  the affected frame, rather than letting a tampered prefix
+  spill into the next frame's bytes and desynchronize framing.
+- Distinguishes Finished frames (`frame_type = 0x02`) from
+  application data frames (`frame_type = 0x03`) cryptographically,
+  even though they share the same `data_*_key` / `data_*_iv`.
+  A peer that swapped one for the other in flight (impossible
+  without breaking AES-256-GCM, but defense in depth) hits AEAD
+  failure on the type-byte mismatch.
+- Provides defense in depth on fields already bound by other
+  means: `direction` is also separated by per-direction keys;
+  `sequence` is also bound by the per-frame nonce; `version`
+  is also bound by the transcript-hash HKDF salt.  The AAD
+  doesn't add cryptographic guarantees here but does make
+  divergence loud at the moment of detection.
+
+The 16-byte `LABEL` `"mqc-frame/v01\n\x00"` is the AAD-format
+version, NOT the protocol version.  It would be bumped only if
+the AAD bytes themselves changed; a protocol-version bump (v0 →
+v1) does not by itself require a new AAD label.
 
 ---
 
