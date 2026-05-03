@@ -1260,7 +1260,6 @@ fail:
 
 mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
 {
-    HANDSHAKE_DEADLINE_ACTIVE();
     int fd;
     struct sockaddr_in cli_addr;
     socklen_t cli_len = sizeof(cli_addr);
@@ -1286,6 +1285,16 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
 
     fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
     if (fd < 0) return NULL;
+
+    /* Arm the slow-loris deadline AFTER accept() returns.  Setting it
+     * before accept() is wrong: accept() can block for arbitrarily
+     * long waiting for the next connection, and the 5-second budget
+     * would already be expired before the handshake even begins.
+     * Bug surfaced during P1.11 attack-port-8446 testing where the
+     * first attack after a quiet period reproducibly hit the
+     * deadline at pos=0 in read_json_block.  Same fix applies to
+     * mqc_accept_encrypted (currently stubbed). */
+    HANDSHAKE_DEADLINE_ACTIVE();
 
     inet_ntop(AF_INET, &cli_addr.sin_addr, client_ip, sizeof(client_ip));
     MQC_LOG("accepted connection from %s:%d", client_ip, ntohs(cli_addr.sin_port));
