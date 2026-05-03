@@ -149,6 +149,86 @@ struct mqc_runtime_cfg {
 };
 const struct mqc_runtime_cfg *mqc_rt_cfg(void);
 
+/* --- Phase 1 protocol constants (issues 1+2+3+4+5) ----------------
+ * Wire-format invariants for MQC v0.  Changing any of these requires
+ * a coordinated flag-day cutover (server + all clients rebuilt and
+ * redeployed together).  See README-plans.md "Deployment model" and
+ * mqc-master.plan. */
+#define MQC_PROTOCOL_VERSION    0
+#define MQC_SUITE_STRING        "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256"
+
+/* 16-byte ML-DSA `ctx` label for handshake signatures, also embedded
+ * in the transcript hash for in-message belt-and-braces.  Style
+ * matches the cosigner label "mtc-subtree/v1\n\x00". */
+#define MQC_HANDSHAKE_LABEL     "mqc-hndshk/v1\n\x00"
+#define MQC_HANDSHAKE_LABEL_LEN 16
+
+/* 16-byte AAD label prefix on every AEAD frame past handshake.  The
+ * "/v01" here is the AAD-format version, NOT the protocol version —
+ * bumped only if the AAD bytes themselves change.  Two-digit version
+ * keeps the literal at exactly 16 bytes (15 explicit chars + implicit
+ * NUL terminator), matching MQC_HANDSHAKE_LABEL's "mqc-hndshk/v1\n\x00"
+ * which is naturally 16 due to its longer prefix. */
+#define MQC_AAD_LABEL           "mqc-frame/v01\n\x00"
+#define MQC_AAD_LABEL_LEN       16
+#define MQC_AAD_LEN             31
+
+/* 6-byte role tags hashed into the signature transcript so a client
+ * sig is bytewise distinguishable from a server sig over the same
+ * fields. */
+#define MQC_ROLE_CLIENT         "client"
+#define MQC_ROLE_SERVER         "server"
+#define MQC_ROLE_LEN            6
+
+/* Mode markers — appear in the JSON `mode` field AND as the
+ * mode_id byte hashed into the transcript. */
+#define MQC_MODE_CLEAR          0x00
+#define MQC_MODE_ENCRYPTED      0x01
+
+/* Direction byte in AAD. */
+#define MQC_DIR_C2S             0x00
+#define MQC_DIR_S2C             0x01
+
+/* Frame types in AAD.  Type 0x01 (early keys) is structurally
+ * separated from 0x02/0x03 (data keys) by key choice; 0x02 vs 0x03
+ * distinguishes Finished from application data over the same key. */
+#define MQC_FRAME_TYPE_PHASE2_IDENTITY 0x01
+#define MQC_FRAME_TYPE_FINISHED        0x02
+#define MQC_FRAME_TYPE_APP_DATA        0x03
+
+/* HMAC-SHA256 output length used for Finished MAC. */
+#define MQC_FINISHED_MAC_SZ     32
+
+/* Exact byte sizes of the cryptographic field blobs.  Used as
+ * pre-crypto length filters per spec §11.3 and issue #12. */
+#define MQC_MLKEM768_PUB_SZ     1184
+#define MQC_MLKEM768_CT_SZ      1088
+#define MQC_MLDSA87_SIG_SZ      4627
+
+/* HKDF info strings.  Produced by HKDF-Expand off the data_secret
+ * (PRK = HKDF-Extract(transcript_hash_full, SS)) and early_secret
+ * (PRK = HKDF-Extract(transcript_hash_phase1, SS)) per issue #3. */
+#define MQC_HKDF_INFO_DATA_C2S_KEY \
+    "mqc/v0/" MQC_SUITE_STRING "/data-c2s-key"
+#define MQC_HKDF_INFO_DATA_S2C_KEY \
+    "mqc/v0/" MQC_SUITE_STRING "/data-s2c-key"
+#define MQC_HKDF_INFO_DATA_C2S_IV \
+    "mqc/v0/" MQC_SUITE_STRING "/data-c2s-iv"
+#define MQC_HKDF_INFO_DATA_S2C_IV \
+    "mqc/v0/" MQC_SUITE_STRING "/data-s2c-iv"
+#define MQC_HKDF_INFO_DATA_C2S_FINISHED \
+    "mqc/v0/" MQC_SUITE_STRING "/data-c2s-finished"
+#define MQC_HKDF_INFO_DATA_S2C_FINISHED \
+    "mqc/v0/" MQC_SUITE_STRING "/data-s2c-finished"
+#define MQC_HKDF_INFO_EARLY_C2S_KEY \
+    "mqc/v0/" MQC_SUITE_STRING "/early-c2s-key"
+#define MQC_HKDF_INFO_EARLY_S2C_KEY \
+    "mqc/v0/" MQC_SUITE_STRING "/early-s2c-key"
+#define MQC_HKDF_INFO_EARLY_C2S_IV \
+    "mqc/v0/" MQC_SUITE_STRING "/early-c2s-iv"
+#define MQC_HKDF_INFO_EARLY_S2C_IV \
+    "mqc/v0/" MQC_SUITE_STRING "/early-s2c-iv"
+
 #ifdef __cplusplus
 }
 #endif
