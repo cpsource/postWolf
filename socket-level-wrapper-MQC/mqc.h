@@ -139,6 +139,30 @@ int  mqc_get_verbose(void);
 void mqc_set_time_enabled(int on);
 int  mqc_get_time_enabled(void);
 
+/* --- Issue #9: client-side expected-identity (server-name) check --
+ *
+ * After successfully verifying a peer cert (signature, inclusion
+ * proof, cosignature, revocation, validity window), mqc_connect
+ * additionally checks that the cert's subject matches the hostname
+ * the caller intended to reach.  By default the expected hostname
+ * is the `host` argument passed to mqc_connect.  An MTC subject
+ * matches if subject == expected (case-insensitive) OR subject
+ * starts with "expected-" (case-insensitive) — covering the
+ * postWolf naming convention where `<dns>-ca`, `<dns>-<label>`
+ * etc. all serve `<dns>`.  IP-literal hostnames cannot bind to
+ * any DNS subject and fail closed unless the check is explicitly
+ * disabled.
+ *
+ * Set BEFORE calling mqc_connect.  hostname is strdup'd. */
+void mqc_ctx_set_expected_name(mqc_ctx_t *ctx, const char *hostname);
+
+/* Disable the expected-identity check entirely.  Logs a
+ * NAME_CHECK_DISABLED warning at handshake time so the dangerous
+ * mode is visible in journalctl.  Use only when the caller has
+ * out-of-band assurance about which identity it's reaching (e.g.,
+ * a cert_index pin, IP-only deployment). */
+void mqc_ctx_disable_name_check(mqc_ctx_t *ctx);
+
 /* --- Runtime configuration (issue 6a) ------------------------------
  * Operational tunables resolved once per process from
  * /etc/postWolf/config (Augeas-parsed) with compiled-in defaults from

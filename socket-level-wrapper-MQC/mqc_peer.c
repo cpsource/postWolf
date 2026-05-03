@@ -22,12 +22,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>      /* strcasecmp / strncasecmp */
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
+#include <arpa/inet.h>    /* inet_pton — IP-literal detection */
 
 #include <json-c/json.h>
 
@@ -1594,5 +1596,115 @@ int mqc_peer_get_cached_pubkey(int cert_index,
         *pubkey_sz_out = der_sz;
     }
 
+    return 0;
+}
+
+/******************************************************************************
+ * Function:    mqc_peer_get_cached_subject
+ *
+ * Description:
+ *   Read the cached certificate.json for a peer cert_index and copy
+ *   the tbs_entry.subject string into the caller's buffer.  The
+ *   subject is the MTC identity name — e.g. "factsorlie.com" (leaf),
+ *   "factsorlie.com-ca" (CA), or "factsorlie.com-router" (labeled
+ *   leaf).  The cert MUST already be cached (verified via
+ *   mqc_peer_verify); this is a pure file read with no fallback.
+ *
+ *   Returns 0 on success, -1 on missing cache / parse failure / buffer
+ *   too small.
+ ******************************************************************************/
+int mqc_peer_get_cached_subject(int cert_index, char *out, int outsz)
+{
+    char path[512];
+    char *raw;
+    struct json_object *cert_json = NULL, *sc, *tbs, *val;
+    const char *subject;
+    int ret = -1;
+
+    if (!out || outsz <= 0) return -1;
+    out[0] = '\0';
+
+    if (peer_cache_path(cert_index, path, sizeof(path)) != 0)
+        return -1;
+
+    raw = read_file_str(path);
+    if (!raw) return -1;
+
+    cert_json = json_tokener_parse(raw);
+    free(raw);
+    if (!cert_json) return -1;
+
+    if (!json_object_object_get_ex(cert_json, "standalone_certificate", &sc) ||
+        !json_object_object_get_ex(sc, "tbs_entry", &tbs) ||
+        !json_object_object_get_ex(tbs, "subject", &val))
+        goto out;
+
+    subject = json_object_get_string(val);
+    if (!subject) goto out;
+
+    if (snprintf(out, (size_t)outsz, "%s", subject) >= outsz)
+        goto out;          /* buffer too small — refuse to truncate an identity */
+
+    ret = 0;
+out:
+    json_object_put(cert_json);
+    return ret;
+}
+
+/******************************************************************************
+ * Function:    mqc_cert_name_matches
+ *
+ * Description:
+ *   Compare an MTC certificate subject string to a caller-supplied
+ *   expected name (typically the hostname the client dialed).  Match
+ *   rule (case-insensitive throughout):
+ *
+ *     - exact:  subject == expected
+ *               (e.g. dialed "factsorlie.com", subject "factsorlie.com")
+ *     - prefix: subject starts with "<expected>-"
+ *               (e.g. dialed "factsorlie.com", subject
+ *                "factsorlie.com-ca" or "factsorlie.com-router")
+ *
+ *   This mirrors the postWolf naming convention: a domain owner runs
+ *   one or more identities under their domain prefix.  No wildcards,
+ *   no suffix matching, no DNS lookup — purely a string comparison
+ *   against the verified-from-the-log subject.
+ *
+ *   Returns 1 on match, 0 on mismatch.  NULL inputs return 0.
+ ******************************************************************************/
+int mqc_cert_name_matches(const char *subject, const char *expected)
+{
+    size_t exp_len;
+
+    if (!subject || !expected || !*expected) return 0;
+
+    if (strcasecmp(subject, expected) == 0) return 1;
+
+    exp_len = strlen(expected);
+    if (strncasecmp(subject, expected, exp_len) == 0 &&
+        subject[exp_len] == '-')
+        return 1;
+
+    return 0;
+}
+
+/******************************************************************************
+ * Function:    mqc_is_ip_literal
+ *
+ * Description:
+ *   Returns 1 if the input parses as an IPv4 or IPv6 address literal,
+ *   0 otherwise.  Used to fail-closed when a caller dials by IP — MTC
+ *   certificates name an identity, not an address, so there is no
+ *   meaningful identity check we can derive from the IP.  Callers that
+ *   genuinely need to dial by IP must pass an explicit expected name
+ *   via mqc_ctx_set_expected_name() (or mqc_ctx_disable_name_check()
+ *   to opt out entirely).
+ ******************************************************************************/
+int mqc_is_ip_literal(const char *host)
+{
+    unsigned char buf[16];
+    if (!host || !*host) return 0;
+    if (inet_pton(AF_INET,  host, buf) == 1) return 1;
+    if (inet_pton(AF_INET6, host, buf) == 1) return 1;
     return 0;
 }

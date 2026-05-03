@@ -265,6 +265,11 @@ struct mqc_ctx {
     uint8_t     *privkey_der;      /* ML-DSA-87 private key DER */
     int          privkey_der_sz;
     int          encrypt_identity; /* 1 = encrypt cert_index in handshake */
+    /* Issue #9: client-side expected-identity check.
+     *   NULL  → derive from the host argument to mqc_connect (default).
+     *   ""    → name check explicitly disabled (operator opt-out).
+     *   other → match cert subject against this string. */
+    char        *expected_name;
 };
 
 struct mqc_conn {
@@ -1040,11 +1045,26 @@ void mqc_ctx_free(mqc_ctx_t *ctx)
     free(ctx->tpm_path);
     free(ctx->mtc_server);
     free(ctx->ca_pubkey);
+    free(ctx->expected_name);
     if (ctx->privkey_der) {
         secure_zero(ctx->privkey_der, (unsigned int)ctx->privkey_der_sz);
         free(ctx->privkey_der);
     }
     free(ctx);
+}
+
+void mqc_ctx_set_expected_name(mqc_ctx_t *ctx, const char *hostname)
+{
+    if (!ctx) return;
+    free(ctx->expected_name);
+    ctx->expected_name = hostname ? strdup(hostname) : NULL;
+}
+
+void mqc_ctx_disable_name_check(mqc_ctx_t *ctx)
+{
+    if (!ctx) return;
+    free(ctx->expected_name);
+    ctx->expected_name = strdup("");  /* sentinel: explicitly disabled */
 }
 
 /* --- Handshake --- */
@@ -1264,6 +1284,55 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
         }
 
         MQC_TRACE("[mqc] peer %d verified + signature OK\n", peer_index);
+
+        /* Issue #9: expected-identity check.  We've cryptographically
+         * proven the peer holds the private key for cert at peer_index;
+         * confirm that cert names the identity we *intended* to talk to.
+         * Defends against a verified-but-unexpected peer (a compromised
+         * sibling identity in the same log, or a wrong-but-valid index
+         * supplied by a hostile resolver).  Resolution order:
+         *   1. ctx->expected_name == ""  → check explicitly disabled
+         *      (mqc_ctx_disable_name_check; opt-out for callers that
+         *      have an out-of-band reason to trust the peer index).
+         *   2. ctx->expected_name set    → use that string verbatim
+         *      (mqc_ctx_set_expected_name; required when dialing by IP).
+         *   3. ctx->expected_name == NULL→ derive from `host`, but
+         *      fail closed if `host` is an IP literal — an IP names a
+         *      location, not an MTC subject. */
+        {
+            char subject[256];
+            const char *expected = ctx->expected_name;
+            int do_check = 1;
+
+            if (expected && expected[0] == '\0') {
+                do_check = 0;
+            } else if (!expected) {
+                if (mqc_is_ip_literal(host)) {
+                    MQC_SECURITY("NAME_CHECK_FAILED: dialed IP literal "
+                        "'%s' with no expected name; call "
+                        "mqc_ctx_set_expected_name() or "
+                        "mqc_ctx_disable_name_check()", host);
+                    goto fail;
+                }
+                expected = host;
+            }
+
+            if (do_check) {
+                if (mqc_peer_get_cached_subject(peer_index, subject,
+                                                sizeof(subject)) != 0) {
+                    MQC_SECURITY("NAME_CHECK_FAILED: no cached subject "
+                        "for verified cert %d", peer_index);
+                    goto fail;
+                }
+                if (!mqc_cert_name_matches(subject, expected)) {
+                    MQC_SECURITY("NAME_CHECK_FAILED: cert subject '%s' "
+                        "does not match expected '%s'", subject, expected);
+                    goto fail;
+                }
+                MQC_TRACE("[mqc] subject '%s' matches expected '%s'\n",
+                          subject, expected);
+            }
+        }
 
         ret = wc_MlKemKey_Decapsulate(&mlkem, shared_secret,
             ciphertext, (word32)ct_sz);

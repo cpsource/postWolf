@@ -17,7 +17,8 @@ AR      ?= ar
 
 LIB     = libmqc.a
 OBJS    = mqc.o mqc_peer.o
-TARGETS = $(LIB) examples/echo_server examples/echo_client
+TESTS   = tests/test_name_check
+TARGETS = $(LIB) examples/echo_server examples/echo_client $(TESTS)
 
 V ?= 0
 ifeq ($(V),0)
@@ -43,7 +44,16 @@ examples/echo_server: examples/echo_server.c $(LIB) mqc.h
 examples/echo_client: examples/echo_client.c $(LIB) mqc.h
 	$(call quiet,CCLD,$@)$(CC) $(CFLAGS) -I. -o $@ $< ../mtc-keymaster/read-config/read-config.c -L. -lmqc $(LDFLAGS)
 
-clean:
-	@rm -f $(OBJS) $(LIB) examples/echo_server examples/echo_client
+tests/test_name_check: tests/test_name_check.c $(LIB) mqc.h mqc_peer.h
+	$(call quiet,CCLD,$@)$(CC) $(CFLAGS) -I. -o $@ $< ../mtc-keymaster/read-config/read-config.c -L. -lmqc $(LDFLAGS)
 
-.PHONY: all clean
+# Run the negative-path regression test.  Requires a live MQC
+# listener at factsorlie.com:8446 and a valid TPM at the path
+# baked into test_name_check.c (override via --tpm / --server).
+test: tests/test_name_check
+	@./tests/test_name_check
+
+clean:
+	@rm -f $(OBJS) $(LIB) examples/echo_server examples/echo_client $(TESTS)
+
+.PHONY: all clean test

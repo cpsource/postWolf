@@ -958,6 +958,57 @@ expired certs.  Implementations SHOULD log distinct
 generic "validity failed") so an operator can tell which
 clock is wrong.
 
+### 10.7. Expected-Identity Check
+
+The cryptographic checks in 10.1–10.6 prove that the peer
+holds the private key bound to a verified, in-log,
+unrevoked, and currently-valid certificate.  They do NOT
+prove that the verified certificate names the identity the
+caller intended to talk to.  Without an expected-identity
+check, a hostile name resolver (DNS, hosts file,
+configuration error, or a `cert_index` supplied by an
+attacker-controlled lookup) can route the connection to a
+DIFFERENT in-log identity that satisfies every cryptographic
+check while not being the party the caller meant to reach.
+
+A client implementation MUST perform an expected-identity
+check after 10.1–10.6 succeed, on the verified subject
+string from the cert's `tbs_entry.subject` field.  The
+expected name SHOULD be derived from the hostname the caller
+dialed; the API MUST also expose a way to set it explicitly
+(for callers that dial by IP or use a non-DNS routing
+indirection) and a way to disable the check (for callers
+with an out-of-band reason to trust the peer index, e.g. a
+log-replication or admin tool).
+
+The match rule is case-insensitive throughout, and accepts:
+
+- exact match (`subject == expected`); or
+- prefix match where `subject` begins with `<expected> + "-"`.
+
+The prefix rule covers the postWolf naming convention in
+which a single domain owner runs an unbounded set of
+identities sharing a common DNS prefix (`<dns>`, `<dns>-ca`,
+`<dns>-<label>`).  No wildcards are accepted.  The rule
+operates on the verified-from-the-log subject only; it MUST
+NOT consult DNS, system resolvers, or any source other than
+the cert itself.
+
+If the caller dialed an IP address literal and has not
+supplied an explicit expected name, the implementation MUST
+fail the connection with a clear `NAME_CHECK_FAILED`
+diagnostic — an IP names a location, not an MTC subject, so
+no meaningful expected identity can be derived from the dial
+target.  Implementations SHOULD log a distinct
+`NAME_CHECK_FAILED` line so an operator can distinguish this
+case from cryptographic failures in 10.1–10.6.
+
+The server side performs no symmetric expected-identity
+check on the client cert: clients are not constrained to a
+particular hostname-derived identity in this protocol.
+Server-side authorisation against `peer_index` or the cert
+subject is the application's responsibility.
+
 ---
 
 ## 11. Operational Parameters
@@ -1155,6 +1206,43 @@ The 16-byte `LABEL` `"mqc-frame/v01\n\x00"` is the AAD-format
 version, NOT the protocol version.  It would be bumped only if
 the AAD bytes themselves changed; a protocol-version bump (v0 →
 v1) does not by itself require a new AAD label.
+
+### 12.9. Identity vs Authority
+
+The cryptographic verification chain in 10.1–10.6 establishes
+*authority* — the peer holds a private key bound to a
+verified, in-log, currently-valid, unrevoked certificate.
+That is necessary but NOT sufficient for a client.  The
+client also needs *identity*: confirmation that the
+authoritative peer is the specific identity the client
+intended to talk to.
+
+Without the Section 10.7 expected-identity check, an
+attacker who can influence the connection's routing
+indicator (DNS, hosts file, mis-typed configuration, a
+hostile `cert_index` lookup) can route the client to a
+different but cryptographically-valid identity in the same
+log.  All four checks in 10.3–10.6 will pass.  No bytes go
+to a malicious party — but they go to the wrong honest
+party.  For an application that conditions sensitive actions
+on *who* the peer is (CA-side recording of leaf actions,
+client-side selection of an oracle), this is a confused-
+deputy vulnerability with the protocol acting as the
+deputy.
+
+Section 10.7 closes that gap by making the comparison
+explicit and surfacing a `NAME_CHECK_FAILED` error before
+any session keys are derived.  The check operates exclusively
+on the verified subject from the log entry; it never queries
+DNS or any other external system, so it cannot be subverted
+by the same attacker who supplied the routing indicator.
+
+The cost is operational rigidity: dialing by IP requires the
+caller to set an explicit expected name, and renaming an
+identity (changing `tbs_entry.subject`) breaks every client
+configured for the old name.  Both are intentional: an
+implicit "trust whatever the log says" mode would re-open
+the gap this section closes.
 
 ---
 

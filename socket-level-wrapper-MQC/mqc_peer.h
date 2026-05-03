@@ -49,6 +49,24 @@ int mqc_peer_verify(const char *mtc_server,
 int mqc_peer_get_cached_pubkey(int cert_index,
                                unsigned char **pubkey_out, int *pubkey_sz_out);
 
+/* Read the cached cert's tbs_entry.subject string (e.g. "factsorlie.com"
+ * or "factsorlie.com-ca") for an already-verified peer.  Caller must
+ * provide a buffer of at least 256 bytes; we refuse to truncate.
+ * Returns 0 on success, -1 if no cache / parse failure / buffer too small. */
+int mqc_peer_get_cached_subject(int cert_index, char *out, int outsz);
+
+/* Match an MTC subject string against a caller-supplied expected name
+ * (typically the dialed hostname).  Case-insensitive exact match OR
+ * "<expected>-..." prefix match (covers the <dns>, <dns>-ca, and
+ * <dns>-<label> identities a single domain owner runs).  No wildcards,
+ * no DNS lookup.  Returns 1 on match, 0 otherwise. */
+int mqc_cert_name_matches(const char *subject, const char *expected);
+
+/* Returns 1 if host is an IPv4 or IPv6 address literal, 0 otherwise.
+ * Used by mqc_connect to fail-closed on dial-by-IP unless the caller
+ * has set an explicit expected name. */
+int mqc_is_ip_literal(const char *host);
+
 /* Load the CA cosigner's raw ML-DSA-87 public key
  * (DILITHIUM_LEVEL5_PUB_KEY_SIZE = 2592 bytes) into out_raw.  Uses
  * the local cache at ~/.TPM/ca-cosigner.pem and falls back to the
