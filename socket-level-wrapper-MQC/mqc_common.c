@@ -782,9 +782,58 @@ out:
     return ret;
 }
 
-/* derive_early_keys (encrypted-identity early_secret expand) was
- * removed after the encrypted-mode stubs went in.  Restore in Phase
- * 5 alongside the encrypted-mode rewrite — see mqc-master.plan. */
+/* Encrypted-identity early-key schedule (spec §7.3 / §8).  Used to
+ * AEAD-seal the two phase-2 identity frames.  Derived from the
+ * SAME shared_secret as data_secret but salted with the phase-1
+ * transcript hash (C_c=C_s=0) so the early keys are independent of
+ * the full-transcript data keys.  Six outputs are NOT produced
+ * here (no early Finished MAC keys) -- the early keys only seal
+ * the two phase-2 frames; the Finished frame after phase 2 uses
+ * the full data_*_finished keys. */
+int mqc_derive_early_keys(
+    const uint8_t *shared_secret,
+    const uint8_t  transcript_hash_phase1[WC_SHA256_DIGEST_SIZE],
+    uint8_t early_c2s_key[MQC_AES_KEY_SZ],
+    uint8_t early_s2c_key[MQC_AES_KEY_SZ],
+    uint8_t early_c2s_iv [MQC_GCM_IV_SZ],
+    uint8_t early_s2c_iv [MQC_GCM_IV_SZ])
+{
+    uint8_t prk[WC_SHA256_DIGEST_SIZE];
+    int ret;
+
+    ret = wc_HKDF_Extract(WC_SHA256,
+        transcript_hash_phase1, WC_SHA256_DIGEST_SIZE,
+        shared_secret,          WC_ML_KEM_SS_SZ,
+        prk);
+    if (ret != 0) goto out;
+
+    ret = wc_HKDF_Expand(WC_SHA256, prk, sizeof(prk),
+        (const byte *)MQC_HKDF_INFO_EARLY_C2S_KEY,
+        (word32)strlen(MQC_HKDF_INFO_EARLY_C2S_KEY),
+        early_c2s_key, MQC_AES_KEY_SZ);
+    if (ret != 0) goto out;
+
+    ret = wc_HKDF_Expand(WC_SHA256, prk, sizeof(prk),
+        (const byte *)MQC_HKDF_INFO_EARLY_S2C_KEY,
+        (word32)strlen(MQC_HKDF_INFO_EARLY_S2C_KEY),
+        early_s2c_key, MQC_AES_KEY_SZ);
+    if (ret != 0) goto out;
+
+    ret = wc_HKDF_Expand(WC_SHA256, prk, sizeof(prk),
+        (const byte *)MQC_HKDF_INFO_EARLY_C2S_IV,
+        (word32)strlen(MQC_HKDF_INFO_EARLY_C2S_IV),
+        early_c2s_iv, MQC_GCM_IV_SZ);
+    if (ret != 0) goto out;
+
+    ret = wc_HKDF_Expand(WC_SHA256, prk, sizeof(prk),
+        (const byte *)MQC_HKDF_INFO_EARLY_S2C_IV,
+        (word32)strlen(MQC_HKDF_INFO_EARLY_S2C_IV),
+        early_s2c_iv, MQC_GCM_IV_SZ);
+
+out:
+    mqc_secure_zero(prk, sizeof(prk));
+    return ret;
+}
 
 
 /* --- Phase 1 Finished MAC (issue #4) ------------------------------ */

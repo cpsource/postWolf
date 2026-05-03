@@ -234,6 +234,17 @@ int mqc_compute_finished_mac(const uint8_t finished_key[MQC_FINISHED_MAC_SZ],
                              const uint8_t transcript_hash[WC_SHA256_DIGEST_SIZE],
                              uint8_t out_mac[MQC_FINISHED_MAC_SZ]);
 
+/* Encrypted-mode early-key schedule (spec §7.3 / §8).  Salted with
+ * the phase-1 transcript hash (C_c=C_s=0) so the early keys are
+ * independent of the full-transcript data keys.  Used to AEAD-seal
+ * the two phase-2 identity frames only. */
+int mqc_derive_early_keys(const uint8_t *shared_secret,
+                          const uint8_t  transcript_hash_phase1[WC_SHA256_DIGEST_SIZE],
+                          uint8_t early_c2s_key[MQC_AES_KEY_SZ],
+                          uint8_t early_s2c_key[MQC_AES_KEY_SZ],
+                          uint8_t early_c2s_iv [MQC_GCM_IV_SZ],
+                          uint8_t early_s2c_iv [MQC_GCM_IV_SZ]);
+
 /* ----------------------------------------------------------------------
  * AEAD seal/unseal + Finished frame send/recv (data-plane primitives;
  * shared between handshake completion and post-handshake traffic)
@@ -282,6 +293,16 @@ int mqc_abuse_check(const char *ip);
 
 mqc_conn_t *mqc_connect_clear(mqc_ctx_t *ctx, const char *host, int port);
 mqc_conn_t *mqc_accept_clear (mqc_ctx_t *ctx, int listen_fd);
+
+/* Post-accept continuations.  Take an already-accepted, connected fd
+ * plus the client_ip string the caller already extracted via
+ * inet_ntop on the accept's cli_addr.  Used by mqc_accept_auto in
+ * mqc.c so it can peek the wire to choose mode without re-doing the
+ * accept (which would be impossible — it's already happened). */
+mqc_conn_t *mqc_accept_clear_post    (mqc_ctx_t *ctx, int fd,
+                                      const char *client_ip);
+mqc_conn_t *mqc_accept_encrypted_post(mqc_ctx_t *ctx, int fd,
+                                      const char *client_ip);
 
 /* mqc_connect_encrypted / mqc_accept_encrypted are public (declared in
  * mqc.h); their bodies live in mqc_encrypted.c. */

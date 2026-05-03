@@ -350,11 +350,14 @@ fail:
     return NULL;
 }
 
-mqc_conn_t *mqc_accept_clear(mqc_ctx_t *ctx, int listen_fd)
+/* Internal continuation called from mqc_accept_clear OR from
+ * mqc_accept_auto after the latter has already accept()ed and
+ * peeked the wire to determine mode.  The fd MUST be a connected
+ * socket; client_ip MUST be filled in (mqc_accept_auto's caller is
+ * responsible for both).  Owns the fd from this point — frees on
+ * any failure path. */
+mqc_conn_t *mqc_accept_clear_post(mqc_ctx_t *ctx, int fd, const char *client_ip)
 {
-    int fd;
-    struct sockaddr_in cli_addr;
-    socklen_t cli_len = sizeof(cli_addr);
     MlKemKey mlkem;
     dilithium_key dil;
     WC_RNG rng;
@@ -373,13 +376,6 @@ mqc_conn_t *mqc_accept_clear(mqc_ctx_t *ctx, int listen_fd)
     int ret;
     mqc_conn_t *conn = NULL;
     int mlkem_ok = 0, dil_ok = 0, rng_ok = 0;
-    char client_ip[64] = "unknown";
-
-    fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
-    if (fd < 0) return NULL;
-
-    inet_ntop(AF_INET, &cli_addr.sin_addr, client_ip, sizeof(client_ip));
-    MQC_LOG("accepted connection from %s:%d", client_ip, ntohs(cli_addr.sin_port));
 
     /* Pre-handshake setup BEFORE arming the slow-loris deadline.
      * mqc_abuse_check makes an HTTPS curl call to AbuseIPDB whose
@@ -669,4 +665,22 @@ fail:
     if (conn) { free(conn); conn = NULL; }
     if (fd >= 0) close(fd);
     return NULL;
+}
+
+/* Public API: same shape as before — does the accept itself, then
+ * calls into the post-accept continuation.  Exists so callers that
+ * have made an explicit clear-mode commitment (cfg.encrypt_identity
+ * == 0) can call this directly without going through the
+ * mqc_accept_auto peek+dispatch path. */
+mqc_conn_t *mqc_accept_clear(mqc_ctx_t *ctx, int listen_fd)
+{
+    struct sockaddr_in cli_addr;
+    socklen_t cli_len = sizeof(cli_addr);
+    char client_ip[64] = "unknown";
+    int fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
+    if (fd < 0) return NULL;
+    inet_ntop(AF_INET, &cli_addr.sin_addr, client_ip, sizeof(client_ip));
+    MQC_LOG("accepted connection from %s:%d",
+            client_ip, ntohs(cli_addr.sin_port));
+    return mqc_accept_clear_post(ctx, fd, client_ip);
 }

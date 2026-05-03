@@ -678,6 +678,12 @@ static void usage(const char *prog)
     printf("  --trace          Show MQC protocol-level trace\n");
     printf("  --cnt N          Show only first N entries\n");
     printf("  -d, --dir DIR    TPM directory (default: ~/.TPM)\n");
+    printf("  --encrypted      Use encrypted-identity-mode handshake (spec §7,\n");
+    printf("                   4 frames; opt-in for traffic-analysis resistance).\n");
+    printf("                   Default is clear-mode (2 frames).  Both peers MUST\n");
+    printf("                   agree on mode -- a clear client against an encrypted\n");
+    printf("                   server (or vice versa) fails with a strict-parse\n");
+    printf("                   mode-mismatch on the first frame.\n");
     printf("  -h, --help       Show this help\n");
     printf("\n");
     printf("MQC OPERATIONAL KNOBS (set in /etc/postWolf/config under [global]):\n");
@@ -708,6 +714,7 @@ int main(int argc, char *argv[])
     const char *tpm_dir_arg = NULL;
     const char *mqc_tpm_path = NULL;
     int verify = 0, verbose = 0, trace = 0, cnt = 0;
+    int encrypted_mode = 0;
     int server_from_cli = 0;
     char tpm_dir[512];
     tpm_entry_t entries[MAX_ENTRIES];
@@ -735,6 +742,8 @@ int main(int argc, char *argv[])
         else if ((strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--dir") == 0)
                  && i + 1 < argc)
             tpm_dir_arg = argv[++i];
+        else if (strcmp(argv[i], "--encrypted") == 0)
+            encrypted_mode = 1;
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             return 0;
@@ -829,9 +838,13 @@ int main(int argc, char *argv[])
         }
 
         memset(&cfg, 0, sizeof(cfg));
-        cfg.role       = MQC_CLIENT;
-        cfg.tpm_path   = mqc_tpm_path;
-        cfg.mtc_server = server;          /* host reused for bootstrap lookups (port 8445) */
+        cfg.role             = MQC_CLIENT;
+        cfg.tpm_path         = mqc_tpm_path;
+        cfg.mtc_server       = server;     /* host reused for bootstrap lookups (port 8445) */
+        cfg.encrypt_identity = encrypted_mode;
+        if (encrypted_mode)
+            fprintf(stderr, "show-tpm: encrypted-identity mode requested "
+                            "(4-frame handshake, spec §7)\n");
 
         /* Load the CA cosigner's raw 32-byte Ed25519 pubkey via the
          * bootstrap port (8445) on the same host; subsequent runs hit
