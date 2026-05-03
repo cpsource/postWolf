@@ -398,6 +398,98 @@ static void a_cert_index_huge(const char *h, int p)
     attack_raw("cert_index=9999..",       h, p, buf, 4 + blen);
 }
 
+/* --- Phase 1 wire-format attacks (P1.11) -----------------------------
+ *
+ * After Phase 1 (commit 6b4c380b6) the MQC server requires every
+ * ClientHello to declare version=0,
+ * suite="MQC_MLKEM768_MLDSA87_AES256GCM_SHA256", mode="clear", and
+ * to use the renamed kem_pub field with exact byte length (1184 B
+ * for ML-KEM-768 pub, 4627 B for ML-DSA-87 sig).  Each attack below
+ * sends a length-prefixed JSON ClientHello with exactly one field
+ * violation and expects the server to reject with an MQC_SECURITY
+ * log line and a quick disconnect. */
+
+/* Send a bare JSON ClientHello (no length prefix — read_json_block
+ * reads byte-by-byte tracking {} depth). */
+static void send_json(const char *name, const char *host, int port,
+                      const char *body)
+{
+    attack_raw(name, host, port, body, strlen(body));
+}
+
+static void a_p1_no_version(const char *h, int p)
+{
+    send_json("p1-no-version", h, p,
+        "{\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"clear\",\"kem_pub\":\"00\",\"cert_index\":1,"
+        "\"signature\":\"00\"}");
+}
+
+static void a_p1_wrong_version(const char *h, int p)
+{
+    send_json("p1-wrong-version", h, p,
+        "{\"version\":99,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"clear\",\"kem_pub\":\"00\",\"cert_index\":1,"
+        "\"signature\":\"00\"}");
+}
+
+static void a_p1_wrong_suite(const char *h, int p)
+{
+    send_json("p1-wrong-suite", h, p,
+        "{\"version\":0,\"suite\":\"BANANA\","
+        "\"mode\":\"clear\",\"kem_pub\":\"00\",\"cert_index\":1,"
+        "\"signature\":\"00\"}");
+}
+
+static void a_p1_wrong_mode(const char *h, int p)
+{
+    send_json("p1-wrong-mode", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"carrot\",\"kem_pub\":\"00\",\"cert_index\":1,"
+        "\"signature\":\"00\"}");
+}
+
+static void a_p1_old_field_names(const char *h, int p)
+{
+    /* Pre-Phase-1 wire format.  Should fail strict-parse since
+     * `version` is missing. */
+    send_json("p1-pre-phase1-format", h, p,
+        "{\"cert_index\":1,\"mlkem_encaps_key\":\"00\","
+        "\"signature\":\"00\"}");
+}
+
+static void a_p1_kem_pub_short(const char *h, int p)
+{
+    /* kem_pub hex is 1 byte instead of 1184. */
+    send_json("p1-kem_pub-too-short", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"clear\",\"kem_pub\":\"ab\",\"cert_index\":1,"
+        "\"signature\":\"00\"}");
+}
+
+static void a_p1_sig_wrong_length(const char *h, int p)
+{
+    /* signature hex is 2 bytes instead of 4627. */
+    send_json("p1-sig-too-short", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"clear\",\"kem_pub\":\"00\",\"cert_index\":1,"
+        "\"signature\":\"abcd\"}");
+}
+
+static void a_p1_trailing_garbage(const char *h, int p)
+{
+    /* JSON object followed by junk.  read_json_block returns at the
+     * matching '}', so trailing garbage after the closing brace is
+     * actually never seen by the parser — this attack documents that
+     * the wire framing reads only the minimal JSON object.  Server
+     * should accept the JSON and then fail strict-parse on the
+     * field validations (kem_pub length).  Renamed accordingly. */
+    send_json("p1-min-json-then-garbage", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"clear\",\"kem_pub\":\"00\",\"cert_index\":1,"
+        "\"signature\":\"00\"}xxx");
+}
+
 static void a_slow_loris(const char *host, int port)
 {
     const char *p = "{\"cert_index\":1,\"proto\":\"mqc-v1\"}";
@@ -1106,6 +1198,15 @@ int main(int argc, char **argv)
     a_json_wrong_fields(host, port);
     a_cert_index_neg(host, port);
     a_cert_index_huge(host, port);
+    /* Phase 1 wire-format attacks (P1.11) */
+    a_p1_no_version(host, port);
+    a_p1_wrong_version(host, port);
+    a_p1_wrong_suite(host, port);
+    a_p1_wrong_mode(host, port);
+    a_p1_old_field_names(host, port);
+    a_p1_kem_pub_short(host, port);
+    a_p1_sig_wrong_length(host, port);
+    a_p1_trailing_garbage(host, port);
     a_slow_loris(host, port);
     a_fragment_burst(host, port);
 
