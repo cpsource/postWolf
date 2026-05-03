@@ -16,7 +16,7 @@ LDFLAGS += -lcurl -lhiredis
 AR      ?= ar
 
 LIB     = libmqc.a
-OBJS    = mqc.o mqc_peer.o
+OBJS    = mqc.o mqc_common.o mqc_clear.o mqc_encrypted.o mqc_peer.o
 TESTS   = tests/test_name_check
 TARGETS = $(LIB) examples/echo_server examples/echo_client $(TESTS)
 
@@ -32,8 +32,17 @@ all: $(TARGETS)
 $(LIB): $(OBJS)
 	$(call quiet,AR,$@)$(AR) rcs $@ $^
 
-mqc.o: mqc.c mqc.h mqc_peer.h
+mqc.o: mqc.c mqc.h mqc_internal.h mqc_peer.h
 	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc.c
+
+mqc_common.o: mqc_common.c mqc.h mqc_internal.h mqc_peer.h
+	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_common.c
+
+mqc_clear.o: mqc_clear.c mqc.h mqc_internal.h mqc_peer.h
+	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_clear.c
+
+mqc_encrypted.o: mqc_encrypted.c mqc.h mqc_internal.h mqc_peer.h
+	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_encrypted.c
 
 mqc_peer.o: mqc_peer.c mqc_peer.h
 	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_peer.c
