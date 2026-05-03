@@ -120,6 +120,23 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    /* Warmup: mqc_peer_verify drops the FIRST connection that misses
+     * the local revocation cache, fetches the status, and persists it
+     * — the next connection then finds the cache fresh and proceeds.
+     * Run a couple of happy-path connects so the negative tests below
+     * exercise the name-check code path, not the first-contact-drop
+     * path.  Failures here are tolerated (server-side rate limits
+     * from prior runs in the same process can drop early connects);
+     * the test below is the load-bearing assertion. */
+    for (i = 0; i < 3; i++) {
+        mqc_ctx_t *ctx = mk_ctx();
+        if (ctx) {
+            mqc_conn_t *c = mqc_connect(ctx, g_host, g_port);
+            if (c) mqc_close(c);
+            mqc_ctx_free(ctx);
+        }
+    }
+
     /* 1. wrong expected_name -> reject */
     {
         mqc_ctx_t *ctx = mk_ctx();

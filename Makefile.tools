@@ -113,7 +113,25 @@ install: all
 
 clean:
 	$(MAKE) -C $(SLC_DIR) clean
-	$(MAKE) -C $(MQC_DIR) clean
 	$(MAKE) -C $(QUIC_DIR) clean
+	$(MAKE) -C $(MQC_DIR) clean
 	$(MAKE) -C $(MTC_DIR) clean
 	$(MAKE) -C $(TOOLS_DIR) clean
+
+# -- Phase 4 system-level tests --------------------------------------
+# Aggregate regression suite (P4a).  Builds dependent test binaries
+# under socket-level-wrapper-MQC/tests, then drives the whole MQC
+# suite-of-suites via mtc-keymaster/tools/sh/test-mqc-all.sh against
+# a live mtc-ca.service.  Knobs: TARGET_HOST, TARGET_PORT, DOMAIN.
+test-mqc-all: tools
+	$(MAKE) -C $(MQC_DIR) tests/test_name_check
+	@./mtc-keymaster/tools/sh/test-mqc-all.sh
+
+# Attack-simulation pack only (P4f).  Subset of test-mqc-all for
+# fast iteration on attack regressions.
+test-attack-pack: tools
+	$(MAKE) -C $(MQC_DIR) tests/test_name_check
+	@SKIP_NAME_CHECK=0 SKIP_ATTACK_PACK=0 \
+	    QUIET=1 ./mtc-keymaster/tools/sh/test-mqc-all.sh
+
+.PHONY: test-mqc-all test-attack-pack
