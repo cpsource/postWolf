@@ -768,48 +768,141 @@ The recovery is non-trivial:
   current text already describes the 4-frame variant, but the key
   schedule and AAD definitions need to align with §6 / §8 / §9.1.
 
+### Strategy (locked in 2026-05-03)
+
+Phase 7 lands in two commits, in this order:
+
+**Commit 1 — pure file-split refactor (zero behavior change).**
+Reorganize the existing clear-mode code into the layout that
+encrypted mode will plug into.  Mode-specific handshake bodies
+move to dedicated files; everything else moves to a shared
+common library:
+
+```
+socket-level-wrapper-MQC/
+  mqc.h                # public API (unchanged contract)
+  mqc.c                # ~50-line dispatcher: reads cfg.encrypt_identity
+                       # and calls mqc_connect_clear or
+                       # mqc_connect_encrypted (and accept variants)
+  mqc_internal.h       # private cross-file API: ctx/conn struct
+                       # definitions, prototypes for everything
+                       # that was static in old mqc.c
+  mqc_common.c         # shared machinery (~80% of old mqc.c):
+                       # strict-JSON helpers, Redis rate limits,
+                       # transcript hash, HKDF schedule, AEAD
+                       # send/recv, Finished frame, JSON parsers,
+                       # AbuseIPDB, runtime cfg cache, etc.
+  mqc_clear.c          # clear-mode handshake bodies
+                       # (mqc_connect_clear, mqc_accept_clear)
+  mqc_encrypted.c      # encrypted-mode entry-point stubs only
+                       # at the end of commit 1; bodies in commit 2
+  mqc_peer.{c,h}       # unchanged (peer-verify is mode-agnostic)
+```
+
+The dispatcher in `mqc.c` reads the existing `cfg.encrypt_identity`
+field on the ctx and routes to the correct implementation:
+
+```c
+mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port) {
+    return ctx->encrypt_identity
+         ? mqc_connect_encrypted(ctx, host, port)
+         : mqc_connect_clear(ctx, host, port);
+}
+```
+
+Care points for the refactor:
+
+1. **Static helpers become non-static.**  ~30 helpers in old
+   `mqc.c` get prototyped in `mqc_internal.h` with an `mqc_`-
+   prefixed name (where they don't already have one).  Mechanical
+   pass.
+2. **Module-level state keeps a single owner.**  `s_redis`,
+   `s_rt_cfg`, `s_mqc_verbose`, `s_mqc_time_enabled`,
+   `s_handshake_deadline`, `s_last_accept_peer_ip` all live in
+   `mqc_common.c`.  Clear/encrypted reach them via accessor
+   functions (NOT `extern`) — accessors defend against link-order
+   surprises and keep the option of per-thread variants open.
+3. **Opaque-handle contract preserved.**  `struct mqc_ctx` and
+   `struct mqc_conn` definitions move from `mqc.c` to
+   `mqc_internal.h`.  `mqc.h` continues to typedef them as opaque
+   to public callers; this is an internal-only structural change.
+4. **Gate of Commit 1 is `make -f Makefile.tools test-mqc-all`
+   passing 100%.**  The aggregate regression suite is unchanged
+   and must stay green; if the refactor regresses anything, the
+   suite catches it immediately.
+
+**Commit 2 — encrypted-mode rewrite.**  All net-new logic lands
+in `mqc_encrypted.c` against the clean substrate from commit 1:
+
+- Resurrect `derive_early_keys` from git history (commit
+  `6b4c380b6` era; it was deleted during Phase 1's wire-format
+  change).
+- Port to the post-Phase-1 transcript / HKDF-Extract+Expand /
+  Finished / AAD architecture — the same patterns
+  `mqc_connect_clear` / `mqc_accept_clear` already use, plus
+  the early-secret split for the two pre-identity frames.
+- Restore `mqc_accept_auto`'s true mode auto-detection by
+  peeking at the first frame's `mode` field after strict parse.
+  (Pre-Phase-1 it peeked at byte shape; the strict parser
+  makes this cleaner now.)
+- Add the encrypted-mode regression suite +
+  `attack-port-8446.c` variants of the wire-attack pack.
+
 ### Critical files to modify
 
-1. `socket-level-wrapper-MQC/mqc.c` — `mqc_connect_encrypted` and
-   `mqc_accept_encrypted` bodies.  Strategy decision deferred to
-   the start of Phase 7: keep in-place under `/* --- Encrypted
-   mode --- */` section headers, OR extract to a new
-   `mqc_encrypted.[ch]` (cleaner reviewer-facing diff but requires
-   either making ~80% of mqc.c's `static` helpers non-static via
-   an `mqc_internal.h`, or duplicating, or moving shared helpers
-   to a third file).
-2. `socket-level-wrapper-MQC/mqc.c` (helper restoration) — bring
-   back `derive_early_keys` (removed during Phase 1; comment at
-   line 853 of post-Phase-3 mqc.c flags this).
-3. `socket-level-wrapper-MQC/mqc_peer.c` — no changes expected;
-   peer-verify is mode-agnostic.
-4. `socket-level-wrapper-MQC/mqc.c` `mqc_accept_auto` — currently
-   a thin alias for `mqc_accept`; restore true mode auto-detection
-   by extracting `do_clear_post_read` and `do_encrypted_post_read`
-   helpers.
-5. `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md` — §7
-   reconciliation pass: align frame structure with §6's transcript
-   construction; document the early-secret derivation under §8;
-   confirm §9.1.1 AEAD AAD applies uniformly to early and full
-   keys; update Appendix A worked example to include both modes.
-6. `socket-level-wrapper-MQC/tests/` — encrypted-mode regression
-   suite parallel to the clear-mode tests (handshake roundtrip,
-   strict-parse negatives, name-check, peer-verify).
-7. `mtc-keymaster/tools/c/attack-port-8446.c` — encrypted-mode
-   variants of the existing P3a/P3b wire-attack pack.
+**Commit 1 (refactor, no behavior change):**
+
+1. `socket-level-wrapper-MQC/mqc.c` — shrink to ~50-line
+   dispatcher.
+2. `socket-level-wrapper-MQC/mqc_common.c` — new; receives
+   ~80% of old `mqc.c`.
+3. `socket-level-wrapper-MQC/mqc_internal.h` — new; private
+   cross-file API + ctx/conn struct definitions.
+4. `socket-level-wrapper-MQC/mqc_clear.c` — new; receives
+   `mqc_connect`/`mqc_accept` bodies (renamed
+   `mqc_connect_clear` / `mqc_accept_clear`).
+5. `socket-level-wrapper-MQC/mqc_encrypted.c` — new; stubs only
+   at end of commit 1.
+6. `socket-level-wrapper-MQC/Makefile` — update `OBJS` list.
+
+**Commit 2 (encrypted-mode rewrite):**
+
+7. `socket-level-wrapper-MQC/mqc_encrypted.c` — replace stubs
+   with the 4-frame handshake bodies.
+8. `socket-level-wrapper-MQC/mqc_common.c` (helper restoration)
+   — bring back `derive_early_keys` (removed during Phase 1;
+   comment at line 853 of post-Phase-3 `mqc.c` flags this).
+9. `socket-level-wrapper-MQC/mqc.c` `mqc_accept_auto` — restore
+   true mode auto-detection.
+10. `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md` —
+    §7 reconciliation pass: align frame structure with §6's
+    transcript construction; document the early-secret
+    derivation under §8; confirm §9.1.1 AEAD AAD applies
+    uniformly to early and full keys; update Appendix A worked
+    example to include both modes.
+11. `socket-level-wrapper-MQC/tests/` — encrypted-mode
+    regression suite parallel to the clear-mode tests
+    (handshake roundtrip, strict-parse negatives, name-check,
+    peer-verify).
+12. `mtc-keymaster/tools/c/attack-port-8446.c` — encrypted-mode
+    variants of the existing P3a/P3b wire-attack pack.
+
+`socket-level-wrapper-MQC/mqc_peer.c` is touched in neither
+commit — peer-verify is mode-agnostic.
 
 ### Open design questions (resolve at Phase 7 kickoff)
 
-- **File split (`mqc_encrypted.[ch]` vs in-place).**  Trade-off:
-  reviewer-ergonomics win vs helper-extraction tax.  No call
-  needed until we see how much net-new code the rewrite adds.
-- **Auto-detect vs explicit mode flag.**  Pre-Phase-1
-  `mqc_accept_auto` peeked at the first bytes to decide mode.
-  Post-Phase-1 a strict parser would catch a mode mismatch
-  cleanly anyway; an explicit `cfg.mode = MQC_MODE_ENCRYPTED`
-  knob is simpler.
+The file-split question (split into clear/encrypted/common vs
+keep in-place) was resolved on 2026-05-03; see "Strategy" above.
+
+The remaining open questions:
+
 - **Whether to keep `mqc_connect_encrypted` as a separate API**
   or fold mode selection into `mqc_connect` via `cfg.mode`.
+  Current direction: keep both, with `mqc_connect` as the
+  dispatcher.  Public callers can either set
+  `cfg.encrypt_identity = 1` and call `mqc_connect`, or call
+  `mqc_connect_encrypted` directly — symmetric to clear mode.
 - **Early-secret transcript binding.**  The early-key AEAD
   protects the cert_index in flight, but the SAME bytes need to
   be bound into the FULL transcript hash (§6) so a downgrade
@@ -852,17 +945,30 @@ The recovery is non-trivial:
 
 ### Phase 7 exit criteria
 
-- `mqc_connect_encrypted` / `mqc_accept_encrypted` are no longer
-  stubs.
+- **Commit 1:** file split landed; `make -f Makefile.tools
+  test-mqc-all` still 100%; the layout above (mqc.c shell,
+  mqc_common.c, mqc_clear.c, mqc_encrypted.c stubs,
+  mqc_internal.h) builds cleanly with zero warnings.
+- **Commit 2:** `mqc_connect_encrypted` / `mqc_accept_encrypted`
+  are no longer stubs.
 - `examples/echo_client --encrypted` ↔ `echo_server --encrypted`
   roundtrip succeeds.
-- Aggregate suite (`make test-mqc-all`) extended with the
-  encrypted-mode happy path + the new wire-attack classes; 100%
-  pass.
+- Aggregate suite extended with the encrypted-mode happy path +
+  the new wire-attack classes; 100% pass.
 - Spec §7 reconciled with §6 / §8 / §9.1; Appendix A has worked
   examples for both modes.
-- Documented strategy (file split or in-place) recorded in the
-  Phase 7 plan and reflected in the resulting commit.
+
+### Effort estimate
+
+- Commit 1 (refactor): ~1 day.  Mostly mechanical: move
+  functions, rename statics, update Makefile, regression-test.
+- Commit 2 (encrypted-mode rewrite): ~2-4 days, depending on
+  how cleanly the pre-Phase-1 bodies port forward from git
+  history.
+
+Total: ~3-5 days of focused work.  Splittable across calendar
+weeks since commit 1 has standalone value (cleaner organization
+for the existing clear-mode code) even if commit 2 stalls.
 
 ---
 
