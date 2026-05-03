@@ -367,15 +367,25 @@ def main() -> int:
     output = paginate(rendered)
     sys.stdout.write(output)
     # Lint pass: flag any output line over LINE_WIDTH columns.  These
-    # always reflect over-length content in the source .md (long URLs,
-    # uncommented identifiers in code blocks, etc.) — the renderer does
-    # not silently mangle them.  Reporting on stderr keeps the redirect-
-    # to-file workflow clean.
-    long_lines = [
-        (i + 1, len(ln))
-        for i, ln in enumerate(output.split("\n"))
-        if len(ln) > LINE_WIDTH
-    ]
+    # usually reflect over-length content in the source .md (uncommented
+    # identifiers in code blocks, run-on prose, etc.) — the renderer
+    # does not silently mangle them.  Reporting on stderr keeps the
+    # redirect-to-file workflow clean.
+    #
+    # URLs are exempt: per IETF I-D convention (and what xml2rfc does),
+    # a long line whose content is just an angle-bracketed URL is not
+    # a layout error — URLs are not supposed to be broken.  Match the
+    # form `<scheme://...>` (optionally indented, optionally followed
+    # by a trailing comma / period / close-paren).
+    url_only = re.compile(
+        r"^\s*<\s*[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>]+\s*>\s*[.,)\];]?\s*$")
+    long_lines = []
+    for i, ln in enumerate(output.split("\n")):
+        if len(ln) <= LINE_WIDTH:
+            continue
+        if url_only.match(ln):
+            continue
+        long_lines.append((i + 1, len(ln)))
     if long_lines:
         sys.stderr.write(
             f"warning: {len(long_lines)} output line(s) exceed "

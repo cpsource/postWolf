@@ -1958,5 +1958,3 @@ Cumulative scope
 
 
 Page, Ed.             Expires 23 October 2026               [Page 35]
-warning: 1 output line(s) exceed 72 columns; .md source needs editing:
-  line 1616: 106 cols
