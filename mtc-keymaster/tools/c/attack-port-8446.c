@@ -490,6 +490,110 @@ static void a_p1_trailing_garbage(const char *h, int p)
         "\"signature\":\"00\"}xxx");
 }
 
+/* ----------------------------------------------------------------------
+ * P3a — strict JSON parsing (issue #11) negative tests.  Each attack
+ * sends a ClientHello variant that should be rejected by the strict
+ * parser BEFORE any cryptographic primitive runs.  Pass criterion is
+ * the same as the other attacks above: the server replies / closes
+ * the connection promptly without hanging.  The `journalctl -u
+ * mtc-ca.service` log should show a matching MQC-SECURITY line for
+ * each: e.g. `field 'cert_index' appears 2 times`, `field 'kem_pub'
+ * invalid hex`, etc.
+ * -------------------------------------------------------------------- */
+
+static void a_p3a_duplicate_cert_index(const char *h, int p)
+{
+    /* json-c silently keeps the LAST value when keys repeat — strict
+     * parser MUST reject ANY duplicate of a defined field. */
+    send_json("p3a-duplicate-cert_index", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"clear\",\"kem_pub\":\"00\",\"cert_index\":1,"
+        "\"cert_index\":2,\"signature\":\"00\"}");
+}
+
+static void a_p3a_leading_zero(const char *h, int p)
+{
+    /* Leading zero on a number — JSON spec disallows; strict tokener
+     * MUST reject. */
+    send_json("p3a-leading-zero", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"clear\",\"kem_pub\":\"00\",\"cert_index\":01,"
+        "\"signature\":\"00\"}");
+}
+
+static void a_p3a_trailing_comma(const char *h, int p)
+{
+    /* Trailing comma after last field — json-c extension; strict
+     * MUST reject. */
+    send_json("p3a-trailing-comma", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"clear\",\"kem_pub\":\"00\",\"cert_index\":1,"
+        "\"signature\":\"00\",}");
+}
+
+static void a_p3a_c_comment(const char *h, int p)
+{
+    /* C-style block comment inside the JSON object — json-c
+     * extension that strict mode MUST reject. */
+    send_json("p3a-c-comment", h, p,
+        "{\"version\":0/*hi*/,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"clear\",\"kem_pub\":\"00\",\"cert_index\":1,"
+        "\"signature\":\"00\"}");
+}
+
+static void a_p3a_int_overflow(const char *h, int p)
+{
+    /* cert_index that overflows int32.  json_object_get_int silently
+     * saturates; strict reader MUST detect via int64 + range check. */
+    send_json("p3a-int-overflow", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"clear\",\"kem_pub\":\"00\","
+        "\"cert_index\":99999999999999999,\"signature\":\"00\"}");
+}
+
+static void a_p3a_unknown_field(const char *h, int p)
+{
+    /* Extra top-level field not in the v0 allowlist — strict MUST
+     * reject; v0 has no extension registry. */
+    send_json("p3a-unknown-field", h, p,
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"clear\",\"kem_pub\":\"00\",\"cert_index\":1,"
+        "\"signature\":\"00\",\"extra\":\"x\"}");
+}
+
+static void a_p3a_bad_utf8(const char *h, int p)
+{
+    /* Lone 0xFF byte inside a string — invalid UTF-8 sequence;
+     * JSON_TOKENER_VALIDATE_UTF8 MUST reject. */
+    char buf[256];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"\xff\xff\",\"kem_pub\":\"00\",\"cert_index\":1,"
+        "\"signature\":\"00\"}");
+    attack_raw("p3a-bad-utf8", h, p, buf, (size_t)n);
+}
+
+static void a_p3a_uppercase_hex(const char *h, int p)
+{
+    /* Right-length kem_pub (2368 hex chars = 1184 B) but with one
+     * uppercase pair embedded.  Strict reader MUST reject the
+     * uppercase rather than silently normalising — silent
+     * normalisation would let an attacker round-trip a re-cased
+     * payload past a signer that hashes the raw bytes. */
+    char body[6000];
+    char kem_pub[2369];
+    int i;
+    for (i = 0; i < 2368; i++) kem_pub[i] = 'a';   /* all lowercase */
+    kem_pub[10] = 'A';                              /* one uppercase */
+    kem_pub[2368] = '\0';
+
+    snprintf(body, sizeof(body),
+        "{\"version\":0,\"suite\":\"MQC_MLKEM768_MLDSA87_AES256GCM_SHA256\","
+        "\"mode\":\"clear\",\"kem_pub\":\"%s\",\"cert_index\":1,"
+        "\"signature\":\"00\"}", kem_pub);
+    send_json("p3a-uppercase-hex", h, p, body);
+}
+
 static void a_slow_loris(const char *host, int port)
 {
     const char *p = "{\"cert_index\":1,\"proto\":\"mqc-v1\"}";
@@ -1207,6 +1311,15 @@ int main(int argc, char **argv)
     a_p1_kem_pub_short(host, port);
     a_p1_sig_wrong_length(host, port);
     a_p1_trailing_garbage(host, port);
+    /* Phase 3a strict-parsing attacks (P3a.6, issue #11) */
+    a_p3a_duplicate_cert_index(host, port);
+    a_p3a_leading_zero(host, port);
+    a_p3a_trailing_comma(host, port);
+    a_p3a_c_comment(host, port);
+    a_p3a_int_overflow(host, port);
+    a_p3a_unknown_field(host, port);
+    a_p3a_bad_utf8(host, port);
+    a_p3a_uppercase_hex(host, port);
     a_slow_loris(host, port);
     a_fragment_burst(host, port);
 

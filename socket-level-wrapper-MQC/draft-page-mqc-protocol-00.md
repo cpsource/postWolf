@@ -300,14 +300,40 @@ given in the table.  The following fields are defined:
 | `signature` | hex string | ML-DSA-87 signature (4627 B), Section 6 / Section 10.2. |
 | `cert_index` | integer | MTC log index of the signing identity. |
 
-Implementations MUST parse handshake JSON in strict mode: reject
-duplicates of any field, reject trailing garbage past the closing
-`}`, reject json-c-style extensions (comments, leading zeros on
-numbers, single-quoted strings, trailing commas).  Hex strings
-MUST be exactly the byte length defined for the field by the
-chosen suite; a length mismatch MUST cause the handshake to be
-aborted before any cryptographic primitive is invoked on the
-field's contents.
+Implementations MUST parse handshake JSON in strict mode and
+enforce the following rules; failing any one MUST abort the
+handshake before any cryptographic primitive is invoked on the
+field's contents:
+
+- **No parser extensions.** Reject comments, leading zeros on
+  numbers, single-quoted strings, unquoted keys, and trailing
+  commas (these are common parser extensions but not JSON).
+- **No trailing bytes.** Reject any bytes past the first complete
+  top-level object — even whitespace.  The parsed length MUST
+  equal the consumed length.
+- **Valid UTF-8.** Reject malformed UTF-8 in any string value.
+- **Each defined field exactly once.** Reject any object in
+  which a defined field appears zero times or more than once.
+  The receiver MUST detect duplication on the raw JSON bytes,
+  not on the parsed object — most JSON parsers silently keep the
+  last value when a key repeats, so a parser-only check would
+  miss the smuggling case where a signer serialised the FIRST
+  occurrence and a verifier parses the LAST.
+- **No unknown top-level fields.** v0 has no extension registry;
+  any key not listed in the table above MUST cause the handshake
+  to be rejected.
+- **Hex fields: lowercase, no separators, exact length.** The
+  hex string for `kem_pub` and `signature` MUST contain only
+  characters `[0-9a-f]`, MUST contain no separators, and MUST
+  decode to exactly the byte length defined for the field by
+  the chosen suite (1184 bytes for the ML-KEM-768 public key,
+  1088 bytes for the ML-KEM-768 ciphertext, 4627 bytes for the
+  ML-DSA-87 signature).
+- **Integer fields: bounded.** `version` MUST equal the protocol
+  version; `cert_index` MUST be a non-negative integer that fits
+  in `int32`.  Implementations MUST reject overflow rather than
+  saturating to `INT_MAX` (some JSON libraries silently saturate;
+  see Section 12.10).
 
 An implementation SHOULD serialize the JSON compactly (no
 whitespace) to keep the `payload length` predictable, but MUST NOT
@@ -1243,6 +1269,59 @@ identity (changing `tbs_entry.subject`) breaks every client
 configured for the old name.  Both are intentional: an
 implicit "trust whatever the log says" mode would re-open
 the gap this section closes.
+
+### 12.10. JSON Parsing Hardening
+
+The handshake JSON parser is a security-sensitive component
+because the bytes on the wire are bound into the transcript
+hash by both parties; any divergence between what the signer
+serialised and what the verifier parsed lets an attacker
+force one side to authenticate to a different message than
+the other side believes it received.  Section 5.2's strict-
+parsing rules close four concrete classes of attack:
+
+- **Duplicate-key smuggling.**  Most JSON parsers (json-c
+  among them) accept duplicate keys in an object and keep one
+  of them — typically the last.  A signer that serialises the
+  FIRST occurrence and a verifier that reads the LAST will
+  hash different `cert_index` values: the signature still
+  validates (it was generated over the signer's view of the
+  bytes) but the verifier proceeds with a different identity.
+  Section 5.2's "exactly once" rule, enforced on the raw JSON
+  bytes (not on the parsed object — by which time the
+  duplicate is already collapsed), closes this.
+
+- **Trailing-garbage smuggling.**  A streaming parser stops
+  at the first complete object; any bytes that follow are
+  ignored by the handshake but may be consumed by some other
+  tool (logger, audit pipeline, application-layer demuxer)
+  and interpreted differently.  The "no trailing bytes" rule
+  forces a length match between the input buffer and the
+  parser's consumed-bytes count, so the same bytes are seen
+  by every consumer or none.
+
+- **Integer-overflow desynchronisation.**  Several JSON
+  libraries silently clamp out-of-range integers to
+  `INT_MAX` / `INT_MIN`.  A signer that serialises a string
+  representation of a 64-bit value and a verifier that parses
+  it into a saturated 32-bit integer hash different transcript
+  bytes.  Section 5.2's "fit in int32" rule, enforced via an
+  explicit `errno=ERANGE` check rather than a silent
+  saturation, closes this.
+
+- **Parser-extension fingerprinting.**  Comments, leading
+  zeros, and single-quoted strings are accepted by some
+  parsers and rejected by others.  An attacker probing a
+  service can fingerprint the parser implementation by sending
+  inputs in the grey zone — useful for pivoting to a parser-
+  specific exploit.  Strict mode removes the grey zone.
+
+The rules also defend in depth against future code changes:
+hex-length and integer-range checks happen BEFORE any
+cryptographic primitive runs (Section 11.2 calls these out as
+cheap pre-crypto filters), so a malformed `kem_pub` cannot
+exercise the ML-KEM decoder and a malformed `cert_index`
+cannot exercise the certificate-fetch path.
 
 ---
 
