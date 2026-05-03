@@ -171,6 +171,32 @@ static void mqc_rt_cfg_init_once(void)
         read_config_long("global/mqc-sig-freshness-sec",
                          MQC_SIG_FRESHNESS_SEC);
 
+    /* Revocation policy (issue #7).  String-typed config key with
+     * three accepted values.  Anything else (or empty) falls back to
+     * mandatory and warns. */
+    {
+        char *raw = read_config_str("global/mqc-revocation-policy",
+                                    MQC_REVOCATION_POLICY_DEFAULT);
+        if (raw && strcmp(raw, "mandatory") == 0) {
+            s_rt_cfg.revocation_policy = MQC_REVOCATION_POLICY_MANDATORY;
+        } else if (raw && strcmp(raw, "cache-only") == 0) {
+            s_rt_cfg.revocation_policy = MQC_REVOCATION_POLICY_CACHE_ONLY;
+        } else if (raw && strcmp(raw, "disabled") == 0) {
+            s_rt_cfg.revocation_policy = MQC_REVOCATION_POLICY_DISABLED;
+            fprintf(stderr,
+                "[MQC-SECURITY] REVOCATION_DISABLED policy=disabled "
+                "(operator opt-out at /etc/postWolf/config; revoked "
+                "peers will be ACCEPTED until policy is restored)\n");
+        } else {
+            if (raw)
+                fprintf(stderr,
+                    "[MQC-SECURITY] REVOCATION_POLICY_INVALID value=%s, "
+                    "falling back to mandatory\n", raw);
+            s_rt_cfg.revocation_policy = MQC_REVOCATION_POLICY_MANDATORY;
+        }
+        free(raw);
+    }
+
     /* Spec §11.3: implementations MAY lower frame ceilings, MUST NOT
      * raise them.  Clamp config-file values that exceed the compiled
      * cap; raising would just produce frames the peer rejects. */
@@ -1148,7 +1174,8 @@ mqc_conn_t *mqc_connect(mqc_ctx_t *ctx, const char *host, int port)
         json_object_put(resp);
 
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
-                              peer_index, 0, &peer_pubkey, &peer_pubkey_sz);
+                              peer_index, mqc_rt_cfg()->revocation_policy,
+                              &peer_pubkey, &peer_pubkey_sz);
         if (ret != 0) {
             MQC_SECURITY("PEER_VERIFY_FAILED: peer for index %d", peer_index);
             goto fail;
@@ -1390,7 +1417,8 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
         json_object_put(req);
 
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
-                              peer_index, 1, &peer_pubkey, &peer_pubkey_sz);
+                              peer_index, mqc_rt_cfg()->revocation_policy,
+                              &peer_pubkey, &peer_pubkey_sz);
         if (ret != 0) {
             MQC_SECURITY("PEER_VERIFY_FAILED: peer for index %d", peer_index);
             goto fail;

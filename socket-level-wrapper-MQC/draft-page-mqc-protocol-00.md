@@ -885,12 +885,40 @@ call in Section 6.
 
 ### 10.5. Revocation
 
-For each verified peer, the verifier MAY query a log endpoint for
-the revocation status of `cert_index`.  A positive revocation
-answer MUST cause the handshake to be aborted.  Implementations
-SHOULD cache negative ("not revoked") answers for a bounded TTL
-(a default of 24 hours is RECOMMENDED); see Section 12 for the
-implications of caching.
+For each verified peer, the verifier **MUST** query a log endpoint
+for the revocation status of `cert_index` unless a non-expired
+cache entry covers that index.  A positive revocation answer MUST
+cause the handshake to be aborted.  Implementations MAY cache
+negative ("not revoked") answers for a bounded TTL (default 24
+hours; tunable via the `mqc-revoked-cache-ttl-sec` operational
+parameter, Section 11).
+
+Implementations MUST treat a query failure (network error, HTTP
+error, malformed response, invalid signature on the response) as
+equivalent to an unknown revocation status: the handshake MUST
+be aborted.  This is the **fail-closed** default.
+
+Both peers — the initiator and the acceptor — MUST apply this
+check to the other party's `cert_index`.  Earlier revisions of
+this protocol applied the check only on the acceptor side; that
+asymmetry is removed in v0 because a client connecting to a
+revoked server is the case that warrants the most caution (the
+client is about to disclose application data to whatever
+identity the server presents).
+
+An operator MAY opt out of the strict policy by setting the
+operational parameter `mqc-revocation-policy` (Section 11) to one
+of:
+
+- `mandatory` (the default behavior described above);
+- `cache-only` — trust the cache, abort on cache miss; never
+  touches the network.  Useful during planned log-endpoint
+  maintenance windows where caches are still valid;
+- `disabled` — skip revocation entirely.  Implementations
+  selecting this MUST log a warning at process startup
+  indicating that revocation enforcement is disabled.  This
+  setting is intended only for emergency recovery (catastrophic
+  log loss) and MUST NOT be the steady-state operational mode.
 
 ---
 
@@ -931,6 +959,15 @@ without advertising a new protocol version.
 
 The suggested default TCP port for MQC services is **8446** (see
 Section 13).
+
+### 11.5. Revocation Policy
+
+Implementations MUST honor the operational parameter
+`mqc-revocation-policy` with one of three values: `mandatory`
+(default, fail-closed; see Section 10.5), `cache-only`, or
+`disabled`.  On Linux deployments using the postWolf reference
+implementation this parameter is read from `/etc/postWolf/config`
+under the `[global]` section at process startup.
 
 ---
 

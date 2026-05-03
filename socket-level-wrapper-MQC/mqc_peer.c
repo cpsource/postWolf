@@ -372,7 +372,7 @@ static int peer_revoked_cache_path(int cert_index, char *out, int outsz)
  *   fetch of GET /revoked/<n> and returns -1 so the caller drops the
  *   current connection.  The peer's next attempt finds the cache fresh.
  ******************************************************************************/
-static int check_revoked(const char *mtc_server, int cert_index)
+static int check_revoked(const char *mtc_server, int cert_index, int allow_fetch)
 {
     char cache_path[512];
     struct stat st;
@@ -401,6 +401,13 @@ static int check_revoked(const char *mtc_server, int cert_index)
         }
         return revoked ? 1 : 0;
     }
+
+    /* Cache missing or stale.  Under MANDATORY policy
+     * (allow_fetch==1) we attempt a single-cert fetch.  Under
+     * CACHE_ONLY (allow_fetch==0) we must NOT touch the network —
+     * just return -1 so the caller drops the handshake. */
+    if (!allow_fetch)
+        return -1;
 
     /* Cache missing or stale → single-cert fetch + drop. */
     {
@@ -1066,7 +1073,7 @@ int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out_raw)
  ******************************************************************************/
 int mqc_peer_verify(const char *mtc_server,
                     const unsigned char *ca_pubkey, int ca_pubkey_sz,
-                    int cert_index, int is_server,
+                    int cert_index, int revocation_policy,
                     unsigned char **pubkey_out, int *pubkey_sz_out)
 {
     struct json_object *cert_json = NULL;
@@ -1371,24 +1378,41 @@ int mqc_peer_verify(const char *mtc_server,
                     cert_index);
     }
 
-    /* 5. Check revocation */
-    /* Revocation check runs only on the acceptor (server-role) side —
-     * that's the party at risk of accepting a revoked incoming peer.
-     * The initiator doesn't need to verify the server isn't revoked
-     * (the server proved possession of its private key during the
-     * handshake; revoked status is a separate policy decision for the
-     * acceptor). */
-    if (is_server) {
-        int rev = check_revoked(mtc_server, cert_index);
+    /* 5. Check revocation (issue #7).
+     *
+     * Pre-issue-7 behavior was asymmetric: only the acceptor (server-
+     * role) ran this check; the initiator (client) skipped it
+     * entirely.  That was exactly backwards — a client connecting to
+     * a revoked server is the case that warrants the most caution.
+     *
+     * After issue #7 the policy is uniform across roles and is set
+     * by /etc/postWolf/config -> mqc-revocation-policy:
+     *
+     *   MANDATORY (default, fail-closed): cache-or-fetch + abort on
+     *     any cache miss after fetch failure or fresh "revoked".
+     *   CACHE_ONLY: trust cache, abort on miss; never touches the
+     *     network.  Useful during planned log-endpoint maintenance.
+     *   DISABLED: skip the check.  Emergency-recovery only; the
+     *     loud REVOCATION_DISABLED warning was already logged at
+     *     process startup. */
+    if (revocation_policy != MQC_REVOCATION_POLICY_DISABLED) {
+        int allow_fetch =
+            (revocation_policy == MQC_REVOCATION_POLICY_MANDATORY);
+        int rev = check_revoked(mtc_server, cert_index, allow_fetch);
         if (rev == 1) {
             MQC_SECURITY("CERT_REVOKED: cert %d is revoked", cert_index);
             json_object_put(cert_json);
             return -1;
         }
         if (rev == -1) {
-            MQC_SECURITY("REVOKED_CACHE_REFRESH: cert %d (dropping; "
-                         "peer will retry with fresh cache)",
-                         cert_index);
+            if (revocation_policy == MQC_REVOCATION_POLICY_CACHE_ONLY) {
+                MQC_SECURITY("REVOCATION_CACHE_MISS policy=cache-only "
+                             "cert=%d, aborting", cert_index);
+            } else {
+                MQC_SECURITY("REVOCATION_QUERY_FAILED policy=mandatory "
+                             "cert=%d (dropping; peer will retry with "
+                             "fresh cache)", cert_index);
+            }
             json_object_put(cert_json);
             return -1;
         }

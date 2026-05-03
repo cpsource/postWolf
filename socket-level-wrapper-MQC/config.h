@@ -79,4 +79,12 @@
 #define MQC_HANDSHAKE_TOTAL_SEC     5
 #endif
 
+/* -- Revocation policy (issue #7) ------------------------------------- */
+/* Default policy if /etc/postWolf/config has no mqc-revocation-policy
+ * key.  Values: "mandatory", "cache-only", "disabled".  See spec
+ * Section 10.5 and mqc-issue-7.plan. */
+#ifndef MQC_REVOCATION_POLICY_DEFAULT
+#define MQC_REVOCATION_POLICY_DEFAULT "mandatory"
+#endif
+
 #endif /* MQC_CONFIG_H */

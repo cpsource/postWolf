@@ -27,17 +27,21 @@
  *
  * mtc_server:     MTC server host[:port] (e.g., "factsorlie.com:8446").
  *                 Only the host is used; lookups go via port 8445.
- * ca_pubkey:      CA Ed25519 cosigner public key
- * ca_pubkey_sz:   Size of ca_pubkey
- * cert_index:     Peer's certificate log index
- * is_server:      1 = acceptor, 0 = initiator (see above)
- * pubkey_out:     Output: malloc'd DER public key (caller frees)
- * pubkey_sz_out:  Output: size of pubkey_out
+ * ca_pubkey:        CA Ed25519 cosigner public key
+ * ca_pubkey_sz:     Size of ca_pubkey
+ * cert_index:       Peer's certificate log index
+ * revocation_policy: One of MQC_REVOCATION_POLICY_MANDATORY /
+ *                   _CACHE_ONLY / _DISABLED (issue #7).  MANDATORY
+ *                   is the default and aborts on any cache miss /
+ *                   query failure.  Both client and server SHOULD
+ *                   pass mqc_rt_cfg()->revocation_policy.
+ * pubkey_out:       Output: malloc'd DER public key (caller frees)
+ * pubkey_sz_out:    Output: size of pubkey_out
  *
  * Returns 0 on success, -1 on failure. */
 int mqc_peer_verify(const char *mtc_server,
                     const unsigned char *ca_pubkey, int ca_pubkey_sz,
-                    int cert_index, int is_server,
+                    int cert_index, int revocation_policy,
                     unsigned char **pubkey_out, int *pubkey_sz_out);
 
 /* Get a cached peer's public key without re-verifying.

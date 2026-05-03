@@ -32,3 +32,14 @@ url-local https://factsorlie.com:8444
 # Cache + skew windows (seconds).
 # mqc-revoked-cache-ttl-sec     86400
 # mqc-sig-freshness-sec         300
+
+# Revocation enforcement policy (issue #7).  Default: mandatory.
+#   mandatory   = both peers query log on cache miss; abort handshake
+#                 on query failure (fail-closed).
+#   cache-only  = use cache only; abort on cache miss; never touches
+#                 the network.  Use during planned log-endpoint
+#                 maintenance windows.
+#   disabled    = skip revocation entirely.  UNSAFE; emergency
+#                 recovery only.  A loud REVOCATION_DISABLED warning
+#                 is logged at process start when this is selected.
+# mqc-revocation-policy        mandatory

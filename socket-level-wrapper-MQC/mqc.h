@@ -146,6 +146,7 @@ struct mqc_runtime_cfg {
     long rl_fail_per_hour;
     long revoked_cache_ttl_sec;
     long sig_freshness_sec;
+    int  revocation_policy;       /* MQC_REVOCATION_POLICY_* (issue #7) */
 };
 const struct mqc_runtime_cfg *mqc_rt_cfg(void);
 
@@ -198,6 +199,17 @@ const struct mqc_runtime_cfg *mqc_rt_cfg(void);
 
 /* HMAC-SHA256 output length used for Finished MAC. */
 #define MQC_FINISHED_MAC_SZ     32
+
+/* --- Revocation policy enum (issue #7) ----------------------------
+ * MANDATORY: query log on cache miss; abort handshake on query failure.
+ * CACHE_ONLY: use cache; abort on cache miss.  Useful during planned
+ *             log-endpoint maintenance windows.
+ * DISABLED:   skip revocation entirely.  Emergency-recovery only;
+ *             selecting this in /etc/postWolf/config logs a loud
+ *             MQC_SECURITY warning at process startup. */
+#define MQC_REVOCATION_POLICY_MANDATORY  0
+#define MQC_REVOCATION_POLICY_CACHE_ONLY 1
+#define MQC_REVOCATION_POLICY_DISABLED   2
 
 /* Exact byte sizes of the cryptographic field blobs.  Used as
  * pre-crypto length filters per spec §11.3 and issue #12. */
