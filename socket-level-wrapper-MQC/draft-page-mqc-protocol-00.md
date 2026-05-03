@@ -154,11 +154,19 @@ ML-DSA-87 public key (the log's **cosigner**).
 **Handshake.**  The initial bidirectional exchange that performs
 peer authentication and establishes the session key.
 
-**Session key.**  A 32-byte AES-256-GCM key derived from the
-ML-KEM-768 shared secret via HKDF-SHA256.
+**Session key schedule.**  The set of per-direction symmetric
+secrets produced from the ML-KEM-768 shared secret and the
+handshake transcript via HKDF-Extract+Expand (Section 8): two
+32-byte AES-256-GCM keys (`data_c2s_key`, `data_s2c_key`), two
+12-byte IVs (`data_c2s_iv`, `data_s2c_iv`), and two 32-byte
+HMAC-SHA256 keys for the Finished frame (`data_c2s_finished`,
+`data_s2c_finished`).
 
 **Frame.**  A single length-prefixed, AEAD-sealed unit on the wire
-after the handshake completes.
+after the handshake completes.  The same wire shape applies to
+the Finished frame and to all subsequent application-data frames;
+they are distinguished cryptographically by the `frame_type` byte
+in their AEAD AAD (Section 9.1.1).
 
 ---
 
@@ -172,20 +180,28 @@ after the handshake completes.
              |  TCP connect to :mqc-port             |
              |------------------------------------->|
              |                                      |
-             |  ClientHello  (JSON)                  |
-             |  ─ ML-KEM-768 public key             |
-             |  ─ ML-DSA-87 signature over same     |
-             |  ─ MTC cert_index                    |
+             |  ClientHello  (JSON, plaintext)       |
+             |  ─ version / suite / mode             |
+             |  ─ ML-KEM-768 encapsulation key       |
+             |  ─ MTC cert_index                     |
+             |  ─ ML-DSA-87 sig over transcript hash |
              |------------------------------------->|
              |                                      |
-             |            ServerHello  (JSON)        |
+             |            ServerHello (JSON, plaintext)
+             |            ─ version / suite / mode   |
              |            ─ ML-KEM-768 ciphertext   |
-             |            ─ ML-DSA-87 signature     |
              |            ─ MTC cert_index          |
+             |            ─ ML-DSA-87 sig over txn hash
              |<-------------------------------------|
              |                                      |
-        HKDF-SHA256(shared_secret, "mqc-session-c2s") → 32-byte c2s_key
-        HKDF-SHA256(shared_secret, "mqc-session-s2c") → 32-byte s2c_key
+        Both peers compute transcript_hash_full and derive a
+        per-direction key schedule via HKDF-Extract+Expand
+        (Section 8): data_c2s_key, data_s2c_key, data_c2s_iv,
+        data_s2c_iv, data_c2s_finished, data_s2c_finished.
+             |                                      |
+             |   Finished frame (AEAD, both ways)   |
+             |<====== HMAC-SHA256(finished_key,    |
+             |        transcript_hash_full) =======>|
              |                                      |
              |  application data frames (both ways) |
              |<====== AES-256-GCM frames =========>|
@@ -493,7 +509,7 @@ passive observer at the cost of one additional round trip.
 > `mqc_connect` (clear).  Restoring the encrypted-mode handshake
 > with the post-Phase-1 transcript / HKDF-Extract+Expand /
 > Finished / AAD architecture is tracked under
-> `mqc-master.plan` Phase 5.  The wire-format and cryptographic
+> `mqc-master.plan` **Phase 7**.  The wire-format and cryptographic
 > requirements below are normative; implementations MUST
 > implement them if they offer encrypted mode at all.
 
@@ -541,7 +557,7 @@ hash** (per Section 6.0 with `C_c=C_s=0`) and derive
 `early_secret = HKDF-Extract(salt=transcript_hash_phase1,
 IKM=SS)`.  HKDF-Expand on `early_secret` produces
 `early_c2s_key`, `early_s2c_key`, `early_c2s_iv`, `early_s2c_iv`
-— used to seal the phase-2 identity blobs only.
+— used to seal the phase-2 identity frames only.
 
 ### 7.4. Encrypted-Identity Phase 2 (Client → Server)
 
@@ -610,7 +626,7 @@ ML-KEM-768 shared secret) and differ by salt:
 clear-mode ServerHello or after encrypted-mode phase 2.
 `transcript_hash_phase1` is the KDF-variant transcript with
 `C_c=C_s=0` — known after encrypted-mode plaintext exchange,
-needed to seal the phase-2 identity blobs.
+needed to seal the phase-2 identity frames.
 
 Per-direction keys, IVs, and Finished MAC keys are produced by
 HKDF-Expand off the appropriate PRK.  All info strings are
@@ -640,7 +656,7 @@ material across protocol versions:
 In encrypted-identity mode an additional four outputs come from
 `early_secret` (info strings `early-c2s-key`, `early-s2c-key`,
 `early-c2s-iv`, `early-s2c-iv`).  These are used only to seal
-the two phase-2 identity blobs and MUST NOT appear in any other
+the two phase-2 identity frames and MUST NOT appear in any other
 frame.
 
 `data_c2s_key` encrypts every client→server data-plane frame
@@ -741,7 +757,7 @@ on both peers; server→client frames carry `0x01`.
 
 | Value | Meaning | Keys used | Sequence |
 |---|---|---|---|
-| `0x01` | Phase-2 identity blob (encrypted mode) | `early_*_key` | 0 |
+| `0x01` | Phase-2 identity frame (encrypted mode) | `early_*_key` | 0 |
 | `0x02` | Finished frame | `data_*_key` | 0 |
 | `0x03` | Application data frame | `data_*_key` | ≥ 1 |
 
@@ -923,8 +939,11 @@ reconstructs the `subtree_hash` it expects from Section 10.3, and
 verifies the ML-DSA-87 signature against the log's known ML-DSA-87
 public key (2592 bytes, raw encoding).  The signature is 4627 bytes.
 The verification uses `wc_dilithium_verify_ctx_msg` with an empty
-context (`ctx = NULL, ctxLen = 0`), matching the handshake-signature
-call in Section 6.
+context (`ctx = NULL, ctxLen = 0`).  Note that this differs from
+the handshake-signature call in Section 6 / Section 10.2, which
+uses the 16-byte `LABEL` as the ctx — the in-message label
+`"mtc-subtree/v1\n\x00"` provides the cosignature's domain
+separation, so a separate ctx is unnecessary.
 
 ### 10.5. Revocation
 
@@ -1039,13 +1058,51 @@ subject is the application's responsibility.
 
 ## 11. Operational Parameters
 
+The parameters below are runtime-tunable in the reference
+implementation via `/etc/postWolf/config` under the `[global]`
+section, read once at process startup.  An implementation MAY
+substitute any equivalent configuration mechanism; the parameter
+*names* below are normative for cross-implementation
+interoperability, the *transport* is not.
+
+| Parameter | Default | Section | What it controls |
+|---|---|---|---|
+| `mqc-handshake-stall-sec` | 3 | 11.1 | Per-read timeout during the handshake |
+| `mqc-handshake-total-sec` | 5 | 11.1 | Total wall-clock budget for one handshake |
+| `mqc-max-handshake-bytes` | 131072 | 11.3 | Cap on a single handshake JSON frame |
+| `mqc-max-msg-bytes` | 1048576 | 11.3 | Cap on a single data-plane payload |
+| `mqc-rl-connect-per-min` | 100 | 11.2 | Per-IP connection-attempt cap (per minute) |
+| `mqc-rl-connect-per-hour` | 1000 | 11.2 | Per-IP connection-attempt cap (per hour) |
+| `mqc-rl-fail-per-min` | 10 | 11.2 | Per-IP handshake-failure cap (per minute) |
+| `mqc-rl-fail-per-hour` | 100 | 11.2 | Per-IP handshake-failure cap (per hour) |
+| `mqc-rl-cert-per-min` | 10 | 11.2 | Per-IP distinct-cert_index cap (per minute) |
+| `mqc-rl-cert-per-hour` | 100 | 11.2 | Per-IP distinct-cert_index cap (per hour) |
+| `mqc-max-children` | 20 | 11.6 | Per-listener fork backpressure cap |
+| `mqc-revoked-cache-ttl-sec` | 86400 | 10.5 | Revocation-cache TTL |
+| `mqc-sig-freshness-sec` | 300 | 10.6 | Cert-validity skew tolerance |
+| `mqc-revocation-policy` | `mandatory` | 11.5 | One of `mandatory` / `cache-only` / `disabled` |
+
+The defaults above are suitable for a single-host deployment
+serving on the order of 10² distinct identities.  See the cited
+sections for tuning guidance.
+
 ### 11.1. Timeouts
 
-An implementation SHOULD impose a total wall-clock deadline on the
-handshake (RECOMMENDED default: 30 seconds from TCP accept to
-handshake completion), and a per-read deadline on the data plane
-(RECOMMENDED default: 60 seconds).  Exceeding either deadline MUST
-cause the connection to be terminated.
+An implementation SHOULD impose a per-read deadline
+(`mqc-handshake-stall-sec`, RECOMMENDED 3 seconds) and a total
+wall-clock deadline (`mqc-handshake-total-sec`, RECOMMENDED 5
+seconds) on the handshake from TCP accept to handshake completion.
+A separate per-read deadline of approximately 60 seconds applies
+to the data plane.  Exceeding any deadline MUST cause the
+connection to be terminated.
+
+The handshake budgets are deliberately tight: a legitimate
+post-quantum handshake completes in under 200 ms on commodity
+hardware (median ~195 ms on a single-core 4 GHz x86 against a
+local server, per the reference implementation's perf snapshot).
+The 5-second total budget allows ample slack for slow links and
+modest server-side queue depth while denying an attacker the
+multi-minute stall windows that pre-Phase-1 drafts permitted.
 
 ### 11.2. Rate Limiting
 
@@ -1097,6 +1154,29 @@ Implementations MUST honor the operational parameter
 `disabled`.  On Linux deployments using the postWolf reference
 implementation this parameter is read from `/etc/postWolf/config`
 under the `[global]` section at process startup.
+
+### 11.6. Server Concurrency Cap
+
+A fork-per-connection server SHOULD cap the number of concurrent
+per-connection child processes via `mqc-max-children` (RECOMMENDED
+default: 20).  Before each `accept()`, the listener checks the
+active-child counter; if it is at or above the cap, the listener
+sleeps briefly (RECOMMENDED 1 second) and re-checks.  Children
+continue to run once spawned — only the *accept rate* is
+throttled, so bursts stretch out instead of fanning into hundreds
+of concurrent forks.
+
+This is a process-level resource cap distinct from the per-IP
+rate limits in Section 11.2: a single legitimate IP can drive
+many parallel connections, and the cap prevents that traffic
+pattern from exhausting host memory or process-table limits even
+when each individual connection is well-behaved.
+
+A thread-pool implementation SHOULD impose an equivalent cap on
+in-flight handshake worker threads.  An implementation that
+admits multiple concurrent handshakes per process (whether via
+threads or async I/O) MAY additionally cap total in-flight
+handshake-buffer memory directly (per Section 12.6).
 
 ---
 
@@ -1183,10 +1263,10 @@ WAF) is RECOMMENDED for production deployments.
 
 The strict-parsing rules in Section 5.2 are also load-bearing
 for DoS resistance: implementations MUST validate the byte
-length of every hex-encoded field (`kem_pub`, `signature`,
-encrypted-mode `encrypted`) against the exact size defined for
-that field by the chosen suite (Section 4) BEFORE invoking any
-cryptographic primitive on the field's contents.  Without this
+length of every hex-encoded field (`kem_pub`, `signature`)
+against the exact size defined for that field by the chosen
+suite (Section 4) BEFORE invoking any cryptographic primitive
+on the field's contents.  Without this
 guard, a 1-byte attacker payload of the right shape would still
 trigger a ~400 µs ML-DSA-87 verification — many orders of
 magnitude of asymmetric work per attack byte.  Rejections at

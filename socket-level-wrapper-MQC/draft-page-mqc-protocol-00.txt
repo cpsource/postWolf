@@ -159,16 +159,24 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    Handshake.  The initial bidirectional exchange that performs peer
    authentication and establishes the session key.
 
-   Session key.  A 32-byte AES-256-GCM key derived from the ML-KEM-768
-   shared secret via HKDF-SHA256.
-
-   Frame.  A single length-prefixed, AEAD-sealed unit on the wire after
-   the handshake completes.
+   Session key schedule.  The set of per-direction symmetric secrets
+   produced from the ML-KEM-768 shared secret and the handshake
+   transcript via HKDF-Extract+Expand (Section 8): two 32-byte
+   AES-256-GCM keys (data_c2s_key, data_s2c_key), two 12-byte IVs
+   (data_c2s_iv, data_s2c_iv), and two 32-byte HMAC-SHA256 keys for the
 
 Page, Ed.             Expires 23 October 2026                [Page 3]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
+
+   Finished frame (data_c2s_finished, data_s2c_finished).
+
+   Frame.  A single length-prefixed, AEAD-sealed unit on the wire after
+   the handshake completes.  The same wire shape applies to the Finished
+   frame and to all subsequent application-data frames; they are
+   distinguished cryptographically by the frame_type byte in their AEAD
+   AAD (Section 9.1.1).
 
 3. Protocol Overview
 
@@ -179,20 +187,28 @@ Internet-Draft          Merkle Quantum Connect          April 2026
              |  TCP connect to :mqc-port             |
              |------------------------------------->|
              |                                      |
-             |  ClientHello  (JSON)                  |
-             |  ─ ML-KEM-768 public key             |
-             |  ─ ML-DSA-87 signature over same     |
-             |  ─ MTC cert_index                    |
+             |  ClientHello  (JSON, plaintext)       |
+             |  ─ version / suite / mode             |
+             |  ─ ML-KEM-768 encapsulation key       |
+             |  ─ MTC cert_index                     |
+             |  ─ ML-DSA-87 sig over transcript hash |
              |------------------------------------->|
              |                                      |
-             |            ServerHello  (JSON)        |
+             |            ServerHello (JSON, plaintext)
+             |            ─ version / suite / mode   |
              |            ─ ML-KEM-768 ciphertext   |
-             |            ─ ML-DSA-87 signature     |
              |            ─ MTC cert_index          |
+             |            ─ ML-DSA-87 sig over txn hash
              |<-------------------------------------|
              |                                      |
-        HKDF-SHA256(shared_secret, "mqc-session-c2s") → 32-byte c2s_key
-        HKDF-SHA256(shared_secret, "mqc-session-s2c") → 32-byte s2c_key
+        Both peers compute transcript_hash_full and derive a
+        per-direction key schedule via HKDF-Extract+Expand
+        (Section 8): data_c2s_key, data_s2c_key, data_c2s_iv,
+        data_s2c_iv, data_c2s_finished, data_s2c_finished.
+             |                                      |
+             |   Finished frame (AEAD, both ways)   |
+             |<====== HMAC-SHA256(finished_key,    |
+             |        transcript_hash_full) =======>|
              |                                      |
              |  application data frames (both ways) |
              |<====== AES-256-GCM frames =========>|
@@ -204,6 +220,11 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    application needing multiplexing MUST layer that above MQC (for
    example, via HTTP/1.1 with Connection: close or a length- prefixed
    RPC framing).
+
+Page, Ed.             Expires 23 October 2026                [Page 4]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
 
 3.2. Identity Modes
 
@@ -220,33 +241,52 @@ Internet-Draft          Merkle Quantum Connect          April 2026
       authenticated.  This costs one additional round trip but denies an
       observer both endpoints' identities.
 
-
-Page, Ed.             Expires 23 October 2026                [Page 4]
-
-Internet-Draft          Merkle Quantum Connect          April 2026
-
-
 4. Cryptographic Primitives
 
    MQC uses the following primitives.  Implementations MUST NOT
    negotiate alternatives; the only negotiable knob in version 0 of this
-   protocol is the identity mode (Section 3.2), which is distinguished
-   by inspection (Section 7.1).
+   protocol is the identity mode (Section 3.2), which is declared
+   explicitly by the mode field (Section 5.2).
 
-   Role                                          Algorithm     Spec
+   Role           Algorithm                        Spec
 
-   KEM (ephemeral key establishment)             ML-KEM-768    [FIPS203]
+   KEM            ML-KEM-768                       [FIPS203]
+   (ephemeral
+   key establis
+   hment)
 
-   Signature (peer identity, handshake           ML-DSA-87     [FIPS204]
+   Signature      ML-DSA-87                        [FIPS204]
+   (peer
+   identity,
+   handshake
    binding)
 
-   Key derivation                                HKDF-SHA256   [RFC5869]
+   Key            HKDF-SHA256 (Extract + Expand)   [RFC5869]
+   derivation
 
-   Hash for HKDF and transcript                  SHA-256       [FIPS180]
+   Hash for       SHA-256                          [FIPS180]
+   HKDF salt
+   and
+   transcript
 
-   Bulk cipher                                   AES-256-GCM   [FIPS197]
+   Bulk cipher    AES-256-GCM                      [FIPS197]
 
-   Log cosigner                                  ML-DSA-87     [FIPS204]
+   Handshake-     HMAC-SHA256                      [FIPS180] + [RFC2104]
+   MAC +
+   Finished MAC
+
+   Log cosigner   ML-DSA-87                        [FIPS204]
+
+Page, Ed.             Expires 23 October 2026                [Page 5]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+   The version-0 suite is identified by the literal ASCII string
+   MQC_MLKEM768_MLDSA87_AES256GCM_SHA256 (referred to as SUITE below).
+   This identifier appears verbatim in the handshake suite field and a
+   SHA-256 hash of it is mixed into the transcript hash as SUITE_ID
+   (Section 6).
 
    Implementations MUST use a cryptographically secure RNG for all
    randomness (ML-KEM key generation, ML-KEM encapsulation randomness,
@@ -276,12 +316,6 @@ Internet-Draft          Merkle Quantum Connect          April 2026
       5.2).
    o  For data-plane frames, the payload is ct || tag where ct is the
       AES-256-GCM ciphertext and tag is the 16-byte GCM authentication
-
-Page, Ed.             Expires 23 October 2026                [Page 5]
-
-Internet-Draft          Merkle Quantum Connect          April 2026
-
-
       tag.  payload length equals len(plaintext) + 16.
 
    Receivers MUST reject a frame whose payload length exceeds the
@@ -298,28 +332,134 @@ Internet-Draft          Merkle Quantum Connect          April 2026
 
 5.2. Handshake JSON
 
+
+Page, Ed.             Expires 23 October 2026                [Page 6]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
    All handshake frames are JSON objects.  Byte-valued fields are
-   hex-encoded (lowercase, no separators).  The following fields are
-   defined:
+   hex-encoded (lowercase, no separators) with the exact byte length
+   given in the table.  The following fields are defined:
 
    Field        Type         Description
 
-   kem_pub      hex string   ML-KEM-768 encapsulation key
-                             (client→server) or ciphertext
-                             (server→client)
+   version      integer      Protocol version.  v0 of this spec uses 0.
+                             A receiver MUST reject any other value.
 
-   signature    hex string   ML-DSA-87 signature, see Section 10
+   suite        string       Suite identifier (Section 4).  v0 uses the
+                             literal
+                             "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256".  A
+                             receiver MUST reject any other value.
 
-   cert_index   integer      MTC log index of the signing identity
+   mode         string       Identity mode: "clear" or "encrypted".
+                             Bound into the transcript hash.
 
-   encrypted    hex string   AEAD-sealed identity blob (encrypted-
-                             identity mode only)
+   kem_pub      hex string   ML-KEM-768 encapsulation key (1184 B,
+                             client→server) or ciphertext (1088 B,
+                             server→client).
+
+   signature    hex string   ML-DSA-87 signature (4627 B), Section 6 /
+                             Section 10.2.
+
+   cert_index   integer      MTC log index of the signing identity.
+
+   Implementations MUST parse handshake JSON in strict mode and enforce
+   the following rules; failing any one MUST abort the handshake before
+   any cryptographic primitive is invoked on the field's contents:
+
+   o  No parser extensions. Reject comments, leading zeros on numbers,
+      single-quoted strings, unquoted keys, and trailing commas (these
+      are common parser extensions but not JSON).
+   o  No trailing bytes. Reject any bytes past the first complete
+      top-level object — even whitespace.  The parsed length MUST equal
+      the consumed length.
+   o  Valid UTF-8. Reject malformed UTF-8 in any string value.
+   o  Each defined field exactly once. Reject any object in which a
+      defined field appears zero times or more than once. The receiver
+      MUST detect duplication on the raw JSON bytes, not on the parsed
+      object — most JSON parsers silently keep the last value when a key
+      repeats, so a parser-only check would miss the smuggling case
+      where a signer serialised the FIRST occurrence and a verifier
+      parses the LAST.
+   o  No unknown top-level fields. v0 has no extension registry; any key
+      not listed in the table above MUST cause the handshake to be
+      rejected.
+   o  Hex fields: lowercase, no separators, exact length. The hex string
+      for kem_pub and signature MUST contain only characters [0-9a-f],
+      MUST contain no separators, and MUST decode to exactly the byte
+
+Page, Ed.             Expires 23 October 2026                [Page 7]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+      length defined for the field by the chosen suite (1184 bytes for
+      the ML-KEM-768 public key, 1088 bytes for the ML-KEM-768
+      ciphertext, 4627 bytes for the ML-DSA-87 signature).
+   o  Integer fields: bounded. version MUST equal the protocol version;
+      cert_index MUST be a non-negative integer that fits in int32.
+      Implementations MUST reject overflow rather than saturating to
+      INT_MAX (some JSON libraries silently saturate; see Section
+      12.10).
 
    An implementation SHOULD serialize the JSON compactly (no whitespace)
    to keep the payload length predictable, but MUST NOT reject a peer's
-   JSON solely for containing whitespace.
+   JSON solely for containing whitespace between tokens.
 
 6. Handshake (clear-identity mode)
+
+6.0. Transcript Construction
+
+   Both ML-DSA signatures and the HKDF-Extract salt (Section 8) are
+   computed over a transcript hash, never directly over a single field.
+   Two SHA-256 inputs are defined; they share a common prefix and differ
+   only by an optional 6-byte role tag.
+
+   LABEL     = "mqc-hndshk/v1\n\x00" (16 bytes; the 16th byte is the
+   explicit \x00, NOT the terminating C-string NUL).
+
+   SUITE_ID  = SHA-256 of the literal ASCII suite string from Section 4
+   (32 bytes).
+
+   MODE_ID   = 0x00 for clear-identity, 0x01 for encrypted- identity.
+
+   ROLE      = "client" (6 bytes) or "server" (6 bytes).
+
+   For the transcript hash for signatures (one peer per role):
+
+   transcript_hash_sig(role) = SHA-256(
+       LABEL                                      (16 bytes)
+    || u8(version)                                (1 byte; v0 = 0)
+    || u8(MODE_ID)                                (1 byte)
+    || SUITE_ID                                   (32 bytes)
+    || u32be(len(EK_c)) || EK_c                   (variable)
+    || u32be(len(CT_s)) || CT_s                   (variable;
+                                                   len=0 if not yet
+                                                   known by signer)
+    || s32be(C_c)                                 (4 bytes; 0 if
+                                                   not yet known)
+    || s32be(C_s)                                 (4 bytes; 0 if
+                                                   not yet known)
+    || ROLE                                       (6 bytes))
+
+   For the transcript hash for HKDF-Extract salt (Section 8): the same
+
+Page, Ed.             Expires 23 October 2026                [Page 8]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+   input MINUS the final 6-byte ROLE tag.  Both peers compute the
+   identical input.
+
+   ML-DSA-87 signatures cover transcript_hash_sig(role) with the context
+   label set to LABEL (16 bytes) — i.e., the call is
+   wc_dilithium_sign_ctx_msg(LABEL, 16, transcript_hash_sig(role), 32,
+   ...).  Verification uses the matching wc_dilithium_verify_ctx_msg.
+   The context label provides domain separation between MQC handshake
+   signatures and any other ML-DSA signature the same identity key might
+   ever produce.
 
 6.1. Client → Server
 
@@ -327,154 +467,291 @@ Internet-Draft          Merkle Quantum Connect          April 2026
 
    1. Generates an ephemeral ML-KEM-768 keypair.  Let EK_c be the
    encoded public (encapsulation) key and DK_c the decoded secret
-   (decapsulation) key. 2. Signs EK_c under its long-term ML-DSA-87
-   private key, yielding signature Sig_c. 3. Sends one handshake frame
-   containing the JSON:
+   (decapsulation) key. 2. Computes transcript_hash_sig(role="client")
+   per Section 6.0 with (EK_c, len=1184; CT_s, len=0; C_s=0) — the
+   client does not yet know the server's cert_index or the ML-KEM
+   ciphertext. 3. Signs that hash under its long-term ML-DSA-87 private
+   key with the LABEL context, yielding signature Sig_c. 4. Sends one
+   handshake frame containing the JSON:
 
    {
-
-Page, Ed.             Expires 23 October 2026                [Page 6]
-
-Internet-Draft          Merkle Quantum Connect          April 2026
-
-
+     "version":    0,
+     "suite":      "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+     "mode":       "clear",
      "kem_pub":    "<hex(EK_c)>",
-     "signature":  "<hex(Sig_c)>",
-     "cert_index": <int C_c>
+     "cert_index": <int C_c>,
+     "signature":  "<hex(Sig_c)>"
    }
 
 6.2. Server → Client
 
    The server, upon receiving the client's handshake frame:
 
-   1. Hex-decodes EK_c and Sig_c; parses C_c.
-   2. Retrieves the MTC certificate at index C_c (see Section 10)
-   and extracts its ML-DSA-87 public key PK_c. 3. Verifies Sig_c =
-   MLDSA-Verify(PK_c, EK_c).  If verification fails, the server MUST
-   disconnect and SHOULD record the failure. 4. Performs ML-KEM-768
-   encapsulation against EK_c, producing ciphertext CT_s and shared
-   secret SS. 5. Signs CT_s under its long-term ML-DSA-87 private key,
-   yielding signature Sig_s. 6. Sends a handshake frame containing:
+   1. Strict-parses the JSON (Section 5.2); rejects on any field
+   mismatch (version != 0, suite != SUITE, mode != "clear", wrong hex
+   length on kem_pub / signature). 2. Retrieves the MTC certificate at
+   index C_c (see Section 10) and extracts its ML-DSA-87 public key
+   PK_c. 3. Recomputes transcript_hash_sig(role="client") with the
+   server's just-parsed view of the client fields and (CT_s, len=0;
+   C_s=0).  Verifies Sig_c against this hash with ctx=LABEL.  Failure →
+   disconnect. 4. Performs ML-KEM-768 encapsulation against EK_c,
+   producing ciphertext CT_s and shared secret SS. 5. Computes
+   transcript_hash_sig(role="server") per Section 6.0 with (EK_c,
+   len=1184; CT_s, len=1088; C_c, C_s) — both cert_index values now
+   populated. 6. Signs that hash with ctx=LABEL, yielding Sig_s. 7.
+   Sends a handshake frame:
+
+Page, Ed.             Expires 23 October 2026                [Page 9]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
 
    {
+     "version":    0,
+     "suite":      "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+     "mode":       "clear",
      "kem_pub":    "<hex(CT_s)>",
-     "signature":  "<hex(Sig_s)>",
-     "cert_index": <int C_s>
+     "cert_index": <int C_s>,
+     "signature":  "<hex(Sig_s)>"
    }
 
 6.3. Client Key Derivation
 
    The client, upon receiving the server's handshake frame:
 
-   1. Hex-decodes CT_s and Sig_s; parses C_s.
+   1. Strict-parses the JSON; rejects on field mismatch.
    2. Retrieves the MTC certificate at index C_s and extracts its
-   ML-DSA-87 public key PK_s. 3. Verifies Sig_s = MLDSA-Verify(PK_s,
-   CT_s). 4. Decapsulates SS = MLKEM-Decap(DK_c, CT_s). 5. Derives the
-   session key (Section 8).
+   ML-DSA-87 public key PK_s. 3. Recomputes
+   transcript_hash_sig(role="server") with both cert_index values
+   populated.  Verifies Sig_s against this hash with ctx=LABEL.  Failure
+   → disconnect. 4. Decapsulates SS = MLKEM-Decap(DK_c, CT_s). 5.
+   Derives the session key set (Section 8). 6. Sends its Finished frame
+   and verifies the peer's Finished frame (Section 8.1) before the
+   handshake is considered complete.
 
-   At this point both parties share SS and derive the same 32-byte
-   AES-256-GCM session key.  The handshake is complete.
+   After a successful Finished exchange both parties share identical
+   data_c2s_key / data_s2c_key / data_c2s_iv / data_s2c_iv and the
+   connection is ready for application data.
 
    Upon handshake completion each endpoint MUST zeroize its ephemeral
-   ML-KEM private key material and any intermediate shared- secret
-   buffers that are not required post-handshake.
+   ML-KEM private key material and any intermediate shared-secret
+   buffers that are not required post-handshake, including the Finished
+   MAC keys (which are consumed exactly once each).
 
 7. Handshake (encrypted-identity mode)
 
    Encrypted-identity mode hides both cert_index values from a passive
    observer at the cost of one additional round trip.
 
-7.1. Distinguishing the Mode
+   > Implementation status note (informative). The reference >
+   implementation in socket-level-wrapper-MQC/mqc.c ships >
+   encrypted-identity entry points (mqc_connect_encrypted and >
+   mqc_accept_encrypted) as stubs that return failure with a > clear log
+   line.  No production caller in the postWolf tree > exercises
+   encrypted mode; every MQC client uses > mqc_connect (clear).
+   Restoring the encrypted-mode handshake > with the post-Phase-1
+   transcript / HKDF-Extract+Expand / > Finished / AAD architecture is
+   tracked under > mqc-master.plan Phase 7.  The wire-format and
+   cryptographic > requirements below are normative; implementations
+   MUST > implement them if they offer encrypted mode at all.
 
-   The client selects the mode.  The server distinguishes the two modes
-   by inspecting the first handshake frame: if the JSON contains a
 
-Page, Ed.             Expires 23 October 2026                [Page 7]
+
+Page, Ed.             Expires 23 October 2026               [Page 10]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
-   cert_index field, the mode is clear-identity; if not, the mode is
-   encrypted-identity.
+7.1. Distinguishing the Mode
+
+   The client selects the mode and declares it explicitly via the mode
+   JSON field (Section 5.2).  Receivers MUST use this field rather than
+   infer mode from the presence or absence of other fields, and MUST
+   reject a frame whose mode value contradicts its JSON shape (e.g.,
+   mode="clear" with no cert_index, or mode="encrypted" with cert_index
+   present).
 
 7.2. Encrypted-Identity ClientHello
 
-   The client sends a first frame containing only:
+   The client sends a first plaintext frame containing only the mode
+   markers and its ML-KEM public key — no identity, no signature:
 
    {
-     "kem_pub": "<hex(EK_c)>"
+     "version":  0,
+     "suite":    "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+     "mode":     "encrypted",
+     "kem_pub":  "<hex(EK_c)>"
    }
-
-   Note the absence of cert_index and signature.
 
 7.3. Encrypted-Identity ServerHello
 
-   The server derives a preliminary AEAD key from SS (Section 8) and
-   sends a frame whose JSON contains:
+   The server replies with a parallel plaintext frame carrying CT_s.  No
+   signature accompanies this frame; the server cannot yet sign the full
+   transcript because it does not know C_c.
 
    {
-     "kem_pub":   "<hex(CT_s)>",
-     "encrypted": "<hex(AEAD-Seal(k, nonce=0, identity_s))>"
+     "version":  0,
+     "suite":    "MQC_MLKEM768_MLDSA87_AES256GCM_SHA256",
+     "mode":     "encrypted",
+     "kem_pub":  "<hex(CT_s)>"
    }
 
-   where identity_s is a nested JSON object {"cert_index": C_s,
-   "signature": Sig_s} serialized to UTF-8.  The AEAD key for this
-   server→client frame is s2c_key, derived from SS via HKDF as in
-   Section 8.  The nonce is eight bytes of zero in the counter region
-   (Section 9.2) and is consumed exactly once on s2c_key.
+   After this exchange both peers compute the phase-1 transcript hash
+   (per Section 6.0 with C_c=C_s=0) and derive early_secret =
+   HKDF-Extract(salt=transcript_hash_phase1, IKM=SS).  HKDF-Expand on
+   early_secret produces early_c2s_key, early_s2c_key, early_c2s_iv,
+   early_s2c_iv — used to seal the phase-2 identity frames only.
 
-7.4. Encrypted-Identity Client Identity
+7.4. Encrypted-Identity Phase 2 (Client → Server)
 
-   After completing key establishment and verifying the server's
-   signature (as in Section 6.3), the client sends a second, AEAD-sealed
-   frame:
+   The client signs the full transcript hash
+   (transcript_hash_sig(role="client") per Section 6.0) with its own
+   cert_index populated and C_s=0 (still unknown), then seals the
+   resulting {cert_index, signature} JSON object with early_c2s_key /
+   early_c2s_iv at sequence 0:
 
-   {
-     "encrypted": "<hex(AEAD-Seal(c2s_key, nonce=0, identity_c))>"
-   }
+   AEAD-Seal(early_c2s_key, nonce(early_c2s_iv, 0),
+             aad(C2S, PHASE2_IDENTITY, 0, plaintext_len),
 
-   where identity_c = {"cert_index": C_c, "signature":
-   MLDSA-Sign(EK_c)}.  This frame is sealed with c2s_key, an independent
-   key from §7.3's s2c_key; both directions may use nonce counter 0
-   because the keys differ.
-
-7.5. Sequence Starts After Identity Frames
-
-   Each direction's nonce counter advances independently because each
-   direction has its own key.  In encrypted-identity mode each side has
-   consumed nonce 0 on its respective key (one frame), so the first
-   data-plane frame in either direction MUST use nonce counter 1
-
-Page, Ed.             Expires 23 October 2026                [Page 8]
+Page, Ed.             Expires 23 October 2026               [Page 11]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
-   (Section 9.2).  In clear-identity mode no AEAD frames were exchanged
-   during handshake, so each direction's data-plane counter begins at 0.
+             {"cert_index": C_c, "signature": Sig_c})
+
+7.5. Encrypted-Identity Phase 2 (Server → Client)
+
+   After receiving and verifying the client's phase-2 frame, the server
+   now knows C_c.  It computes transcript_hash_sig(role="server") with
+   both cert_index values populated, signs it, and seals the
+   {cert_index, signature} blob with early_s2c_key / early_s2c_iv at
+   sequence 0.
+
+   This 4-frame total (CH plaintext + SH plaintext + client
+   encrypted-identity + server encrypted-identity) is one round trip
+   more than clear mode.  After phase 2 both peers compute the full
+   transcript hash, derive data_secret =
+   HKDF-Extract(salt=transcript_hash_full, IKM=SS), and proceed to the
+   Finished exchange (Section 8.1) and data plane.
+
+7.6. Sequence Numbering
+
+   Across both modes the data-plane sequence counter starts at 1 in each
+   direction, because the Finished frame (Section 8.1) consumed sequence
+   0.  This contract is uniform regardless of mode.
 
 8. Key Derivation
 
-   Both modes derive two 32-byte AES-256-GCM session keys from the
-   ML-KEM-768 shared secret — one per direction:
+   Key derivation in v0 uses HKDF-SHA256 in its full Extract + Expand
+   form (RFC 5869).  The salt for HKDF-Extract is the transcript hash
+   (Section 6.0, KDF variant — no role tag), so all derived material is
+   bound to every byte both peers exchanged.  This goes beyond
+   TLS-1.3-style transcript binding by including the cert_index of both
+   peers and the suite identifier in the salt.
 
-    c2s_key = HKDF-SHA256(
-                IKM      = SS,                       // 32 bytes
-                salt     = <empty>,                  // zero-length
-                info     = "mqc-session-c2s",        // ASCII, 15 bytes
-                L        = 32)
+   Two derivation contexts exist; they share IKM = SS (the 32-byte
+   ML-KEM-768 shared secret) and differ by salt:
 
-    s2c_key = HKDF-SHA256(
-                IKM      = SS,
-                salt     = <empty>,
-                info     = "mqc-session-s2c",        // ASCII, 15 bytes
-                L        = 32)
+    data_secret  = HKDF-Extract(SHA-256,
+                       salt = transcript_hash_full,
+                       IKM  = SS)
 
-   c2s_key encrypts every client→server frame; s2c_key encrypts every
-   server→client frame.  Each direction maintains its own nonce counter
-   (Section 9.2).  Per-direction keys eliminate the possibility of (key,
-   nonce) pair reuse across directions, which under AES-256-GCM would
-   leak both plaintexts and the GHASH authentication key.
+    early_secret = HKDF-Extract(SHA-256,
+                       salt = transcript_hash_phase1,
+                       IKM  = SS)             [encrypted mode only]
+
+   transcript_hash_full is the KDF-variant transcript with both
+   cert_index values populated — known to both peers after clear-mode
+   ServerHello or after encrypted-mode phase 2. transcript_hash_phase1
+   is the KDF-variant transcript with C_c=C_s=0 — known after
+   encrypted-mode plaintext exchange, needed to seal the phase-2
+   identity frames.
+
+
+Page, Ed.             Expires 23 October 2026               [Page 12]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+   Per-direction keys, IVs, and Finished MAC keys are produced by
+   HKDF-Expand off the appropriate PRK.  All info strings are
+   deployment-stable ASCII literals containing the version and suite
+   identifier so a peer cannot accidentally agree on key material across
+   protocol versions:
+
+    /* Convention: "mqc/v0/<SUITE>/<purpose>" where SUITE is the full
+       suite identifier from Section 4.  Abbreviated as "..." below
+       after the first occurrence. */
+    data_c2s_key      = HKDF-Expand(SHA-256, data_secret,
+        info = "mqc/v0/MQC_MLKEM768_MLDSA87_AES256GCM_SHA256"
+               "/data-c2s-key",                              L = 32)
+    data_s2c_key      = HKDF-Expand(SHA-256, data_secret,
+        info = "mqc/v0/.../data-s2c-key",                L = 32)
+    data_c2s_iv       = HKDF-Expand(SHA-256, data_secret,
+        info = "mqc/v0/.../data-c2s-iv",                 L = 12)
+    data_s2c_iv       = HKDF-Expand(SHA-256, data_secret,
+        info = "mqc/v0/.../data-s2c-iv",                 L = 12)
+    data_c2s_finished = HKDF-Expand(SHA-256, data_secret,
+        info = "mqc/v0/.../data-c2s-finished",           L = 32)
+    data_s2c_finished = HKDF-Expand(SHA-256, data_secret,
+        info = "mqc/v0/.../data-s2c-finished",           L = 32)
+
+   In encrypted-identity mode an additional four outputs come from
+   early_secret (info strings early-c2s-key, early-s2c-key,
+   early-c2s-iv, early-s2c-iv).  These are used only to seal the two
+   phase-2 identity frames and MUST NOT appear in any other frame.
+
+   data_c2s_key encrypts every client→server data-plane frame (Section
+   9.1); data_s2c_key every server→client frame. Per-direction keys
+   eliminate (key, nonce) pair reuse across directions — a property
+   AES-256-GCM requires for confidentiality and tag unforgeability.
+
+   Implementations MUST zeroize the PRK (data_secret, early_secret)
+   after expansion completes.
+
+8.1. Finished Frame
+
+   After each peer derives the data-plane key set above (and verifies
+   the peer's handshake signature), it sends a Finished frame as the
+   first AEAD-sealed frame in its sending direction and verifies the
+   peer's Finished frame before allowing any application data to flow.
+
+   The Finished frame uses the same wire format as a data-plane frame
+   (Section 9.1).  It is sealed with data_<role>_key and data_<role>_iv
+   at sequence number 0; its 31-byte AAD (Section 9.1.1) carries
+   frame_type = 0x02 (Finished) and plaintext_length = 32.  The
+   plaintext is exactly 32 bytes:
+
+    finished_mac = HMAC-SHA256(
+
+Page, Ed.             Expires 23 October 2026               [Page 13]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+                       key = data_<role>_finished,
+                       msg = transcript_hash_full)
+
+   A receiver MUST:
+
+   1. AEAD-decrypt the first frame in each direction at sequence 0.
+   Failure → terminate (this surfaces as "wrong key" — distinct from MAC
+   failure). 2. Assert plaintext length is exactly MQC_FINISHED_MAC_SZ
+   (32 bytes).  Mismatch → terminate. 3. Recompute the expected MAC
+   using its local copy of data_<sender_role>_finished and
+   transcript_hash_full. 4. Constant-time compare received vs expected.
+   Mismatch → terminate. 5. Mark the connection as Finished-verified.
+   The next frame on the same key/IV is the first application frame at
+   sequence 1.
+
+   Each Finished MAC key is consumed exactly once (one MAC computation)
+   and MUST be zeroized after use.
+
+   The Finished MAC defends against transcript-construction divergence
+   between honest peers and against on-path tampering of bytes outside
+   the signature transcript that the receiver nevertheless hashes into
+   its own transcript_hash_full.  See Section 12.7.
 
 9. Data Plane
 
@@ -487,49 +764,98 @@ Internet-Draft          Merkle Quantum Connect          April 2026
       AES-256-GCM ciphertext of the application plaintext and tag is the
       16-byte authentication tag.
 
-   No additional headers are inserted between the length prefix and the
-   AEAD output.
+   No additional headers are inserted on the wire between the length
+   prefix and the AEAD output.  Frame metadata (direction, type,
+   sequence, plaintext length, version) is bound into the AEAD AAD
+   (Section 9.1.1) rather than emitted as a separate header.
 
-9.2. Nonce Construction
+9.1.1. AEAD AAD
 
-   Each endpoint maintains two 64-bit unsigned counters:
+   Every AEAD-sealed frame on an MQC connection (phase-2 identity blobs
+   in encrypted mode, the Finished frame, every application data frame)
+   is sealed with a fixed 31-byte AAD:
 
-   o  send_seq, initialized at 0 (clear-identity mode) or 1
-      (encrypted-identity mode, Section 7.5).
-   o  recv_seq, initialized at the same value as send_seq.
+   AAD = LABEL                       (16 bytes "mqc-frame/v01\n\x00")
+      || u8(version)                 (1 byte; v0 = 0)
+      || u8(direction)               (1 byte; 0 = c2s, 1 = s2c)
+      || u8(frame_type)              (1 byte; see below)
+      || u64be(sequence)             (8 bytes)
 
-   To send a frame, an endpoint forms a 12-byte GCM nonce:
-
-
-Page, Ed.             Expires 23 October 2026                [Page 9]
+Page, Ed.             Expires 23 October 2026               [Page 14]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
-      nonce[0..4]   = 0x00 0x00 0x00 0x00    (reserved zeros)
-      nonce[4..12]  = htobe64(send_seq)       (8-byte big-endian)
+      || u32be(plaintext_length)     (4 bytes)
 
-   and encrypts with:
+   LABEL is "mqc-frame/v01\n\x00" — 16 bytes including the implicit
+   terminating NUL appended by C's string-literal storage. The /v01 is
+   the AAD-format version, NOT the protocol version; it would be bumped
+   only if the AAD bytes themselves changed.
 
-      (ct, tag) = AES-256-GCM-Seal(
-                      key = K_send,
-                      nonce = nonce,
-                      aad = <empty>,
-                      plaintext = application_payload)
+   direction is the direction of the frame on the wire from the sender's
+   point of view: client→server frames carry 0x00 in AAD on both peers;
+   server→client frames carry 0x01.
 
-   where K_send is c2s_key on the client and s2c_key on the server
-   (Section 8).  It then increments send_seq by one.
+   frame_type distinguishes the three AEAD-sealed wire contexts:
 
-   To receive a frame, an endpoint uses recv_seq to form the nonce in
-   the same way and decrypts with K_recv — s2c_key on the client,
-   c2s_key on the server — then increments recv_seq on success.  A
-   decryption failure MUST cause the connection to be terminated; the
-   endpoint SHOULD record the failure for rate-limiting (Section 11.2).
+   Value   Meaning                                Keys used     Sequence
 
-   Direction separation is enforced by the per-direction key, not by the
-   nonce.  Endpoint counters may collide (both sides at send_seq = N
-   simultaneously) without consequence: an AES-GCM collision requires
-   the same (key, nonce) pair, and the keys differ.
+   0x01    Phase-2 identity frame (encrypted      early_*_key   0
+           mode)
+
+   0x02    Finished frame                         data_*_key    0
+
+   0x03    Application data frame                 data_*_key    ≥ 1
+
+   plaintext_length is the byte length of the plaintext that will be
+   sealed (i.e., the on-wire payload length minus the 16-byte GCM tag).
+   Length-prefix tampering becomes immediate AEAD failure: a receiver
+   that read a tampered prefix builds AAD with the on-wire length, which
+   differs from what the honest sender computed; the GCM tag
+   verification fails on the next byte.
+
+9.2. Nonce Construction
+
+   Per-direction IVs derived in Section 8 (data_<role>_iv,
+   early_<role>_iv) drive the per-frame nonce via TLS-1.3 §5.3
+   construction:
+
+   nonce = iv  XOR  (0x00 0x00 0x00 0x00 || htobe64(seq))
+
+   The 4-byte zero prefix and 8-byte big-endian sequence form a 12-byte
+   mask; the 12-byte IV is XOR'd with the mask to produce the GCM nonce.
+   Per-direction IVs make the on-wire nonce unpredictable across
+   connections (the IV byte-prefix is per- connection secret material),
+   eliminating any nonce-prediction analysis surface.
+
+   Each endpoint maintains two 64-bit unsigned sequence counters,
+   send_seq and recv_seq.  Both initialize to 0 immediately after key
+   derivation, are consumed (set to 1) by the Finished frame in each
+   direction (Section 8.1), and proceed to 2, 3, ... for application
+   data.  Application data therefore begins at sequence 1 in both
+   directions and in both modes.
+
+
+Page, Ed.             Expires 23 October 2026               [Page 15]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+   A send operation forms the nonce, AEAD-seals (plaintext, AAD =
+   mqc_build_aad(direction, frame_type, send_seq, len(plaintext))),
+   increments send_seq, and writes the frame.  A receive operation reads
+   the frame, forms the nonce from recv_iv and recv_seq, AEAD-decrypts
+   with the matching AAD, increments recv_seq on success.
+
+   A decryption failure (AEAD tag mismatch, AAD mismatch, length ceiling
+   exceeded) MUST cause the connection to be terminated; the endpoint
+   SHOULD record the failure for rate-limiting (Section 11.2).
+
+   Direction separation is enforced by the per-direction key; the
+   per-direction IV is a defense-in-depth bonus that makes nonces
+   unguessable.  AES-GCM collision requires the same (key, nonce) pair,
+   and per-direction keys ensure the keys always differ.
 
 9.3. No Reordering or Omission
 
@@ -548,30 +874,88 @@ Internet-Draft          Merkle Quantum Connect          April 2026
 10.1. MTC Certificate Retrieval
 
    Given cert_index, the verifier retrieves the full MTC certificate.
+   The retrieval transport (HTTP, MQC, or a local filesystem cache) MUST
+   NOT be relied on for trust.  The verifier MUST perform every check in
+   §10.2 through §10.6 on the bytes the transport returns, regardless of
+   source; a cert that fails any of those checks MUST be rejected even
+   if the transport reported success.
+
    Implementations SHOULD cache verified certificates locally to avoid
    repeated log queries; a typical cache structure stores one file per
    cert_index under a path such as
-   ~/.TPM/peers/<index>/certificate.json.
+   ~/.TPM/peers/<index>/certificate.json.  Cache entries MUST be
+   invalidated when the cosigner key rotates: a cached cert was verified
+   under the cosigner key in effect at cache-write time, and a key
+   rotation (e.g., via admin_recosign in the postWolf reference
+   implementation) means subsequent cosignature checks against the new
+   key would fail.  The reference implementation stores
+   ~/.TPM/peers/<index>/cosigner-fp.hex alongside each cached cert
+   (lowercase hex SHA-256 of the cosigner pubkey at verification time)
+   and treats a fingerprint mismatch as a cache miss, triggering a
+
+Page, Ed.             Expires 23 October 2026               [Page 16]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+   re-fetch + re-verify under the current cosigner.
 
    Retrieval MAY be performed over the same MQC connection if the peer
    is the log itself, or out of band via HTTP against a known
    log-service URL.
 
-Page, Ed.             Expires 23 October 2026               [Page 10]
-
-Internet-Draft          Merkle Quantum Connect          April 2026
-
-
 10.2. ML-DSA-87 Signature on the Handshake
 
    The verifier extracts the ML-DSA-87 public key from the retrieved
    certificate and verifies that signature in the handshake frame is a
-   valid ML-DSA-87 signature, under that public key, over:
+   valid ML-DSA-87 signature under that public key, with the context
+   label LABEL = "mqc-hndshk/v1\n\x00" (16 bytes), over the transcript
+   hash for the appropriate role (Section 6.0):
 
-   o  the sender's kem_pub field value (the ML-KEM-768 encapsulation key
-      for the client; the ML-KEM-768 ciphertext for the server).
+   verified = MLDSA-Verify-CtxMsg(
+                  pk      = peer_PK,
+                  ctx     = LABEL,                  /* 16 bytes */
+                  ctx_len = 16,
+                  msg     = transcript_hash_sig(role),
+                  msg_len = 32,                     /* SHA-256 */
+                  sig     = signature)
 
-   This binds the ephemeral KEM exchange to the long-term identity.
+   The transcript hash binds:
+
+   o  the protocol version (u8(version));
+   o  the suite identifier (SUITE_ID = SHA-256(SUITE));
+   o  the identity mode (u8(MODE_ID));
+   o  both peers' ML-KEM contributions (EK_c, CT_s, with explicit
+      byte-length prefixes — len=0 if not yet known by the signer);
+   o  both peers' cert_index values (s32be(C_c), s32be(C_s) — 0 if not
+      yet known by the signer);
+   o  the role tag ("client" or "server", 6 bytes).
+
+   Together with the ML-DSA ctx label, this provides cryptographic
+   domain separation against any other use of the same identity key and
+   prevents:
+
+   o  identity-substitution attacks (the peer's cert_index is signed);
+   o  KEM-share substitution (both ML-KEM values are signed);
+   o  cross-protocol replay (the LABEL ctx and LABEL prefix in the
+      message guarantee a different signed bytestring);
+   o  mode confusion (the mode_id byte is signed);
+   o  role confusion (the role tag distinguishes a client signature from
+      a server signature on otherwise-identical data).
+
+   The asymmetry in the "knowledge available at signing time" — client
+   signs with C_s = 0 and len(CT_s) = 0 because the client doesn't yet
+   know those — is intentional.  The server signs with everything
+   populated, which closes Unknown Key Share in the client→server
+   direction.  A "Finished" MAC over the full transcript (Section 8.1)
+
+Page, Ed.             Expires 23 October 2026               [Page 17]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+   closes the residual asymmetry by committing both peers to their view
+   of the same transcript at handshake completion.
 
 10.3. Merkle Inclusion Proof
 
@@ -603,33 +987,220 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    verifies the ML-DSA-87 signature against the log's known ML-DSA-87
    public key (2592 bytes, raw encoding).  The signature is 4627 bytes.
    The verification uses wc_dilithium_verify_ctx_msg with an empty
-   context (ctx = NULL, ctxLen = 0), matching the handshake-signature
-   call in Section 6.
+   context (ctx = NULL, ctxLen = 0).  Note that this differs from the
+   handshake-signature call in Section 6 / Section 10.2, which uses the
+   16-byte LABEL as the ctx — the in-message label
+   "mtc-subtree/v1\n\x00" provides the cosignature's domain separation,
+   so a separate ctx is unnecessary.
 
 10.5. Revocation
 
-   For each verified peer, the verifier MAY query a log endpoint for the
-   revocation status of cert_index.  A positive revocation answer MUST
-   cause the handshake to be aborted.  Implementations SHOULD cache
-   negative ("not revoked") answers for a bounded TTL (a default of 24
+   For each verified peer, the verifier MUST query a log endpoint for
+   the revocation status of cert_index unless a non-expired cache entry
+   covers that index.  A positive revocation answer MUST cause the
+   handshake to be aborted.  Implementations MAY cache negative ("not
+   revoked") answers for a bounded TTL (default 24 hours; tunable via
+   the mqc-revoked-cache-ttl-sec operational parameter, Section 11).
 
-Page, Ed.             Expires 23 October 2026               [Page 11]
+   Implementations MUST treat a query failure (network error, HTTP
+   error, malformed response, invalid signature on the response) as
+
+Page, Ed.             Expires 23 October 2026               [Page 18]
 
 Internet-Draft          Merkle Quantum Connect          April 2026
 
 
-   hours is RECOMMENDED); see Section 12 for the implications of
-   caching.
+   equivalent to an unknown revocation status: the handshake MUST be
+   aborted.  This is the fail-closed default.
+
+   Both peers — the initiator and the acceptor — MUST apply this check
+   to the other party's cert_index.  Earlier revisions of this protocol
+   applied the check only on the acceptor side; that asymmetry is
+   removed in v0 because a client connecting to a revoked server is the
+   case that warrants the most caution (the client is about to disclose
+   application data to whatever identity the server presents).
+
+   An operator MAY opt out of the strict policy by setting the
+   operational parameter mqc-revocation-policy (Section 11) to one of:
+
+   o  mandatory (the default behavior described above);
+   o  cache-only — trust the cache, abort on cache miss; never touches
+      the network.  Useful during planned log-endpoint maintenance
+      windows where caches are still valid;
+   o  disabled — skip revocation entirely.  Implementations selecting
+      this MUST log a warning at process startup indicating that
+      revocation enforcement is disabled.  This setting is intended only
+      for emergency recovery (catastrophic log loss) and MUST NOT be the
+      steady-state operational mode.
+
+10.6. Validity Window
+
+   Each MTC certificate carries not_before and not_after Unix-epoch
+   timestamps in its tbs_entry.  The verifier MUST require both fields
+   and MUST reject the cert if:
+
+   o  either field is missing or zero (a malformed cert that the
+      verifier cannot bound), or
+   o  the verifier's clock indicates now < not_before - skew (the cert
+      is not yet valid), or
+   o  the verifier's clock indicates now > not_after + skew (the cert
+      has expired).
+
+   skew is the operational parameter mqc-sig-freshness-sec (Section 11;
+   default 300 s).  This tolerance accommodates peers with modest NTP
+   drift without indefinitely accepting expired certs.  Implementations
+   SHOULD log distinct CERT_NOT_YET_VALID and CERT_EXPIRED lines (rather
+   than a generic "validity failed") so an operator can tell which clock
+   is wrong.
+
+10.7. Expected-Identity Check
+
+   The cryptographic checks in 10.1–10.6 prove that the peer holds the
+   private key bound to a verified, in-log, unrevoked, and
+   currently-valid certificate.  They do NOT prove that the verified
+   certificate names the identity the caller intended to talk to.
+   Without an expected-identity check, a hostile name resolver (DNS,
+
+Page, Ed.             Expires 23 October 2026               [Page 19]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+   hosts file, configuration error, or a cert_index supplied by an
+   attacker-controlled lookup) can route the connection to a DIFFERENT
+   in-log identity that satisfies every cryptographic check while not
+   being the party the caller meant to reach.
+
+   A client implementation MUST perform an expected-identity check after
+   10.1–10.6 succeed, on the verified subject string from the cert's
+   tbs_entry.subject field.  The expected name SHOULD be derived from
+   the hostname the caller dialed; the API MUST also expose a way to set
+   it explicitly (for callers that dial by IP or use a non-DNS routing
+   indirection) and a way to disable the check (for callers with an
+   out-of-band reason to trust the peer index, e.g. a log-replication or
+   admin tool).
+
+   The match rule is case-insensitive throughout, and accepts:
+
+   o  exact match (subject == expected); or
+   o  prefix match where subject begins with <expected> + "-".
+
+   The prefix rule covers the postWolf naming convention in which a
+   single domain owner runs an unbounded set of identities sharing a
+   common DNS prefix (<dns>, <dns>-ca, <dns>-<label>).  No wildcards are
+   accepted.  The rule operates on the verified-from-the-log subject
+   only; it MUST NOT consult DNS, system resolvers, or any source other
+   than the cert itself.
+
+   If the caller dialed an IP address literal and has not supplied an
+   explicit expected name, the implementation MUST fail the connection
+   with a clear NAME_CHECK_FAILED diagnostic — an IP names a location,
+   not an MTC subject, so no meaningful expected identity can be derived
+   from the dial target.  Implementations SHOULD log a distinct
+   NAME_CHECK_FAILED line so an operator can distinguish this case from
+   cryptographic failures in 10.1–10.6.
+
+   The server side performs no symmetric expected-identity check on the
+   client cert: clients are not constrained to a particular
+   hostname-derived identity in this protocol. Server-side authorisation
+   against peer_index or the cert subject is the application's
+   responsibility.
 
 11. Operational Parameters
 
+   The parameters below are runtime-tunable in the reference
+   implementation via /etc/postWolf/config under the [global] section,
+   read once at process startup.  An implementation MAY substitute any
+   equivalent configuration mechanism; the parameter *names* below are
+   normative for cross-implementation interoperability, the *transport*
+   is not.
+
+   Parameter                   Default     Section   What it controls
+
+Page, Ed.             Expires 23 October 2026               [Page 20]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+   mqc-handshake-stall-sec     3           11.1      Per-read timeout
+                                                     during the
+                                                     handshake
+
+   mqc-handshake-total-sec     5           11.1      Total wall-clock
+                                                     budget for one
+                                                     handshake
+
+   mqc-max-handshake-bytes     131072      11.3      Cap on a single
+                                                     handshake JSON
+                                                     frame
+
+   mqc-max-msg-bytes           1048576     11.3      Cap on a single
+                                                     data-plane payload
+
+   mqc-rl-connect-per-min      100         11.2      Per-IP connection-
+                                                     attempt cap (per
+                                                     minute)
+
+   mqc-rl-connect-per-hour     1000        11.2      Per-IP connection-
+                                                     attempt cap (per
+                                                     hour)
+
+   mqc-rl-fail-per-min         10          11.2      Per-IP handshake-
+                                                     failure cap (per
+                                                     minute)
+
+   mqc-rl-fail-per-hour        100         11.2      Per-IP handshake-
+                                                     failure cap (per
+                                                     hour)
+
+   mqc-rl-cert-per-min         10          11.2      Per-IP distinct-
+                                                     cert_index cap (per
+                                                     minute)
+
+   mqc-rl-cert-per-hour        100         11.2      Per-IP distinct-
+                                                     cert_index cap (per
+                                                     hour)
+
+   mqc-max-children            20          11.6      Per-listener fork
+                                                     backpressure cap
+
+   mqc-revoked-cache-ttl-sec   86400       10.5      Revocation-cache
+                                                     TTL
+
+   mqc-sig-freshness-sec       300         10.6      Cert-validity skew
+                                                     tolerance
+
+   mqc-revocation-policy       mandatory   11.5      One of mandatory /
+                                                     cache-only /
+
+Page, Ed.             Expires 23 October 2026               [Page 21]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+                                                     disabled
+
+   The defaults above are suitable for a single-host deployment serving
+   on the order of 10² distinct identities.  See the cited sections for
+   tuning guidance.
+
 11.1. Timeouts
 
-   An implementation SHOULD impose a total wall-clock deadline on the
-   handshake (RECOMMENDED default: 30 seconds from TCP accept to
-   handshake completion), and a per-read deadline on the data plane
-   (RECOMMENDED default: 60 seconds).  Exceeding either deadline MUST
-   cause the connection to be terminated.
+   An implementation SHOULD impose a per-read deadline
+   (mqc-handshake-stall-sec, RECOMMENDED 3 seconds) and a total
+   wall-clock deadline (mqc-handshake-total-sec, RECOMMENDED 5 seconds)
+   on the handshake from TCP accept to handshake completion. A separate
+   per-read deadline of approximately 60 seconds applies to the data
+   plane.  Exceeding any deadline MUST cause the connection to be
+   terminated.
+
+   The handshake budgets are deliberately tight: a legitimate
+   post-quantum handshake completes in under 200 ms on commodity
+   hardware (median ~195 ms on a single-core 4 GHz x86 against a local
+   server, per the reference implementation's perf snapshot). The
+   5-second total budget allows ample slack for slow links and modest
+   server-side queue depth while denying an attacker the multi-minute
+   stall windows that pre-Phase-1 drafts permitted.
 
 11.2. Rate Limiting
 
@@ -642,8 +1213,27 @@ Internet-Draft          Merkle Quantum Connect          April 2026
       application-protocol layer above MQC) using at least a per-minute
       and a per-hour bucket.
 
+   Servers SHOULD additionally enforce per-(source-IP, cert_index) rate
+   limits.  A peer that rotates cert_index on every connect, even within
+   the per-IP connection budget, forces a fresh certificate fetch
+   (Section 10.1), inclusion- proof verification (Section 10.3), and
+   ML-DSA-87 cosignature verification (Section 10.4) per attempt —
+   millisecond-scale work per cheap client byte.  Cap distinct
+   cert_index values per source IP; RECOMMENDED defaults are 10 fresh
+   indices per minute and 100 per hour, exposed via the operational
+   parameters mqc-rl-cert-per-min and mqc-rl-cert-per-hour. Rejections
+   under this cap SHOULD count against the per-IP failure bucket (so a
+   single attacker IP rotating cert_index also burns its
+   handshake-failure budget).
+
    A typical bucket structure keys on <operation>:<ip>:<window> and is
    persisted in a local key-value store (e.g., Redis) for cross-process
+
+Page, Ed.             Expires 23 October 2026               [Page 22]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
    aggregation within a single host.
 
 11.3. Maximum Message Sizes
@@ -659,7 +1249,46 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    The suggested default TCP port for MQC services is 8446 (see Section
    13).
 
+11.5. Revocation Policy
+
+   Implementations MUST honor the operational parameter
+   mqc-revocation-policy with one of three values: mandatory (default,
+   fail-closed; see Section 10.5), cache-only, or disabled.  On Linux
+   deployments using the postWolf reference implementation this
+   parameter is read from /etc/postWolf/config under the [global]
+   section at process startup.
+
+11.6. Server Concurrency Cap
+
+   A fork-per-connection server SHOULD cap the number of concurrent
+   per-connection child processes via mqc-max-children (RECOMMENDED
+   default: 20).  Before each accept(), the listener checks the
+   active-child counter; if it is at or above the cap, the listener
+   sleeps briefly (RECOMMENDED 1 second) and re-checks.  Children
+   continue to run once spawned — only the *accept rate* is throttled,
+   so bursts stretch out instead of fanning into hundreds of concurrent
+   forks.
+
+   This is a process-level resource cap distinct from the per-IP rate
+   limits in Section 11.2: a single legitimate IP can drive many
+   parallel connections, and the cap prevents that traffic pattern from
+   exhausting host memory or process-table limits even when each
+   individual connection is well-behaved.
+
+   A thread-pool implementation SHOULD impose an equivalent cap on
+   in-flight handshake worker threads.  An implementation that admits
+   multiple concurrent handshakes per process (whether via threads or
+   async I/O) MAY additionally cap total in-flight handshake-buffer
+   memory directly (per Section 12.6).
+
 12. Security Considerations
+
+
+
+Page, Ed.             Expires 23 October 2026               [Page 23]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
 
 12.1. Quantum Resistance of Components
 
@@ -668,12 +1297,6 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    o  ML-DSA-87 targets NIST post-quantum security category 5 and is
       paired with ML-KEM-768 to keep the aggregate handshake at Category
       3 or above.  [FIPS204]
-
-Page, Ed.             Expires 23 October 2026               [Page 12]
-
-Internet-Draft          Merkle Quantum Connect          April 2026
-
-
    o  AES-256-GCM at Category 5 is selected to match ML-DSA-87's
       pre-quantum and post-quantum margins.  Using AES-128-GCM or a
       smaller key would weaken the aggregate.
@@ -717,6 +1340,12 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    from passive observers is a requirement, implementations MUST use
    encrypted-identity mode (Section 7).
 
+
+Page, Ed.             Expires 23 October 2026               [Page 24]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
 12.4. Revocation-Cache Staleness
 
    A revoked peer whose revocation has not yet been published to the
@@ -724,12 +1353,6 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    verifier's cache, will continue to be accepted.  Operators SHOULD set
    revocation-cache TTLs commensurate with their threat model; an
    emergency-revocation pipeline that forcibly invalidates peer caches
-
-Page, Ed.             Expires 23 October 2026               [Page 13]
-
-Internet-Draft          Merkle Quantum Connect          April 2026
-
-
    is out of scope here.
 
 12.5. Compromise of the Log Cosigner
@@ -751,9 +1374,202 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    (e.g., iptables --hitcount or a cloud-provider WAF) is RECOMMENDED
    for production deployments.
 
+   The strict-parsing rules in Section 5.2 are also load-bearing for DoS
+   resistance: implementations MUST validate the byte length of every
+   hex-encoded field (kem_pub, signature) against the exact size defined
+   for that field by the chosen suite (Section 4) BEFORE invoking any
+   cryptographic primitive on the field's contents.  Without this guard,
+   a 1-byte attacker payload of the right shape would still trigger a
+   ~400 µs ML-DSA-87 verification — many orders of magnitude of
+   asymmetric work per attack byte.  Rejections at the length-check
+   stage SHOULD count against the per-IP handshake-failure bucket
+   (Section 11.2) so that a peer that repeatedly sends malformed input
+   also exhausts its connection budget.
+
+   The accept loop in the reference implementation runs the entire
+   handshake in the listener process before forking off the
+   connection-handling child, so handshakes are serialised and only one
+   handshake-sized JSON buffer is ever in flight per listener.  An
+   implementation that uses a thread pool (or otherwise admits multiple
+   in-flight handshakes per process) SHOULD additionally cap total
+   in-flight handshake-buffer memory and reject new accepts when the cap
+   is exceeded.
+
+
+
+Page, Ed.             Expires 23 October 2026               [Page 25]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+12.7. Transcript Binding and Cross-Protocol Domain Separation
+
+   Every byte both peers exchange in the handshake is bound into the
+   transcript hash that the ML-DSA signatures cover (Section 6.0) and
+   that becomes the HKDF-Extract salt for all derived session material
+   (Section 8).  Specifically:
+
+   o  version, suite_id, and mode defeat version, suite, and mode
+      rollback / confusion.
+   o  Both peers' cert_index values defeat identity substitution (an
+      attacker presenting cert A's signature for a connection the client
+      believed was with cert B fails verification because the cert_index
+      value the client expected differs from what the signing peer
+      hashed).
+   o  Both peers' KEM contributions (EK_c and CT_s, with byte-length
+      prefixes) defeat KEM-share substitution and classic Unknown Key
+      Share attacks where an attacker forwards one peer's KEM value to a
+      different peer.
+   o  The 6-byte role tag ("client" vs "server") prevents a client
+      signature from being mistaken for a server signature on
+      otherwise-identical data.
+
+   The ML-DSA ctx label "mqc-hndshk/v1\n\x00" and its in-message LABEL
+   prefix together provide cross-protocol domain separation: an MQC
+   handshake signature is not a valid signature for any other use of the
+   same ML-DSA-87 identity key, including the cosigner's checkpoint
+   signature (which uses a different label "mtc-subtree/v1\n\x00").
+
+   The Finished MAC (Section 8.1) closes the residual gap left by the
+   asymmetric "knowledge available at signing time" in §6.0 (client
+   signs without knowing C_s; server signs knowing both).  By committing
+   both peers via HMAC-SHA256 to their view of the full transcript at
+   handshake completion, transcript- construction divergence between
+   honest implementations and on-path tampering of bytes outside the
+   signature transcript both surface as a clean Finished failure rather
+   than as opaque AEAD failures three frames into application traffic.
+
+12.8. Frame-Header Authentication
+
+   Every AEAD-sealed frame past the unauthenticated handshake fields
+   binds the same 31-byte AAD (Section 9.1.1) into its GCM
+   authentication tag.  This:
+
+   o  Turns length-prefix tampering into immediate AEAD failure on the
+      affected frame, rather than letting a tampered prefix spill into
+      the next frame's bytes and desynchronize framing.
+   o  Distinguishes Finished frames (frame_type = 0x02) from application
+      data frames (frame_type = 0x03) cryptographically, even though
+      they share the same data_*_key / data_*_iv. A peer that swapped
+      one for the other in flight (impossible without breaking
+
+Page, Ed.             Expires 23 October 2026               [Page 26]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+      AES-256-GCM, but defense in depth) hits AEAD failure on the
+      type-byte mismatch.
+   o  Provides defense in depth on fields already bound by other means:
+      direction is also separated by per-direction keys; sequence is
+      also bound by the per-frame nonce; version is also bound by the
+      transcript-hash HKDF salt.  The AAD doesn't add cryptographic
+      guarantees here but does make divergence loud at the moment of
+      detection.
+
+   The 16-byte LABEL "mqc-frame/v01\n\x00" is the AAD-format version,
+   NOT the protocol version.  It would be bumped only if the AAD bytes
+   themselves changed; a protocol-version bump (v0 → v1) does not by
+   itself require a new AAD label.
+
+12.9. Identity vs Authority
+
+   The cryptographic verification chain in 10.1–10.6 establishes
+   *authority* — the peer holds a private key bound to a verified,
+   in-log, currently-valid, unrevoked certificate. That is necessary but
+   NOT sufficient for a client.  The client also needs *identity*:
+   confirmation that the authoritative peer is the specific identity the
+   client intended to talk to.
+
+   Without the Section 10.7 expected-identity check, an attacker who can
+   influence the connection's routing indicator (DNS, hosts file,
+   mis-typed configuration, a hostile cert_index lookup) can route the
+   client to a different but cryptographically-valid identity in the
+   same log.  All four checks in 10.3–10.6 will pass.  No bytes go to a
+   malicious party — but they go to the wrong honest party.  For an
+   application that conditions sensitive actions on *who* the peer is
+   (CA-side recording of leaf actions, client-side selection of an
+   oracle), this is a confused- deputy vulnerability with the protocol
+   acting as the deputy.
+
+   Section 10.7 closes that gap by making the comparison explicit and
+   surfacing a NAME_CHECK_FAILED error before any session keys are
+   derived.  The check operates exclusively on the verified subject from
+   the log entry; it never queries DNS or any other external system, so
+   it cannot be subverted by the same attacker who supplied the routing
+   indicator.
+
+   The cost is operational rigidity: dialing by IP requires the caller
+   to set an explicit expected name, and renaming an identity (changing
+   tbs_entry.subject) breaks every client configured for the old name.
+   Both are intentional: an implicit "trust whatever the log says" mode
+   would re-open the gap this section closes.
+
+12.10. JSON Parsing Hardening
+
+   The handshake JSON parser is a security-sensitive component because
+
+Page, Ed.             Expires 23 October 2026               [Page 27]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
+   the bytes on the wire are bound into the transcript hash by both
+   parties; any divergence between what the signer serialised and what
+   the verifier parsed lets an attacker force one side to authenticate
+   to a different message than the other side believes it received.
+   Section 5.2's strict- parsing rules close four concrete classes of
+   attack:
+
+   o  Duplicate-key smuggling.  Most JSON parsers (json-c among them)
+      accept duplicate keys in an object and keep one of them —
+      typically the last.  A signer that serialises the FIRST occurrence
+      and a verifier that reads the LAST will hash different cert_index
+      values: the signature still validates (it was generated over the
+      signer's view of the bytes) but the verifier proceeds with a
+      different identity. Section 5.2's "exactly once" rule, enforced on
+      the raw JSON bytes (not on the parsed object — by which time the
+      duplicate is already collapsed), closes this.
+
+   o  Trailing-garbage smuggling.  A streaming parser stops at the first
+      complete object; any bytes that follow are ignored by the
+      handshake but may be consumed by some other tool (logger, audit
+      pipeline, application-layer demuxer) and interpreted differently.
+      The "no trailing bytes" rule forces a length match between the
+      input buffer and the parser's consumed-bytes count, so the same
+      bytes are seen by every consumer or none.
+
+   o  Integer-overflow desynchronisation.  Several JSON libraries
+      silently clamp out-of-range integers to INT_MAX / INT_MIN.  A
+      signer that serialises a string representation of a 64-bit value
+      and a verifier that parses it into a saturated 32-bit integer hash
+      different transcript bytes.  Section 5.2's "fit in int32" rule,
+      enforced via an explicit errno=ERANGE check rather than a silent
+      saturation, closes this.
+
+   o  Parser-extension fingerprinting.  Comments, leading zeros, and
+      single-quoted strings are accepted by some parsers and rejected by
+      others.  An attacker probing a service can fingerprint the parser
+      implementation by sending inputs in the grey zone — useful for
+      pivoting to a parser- specific exploit.  Strict mode removes the
+      grey zone.
+
+   The rules also defend in depth against future code changes:
+   hex-length and integer-range checks happen BEFORE any cryptographic
+   primitive runs (Section 11.2 calls these out as cheap pre-crypto
+   filters), so a malformed kem_pub cannot exercise the ML-KEM decoder
+   and a malformed cert_index cannot exercise the certificate-fetch
+   path.
+
 13. IANA Considerations
 
    This document requests IANA to register TCP port 8446 in the "Service
+
+Page, Ed.             Expires 23 October 2026               [Page 28]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
    Name and Transport Protocol Port Number Registry" for the service
    name mqc.  The assignment category is "User" (not "System"); the
    contact is the author of this document.
@@ -780,12 +1596,6 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    o  [RFC2119]  Bradner, *Key words for use in RFCs to Indicate
       Requirement Levels*, BCP 14, RFC 2119, March 1997.
    o  [RFC5869]  Krawczyk and Eronen, *HMAC-based Extract-and- Expand
-
-Page, Ed.             Expires 23 October 2026               [Page 14]
-
-Internet-Draft          Merkle Quantum Connect          April 2026
-
-
       Key Derivation Function (HKDF)*, RFC 5869, May 2010.
    o  [RFC8174]  Leiba, *Ambiguity of Uppercase vs Lowercase in RFC 2119
       Key Words*, BCP 14, RFC 8174, May 2017.
@@ -810,6 +1620,11 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    https://factsorlie.com/
 
 Appendix A. Worked Example (informative)
+
+Page, Ed.             Expires 23 October 2026               [Page 29]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
 
    The following is a single clear-identity mode handshake, captured
    from the reference implementation.  All values are truncated for
@@ -836,12 +1651,6 @@ Appendix A. Worked Example (informative)
        "kem_pub":
          "2e5471cc... (2176 hex chars total, ML-KEM CT)",
        "signature":
-
-Page, Ed.             Expires 23 October 2026               [Page 15]
-
-Internet-Draft          Merkle Quantum Connect          April 2026
-
-
          "91b2...  (9256 hex chars total)",
        "cert_index": 12
      }
@@ -868,6 +1677,11 @@ Internet-Draft          Merkle Quantum Connect          April 2026
    server→client frame uses s2c_key with the same nonce — safe, because
    the keys differ.
 
+Page, Ed.             Expires 23 October 2026               [Page 30]
+
+Internet-Draft          Merkle Quantum Connect          April 2026
+
+
 Appendix B. Reference Implementation (informative)
 
    A reference implementation in C, built against the postWolf fork of
@@ -893,4 +1707,33 @@ Appendix B. Reference Implementation (informative)
 
 
 
-Page, Ed.             Expires 23 October 2026               [Page 16]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Page, Ed.             Expires 23 October 2026               [Page 31]
+warning: 2 output line(s) exceed 72 columns; .md source needs editing:
+  line 1611: 106 cols
+  line 1661: 76 cols
