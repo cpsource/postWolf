@@ -2,20 +2,29 @@
 # test-mqc-perf.sh — Phase 4g performance baseline.
 #
 # Captures current-state median + p95 + p99 wall-clock latency for
-# the MQC encode|decode roundtrip.  No "before" baseline was saved
-# pre-Phase-1 cutover, so this is a snapshot-now: the value is to
-# detect future regressions, not to assert against a prior number.
+# `show-tpm --verify`, which is the canonical exerciser of MQC
+# client-server handshakes (one TCP+ML-KEM+ML-DSA+Finished handshake
+# per HTTP endpoint hit, several per invocation).  No "before"
+# baseline was saved pre-Phase-1 cutover, so this is a snapshot-now:
+# the value is to detect future regressions, not to assert against a
+# prior number.
+#
+# `mqc --encode|--decode` is NOT used here even though that's what
+# CI smoke roundtrips run -- it's pure local scrypt+AES-GCM and
+# never touches the MQC server, so it would mis-measure pure crypto
+# overhead instead of handshake cost.
 #
 # Output: stdout summary + a snapshot file at
 # mtc-keymaster/perf/perf-snapshot-<date>.txt.
 #
 # Knobs:
-#   PERF_N         default 50  (how many sequential roundtrips)
+#   PERF_N         default 10  (sequential show-tpm --verify runs;
+#                              each is ~6-8 MQC handshakes)
 #   TARGET_HOST    default factsorlie.com
 
 set -u
 
-PERF_N="${PERF_N:-50}"
+PERF_N="${PERF_N:-10}"
 TARGET_HOST="${TARGET_HOST:-factsorlie.com}"
 TARGET_IP="${TARGET_IP:-$(getent ahostsv4 "$TARGET_HOST" | awk '/STREAM/{print $1; exit}')}"
 
@@ -43,26 +52,23 @@ if command -v redis-cli >/dev/null 2>&1; then
         >/dev/null 2>&1 || true
 fi
 
-# Warmup: first roundtrip pays the cold-cache penalty (cert fetch +
-# revocation cache populate).  Discard.
-echo hi | mqc --encode --env --no-cache 2>/dev/null \
-       | mqc --decode --env --no-cache >/dev/null 2>&1
+# Warmup: first run pays the cold-cache penalty (cert fetch +
+# revocation cache populate + Augeas init).  Discard.
+show-tpm --verify >/dev/null 2>&1
 
 # -- Sample loop -------------------------------------------------------
-printf '%s--- sampling %d roundtrips%s\n' "$c_cyan" "$PERF_N" "$c_off"
+printf '%s--- sampling %d show-tpm --verify runs%s\n' "$c_cyan" "$PERF_N" "$c_off"
 SAMPLES=$(mktemp)
 i=0
 while [ "$i" -lt "$PERF_N" ]; do
     i=$((i+1))
     # Use python for monotonic-ms timing — `time(1)` rounds to ms and
-    # the shell math is awkward.
+    # shell math is awkward.
     ms=$(python3 -c "
 import subprocess, time
 t = time.monotonic()
-p = subprocess.run(
-    'echo hi | mqc --encode --env --no-cache 2>/dev/null '
-    '| mqc --decode --env --no-cache 2>/dev/null',
-    shell=True, capture_output=True)
+subprocess.run(['show-tpm', '--verify'],
+               capture_output=True, check=False)
 print(int((time.monotonic() - t) * 1000))
 ")
     echo "$ms" >> "$SAMPLES"
@@ -85,8 +91,8 @@ MEAN=$((SUM / N))
 
 # -- Report ------------------------------------------------------------
 {
-    printf 'MQC encode|decode roundtrip latency snapshot\n'
-    printf '============================================\n'
+    printf 'MQC handshake latency snapshot (show-tpm --verify wall clock)\n'
+    printf '=============================================================\n'
     printf 'date:     %s UTC\n' "$(date -u +%Y-%m-%dT%H:%M:%S)"
     printf 'host:     %s\n' "$(hostname)"
     printf 'target:   %s:%s\n' "$TARGET_HOST" "${TARGET_PORT:-8446}"

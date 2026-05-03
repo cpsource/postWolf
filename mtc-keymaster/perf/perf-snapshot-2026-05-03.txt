@@ -1,0 +1,17 @@
+MQC handshake latency snapshot (show-tpm --verify wall clock)
+=============================================================
+date:     2026-05-03T14:46:07 UTC
+host:     ip-172-26-3-143
+target:   factsorlie.com:8446
+commit:   86e924fb3
+N:        10 (after 1 warmup, sequential)
+
+min:        180 ms
+mean:       978 ms
+median:     195 ms
+p95:       2106 ms
+p99:       2106 ms
+max:       2106 ms
+
+raw samples (sorted):
+180 182 183 184 195 1139 1770 1916 1933 2106 

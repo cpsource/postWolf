@@ -154,5 +154,12 @@ test-mqc-stress: tools
 test-cosigner-rotation: tools
 	@./mtc-keymaster/tools/sh/test-cosigner-rotation.sh
 
+# Performance baseline snapshot (P4g).  Runs show-tpm --verify N
+# times sequentially and captures min / mean / median / p95 / p99 /
+# max wall-clock latency to mtc-keymaster/perf/perf-snapshot-<date>.txt.
+# Knob: PERF_N (default 10).
+test-mqc-perf: tools
+	@./mtc-keymaster/tools/sh/test-mqc-perf.sh
+
 .PHONY: test-mqc-all test-attack-pack test-mqc-matrix test-mqc-stress \
-        test-cosigner-rotation
+        test-cosigner-rotation test-mqc-perf
