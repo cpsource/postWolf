@@ -19,8 +19,8 @@ trivial, ~3 substantive, ~1 deferred.
 
 | Phase | Status | Closes findings |
 |---|---|---|
-| 1 — length-prefixed handshake frames | **DONE** (in working tree, 2026-05-03; live-verified, NOT yet committed) | #1, #2, #6, #9 |
-| 2 — pubkey-hash binding | pending | #4 |
+| 1 — length-prefixed handshake frames | **DONE** (committed 45e8390d4, pushed to phase-21) | #1, #2, #6, #9 |
+| 2 — pubkey-hash binding | **DONE** (in working tree, 2026-05-03; live-verified, NOT yet committed) | #4 |
 | 3 — AEAD seq after verify | pending | #7 |
 | 4 — stale-doc cleanup | pending | #8 |
 | 5 — cosigner TOFU hardening | pending | #3 |
@@ -233,10 +233,57 @@ post-restart.
 
 ---
 
-## Phase 2 — Peer pubkey hash binding (issue #4 — most important)
+## Phase 2 — Peer pubkey hash binding (issue #4 — most important)  **— DONE 2026-05-03**
 
-Closes finding #4.  This is the highest-severity item from the
+Closes finding #4.  This was the highest-severity item from the
 reviewer.
+
+**Implementation summary.**  All Phase 2 work landed in the
+working tree on 2026-05-03 and was live-verified end-to-end
+against `mtc-ca.service` on factsorlie.com:
+- Added static `verify_pubkey_pem_hash(cert_json, pem,
+  pem_len, source, cert_index)` in `mqc_peer.c`.  Walks
+  `cert_json.standalone_certificate.tbs_entry.subject_public_key_hash`,
+  SHA-256s the loaded PEM bytes, hex-compares.  Logs
+  `PUBKEY_HASH_MISSING` (cert lacks field) /
+  `PUBKEY_HASH_MALFORMED` (field wrong length) /
+  `PUBKEY_HASH_MISMATCH` (bytes disagree) and returns -1 on
+  any of those.
+- Wired the helper into all 5 PEM-load paths in
+  `extract_pubkey_from_cert` (peer-cache,
+  tpm-by-subject, ca-data-by-subject,
+  ca-data-by-base-subject, mtc-server) — fail-closed: a
+  mismatch on any source returns -1 from the function instead
+  of falling through, so a substituted PEM cannot be quietly
+  bypassed by a later source returning a good one.
+- Audited `mqc_peer_get_cached_pubkey` (the cache-only
+  shortcut exposed in `mqc_peer.h`).  It had no callers but
+  was unsafe-by-construction — added a colocated cert.json
+  load + same hash gate so the public surface is safe even if
+  a future caller adopts it.
+- Spec §10.2 gained a normative paragraph requiring the
+  hash check; new §12.11 "Pubkey-Hash Binding" describes the
+  attack class.  Appendix C entry added.
+
+**Live verification.**  After install + `systemctl restart
+mtc-ca`:
+- Negative test: appended `\n` to
+  `~/.TPM/peers/73/public_key.pem` (changed SHA-256 from
+  `c8cf4055...` to `f59c9ade...`).  Ran `issue_leaf_nonce
+  --domain testdomain.invalid --label test-p2 --ttl-days 1`
+  → server's accept path triggered `PUBKEY_HASH_MISMATCH:
+  cert 73 source=peer-cache expected=c8cf4055d62f8db0...
+  got=f59c9ade3e8d103d... — local PEM does NOT match the
+  cert's subject_public_key_hash; possible local-file
+  substitution attack`.  Client got `mqc_connect failed`.
+- Positive recovery: restored the PEM, re-ran the same
+  command → handshake succeeded, server returned HTTP 403
+  (expected — no CA enrolled for testdomain.invalid).
+- 79/79 `attack-port-8446 -s factsorlie.com` probes still
+  pass.  Zero-warning build.
+
+The design and exit-criteria text below is preserved for
+reference; everything else from Phase 2 is now historical.
 
 **What's broken:**
 

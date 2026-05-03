@@ -485,6 +485,80 @@ static int check_revoked(const char *mtc_server, int cert_index, int allow_fetch
     }
 }
 
+/* mqc-2 Phase 2 (closes review #4 — highest severity).
+ *
+ * Verify SHA-256 of the loaded peer pubkey PEM against the
+ * `subject_public_key_hash` field from its in-log certificate.  The
+ * MTC CA computes that hash as `sha256(pem_bytes)` over the exact
+ * PEM-text bytes (see mtc_bootstrap.c:995-1001 / mtc_http.c:1010-
+ * 1018), and `show-tpm`'s local audit (`check_spkh`) does the same
+ * comparison; this is the same canonical form.
+ *
+ * Pre-mqc-2-P2 the verifier blindly trusted whatever PEM landed in
+ * `~/.TPM/peers/<n>/public_key.pem` (or any of the four other
+ * search paths below).  Anyone who could write to those files
+ * could substitute the verifier pubkey while the in-log cert went
+ * unchanged → identity-substitution under a real, signed cert.
+ * Verifying the PEM hash against the cert binds the loaded key to
+ * the same bytes the cosigner attested to.
+ *
+ * Returns 0 on match, -1 on mismatch or missing hash.  On
+ * mismatch, logs MQC_SECURITY with a `source` tag identifying
+ * which load path produced the bad PEM and a 16-hex-char preview
+ * of expected vs actual (full hash would be too noisy).  Caller
+ * MUST treat -1 as fail-closed for THIS pubkey load attempt:
+ * falling through to another source would mask the substitution.
+ */
+static int verify_pubkey_pem_hash(struct json_object *cert_json,
+                                  const char *pem, int pem_len,
+                                  const char *source, int cert_index)
+{
+    struct json_object *sc, *tbs, *spkh_val;
+    const char *expected_hex;
+    wc_Sha256 sha;
+    unsigned char hash[32];
+    char actual_hex[65];
+    int i;
+
+    if (!json_object_object_get_ex(cert_json, "standalone_certificate", &sc) ||
+        !json_object_object_get_ex(sc, "tbs_entry", &tbs) ||
+        !json_object_object_get_ex(tbs, "subject_public_key_hash", &spkh_val)) {
+        MQC_SECURITY("PUBKEY_HASH_MISSING: cert %d has no "
+                     "subject_public_key_hash field; refusing to trust "
+                     "PEM from %s", cert_index, source);
+        return -1;
+    }
+    expected_hex = json_object_get_string(spkh_val);
+    if (!expected_hex || strlen(expected_hex) != 64) {
+        MQC_SECURITY("PUBKEY_HASH_MALFORMED: cert %d "
+                     "subject_public_key_hash is not 64 hex chars; "
+                     "refusing to trust PEM from %s",
+                     cert_index, source);
+        return -1;
+    }
+
+    if (wc_InitSha256(&sha) != 0) return -1;
+    wc_Sha256Update(&sha, (const unsigned char *)pem, (word32)pem_len);
+    wc_Sha256Final(&sha, hash);
+    wc_Sha256Free(&sha);
+
+    for (i = 0; i < 32; i++)
+        snprintf(actual_hex + i * 2, 3, "%02x", hash[i]);
+
+    /* Comparing two 64-hex-char strings; not a secret comparison
+     * (the hash is a public field on the cert), so plain strcmp is
+     * fine — constant-time would be cargo-cult here. */
+    if (strcmp(actual_hex, expected_hex) != 0) {
+        MQC_SECURITY("PUBKEY_HASH_MISMATCH: cert %d source=%s "
+                     "expected=%.16s... got=%.16s... — local PEM does "
+                     "NOT match the cert's subject_public_key_hash; "
+                     "possible local-file substitution attack",
+                     cert_index, source, expected_hex, actual_hex);
+        return -1;
+    }
+    return 0;
+}
+
 /******************************************************************************
  * Function:    extract_pubkey_pem
  *
@@ -498,6 +572,14 @@ static int check_revoked(const char *mtc_server, int cert_index, int allow_fetch
  *   /ca/public-key endpoint (for CAs) or from the mtc_public_keys table.
  *
  *   Returns malloc'd DER public key, caller frees.
+ *
+ *   mqc-2 P2: every PEM produced by any source below is verified
+ *   against the cert's subject_public_key_hash via
+ *   verify_pubkey_pem_hash before being converted to DER and
+ *   returned.  A mismatch on any source aborts the function with
+ *   -1; we do NOT fall through to a later source, because doing
+ *   so would silently mask a substitution attack on the earlier
+ *   source.
  ******************************************************************************/
 static int extract_pubkey_from_cert(struct json_object *cert_json,
                                     const char *mtc_server, int cert_index,
@@ -546,12 +628,18 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
         {
             char *pem = read_file_str(pubkey_path);
             if (pem) {
+                int pem_len = (int)strlen(pem);
+                if (verify_pubkey_pem_hash(cert_json, pem, pem_len,
+                        "peer-cache", cert_index) != 0) {
+                    free(pem);
+                    return -1;  /* fail-closed; do NOT fall through */
+                }
                 /* Convert PEM to DER */
                 unsigned char der[4096];
                 int der_sz;
 
                 der_sz = wc_PubKeyPemToDer((const unsigned char *)pem,
-                    (int)strlen(pem), der, (int)sizeof(der));
+                    pem_len, der, (int)sizeof(der));
                 free(pem);
 
                 if (der_sz > 0) {
@@ -591,10 +679,16 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
                 {
                     char *pem2 = read_file_str(tpm_key_path);
                     if (pem2) {
+                        int pem2_len = (int)strlen(pem2);
+                        if (verify_pubkey_pem_hash(cert_json, pem2, pem2_len,
+                                "tpm-by-subject", cert_index) != 0) {
+                            free(pem2);
+                            return -1;
+                        }
                         unsigned char der2[4096];
                         int der2_sz = wc_PubKeyPemToDer(
                             (const unsigned char *)pem2,
-                            (int)strlen(pem2), der2, (int)sizeof(der2));
+                            pem2_len, der2, (int)sizeof(der2));
                         free(pem2);
                         if (der2_sz > 0) {
                             *out = malloc((size_t)der2_sz);
@@ -630,10 +724,16 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
                 {
                     char *pem3 = read_file_str(tpm_key_path);
                     if (pem3) {
+                        int pem3_len = (int)strlen(pem3);
+                        if (verify_pubkey_pem_hash(cert_json, pem3, pem3_len,
+                                "ca-data-by-subject", cert_index) != 0) {
+                            free(pem3);
+                            return -1;
+                        }
                         unsigned char der3[4096];
                         int der3_sz = wc_PubKeyPemToDer(
                             (const unsigned char *)pem3,
-                            (int)strlen(pem3), der3, (int)sizeof(der3));
+                            pem3_len, der3, (int)sizeof(der3));
                         if (der3_sz > 0) {
                             *out = malloc((size_t)der3_sz);
                             if (*out) {
@@ -698,10 +798,17 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
                         {
                             char *pem4 = read_file_str(tpm_key_path);
                             if (pem4) {
+                                int pem4_len = (int)strlen(pem4);
+                                if (verify_pubkey_pem_hash(cert_json, pem4,
+                                        pem4_len, "ca-data-by-base-subject",
+                                        cert_index) != 0) {
+                                    free(pem4);
+                                    return -1;
+                                }
                                 unsigned char der4[4096];
                                 int der4_sz = wc_PubKeyPemToDer(
                                     (const unsigned char *)pem4,
-                                    (int)strlen(pem4), der4, (int)sizeof(der4));
+                                    pem4_len, der4, (int)sizeof(der4));
                                 if (der4_sz > 0) {
                                     *out = malloc((size_t)der4_sz);
                                     if (*out) {
@@ -741,10 +848,18 @@ static int extract_pubkey_from_cert(struct json_object *cert_json,
                         if (pk_obj &&
                             json_object_object_get_ex(pk_obj, "key_value", &pk_val)) {
                             const char *fetched_pem = json_object_get_string(pk_val);
+                            int fetched_len = (int)strlen(fetched_pem);
+                            if (verify_pubkey_pem_hash(cert_json, fetched_pem,
+                                    fetched_len, "mtc-server",
+                                    cert_index) != 0) {
+                                json_object_put(pk_obj);
+                                free(pub_body);
+                                return -1;
+                            }
                             unsigned char der5[4096];
                             int der5_sz = wc_PubKeyPemToDer(
                                 (const unsigned char *)fetched_pem,
-                                (int)strlen(fetched_pem),
+                                fetched_len,
                                 der5, (int)sizeof(der5));
                             if (der5_sz > 0) {
                                 *out = malloc((size_t)der5_sz);
@@ -1563,12 +1678,33 @@ int mqc_peer_verify(const char *mtc_server,
 
 /******************************************************************************
  * Function:    mqc_peer_get_cached_pubkey
+ *
+ * Description:
+ *   Cache-only fast-path: read the cached PEM at
+ *   ~/.TPM/peers/<cert_index>/public_key.pem and return the DER.
+ *   Caller MUST have separately verified the cert (see
+ *   mqc_peer_verify); this entry point is a shortcut for code that
+ *   has already done the cosigner / inclusion / revocation checks
+ *   and just needs the bytes.
+ *
+ *   mqc-2 P2: even in the cache-only path the loaded PEM is
+ *   verified against the colocated certificate.json's
+ *   subject_public_key_hash before being returned.  Without this
+ *   check, a future caller of this entry point could be fed a
+ *   substituted public_key.pem (the very attack class Phase 2
+ *   closes in extract_pubkey_from_cert).  The function still has
+ *   no callers today, but exposing an unsafe-by-construction
+ *   primitive in mqc_peer.h would be a foot-gun.
  ******************************************************************************/
 int mqc_peer_get_cached_pubkey(int cert_index,
                                unsigned char **pubkey_out, int *pubkey_sz_out)
 {
     char path[512];
-    char *pem;
+    char cert_path[512];
+    char *pem = NULL;
+    char *cert_str = NULL;
+    struct json_object *cert_json = NULL;
+    int rc = -1;
     const char *home = getenv("HOME");
 
     *pubkey_out = NULL;
@@ -1578,25 +1714,48 @@ int mqc_peer_get_cached_pubkey(int cert_index,
 
     snprintf(path, sizeof(path), "%s/.TPM/%s/%d/public_key.pem",
              home, PEER_CACHE_DIR, cert_index);
+    snprintf(cert_path, sizeof(cert_path), "%s/.TPM/%s/%d/certificate.json",
+             home, PEER_CACHE_DIR, cert_index);
 
     pem = read_file_str(path);
-    if (!pem) return -1;
+    if (!pem) goto out;
+
+    cert_str = read_file_str(cert_path);
+    if (!cert_str) {
+        MQC_SECURITY("PUBKEY_HASH_NO_CERT: cached PEM at %s has no "
+                     "colocated certificate.json; refusing to return "
+                     "an unverifiable pubkey", path);
+        goto out;
+    }
+    cert_json = json_tokener_parse(cert_str);
+    if (!cert_json) {
+        MQC_SECURITY("PUBKEY_HASH_BAD_CERT: cached cert at %s does "
+                     "not parse as JSON", cert_path);
+        goto out;
+    }
+
+    if (verify_pubkey_pem_hash(cert_json, pem, (int)strlen(pem),
+                               "cached-pubkey", cert_index) != 0)
+        goto out;
 
     {
         unsigned char der[4096];
         int der_sz = wc_PubKeyPemToDer((const unsigned char *)pem,
             (int)strlen(pem), der, (int)sizeof(der));
-        free(pem);
-
-        if (der_sz <= 0) return -1;
+        if (der_sz <= 0) goto out;
 
         *pubkey_out = malloc((size_t)der_sz);
-        if (!*pubkey_out) return -1;
+        if (!*pubkey_out) goto out;
         memcpy(*pubkey_out, der, (size_t)der_sz);
         *pubkey_sz_out = der_sz;
+        rc = 0;
     }
 
-    return 0;
+out:
+    free(pem);
+    free(cert_str);
+    if (cert_json) json_object_put(cert_json);
+    return rc;
 }
 
 /******************************************************************************

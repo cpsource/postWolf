@@ -870,7 +870,20 @@ The verifier extracts the ML-DSA-87 public key from the retrieved
 certificate and verifies that `signature` in the handshake frame
 is a valid ML-DSA-87 signature under that public key, with the
 context label `LABEL = "mqc-hndshk/v1\n\x00"` (16 bytes), over
-the **transcript hash** for the appropriate role (Section 6.0):
+the **transcript hash** for the appropriate role (Section 6.0).
+
+The certificate carries a `subject_public_key_hash` field —
+SHA-256 over the canonical PEM-text byte sequence of the
+ML-DSA-87 public key, lowercase-hex encoded.  Implementations
+MUST recompute that hash over whatever public-key bytes they
+load (cache, on-disk store, or fresh fetch from the log
+service) and MUST refuse to use the loaded key for signature
+verification unless the recomputed hash matches the one in the
+certificate exactly.  An implementation MUST NOT silently fall
+back to a different source on mismatch — a mismatch on any
+source is a fail-closed condition for that handshake (see
+Section 12.11).
+
 
 ```
    verified = MLDSA-Verify-CtxMsg(
@@ -1448,6 +1461,42 @@ cheap pre-crypto filters), so a malformed `kem_pub` cannot
 exercise the ML-KEM decoder and a malformed `cert_index`
 cannot exercise the certificate-fetch path.
 
+### 12.11. Pubkey-Hash Binding
+
+The certificate's `subject_public_key_hash` field binds the
+in-log identity to a specific public-key bit-string.  Without
+the binding check defined in Section 10.2, an attacker who can
+write to the verifier's local pubkey cache (e.g., a co-tenant
+on the same UID, a tampered backup-restore, a misconfigured
+sync daemon, or an MITM on the optional `/public-key/<subject>`
+fetch endpoint) can substitute the public key used for
+signature verification while leaving the in-log certificate
+untouched.
+
+The substituted key passes signature verification because the
+verifier never asked "is this the key the cert says it should
+be?"  The result is identity-substitution under a real,
+cosigner-attested cert — the exact attack class that the
+transcript binding (Section 12.7) and the chain-of-cosignature
+verification (Section 10.4) were intended to close, re-opened
+by trusting a local file.
+
+Implementations MUST close this gap by SHA-256-hashing the
+loaded public-key bytes (in canonical PEM-text form) and
+comparing to the certificate's `subject_public_key_hash` field
+before invoking signature verification.  The check MUST be
+fail-closed: a mismatch on ANY pubkey source aborts the
+handshake.  Implementations MUST NOT silently fall through to
+another source — doing so would mask a substitution attack on
+the earlier source.
+
+The reference implementation (`socket-level-wrapper-MQC/
+mqc_peer.c::verify_pubkey_pem_hash`) gates all five PEM-load
+paths in `extract_pubkey_from_cert` plus the cache-only
+shortcut `mqc_peer_get_cached_pubkey` with this check, logging
+`PUBKEY_HASH_MISMATCH` (with a `source=` tag identifying the
+load path) on any failure.
+
 ---
 
 ## 13. IANA Considerations
@@ -1841,6 +1890,37 @@ detection) from `README-mqc-2-issues.md`.  No spec text needed
 to change — §5.1 was already correct — but the §7 informative
 note was rewritten to describe the new dispatch path, and this
 appendix entry was added.
+
+### mqc-2 Phase 2 — pubkey-hash binding
+
+mqc-2 Phase 2 (commit TBD) closes the highest-severity finding
+from the second external review.  The reference implementation
+had been loading peer ML-DSA-87 public keys from local files
+(`~/.TPM/peers/<index>/public_key.pem` and four other paths) or
+from the log service's `/public-key/<subject>` endpoint and
+using them for handshake signature verification *without ever
+checking the loaded bytes against the certificate's
+`subject_public_key_hash` field*.  The wire-format spec already
+defined the field; the verifier just wasn't honoring it.
+
+Spec changes:
+
+- §10.2 gained a normative paragraph requiring implementations
+  to hash the loaded pubkey (canonical PEM-text bytes) and
+  refuse signature verification on mismatch.  Adds a "MUST NOT
+  silently fall through" clause covering the multi-source
+  case.
+- New §12.11 "Pubkey-Hash Binding" describes the attack class
+  this closes (local-file substitution / MITM on the optional
+  pubkey endpoint), explains why the previous verifier
+  trusted whatever bytes appeared, and points at the
+  reference-implementation gate
+  (`mqc_peer.c::verify_pubkey_pem_hash`).
+
+This change closes reviewer finding #4 from
+`README-mqc-2-issues.md`.  Wire-format unchanged
+(`subject_public_key_hash` was already mandatory in §5.2's
+table of cert fields, just not enforced by verifiers).
 
 ### Cumulative scope
 

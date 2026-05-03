@@ -156,8 +156,57 @@ factsorlie.com after install + `systemctl restart mtc-ca`.
 
 ### Remaining
 
-- Findings **#4** (Phase 2, highest severity), **#7** (Phase 3,
-  trivial), **#8** (Phase 4, doc cleanup), **#3** (Phase 5,
-  substantial — snoopy-rivest), **#5** (Phase 6, deferred).
-  Each is its own commit/cutover; ordering and scope per
+- Findings **#4** (Phase 2, highest severity — see Appendix C
+  below for status), **#7** (Phase 3, trivial), **#8** (Phase
+  4, doc cleanup), **#3** (Phase 5, substantial —
+  snoopy-rivest), **#5** (Phase 6, deferred).  Each is its own
+  commit/cutover; ordering and scope per
   [`mqc-2-master.plan`](./mqc-2-master.plan).
+
+---
+
+## Appendix C — Phase 2 status (2026-05-03)
+
+Phase 2 is implemented in the working tree but not yet
+committed (commit boundary is the next step).  Live-verified
+end-to-end against `mtc-ca.service` on factsorlie.com after
+install + restart.
+
+### Findings closed
+
+- **#4** Peer pubkey not verified against
+  `subject_public_key_hash` — DONE.  All five PEM-load paths
+  in `mqc_peer.c::extract_pubkey_from_cert` plus the
+  cache-only shortcut `mqc_peer_get_cached_pubkey` now route
+  the loaded PEM through `verify_pubkey_pem_hash`, which
+  SHA-256s the bytes and constant-strcmps to the cert's
+  `subject_public_key_hash`.  Mismatch is fail-closed: the
+  function returns -1 instead of falling through to a later
+  source.  Spec §10.2 + new §12.11 record the requirement.
+
+### Verification
+
+- **Negative test**: corrupted
+  `~/.TPM/peers/73/public_key.pem` (appended a single
+  newline → SHA-256 differs from the cert's hash).  Ran
+  `issue_leaf_nonce --domain testdomain.invalid --label
+  test-p2 --ttl-days 1` (real MQC connect).  Server-side
+  journal shows `PUBKEY_HASH_MISMATCH: cert 73
+  source=peer-cache expected=c8cf4055d62f8db0...
+  got=f59c9ade3e8d103d... — possible local-file
+  substitution attack`.  Client received `mqc_connect
+  failed`.  Handshake aborted before any signature
+  verification occurred.
+- **Positive recovery**: restored the PEM byte-for-byte,
+  re-ran the same command — handshake succeeded, server
+  returned HTTP 403 (testdomain.invalid has no CA, expected).
+- **Regression**: `attack-port-8446 -s factsorlie.com` still
+  79/79 pass.  Zero-warning build at `make -f Makefile.tools
+  clean && make -f Makefile.tools`.
+
+### Remaining
+
+- Findings **#7** (Phase 3, trivial — AEAD seq after verify),
+  **#8** (Phase 4, doc cleanup), **#3** (Phase 5,
+  substantial — snoopy-rivest), **#5** (Phase 6, deferred).
+  Per `mqc-2-master.plan`.
