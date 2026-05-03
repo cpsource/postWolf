@@ -119,6 +119,31 @@ static void handshake_deadline_cleanup(int *unused)
 
 #define MQC_ABUSE_THRESHOLD  25  /* reject if abuse score >= 25% */
 
+/* --- Timing probes (opt-in via --mqc-time on the server CLI) -------
+ * Once enabled, every accept() handshake logs millisecond-precision
+ * stage breakdowns to stderr (so they show up in journalctl).  Useful
+ * for hunting cold-start regressions like the rt_cfg/augeas pause
+ * that surfaced during P2a smoke testing.  Default is OFF; the
+ * macros expand to no-ops in the common case so the production hot
+ * path pays nothing. */
+static int s_mqc_time_enabled = 0;
+void mqc_set_time_enabled(int on) { s_mqc_time_enabled = !!on; }
+int  mqc_get_time_enabled(void)   { return s_mqc_time_enabled; }
+
+static long mqc_now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
+}
+#define MQC_TIME_BEGIN(name) \
+    long _t_##name = s_mqc_time_enabled ? mqc_now_ms() : 0
+#define MQC_TIME_END(name) do { \
+    if (s_mqc_time_enabled) \
+        fprintf(stderr, "[MQC-TIME] %s = %ld ms\n", \
+                #name, mqc_now_ms() - _t_##name); \
+    } while (0)
+
 /* Compiled-in defaults for the operational tunables.  Each can be
  * overridden at runtime via [global]/<key> in /etc/postWolf/config
  * (issue 6a).  See README-plans.md and the per-key documentation in
@@ -686,16 +711,43 @@ static int mqc_ratelimit_check(const char *ip)
     char key[128];
     int count_m, count_h;
 
-    mqc_redis_init();
+    {
+        long _t = mqc_now_ms();
+        mqc_redis_init();
+        if (s_mqc_time_enabled)
+            fprintf(stderr, "[MQC-TIME]   redis_init = %ld ms\n",
+                    mqc_now_ms() - _t);
+    }
     if (!s_redis) return 0;  /* no Redis = allow */
 
     /* Per-minute */
     snprintf(key, sizeof(key), "mqc:%s:conn:m", ip);
-    count_m = redis_incr(key, 60);
+    {
+        long _t = mqc_now_ms();
+        count_m = redis_incr(key, 60);
+        if (s_mqc_time_enabled)
+            fprintf(stderr, "[MQC-TIME]   redis_incr_m = %ld ms\n",
+                    mqc_now_ms() - _t);
+    }
 
     /* Per-hour */
     snprintf(key, sizeof(key), "mqc:%s:conn:h", ip);
-    count_h = redis_incr(key, 3600);
+    {
+        long _t = mqc_now_ms();
+        count_h = redis_incr(key, 3600);
+        if (s_mqc_time_enabled)
+            fprintf(stderr, "[MQC-TIME]   redis_incr_h = %ld ms\n",
+                    mqc_now_ms() - _t);
+    }
+
+    {
+        long _t = mqc_now_ms();
+        const struct mqc_runtime_cfg *cfg = mqc_rt_cfg();
+        if (s_mqc_time_enabled)
+            fprintf(stderr, "[MQC-TIME]   rt_cfg = %ld ms\n",
+                    mqc_now_ms() - _t);
+        (void)cfg;
+    }
 
     if (count_m > mqc_rt_cfg()->rl_connect_per_min) {
         MQC_SECURITY("RATE_LIMITED: %s connect %d/min (max %ld)",
@@ -1313,27 +1365,55 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
     fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
     if (fd < 0) return NULL;
 
-    /* Arm the slow-loris deadline AFTER accept() returns.  Setting it
-     * before accept() is wrong: accept() can block for arbitrarily
-     * long waiting for the next connection, and the 5-second budget
-     * would already be expired before the handshake even begins.
-     * Bug surfaced during P1.11 attack-port-8446 testing where the
-     * first attack after a quiet period reproducibly hit the
-     * deadline at pos=0 in read_json_block.  Same fix applies to
-     * mqc_accept_encrypted (currently stubbed). */
-    HANDSHAKE_DEADLINE_ACTIVE();
-
     inet_ntop(AF_INET, &cli_addr.sin_addr, client_ip, sizeof(client_ip));
     MQC_LOG("accepted connection from %s:%d", client_ip, ntohs(cli_addr.sin_port));
 
-    if (mqc_abuse_check(client_ip) != 0) { close(fd); return NULL; }
-    if (mqc_ratelimit_check(client_ip) != 0) { close(fd); return NULL; }
-    if (mqc_ratelimit_fail_check(client_ip) != 0) { close(fd); return NULL; }
+    /* Pre-handshake setup BEFORE arming the slow-loris deadline.
+     * mqc_abuse_check makes an HTTPS curl call to AbuseIPDB whose
+     * cold-start cost (DNS+TLS+request) easily eats 5 seconds the
+     * first time it runs.  ratelimit checks hit Redis.  wc_InitRng
+     * may seed from /dev/random.  All of these are best-effort
+     * server-side setup, NOT the slow-loris attack surface the
+     * deadline defends against; charge them to startup, not the
+     * client's handshake budget. */
+    {
+        long _t_total = mqc_now_ms();
+        MQC_TIME_BEGIN(abuse);
+        if (mqc_abuse_check(client_ip) != 0) { close(fd); return NULL; }
+        MQC_TIME_END(abuse);
+        MQC_TIME_BEGIN(rl_check);
+        if (mqc_ratelimit_check(client_ip) != 0) { close(fd); return NULL; }
+        MQC_TIME_END(rl_check);
+        MQC_TIME_BEGIN(rl_fail);
+        if (mqc_ratelimit_fail_check(client_ip) != 0) { close(fd); return NULL; }
+        MQC_TIME_END(rl_fail);
 
-    set_socket_timeout(fd, mqc_rt_cfg()->handshake_stall_sec);
+        set_socket_timeout(fd, mqc_rt_cfg()->handshake_stall_sec);
 
-    if (wc_InitRng(&rng) != 0) { close(fd); return NULL; }
-    rng_ok = 1;
+        MQC_TIME_BEGIN(rng);
+        if (wc_InitRng(&rng) != 0) { close(fd); return NULL; }
+        MQC_TIME_END(rng);
+        rng_ok = 1;
+        if (s_mqc_time_enabled)
+            fprintf(stderr, "[MQC-TIME] setup_total = %ld ms\n",
+                    mqc_now_ms() - _t_total);
+    }
+
+    /* Now that all server-side setup is done, arm the deadline that
+     * bounds the time the server WAITS for the CLIENT.  This covers
+     * read_json_block (ClientHello), enc_recv (Finished), and the
+     * read_all loops they call into.  Server-side compute (ML-KEM
+     * encapsulate, ML-DSA sign, HKDF, Finished MAC) runs between
+     * those reads; if it takes longer than handshake_total_sec the
+     * deadline still fires correctly because the next read_all
+     * checks it.
+     *
+     * Pre-Phase-1 the deadline was armed BEFORE accept() (catastrophic;
+     * fixed in commit 1ef4699d3 to fire after accept).  Phase-2a smoke
+     * testing then surfaced the cold-start issue described above:
+     * the abuse-check HTTPS call ate the budget before any handshake
+     * byte arrived.  Move-after-setup is the right semantic. */
+    HANDSHAKE_DEADLINE_ACTIVE();
 
     ret = read_json_block(fd, json_buf, sizeof(json_buf));
     if (ret <= 0) {
@@ -1416,9 +1496,11 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
         }
         json_object_put(req);
 
+        MQC_TIME_BEGIN(peer_verify);
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
                               peer_index, mqc_rt_cfg()->revocation_policy,
                               &peer_pubkey, &peer_pubkey_sz);
+        MQC_TIME_END(peer_verify);
         if (ret != 0) {
             MQC_SECURITY("PEER_VERIFY_FAILED: peer for index %d", peer_index);
             goto fail;
@@ -1429,6 +1511,7 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
             peer_index, 0, MQC_ROLE_CLIENT);
         if (ret != 0) { free(peer_pubkey); goto fail; }
 
+        MQC_TIME_BEGIN(verify_sig);
         {
             dilithium_key peer_dil;
             int verified = 0;
@@ -1453,9 +1536,11 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
                 goto fail;
             }
         }
+        MQC_TIME_END(verify_sig);
 
         MQC_TRACE("[mqc] peer %d verified + signature OK\n", peer_index);
 
+        MQC_TIME_BEGIN(encapsulate);
         ret = wc_MlKemKey_Init(&mlkem, WC_ML_KEM_768, NULL, INVALID_DEVID);
         if (ret != 0) goto fail;
         mlkem_ok = 1;
@@ -1476,12 +1561,14 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
             fprintf(stderr, "[mqc] ML-KEM encapsulate: %d\n", ret);
             goto fail;
         }
+        MQC_TIME_END(encapsulate);
 
         ret = mqc_compute_transcript_hash(th_sign, MQC_MODE_CLEAR,
             encaps_key, (size_t)ek_sz, ciphertext, (size_t)ct_sz,
             peer_index, ctx->our_cert_index, MQC_ROLE_SERVER);
         if (ret != 0) goto fail;
 
+        MQC_TIME_BEGIN(server_sign);
         wc_dilithium_init(&dil);
         dil_ok = 1;
         wc_dilithium_set_level(&dil, WC_ML_DSA_87);
@@ -1497,7 +1584,9 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
             th_sign, WC_SHA256_DIGEST_SIZE,
             sig, &sig_sz, &dil, &rng);
         if (ret != 0) goto fail;
+        MQC_TIME_END(server_sign);
 
+        MQC_TIME_BEGIN(server_send);
         {
             char *ct_hex_str  = malloc(ct_sz * 2 + 1);
             char *sig_hex_str = malloc(sig_sz * 2 + 1);
@@ -1516,6 +1605,7 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
             if (write_all(fd, (unsigned char *)json_buf, (unsigned int)json_len) != 0)
                 goto fail;
         }
+        MQC_TIME_END(server_send);
 
         ret = mqc_transcript_hash_kdf(th_kdf, MQC_MODE_CLEAR,
             encaps_key, (size_t)ek_sz, ciphertext, (size_t)ct_sz,
@@ -1542,8 +1632,15 @@ mqc_conn_t *mqc_accept(mqc_ctx_t *ctx, int listen_fd)
         conn->recv_seq = 0;
         conn->finished_verified = 0;
 
-        if (mqc_recv_finished(conn) != 0) goto fail;
+        MQC_TIME_BEGIN(recv_finished);
+        if (mqc_recv_finished(conn) != 0) {
+            MQC_TIME_END(recv_finished);
+            goto fail;
+        }
+        MQC_TIME_END(recv_finished);
+        MQC_TIME_BEGIN(send_finished);
         if (mqc_send_finished(conn) != 0) goto fail;
+        MQC_TIME_END(send_finished);
 
         clear_socket_timeout(fd);
         MQC_TRACE("[mqc] session established with peer %d (Finished verified)\n",

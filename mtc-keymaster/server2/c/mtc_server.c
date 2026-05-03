@@ -46,6 +46,7 @@
 #include "mtc_store.h"
 #include "mtc_http.h"
 #include "mtc_bootstrap.h"
+#include "mqc.h"
 #include "mtc_checkendpoint.h"
 #include "mtc_log.h"
 #include "mtc_ratelimit.h"
@@ -115,6 +116,7 @@ static void usage(const char *prog)
     printf("  --mtc-server URL MTC server URL for MQC peer verification\n");
     printf("  --log-level N    Log level: 0=error 1=warn 2=info 3=debug 4=trace (default: 2)\n");
     printf("  --log-file PATH  Log file (default: /var/log/mtc/mtc_server.log)\n");
+    printf("  --mqc-time       Emit per-handshake stage timings to stderr (off by default)\n");
     printf("  -h, --help       Show this help\n");
 }
 
@@ -215,6 +217,8 @@ int main(int argc, char *argv[])
             log_level = atoi(argv[++i]);
         else if (strcmp(argv[i], "--log-file") == 0 && i + 1 < argc)
             log_file = argv[++i];
+        else if (strcmp(argv[i], "--mqc-time") == 0)
+            mqc_set_time_enabled(1);
         else if (strcmp(argv[i], "-h") == 0 ||
                  strcmp(argv[i], "--help") == 0) {
             usage(argv[0]); return 0;

@@ -130,6 +130,15 @@ int mqc_get_peer_index(mqc_conn_t *conn);
 void mqc_set_verbose(int level);
 int  mqc_get_verbose(void);
 
+/* Enable per-handshake millisecond-precision stage timing in the
+ * server-side mqc_accept path.  Off by default; toggled on with
+ * --mqc-time on the mtc_server CLI.  Lines appear in journalctl as
+ *   [MQC-TIME] <stage> = <N> ms
+ * Useful for hunting cold-start regressions.  Production cost when
+ * disabled: zero (the macros expand to no-ops). */
+void mqc_set_time_enabled(int on);
+int  mqc_get_time_enabled(void);
+
 /* --- Runtime configuration (issue 6a) ------------------------------
  * Operational tunables resolved once per process from
  * /etc/postWolf/config (Augeas-parsed) with compiled-in defaults from

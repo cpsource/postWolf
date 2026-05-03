@@ -13,9 +13,27 @@ static augeas *aug;
 int init_augeas(void) {
     if (aug)
         return 0;
-    aug = aug_init(NULL, NULL, AUG_NONE);
+    /* AUG_NO_MODL_AUTOLOAD skips augeas's default scan of every
+     * .aug file under /usr/share/augeas/lenses/dist/ — about 200
+     * files for ~1 s on this box.  We only ever read
+     * /etc/postWolf/config via the Myconf lens, so wire that one
+     * up explicitly and call aug_load().  Net cost on cold start
+     * drops from ~1000 ms to <10 ms.  Surfaced during P2a
+     * smoke testing where the per-handshake setup_total was
+     * 14.6 s on first connection — the previous fix (keep aug
+     * open across batch reads) collapsed the 14× re-scan to a
+     * single one-second hit; this fix makes the single hit go
+     * away too. */
+    aug = aug_init(NULL, NULL, AUG_NO_MODL_AUTOLOAD);
     if (!aug)
         return -1;
+    if (aug_set(aug, "/augeas/load/Myconf/lens", "Myconf.lns") < 0 ||
+        aug_set(aug, "/augeas/load/Myconf/incl", "/etc/postWolf/config") < 0 ||
+        aug_load(aug) < 0) {
+        aug_close(aug);
+        aug = NULL;
+        return -1;
+    }
     return 0;
 }
 
@@ -45,8 +63,14 @@ char *get_augeas(const char *key) {
 char *read_config_url(const char *key) {
     if (init_augeas() != 0)
         return NULL;
+    /* Do NOT close after each get: tearing down and re-creating the
+     * augeas context per key forces a re-scan of /usr/share/augeas/lenses
+     * and costs ~1 second per call.  A loader that reads ~14 keys in
+     * a row burns ~15 s on cold start, blowing the MQC handshake
+     * deadline.  Augeas memory is bounded; keeping one context open
+     * for process lifetime is the right move.  Callers who genuinely
+     * need to release the context can call close_augeas() explicitly. */
     char *raw = get_augeas(key);
-    close_augeas();
     if (!raw)
         return NULL;
 
@@ -78,8 +102,14 @@ int parse_long_strict(const char *raw, long *out) {
 long read_config_long(const char *key, long default_val) {
     if (init_augeas() != 0)
         return default_val;
+    /* Do NOT close after each get: tearing down and re-creating the
+     * augeas context per key forces a re-scan of /usr/share/augeas/lenses
+     * and costs ~1 second per call.  A loader that reads ~14 keys in
+     * a row burns ~15 s on cold start, blowing the MQC handshake
+     * deadline.  Augeas memory is bounded; keeping one context open
+     * for process lifetime is the right move.  Callers who genuinely
+     * need to release the context can call close_augeas() explicitly. */
     char *raw = get_augeas(key);
-    close_augeas();
     if (!raw)
         return default_val;
 
@@ -100,8 +130,14 @@ long read_config_long(const char *key, long default_val) {
 char *read_config_str(const char *key, const char *default_val) {
     if (init_augeas() != 0)
         return default_val ? strdup(default_val) : NULL;
+    /* Do NOT close after each get: tearing down and re-creating the
+     * augeas context per key forces a re-scan of /usr/share/augeas/lenses
+     * and costs ~1 second per call.  A loader that reads ~14 keys in
+     * a row burns ~15 s on cold start, blowing the MQC handshake
+     * deadline.  Augeas memory is bounded; keeping one context open
+     * for process lifetime is the right move.  Callers who genuinely
+     * need to release the context can call close_augeas() explicitly. */
     char *raw = get_augeas(key);
-    close_augeas();
     if (!raw)
         return default_val ? strdup(default_val) : NULL;
 
