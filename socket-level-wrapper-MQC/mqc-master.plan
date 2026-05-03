@@ -66,10 +66,10 @@ explicit control over.
 ## Phase ordering (TL;DR)
 
 ```
-P0 ─► P1 (flag day) ─► P2 ─► P3 ─► P4 ─► P5 ─► P6
-6a    1,2,3,4,5         7,8,9 11,12 system spec   user-
-      6+10 close                    testing cleanup facing
-      automatically                                docs
+P0 ─► P1 (flag day) ─► P2 ─► P3 ─► P4 ─► P5 ─► P6 ─► P7
+6a    1,2,3,4,5         7,8,9 11,12 system spec   user-  encrypted-
+      6+10 close                    testing cleanup facing  identity
+      automatically                                docs    rewrite
 ```
 
 - Phases 0–3 are **implementation** (per-issue plans, per-issue code).
@@ -78,6 +78,10 @@ P0 ─► P1 (flag day) ─► P2 ─► P3 ─► P4 ─► P5 ─► P6
   implementers).
 - Phase 6 is **user-facing documentation** (operators, CLI users,
   future Claude Code sessions).
+- Phase 7 is the **encrypted-identity mode rewrite** (deferred —
+  pre-Phase-1 implementation was deleted; clear mode is the
+  default; encrypted mode is opt-in for callers that need
+  traffic-analysis resistance).
 
 ## Phase 0 — Operability foundation (ship-anytime)
 
@@ -713,6 +717,152 @@ already serving this role) that:
 - A new operator joining the team can deploy postWolf, tune the
   knobs, and respond to incidents using only the docs in the
   repo (no code-reading required).
+
+---
+
+## Phase 7 — Encrypted-identity mode rewrite (deferred)
+
+### What this is
+
+The MQC handshake currently runs in **clear-identity** mode: the
+ClientHello sends `cert_index` in plaintext, so an on-path observer
+can read who-is-talking-to-whom even though they cannot read the
+conversation.  **Encrypted-identity** mode hides `cert_index` (and
+the signature) by splitting the handshake into 4 frames instead of
+2:
+
+```
+Phase 1 — anonymous KEM (plaintext):
+  client → server:  { kem_pub }
+  server → client:  { kem_pub_response }
+                    → derive "early secret" from anonymous KEM
+Phase 2 — identity, AEAD-sealed under early secret:
+  client → server:  AEAD(early_key, { cert_index, signature })
+  server → client:  AEAD(early_key, { cert_index, signature })
+                    → derive full session keys + Finished
+```
+
+The cost is one extra round trip (~1.5x latency) and a second key
+schedule.  It's an opt-in mode for callers who want
+traffic-analysis resistance; clear mode remains the default.
+
+### Why this is deferred
+
+The pre-Phase-1 implementation of `mqc_connect_encrypted` /
+`mqc_accept_encrypted` was **deleted** during Phase 1's wire-format
+change (it didn't compose with the new transcript / HKDF / Finished
+/ AAD architecture).  The two entry points are 3-line stubs that
+return NULL with a clear MQC_SECURITY log line.  Every production
+MQC client (`mqc`, `show-tpm`, `bootstrap_ca`, `bootstrap_leaf`,
+`admin_recosign`, the renew/revoke/issue tools) uses clear mode, so
+no caller currently requires encrypted mode.
+
+The recovery is non-trivial:
+- Pull the pre-Phase-1 bodies from git history (commit 6b4c380b6
+  era).
+- Port to the new transcript / HKDF-Extract+Expand / Finished /
+  AAD architecture (the same patterns Phase 1 introduced for clear
+  mode, plus the early-secret split for the two pre-identity
+  frames).
+- Rewrite spec §7 (encrypted handshake) to match — most of §7's
+  current text already describes the 4-frame variant, but the key
+  schedule and AAD definitions need to align with §6 / §8 / §9.1.
+
+### Critical files to modify
+
+1. `socket-level-wrapper-MQC/mqc.c` — `mqc_connect_encrypted` and
+   `mqc_accept_encrypted` bodies.  Strategy decision deferred to
+   the start of Phase 7: keep in-place under `/* --- Encrypted
+   mode --- */` section headers, OR extract to a new
+   `mqc_encrypted.[ch]` (cleaner reviewer-facing diff but requires
+   either making ~80% of mqc.c's `static` helpers non-static via
+   an `mqc_internal.h`, or duplicating, or moving shared helpers
+   to a third file).
+2. `socket-level-wrapper-MQC/mqc.c` (helper restoration) — bring
+   back `derive_early_keys` (removed during Phase 1; comment at
+   line 853 of post-Phase-3 mqc.c flags this).
+3. `socket-level-wrapper-MQC/mqc_peer.c` — no changes expected;
+   peer-verify is mode-agnostic.
+4. `socket-level-wrapper-MQC/mqc.c` `mqc_accept_auto` — currently
+   a thin alias for `mqc_accept`; restore true mode auto-detection
+   by extracting `do_clear_post_read` and `do_encrypted_post_read`
+   helpers.
+5. `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md` — §7
+   reconciliation pass: align frame structure with §6's transcript
+   construction; document the early-secret derivation under §8;
+   confirm §9.1.1 AEAD AAD applies uniformly to early and full
+   keys; update Appendix A worked example to include both modes.
+6. `socket-level-wrapper-MQC/tests/` — encrypted-mode regression
+   suite parallel to the clear-mode tests (handshake roundtrip,
+   strict-parse negatives, name-check, peer-verify).
+7. `mtc-keymaster/tools/c/attack-port-8446.c` — encrypted-mode
+   variants of the existing P3a/P3b wire-attack pack.
+
+### Open design questions (resolve at Phase 7 kickoff)
+
+- **File split (`mqc_encrypted.[ch]` vs in-place).**  Trade-off:
+  reviewer-ergonomics win vs helper-extraction tax.  No call
+  needed until we see how much net-new code the rewrite adds.
+- **Auto-detect vs explicit mode flag.**  Pre-Phase-1
+  `mqc_accept_auto` peeked at the first bytes to decide mode.
+  Post-Phase-1 a strict parser would catch a mode mismatch
+  cleanly anyway; an explicit `cfg.mode = MQC_MODE_ENCRYPTED`
+  knob is simpler.
+- **Whether to keep `mqc_connect_encrypted` as a separate API**
+  or fold mode selection into `mqc_connect` via `cfg.mode`.
+- **Early-secret transcript binding.**  The early-key AEAD
+  protects the cert_index in flight, but the SAME bytes need to
+  be bound into the FULL transcript hash (§6) so a downgrade
+  attack that strips the encryption cannot succeed.  Confirm the
+  post-Phase-1 transcript construction handles this correctly.
+- **Negative-test surface.**  Encrypted mode adds ~10 new attack
+  classes (early-key forgery, mode-downgrade, KEM-share reuse
+  across phases, AAD substitution between early and full keys,
+  Finished-before-identity-revealed).  Each needs a probe in
+  `attack-port-8446.c`.
+
+### Migration runbook (sketch)
+
+1. Build + install.  Restart `mtc-ca.service`.  Encrypted-mode
+   callers: none yet — first encrypted-mode caller is the
+   testbed below.
+2. Add an `--encrypted` flag to `examples/echo_client.c` /
+   `echo_server.c` for end-to-end testing.
+3. Smoke: `echo_client --encrypted` against
+   `echo_server --encrypted` succeeds.  `echo_client` (clear) vs
+   `echo_server --encrypted-only` fails with a clean mode-mismatch
+   diagnostic, and vice versa.
+4. Regression: aggregate suite (`make test-mqc-all`) still 100%;
+   new encrypted-mode suite hits the 4-frame happy path + the
+   ~10 new wire-attack classes.
+5. Operator-facing: add `--encrypted` flag to the CLI tools that
+   want to opt in (`mqc`, `show-tpm`, etc.) — typically those
+   that operate over public networks or shared infrastructure.
+
+### Out of scope (within Phase 7)
+
+- 0-RTT / PSK resumption — would require a third frame ordering
+  and a new key schedule branch.
+- Mode upgrade / downgrade after handshake — connections pick a
+  mode at handshake time and keep it for the connection lifetime.
+- Hiding the suite identifier — the early phase necessarily
+  exposes which KEM is in use.  Hiding it would require either
+  pre-shared suite agreement or a dummy-KEM probe phase, neither
+  of which is in MQC v0.
+
+### Phase 7 exit criteria
+
+- `mqc_connect_encrypted` / `mqc_accept_encrypted` are no longer
+  stubs.
+- `examples/echo_client --encrypted` ↔ `echo_server --encrypted`
+  roundtrip succeeds.
+- Aggregate suite (`make test-mqc-all`) extended with the
+  encrypted-mode happy path + the new wire-attack classes; 100%
+  pass.
+- Spec §7 reconciled with §6 / §8 / §9.1; Appendix A has worked
+  examples for both modes.
+- Documented strategy (file split or in-place) recorded in the
+  Phase 7 plan and reflected in the resulting commit.
 
 ---
 
