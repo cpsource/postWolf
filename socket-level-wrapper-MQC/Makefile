@@ -17,7 +17,7 @@ AR      ?= ar
 
 LIB     = libmqc.a
 OBJS    = mqc.o mqc_common.o mqc_clear.o mqc_encrypted.o mqc_peer.o
-TESTS   = tests/test_name_check
+TESTS   = tests/test_name_check tests/mqc_dnssec_pin
 TARGETS = $(LIB) examples/echo_server examples/echo_client $(TESTS)
 
 V ?= 0
@@ -55,6 +55,16 @@ examples/echo_client: examples/echo_client.c $(LIB) mqc.h
 
 tests/test_name_check: tests/test_name_check.c $(LIB) mqc.h mqc_peer.h
 	$(call quiet,CCLD,$@)$(CC) $(CFLAGS) -I. -o $@ $< ../mtc-keymaster/read-config/read-config.c -L. -lmqc $(LDFLAGS)
+
+# DNSSEC TXT lookup + CA pubkey hash pinning probe (mqc-3 staging).
+# Source lives at the top of the MQC tree (mqc_dnssec_pin.c) but the
+# binary lands in tests/ so it sits alongside the other regression
+# tools.  Built with -DMQC_DNSSEC_PIN_TEST to enable the embedded
+# main(); the same .c file is intended to be compiled WITHOUT that
+# define when it joins libmqc.a as a callable helper.
+# Requires libunbound-dev and libssl-dev.
+tests/mqc_dnssec_pin: mqc_dnssec_pin.c
+	$(call quiet,CCLD,$@)$(CC) $(CFLAGS) -DMQC_DNSSEC_PIN_TEST -o $@ $< -lunbound -lcrypto
 
 # Run the negative-path regression test.  Requires a live MQC
 # listener at factsorlie.com:8446 and a valid TPM at the path
