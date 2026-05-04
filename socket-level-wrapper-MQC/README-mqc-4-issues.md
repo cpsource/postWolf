@@ -38,7 +38,7 @@ But the **implementation is still weaker than TLS 1.3 mainly because of parsing/
 3. **Make DNSSEC TXT pinning mandatory for 8445 bootstrap.** — DONE (mqc-3 server, commit `bf21e4fc9`; tightened in `bdbf08309`)
 4. **Hash exact canonical handshake frames into the transcript.** — DEFERRED as TODO #54 in `mtc-keymaster/README-bugsandtodo.md`; field-based transcript stays for now (see commit `705ccbc21` for the rationale).
 5. **Require Merkle inclusion proof before accepting CA/leaf certs.** — DONE (already in tree at `socket-level-wrapper-MQC/mqc_peer.c::mqc_peer_verify` step 3 + cosignature verify at step 4; both client and server reject with `MQC_SECURITY("PROOF_INVALID: cert N")` on failure).
-6. **Increment AEAD receive sequence only after successful decrypt/auth.** — open (mqc-2 master plan Phase 3, trivial).
+6. **Increment AEAD receive sequence only after successful decrypt/auth.** — DONE 2026-05-04 (commit `88b7fadbe`).  `mqc_common.c::mqc_enc_recv` and `mqc_read` now advance `*seq` / `conn->recv_seq` only on `wc_AesGcmDecrypt` success; failure logs name the actually-failing sequence number.  Verified: 79/79 `attack-port-8446` probes still pass and the happy path is unchanged.
 
 After those, MQC becomes much closer to a real TLS-like authenticated key exchange.
 
