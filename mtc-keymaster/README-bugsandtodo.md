@@ -2453,6 +2453,50 @@ follow-up.  Do it before mqc-3 grows additional callers of
 `sha3_256_file_hex`, since each new caller would have to be
 re-pointed.
 
+### 54. MQC handshake transcript: raw-frame bytes vs field-based hash (LOW)
+
+**Severity:** Low — design-clarity / TLS-1.3 alignment, not an
+exploitable gap.  Same item the second-review pack raised as
+[`README-mqc-2-issues.md`](../socket-level-wrapper-MQC/README-mqc-2-issues.md)
+issue #6 and the third pack reiterates as
+[`README-mqc-4-issues.md`](../socket-level-wrapper-MQC/README-mqc-4-issues.md)
+"highest-priority MQC fix" #4.
+
+**What MQC does today** (spec §6.0,
+[`socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md`](../socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md)):
+the transcript hash is over a structured byte sequence
+`LABEL ‖ u8(version) ‖ u8(MODE_ID) ‖ SUITE_ID ‖
+len(EK_c)‖EK_c ‖ len(CT_s)‖CT_s ‖ s32be(C_c) ‖ s32be(C_s) ‖
+ROLE`.  Every field a handshake frame carries gets explicitly
+bound, with explicit length prefixes on the variable-length
+KEM contributions.
+
+**What TLS 1.3 does** (and what the reviewer prefers):
+`Transcript-Hash = Hash(handshake_message_1 || message_2 ||
+...)` over the literal on-wire bytes.
+
+**Why I left it as-is in mqc-2 and mqc-3.**  The structured
+form binds the same security-relevant content (every field +
+explicit lengths) as raw-frame hashing, while sidestepping the
+ambiguity that comes with hashing JSON: serialisation order,
+whitespace, key duplication.  Switching to raw-frame hashing
+would force MQC to also pin a canonical JSON serialiser (or a
+new binary wire), which is a larger spec change than the
+benefit warrants.
+
+**If we ever do it.**  Either (a) keep the field-based hash
+and add a §6.0 design-rationale paragraph explaining the
+choice (closes the reviewer's concern as documentation), or
+(b) define a canonical handshake serialisation (CBOR? a
+strict JSON profile?) and switch.  Option (a) is the cheap,
+sufficient fix; option (b) is a wire-format bump that should
+only happen alongside another protocol-version cutover.
+
+**Out of scope until.**  Bumping MQC's protocol version for
+some other reason, OR a third reviewer flags it again with
+fresh evidence that the field-based form actually misses
+something.
+
 ---
 
 ## Appendix: Server Directory Layout

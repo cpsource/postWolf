@@ -1,8 +1,14 @@
 I inspected the **8445 CA registration path**. DNSSEC addition is a big improvement, but I see several flaws.
 
+> **Status (2026-05-04): all six items DONE.**  Each section
+> below is annotated with the closing commit; the in-tree
+> source is now consistent with the prescribed fixes.  See the
+> per-issue commit messages for design rationale and live-
+> verification notes.
+
 ## Serious issues
 
-### 1. Public-key cross-check is broken
+### 1. Public-key cross-check is broken — **DONE 2026-05-04 (commit `d5a8779bb`)**
 
 In `mtc_ca_validate.c`, the CA cert fingerprint is:
 
@@ -35,7 +41,7 @@ and compare to `x509_spki_fp`.
 
 ---
 
-### 2. CA revocation gate appears broken
+### 2. CA revocation gate appears broken — **DONE 2026-05-04 (commit `6ca6f65c2`)**
 
 You already require CA subject:
 
@@ -71,7 +77,7 @@ snprintf(ca_subject, sizeof(ca_subject), "%s", subject);
 
 ---
 
-### 3. DNSSEC TXT validation is too loose
+### 3. DNSSEC TXT validation is too loose — **DONE 2026-05-04 (commit `bdbf08309`)**
 
 Right now `mqc_dnssec_validate_ca_kh()` accepts any DNSSEC-secure TXT token containing:
 
@@ -102,7 +108,7 @@ kh == expected hash
 
 ## Medium issues
 
-### 4. CA X.509 cert is parsed with `NO_VERIFY`
+### 4. CA X.509 cert is parsed with `NO_VERIFY` — **DONE 2026-05-04 (commit `c84de74bf`, doc-only)**
 
 This is acceptable only if your real trust anchor is DNSSEC pinning of the SPKI. But then the cert is mostly a structured container, not a real X.509 trust object.
 
@@ -116,7 +122,7 @@ Or verify it is self-signed by the same SPKI.
 
 ---
 
-### 5. No proof-of-possession for CA private key
+### 5. No proof-of-possession for CA private key — **DONE 2026-05-04 (commit `308560ae4`)**
 
 DNSSEC proves the domain published the public-key hash. It does not prove the requester controls the private key.
 
@@ -132,7 +138,7 @@ This prevents registering a CA key the requester cannot actually use.
 
 ---
 
-### 6. Domain/SAN normalization is missing
+### 6. Domain/SAN normalization is missing — **DONE 2026-05-04 (commits `825e75a88` server-side + `1dd96b286` client-side gate)**
 
 Before comparing or querying DNS, normalize and reject weird names:
 
