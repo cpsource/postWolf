@@ -15,6 +15,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <unistd.h>
 
 #include <unbound.h>
 #include <openssl/evp.h>
@@ -238,15 +239,34 @@ static mqc_dnssec_status_t mqc_dnssec_fetch_ca_txt(const char *domain,
      * servers or need DNSSEC validation.
      */
 
-    rc = ub_ctx_add_ta_file(ctx, "/var/lib/unbound/root.key");
-    if (rc != 0) {
-        /*
-         * Common alternatives:
-         *   /usr/share/dns/root.key
-         *   /etc/unbound/root.key
-         */
-        ub_ctx_delete(ctx);
-        return MQC_DNSSEC_RESOLVE_ERROR;
+    {
+        /* Try the well-known root-anchor paths in order.  Different
+         * distros / packages put the IANA root.key in different
+         * places: unbound's own daemon writes /var/lib/unbound/root.key
+         * (and refreshes it via unbound-anchor), Debian's
+         * dns-root-data ships /usr/share/dns/root.key, and a manual
+         * /etc/unbound/root.key is common too.
+         *
+         * ub_ctx_add_ta_file does NOT load the file at call-time —
+         * it records the path and lazily reads at ub_resolve.  If
+         * we register a non-existent path, validator init fails
+         * later even when a valid path was also registered.  So
+         * stat() each candidate up front and call ub_ctx_add_ta_file
+         * exactly once with the first one that exists. */
+        static const char *const ta_paths[] = {
+            "/var/lib/unbound/root.key",
+            "/usr/share/dns/root.key",
+            "/etc/unbound/root.key",
+            NULL
+        };
+        const char *anchor = NULL;
+        for (const char *const *p = ta_paths; *p; p++) {
+            if (access(*p, R_OK) == 0) { anchor = *p; break; }
+        }
+        if (!anchor || ub_ctx_add_ta_file(ctx, anchor) != 0) {
+            ub_ctx_delete(ctx);
+            return MQC_DNSSEC_RESOLVE_ERROR;
+        }
     }
 
     rc = ub_resolve(ctx, qname, 16 /* TXT */, 1 /* IN */, &result);
