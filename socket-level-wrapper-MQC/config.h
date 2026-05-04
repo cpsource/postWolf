@@ -102,4 +102,40 @@
 #define MQC_RL_CERT_HOUR    100
 #endif
 
+/* -- Redis-down failure policy --------------------------------------- */
+/* What every rate-limit / abuse gate does when its Redis backing
+ * store is unreachable.  Three values:
+ *
+ *   "open"          — allow the request, log MQC_SECURITY.  Pre-fix
+ *                     default.  Operationally safest (a Redis blip
+ *                     never causes a service outage) but lets a
+ *                     coordinated attacker who can DoS Redis disable
+ *                     all rate limiting.
+ *
+ *   "closed"        — refuse the request immediately, log
+ *                     MQC_SECURITY.  Stops the attack class but a
+ *                     normal Redis restart causes a brief total
+ *                     outage of every gate-protected port.
+ *
+ *   "closed-after"  — stay fail-OPEN for the first N seconds of
+ *                     Redis being down (covers a routine restart),
+ *                     flip to fail-CLOSED past N (the outage now
+ *                     looks hostile or persistent).  N defaults to
+ *                     a conservative Redis-restart budget; tune via
+ *                     mqc-rl-redis-fail-closed-after-sec.
+ *
+ * The CLOSED_AFTER timer is shared across forks via a tiny tmpfile
+ * (mqc-rl-redis-state-path).  Each child writes the unix timestamp
+ * the FIRST time it sees Redis-down; siblings read it; whichever
+ * child sees Redis-up unlinks it. */
+#ifndef MQC_REDIS_FAIL_POLICY_DEFAULT
+#define MQC_REDIS_FAIL_POLICY_DEFAULT "closed-after"
+#endif
+#ifndef MQC_REDIS_FAIL_CLOSED_AFTER_SEC_DEFAULT
+#define MQC_REDIS_FAIL_CLOSED_AFTER_SEC_DEFAULT 8
+#endif
+#ifndef MQC_REDIS_STATE_PATH_DEFAULT
+#define MQC_REDIS_STATE_PATH_DEFAULT "/tmp/postWolf-mqc-redis-down"
+#endif
+
 #endif /* MQC_CONFIG_H */

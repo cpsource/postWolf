@@ -168,6 +168,16 @@ void mqc_ctx_disable_name_check(mqc_ctx_t *ctx);
  * /etc/postWolf/config (Augeas-parsed) with compiled-in defaults from
  * config.h and mqc.c.  Read-only view — modify only by editing the
  * config file and restarting the process. */
+/* What to do when Redis is unreachable for a rate-limit gate.
+ * See mqc-rl-redis-fail-policy in config and the gate-decision
+ * helper in mqc_common.c.  CLOSED_AFTER stays fail-OPEN for the
+ * first N seconds of Redis being down (matches a routine Redis
+ * restart) and flips to fail-CLOSED past N (assumes outage is
+ * hostile or persistent). */
+#define MQC_REDIS_FAIL_POLICY_OPEN          0
+#define MQC_REDIS_FAIL_POLICY_CLOSED        1
+#define MQC_REDIS_FAIL_POLICY_CLOSED_AFTER  2
+
 struct mqc_runtime_cfg {
     long handshake_stall_sec;
     long handshake_total_sec;
@@ -182,6 +192,9 @@ struct mqc_runtime_cfg {
     long revoked_cache_ttl_sec;
     long sig_freshness_sec;
     int  revocation_policy;       /* MQC_REVOCATION_POLICY_* (issue #7) */
+    int  redis_fail_policy;       /* MQC_REDIS_FAIL_POLICY_* */
+    long redis_fail_closed_after_sec;  /* N for CLOSED_AFTER */
+    char redis_state_path[256];   /* tmpfile recording first-down ts */
 };
 const struct mqc_runtime_cfg *mqc_rt_cfg(void);
 

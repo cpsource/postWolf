@@ -63,3 +63,28 @@ url-local https://factsorlie.com:8444
 #                 recovery only.  A loud REVOCATION_DISABLED warning
 #                 is logged at process start when this is selected.
 # mqc-revocation-policy        mandatory
+
+# What every Redis-backed rate-limit gate (per-IP RL, per-IP fail
+# RL, per-(IP, cert) RL) does when Redis is unreachable.  Default:
+# closed-after.
+#   open          = allow the request, log MQC_SECURITY.  A Redis
+#                   blip never causes an outage but a coordinated
+#                   attacker who can DoS Redis disables every gate.
+#   closed        = refuse every connection while Redis is down.
+#                   Stops the attack class but a normal Redis
+#                   restart causes a brief total outage of every
+#                   gate-protected port.
+#   closed-after  = stay fail-OPEN for the first
+#                   mqc-rl-redis-fail-closed-after-sec seconds
+#                   (covers a routine Redis restart) and flip to
+#                   fail-CLOSED past that (the outage now looks
+#                   hostile or persistent).
+# mqc-rl-redis-fail-policy            closed-after
+# mqc-rl-redis-fail-closed-after-sec  8
+
+# Path to the tmpfile the closed-after policy uses to share
+# "Redis-down since when" state across forks.  The MQC server
+# forks per-accept; this file lets each child write the timestamp
+# the FIRST time it sees Redis-down and lets siblings read it.
+# Default: /tmp/postWolf-mqc-redis-down (no setup needed).
+# mqc-rl-redis-state-path  /tmp/postWolf-mqc-redis-down

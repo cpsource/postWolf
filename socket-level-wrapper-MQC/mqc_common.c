@@ -210,6 +210,51 @@ static void mqc_rt_cfg_init_once(void)
         s_rt_cfg.max_msg_bytes = MQC_MAX_MSG;
     if (s_rt_cfg.max_handshake_bytes > MQC_MAX_HANDSHAKE)
         s_rt_cfg.max_handshake_bytes = MQC_MAX_HANDSHAKE;
+
+    /* Redis-down failure policy.  See config.h header for the
+     * three accepted values + defaults.  Same shape as the
+     * revocation-policy block above: string-typed key, fall back
+     * to the recommended default with a warning if the operator
+     * supplied something we don't recognise. */
+    s_rt_cfg.redis_fail_closed_after_sec =
+        read_config_long("global/mqc-rl-redis-fail-closed-after-sec",
+                         MQC_REDIS_FAIL_CLOSED_AFTER_SEC_DEFAULT);
+    if (s_rt_cfg.redis_fail_closed_after_sec < 0)
+        s_rt_cfg.redis_fail_closed_after_sec = 0;
+    {
+        char *raw = read_config_str("global/mqc-rl-redis-fail-policy",
+                                    MQC_REDIS_FAIL_POLICY_DEFAULT);
+        if (raw && strcmp(raw, "open") == 0) {
+            s_rt_cfg.redis_fail_policy = MQC_REDIS_FAIL_POLICY_OPEN;
+        } else if (raw && strcmp(raw, "closed") == 0) {
+            s_rt_cfg.redis_fail_policy = MQC_REDIS_FAIL_POLICY_CLOSED;
+        } else if (raw && strcmp(raw, "closed-after") == 0) {
+            s_rt_cfg.redis_fail_policy = MQC_REDIS_FAIL_POLICY_CLOSED_AFTER;
+        } else {
+            if (raw && raw[0])
+                fprintf(stderr,
+                    "[MQC-SECURITY] REDIS_FAIL_POLICY_INVALID value=%s, "
+                    "falling back to %s\n",
+                    raw, MQC_REDIS_FAIL_POLICY_DEFAULT);
+            /* Match the default-string */
+            if (strcmp(MQC_REDIS_FAIL_POLICY_DEFAULT, "open") == 0)
+                s_rt_cfg.redis_fail_policy = MQC_REDIS_FAIL_POLICY_OPEN;
+            else if (strcmp(MQC_REDIS_FAIL_POLICY_DEFAULT, "closed") == 0)
+                s_rt_cfg.redis_fail_policy = MQC_REDIS_FAIL_POLICY_CLOSED;
+            else
+                s_rt_cfg.redis_fail_policy = MQC_REDIS_FAIL_POLICY_CLOSED_AFTER;
+        }
+        free(raw);
+    }
+    {
+        char *raw = read_config_str("global/mqc-rl-redis-state-path",
+                                    MQC_REDIS_STATE_PATH_DEFAULT);
+        snprintf(s_rt_cfg.redis_state_path,
+                 sizeof(s_rt_cfg.redis_state_path),
+                 "%s",
+                 (raw && raw[0]) ? raw : MQC_REDIS_STATE_PATH_DEFAULT);
+        free(raw);
+    }
 }
 
 const struct mqc_runtime_cfg *mqc_rt_cfg(void)
@@ -985,6 +1030,77 @@ void mqc_clear_socket_timeout(int fd)
 
 static redisContext *s_redis = NULL;
 
+/* Cross-fork "Redis-down since when" state.
+ *
+ * The MQC server forks per-accept, so process-local state can't tell
+ * a child "Redis has been down for K seconds across the last M
+ * connections" — each child only sees its own one connect attempt.
+ * A tiny tmpfile (default /tmp/postWolf-mqc-redis-down, override via
+ * config knob mqc-rl-redis-state-path) gives us shared state with
+ * zero fork-time setup: each child reads on Redis-down, the first
+ * child writes "now", siblings read it; whichever child sees Redis
+ * back up unlinks it.  Writes race benignly — values converge within
+ * a few seconds and the policy decision tolerates jitter on that
+ * scale.  Used by mqc_redis_down_decide() below. */
+
+typedef enum {
+    MQC_REDIS_DECISION_OPEN,
+    MQC_REDIS_DECISION_CLOSED
+} mqc_redis_decision_t;
+
+static time_t mqc_redis_get_down_since(void)
+{
+    FILE *f = fopen(mqc_rt_cfg()->redis_state_path, "r");
+    long ts = 0;
+    if (!f) return 0;
+    if (fscanf(f, "%ld", &ts) != 1) ts = 0;
+    fclose(f);
+    return (time_t)ts;
+}
+
+static void mqc_redis_mark_down(void)
+{
+    FILE *f;
+    if (mqc_redis_get_down_since() != 0) return;  /* already marked */
+    f = fopen(mqc_rt_cfg()->redis_state_path, "w");
+    if (!f) return;                                /* best effort */
+    fprintf(f, "%ld\n", (long)time(NULL));
+    fclose(f);
+}
+
+static void mqc_redis_mark_up(void)
+{
+    /* Idempotent and racy on purpose: an unlink of a missing path
+     * is a cheap ENOENT, and concurrent unlinks all converge. */
+    unlink(mqc_rt_cfg()->redis_state_path);
+}
+
+/* Caller has already determined Redis is unreachable for this
+ * request.  Returns the policy decision and (if @p out_dt is non-
+ * NULL) the seconds-since-first-down value the caller can include
+ * in its log line. */
+static mqc_redis_decision_t mqc_redis_down_decide(time_t *out_dt)
+{
+    int p = mqc_rt_cfg()->redis_fail_policy;
+    time_t down_since;
+    time_t dt;
+
+    mqc_redis_mark_down();
+    down_since = mqc_redis_get_down_since();
+    dt = down_since ? (time(NULL) - down_since) : 0;
+    if (dt < 0) dt = 0;                            /* clock jump */
+    if (out_dt) *out_dt = dt;
+
+    if (p == MQC_REDIS_FAIL_POLICY_OPEN)
+        return MQC_REDIS_DECISION_OPEN;
+    if (p == MQC_REDIS_FAIL_POLICY_CLOSED)
+        return MQC_REDIS_DECISION_CLOSED;
+    /* CLOSED_AFTER */
+    return (dt < mqc_rt_cfg()->redis_fail_closed_after_sec)
+        ? MQC_REDIS_DECISION_OPEN
+        : MQC_REDIS_DECISION_CLOSED;
+}
+
 void mqc_redis_init(void)
 {
     struct timeval timeout = { 1, 0 };
@@ -992,8 +1108,16 @@ void mqc_redis_init(void)
 
     s_redis = redisConnectWithTimeout("127.0.0.1", 6379, timeout);
     if (!s_redis || s_redis->err) {
-        MQC_LOG("Redis connect failed: %s — rate limiting disabled",
-                s_redis ? s_redis->errstr : "NULL context");
+        /* Promoted from MQC_LOG to MQC_SECURITY: every gate that
+         * relies on Redis (per-IP RL, per-IP fail RL, per-(IP,
+         * cert) RL, fail-recording) silently fails OPEN when
+         * Redis is unreachable.  Operators need to see this in
+         * the journal — without it, an attacker who DoSes Redis
+         * disables rate limiting invisibly. */
+        MQC_SECURITY("REDIS_DOWN: connect failed: %s — every "
+                     "rate-limit gate is now FAIL-OPEN until Redis "
+                     "comes back",
+                     s_redis ? s_redis->errstr : "NULL context");
         if (s_redis) { redisFree(s_redis); s_redis = NULL; }
     } else {
         MQC_LOG("Redis connected for rate limiting");
@@ -1009,7 +1133,14 @@ int mqc_redis_incr(const char *key, int ttl_secs)
 
     reply = redisCommand(s_redis, "INCR %s", key);
     if (!reply || reply->type != REDIS_REPLY_INTEGER) {
-        MQC_LOG("Redis INCR failed for %s — fail-open", key);
+        /* Promoted from MQC_LOG: an in-flight INCR failure is
+         * a Redis-side problem (server crash mid-pipeline,
+         * connection reset).  Caller treats the 0 return as
+         * "no count" → its rate-limit comparison can never
+         * exceed the threshold → fail-open.  Operators need
+         * the loud line. */
+        MQC_SECURITY("RL_FAIL_OPEN: Redis INCR failed for key=%s "
+                     "— gate is fail-open for this request", key);
         if (reply) freeReplyObject(reply);
         return 0;
     }
@@ -1036,7 +1167,21 @@ int mqc_ratelimit_check(const char *ip)
             fprintf(stderr, "[MQC-TIME]   redis_init = %ld ms\n",
                     mqc_now_ms() - _t);
     }
-    if (!s_redis) return 0;  /* no Redis = allow */
+    if (!s_redis) {
+        time_t dt;
+        if (mqc_redis_down_decide(&dt) == MQC_REDIS_DECISION_CLOSED) {
+            MQC_SECURITY("RL_FAIL_CLOSED: per-IP connect-rate gate "
+                         "enforced, Redis down %lds (ip=%s) — "
+                         "rejecting connection per "
+                         "mqc-rl-redis-fail-policy",
+                         (long)dt, ip);
+            return -1;
+        }
+        MQC_SECURITY("RL_FAIL_OPEN: per-IP connect-rate gate disabled, "
+                     "Redis down %lds (ip=%s)", (long)dt, ip);
+        return 0;
+    }
+    mqc_redis_mark_up();
 
     /* Per-minute */
     snprintf(key, sizeof(key), "mqc:%s:conn:m", ip);
@@ -1088,7 +1233,19 @@ int mqc_ratelimit_fail_check(const char *ip)
     redisReply *reply;
     int count_m = 0, count_h = 0;
 
-    if (!s_redis) return 0;
+    if (!s_redis) {
+        time_t dt;
+        if (mqc_redis_down_decide(&dt) == MQC_REDIS_DECISION_CLOSED) {
+            MQC_SECURITY("RL_FAIL_CLOSED: per-IP fail-rate gate "
+                         "enforced, Redis down %lds (ip=%s) — "
+                         "rejecting connection",
+                         (long)dt, ip);
+            return -1;
+        }
+        MQC_SECURITY("RL_FAIL_OPEN: per-IP fail-rate gate disabled, "
+                     "Redis down %lds (ip=%s)", (long)dt, ip);
+        return 0;
+    }
 
     snprintf(key, sizeof(key), "mqc:%s:fail:m", ip);
     reply = redisCommand(s_redis, "GET %s", key);
@@ -1112,7 +1269,16 @@ void mqc_ratelimit_fail_record(const char *ip)
 {
     char key[128];
 
-    if (!s_redis) return;
+    if (!s_redis) {
+        /* Recording side has nothing to fail-closed against — the
+         * connection is already failing, we just can't record it.
+         * One MQC_SECURITY line is enough; no decide() call. */
+        MQC_SECURITY("RL_FAIL_OPEN: failure-recording disabled, "
+                     "Redis unreachable (ip=%s) — this handshake "
+                     "failure will NOT count toward future fail-rate "
+                     "checks, even after Redis comes back", ip);
+        return;
+    }
 
     snprintf(key, sizeof(key), "mqc:%s:fail:m", ip);
     mqc_redis_incr(key, 60);
@@ -1162,7 +1328,20 @@ int mqc_ratelimit_cert_check(const char *ip, int cert_index)
     char key[160];
     int count_m, count_h;
 
-    if (!s_redis) return 0;     /* no Redis = allow */
+    if (!s_redis) {
+        time_t dt;
+        if (mqc_redis_down_decide(&dt) == MQC_REDIS_DECISION_CLOSED) {
+            MQC_SECURITY("RL_FAIL_CLOSED: per-(IP, cert) gate "
+                         "enforced, Redis down %lds (ip=%s cert=%d) "
+                         "— rejecting connection",
+                         (long)dt, ip, cert_index);
+            return -1;
+        }
+        MQC_SECURITY("RL_FAIL_OPEN: per-(IP, cert) gate disabled, "
+                     "Redis down %lds (ip=%s cert=%d)",
+                     (long)dt, ip, cert_index);
+        return 0;
+    }
 
     snprintf(key, sizeof(key), "mqc:%s:cert:m", ip);
     count_m = mqc_redis_sadd_count(key, cert_index, 60);
