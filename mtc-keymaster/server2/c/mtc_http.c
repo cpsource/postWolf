@@ -511,6 +511,7 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
 {
     struct json_object *req, *val;
     const char *domain, *fp_raw, *nonce_type;
+    char domain_canon[256];        /* canonical form, lives for the function */
     const char *label_in = NULL;    /* optional, leaf-only */
     const char *fp_hex_for_db = NULL;  /* NULL = long-lived reservation */
     char fp_hex[65];
@@ -541,7 +542,19 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
         json_object_put(req);
         return;
     }
-    domain = json_object_get_string(val);
+    {
+        const char *raw = json_object_get_string(val);
+        if (!raw || mtc_canonicalize_domain(raw, domain_canon,
+                                            sizeof(domain_canon)) != 0) {
+            http_send_error(io, 400,
+                "invalid 'domain' (must be lowercase ASCII LDH; "
+                "no wildcards, no underscore-prefixed labels, no IDN — "
+                "punycode to xn--... yourself)");
+            json_object_put(req);
+            return;
+        }
+        domain = domain_canon;
+    }
 
     /* Check nonce type (needed before fp validation since leaf nonces
      * may omit fp for long-lived reservation mode). */
@@ -684,7 +697,7 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
          * tokens for operators who want to audit-trail when a
          * pin was minted, but mqc_dnssec_validate_ca_kh ignores
          * unknown tokens. */
-        char dns_name[256], dns_value[512];
+        char dns_name[280], dns_value[512];   /* "_mqc-ca." + 253 + "." + NUL */
         snprintf(dns_name, sizeof(dns_name), "_mqc-ca.%s.", domain);
         snprintf(dns_value, sizeof(dns_value),
                  "v=MQC1; role=ca; alg=ML-DSA-87; "
@@ -739,6 +752,7 @@ static void handle_cancel_nonce(client_io *io, MtcStore *store,
 {
     struct json_object *req, *val, *caller_cert, *sc_j, *tbs_j, *subj_j;
     const char *domain, *label, *caller_subject;
+    char domain_canon[256];        /* canonical form, lives for the function */
     int peer_idx, rc;
     size_t subj_len;
     (void)body_len;
@@ -798,15 +812,27 @@ static void handle_cancel_nonce(client_io *io, MtcStore *store,
         json_object_put(req);
         return;
     }
-    domain = json_object_get_string(val);
+    {
+        const char *raw = json_object_get_string(val);
+        if (!raw || mtc_canonicalize_domain(raw, domain_canon,
+                                            sizeof(domain_canon)) != 0) {
+            http_send_error(io, 400,
+                "invalid 'domain' (must be lowercase ASCII LDH; "
+                "no wildcards, no underscore-prefixed labels, no IDN — "
+                "punycode to xn--... yourself)");
+            json_object_put(req);
+            return;
+        }
+        domain = domain_canon;
+    }
     if (!json_object_object_get_ex(req, "label", &val)) {
         http_send_error(io, 400, "missing 'label'");
         json_object_put(req);
         return;
     }
     label = json_object_get_string(val);
-    if (!domain || !domain[0] || !label || !label[0]) {
-        http_send_error(io, 400, "'domain' and 'label' must both be non-empty");
+    if (!label || !label[0]) {
+        http_send_error(io, 400, "'label' must be non-empty");
         json_object_put(req);
         return;
     }
