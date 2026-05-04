@@ -68,17 +68,21 @@ backfill-pubkey: backfill-pubkey.c \
 
 bootstrap_ca: bootstrap_ca.c mtc_pubkey_db.c mtc_pubkey_db.h \
               $(SERVER_DIR)/mtc_crypt.c $(SERVER_DIR)/mtc_crypt.h \
+              $(SERVER_DIR)/mtc_domain.c $(SERVER_DIR)/mtc_domain.h \
               $(READ_CONFIG_SRC)
 	$(CC) $(CFLAGS) -o $@ \
 		bootstrap_ca.c mtc_pubkey_db.c $(SERVER_DIR)/mtc_crypt.c \
+		$(SERVER_DIR)/mtc_domain.c \
 		$(READ_CONFIG_SRC) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) $(AUGEAS_LIBS)
 
 bootstrap_leaf: bootstrap_leaf.c mtc_pubkey_db.c mtc_pubkey_db.h \
                 $(SERVER_DIR)/mtc_crypt.c $(SERVER_DIR)/mtc_crypt.h \
+                $(SERVER_DIR)/mtc_domain.c $(SERVER_DIR)/mtc_domain.h \
                 $(READ_CONFIG_SRC)
 	$(CC) $(CFLAGS) -o $@ \
 		bootstrap_leaf.c mtc_pubkey_db.c $(SERVER_DIR)/mtc_crypt.c \
+		$(SERVER_DIR)/mtc_domain.c \
 		$(READ_CONFIG_SRC) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) $(AUGEAS_LIBS)
 
@@ -87,8 +91,10 @@ show-tpm: show-tpm.c $(READ_CONFIG_SRC) $(MQC_LIB)
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
 		-lcurl -lhiredis -lpthread -lm
 
-issue_leaf_nonce: issue_leaf_nonce.c $(READ_CONFIG_SRC) $(MQC_LIB)
-	$(CC) $(CFLAGS) -o $@ issue_leaf_nonce.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+issue_leaf_nonce: issue_leaf_nonce.c $(SERVER_DIR)/mtc_domain.c \
+                  $(SERVER_DIR)/mtc_domain.h $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) -o $@ issue_leaf_nonce.c \
+		$(SERVER_DIR)/mtc_domain.c $(READ_CONFIG_SRC) $(MQC_LIB) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
 		-lcurl -lhiredis -lpthread -lm
 
@@ -107,8 +113,10 @@ check-renewal-cert: check-renewal-cert.c $(READ_CONFIG_SRC) $(MQC_LIB)
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
 		-lcurl -lhiredis -lpthread -lm
 
-cancel-nonce: cancel-nonce.c $(READ_CONFIG_SRC) $(MQC_LIB)
-	$(CC) $(CFLAGS) -o $@ cancel-nonce.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+cancel-nonce: cancel-nonce.c $(SERVER_DIR)/mtc_domain.c \
+              $(SERVER_DIR)/mtc_domain.h $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) -o $@ cancel-nonce.c \
+		$(SERVER_DIR)/mtc_domain.c $(READ_CONFIG_SRC) $(MQC_LIB) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
 		-lcurl -lhiredis -lpthread -lm
 

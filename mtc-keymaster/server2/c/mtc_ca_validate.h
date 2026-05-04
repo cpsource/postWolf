@@ -64,38 +64,9 @@ int mtc_validate_ca_cert(struct json_object *extensions,
                          char *spki_fp_out, size_t spki_fp_out_sz,
                          char *san_out, size_t san_out_sz);
 
-/**
- * @brief  Canonicalize and validate a domain name.
- *
- * @details
- * One central LDH/ASCII gate for every domain that flows into a
- * comparison or a DNSSEC query.  Closes README-issues.md issue #6
- * (domain/SAN normalization is missing).
- *
- * Accepts: ASCII LDH per-label names ([a-z0-9-], 1-63 chars per
- * label, total <= 253 bytes), case-insensitive — uppercase input
- * is lowercased into @p out.  A single trailing `.` is stripped
- * (treated as canonical-equivalent to the un-dotted form).
- *
- * Rejects (returns -1, leaves @p out cleared):
- *   - empty or > 253 byte input
- *   - non-ASCII byte (any 0x80-0xFF) — operators must punycode
- *     IDN domains themselves and submit the `xn--...` form
- *   - any character outside `[A-Za-z0-9.-]`
- *   - leading or trailing `-` or `.`, consecutive `.`
- *   - any label longer than 63 bytes
- *   - wildcard prefix `*.`
- *   - any label starting with `_` (catches `_mqc-ca.example.com`
- *     and similar reserved-namespace abuse)
- *
- * @param[in]  in      Input domain (NUL-terminated).
- * @param[out] out     Buffer for the canonical form (NUL-terminated).
- * @param[in]  out_sz  Size of @p out.  MUST be >= strlen(in)+1.
- *
- * @return  0 on accept (with canonical form written to @p out).
- *          -1 on reject (with @p out cleared).
- */
-int mtc_canonicalize_domain(const char *in, char *out, size_t out_sz);
+/* mtc_canonicalize_domain — see mtc_domain.h (extracted in
+ * mqc-3 so client tools can call it without dragging this
+ * translation unit's wolfSSL / json-c includes). */
 
 /**
  * @brief  Validate the DNSSEC-signed TXT record at _mqc-ca.<domain>.

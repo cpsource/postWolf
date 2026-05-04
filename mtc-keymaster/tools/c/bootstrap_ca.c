@@ -32,6 +32,7 @@
 
 #include "mtc_crypt.h"
 #include "mtc_pubkey_db.h"
+#include "mtc_domain.h"
 #include "../../read-config/read-config.h"
 
 #include <stdio.h>
@@ -557,6 +558,21 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Error: --domain is required\n\n");
         usage(argv[0]);
         return 1;
+    }
+
+    /* Canonicalize early — same gate the server applies, just
+     * before the network round-trip.  README-issues.md issue #6. */
+    {
+        static char domain_canon[256];
+        if (mtc_canonicalize_domain(subject, domain_canon,
+                                    sizeof(domain_canon)) != 0) {
+            fprintf(stderr,
+                "Error: --domain '%s' is not a valid lowercase ASCII "
+                "LDH name (no wildcards, no underscore-prefixed labels, "
+                "no IDN — punycode to xn--... yourself).\n", subject);
+            return 1;
+        }
+        subject = domain_canon;
     }
 
     if (label_arg && sanitize_label(label_arg) != 0) {

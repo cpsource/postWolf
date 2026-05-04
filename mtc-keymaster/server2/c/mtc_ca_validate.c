@@ -90,6 +90,7 @@
 
 #include "mtc_ca_validate.h"
 #include "mtc_dnssec_pin.h"
+#include "mtc_domain.h"
 #include "mtc_log.h"
 
 #include <string.h>
@@ -116,121 +117,11 @@ static void ca_to_hex(const uint8_t *data, int sz, char *out)
         snprintf(out + i * 2, 3, "%02x", data[i]);
 }
 
-/******************************************************************************
- * Function:    mtc_canonicalize_domain
- *
- * Description:
- *   See mtc_ca_validate.h for the contract.  README-issues.md
- *   issue #6 — central LDH/ASCII gate for every domain that flows
- *   into a comparison or a DNSSEC query.
- ******************************************************************************/
-int mtc_canonicalize_domain(const char *in, char *out, size_t out_sz)
-{
-    size_t in_len, i;
-    size_t label_len = 0;
-    int prev_was_dot = 1;       /* leading '.' would be rejected */
-
-    if (out && out_sz > 0) out[0] = '\0';
-    if (!in || !out || out_sz == 0) return -1;
-
-    in_len = strlen(in);
-    if (in_len == 0 || in_len > 253) {
-        LOG_WARN("domain canonicalize: empty or > 253 bytes (%zu)", in_len);
-        return -1;
-    }
-
-    /* Strip a single trailing dot if present.  Treat "example.com."
-     * as canonical-equivalent to "example.com". */
-    if (in[in_len - 1] == '.') {
-        in_len--;
-        if (in_len == 0) {
-            LOG_WARN("domain canonicalize: bare trailing dot");
-            return -1;
-        }
-    }
-
-    if (in_len + 1 > out_sz) {
-        LOG_WARN("domain canonicalize: out buffer too small (%zu < %zu)",
-                 out_sz, in_len + 1);
-        return -1;
-    }
-
-    /* Wildcard prefix is rejected outright.  Wildcards have no
-     * defined meaning anywhere downstream (CA enrollment,
-     * DNSSEC pin lookup, leaf-CA authorization). */
-    if (in_len >= 2 && in[0] == '*' && in[1] == '.') {
-        LOG_WARN("domain canonicalize: wildcard prefix '*.' rejected");
-        return -1;
-    }
-
-    for (i = 0; i < in_len; i++) {
-        unsigned char c = (unsigned char)in[i];
-
-        if (c & 0x80) {
-            LOG_WARN("domain canonicalize: non-ASCII byte at offset %zu "
-                     "— punycode the domain to xn--... before submitting",
-                     i);
-            return -1;
-        }
-
-        if (c == '.') {
-            if (prev_was_dot) {
-                LOG_WARN("domain canonicalize: empty label at offset %zu",
-                         i);
-                return -1;
-            }
-            label_len = 0;
-            prev_was_dot = 1;
-            out[i] = '.';
-            continue;
-        }
-
-        /* Per-label start-of-label rules */
-        if (prev_was_dot) {
-            if (c == '_') {
-                LOG_WARN("domain canonicalize: label starts with '_' at "
-                         "offset %zu — reserved-namespace names "
-                         "(e.g., _mqc-ca.example.com) are rejected", i);
-                return -1;
-            }
-            if (c == '-') {
-                LOG_WARN("domain canonicalize: label starts with '-' at "
-                         "offset %zu", i);
-                return -1;
-            }
-        }
-
-        /* LDH */
-        if (!((c >= 'a' && c <= 'z') ||
-              (c >= 'A' && c <= 'Z') ||
-              (c >= '0' && c <= '9') ||
-              c == '-')) {
-            LOG_WARN("domain canonicalize: invalid char 0x%02x at "
-                     "offset %zu", c, i);
-            return -1;
-        }
-
-        if (++label_len > 63) {
-            LOG_WARN("domain canonicalize: label > 63 bytes at offset %zu",
-                     i);
-            return -1;
-        }
-
-        /* Lowercase into output */
-        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
-        out[i] = (char)c;
-        prev_was_dot = 0;
-    }
-
-    /* Trailing '-' check (last char of the last label). */
-    if (in_len > 0 && in[in_len - 1] == '-') {
-        LOG_WARN("domain canonicalize: trailing '-'");
-        return -1;
-    }
-
-    out[in_len] = '\0';
-    return 0;
-}
+/* mtc_canonicalize_domain moved to mtc_domain.c (see
+ * README-issues.md issue #6).  The implementation is pure libc
+ * so the operator tools in tools/c/ can compile it in without
+ * dragging the wolfSSL/json-c headers this translation unit
+ * pulls in. */
 
 /******************************************************************************
  * Function:    mtc_validate_ca_dns_txt

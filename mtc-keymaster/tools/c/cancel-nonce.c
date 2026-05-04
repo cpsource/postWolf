@@ -50,6 +50,7 @@
 
 #include "mqc.h"
 #include "mqc_peer.h"
+#include "mtc_domain.h"
 #include "../../read-config/read-config.h"
 
 #include "../../../socket-level-wrapper-MQC/config.h"
@@ -276,6 +277,21 @@ int main(int argc, char **argv)
         fprintf(stderr, "Error: --domain and --label are both required\n");
         usage(argv[0]);
         return 2;
+    }
+
+    /* Canonicalize early — same gate the server applies, just
+     * before the network round-trip.  README-issues.md issue #6. */
+    {
+        static char domain_canon[256];
+        if (mtc_canonicalize_domain(domain, domain_canon,
+                                    sizeof(domain_canon)) != 0) {
+            fprintf(stderr,
+                "Error: --domain '%s' is not a valid lowercase ASCII "
+                "LDH name (no wildcards, no underscore-prefixed labels, "
+                "no IDN — punycode to xn--... yourself).\n", domain);
+            return 2;
+        }
+        domain = domain_canon;
     }
 
     /* --- Resolve CA identity dir --- */

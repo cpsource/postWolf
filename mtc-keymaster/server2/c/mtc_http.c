@@ -52,6 +52,7 @@
 #include "mtc_checkendpoint.h"
 #include "mtc_log.h"
 #include "mtc_ca_validate.h"
+#include "mtc_domain.h"
 #include "mtc_ratelimit.h"
 #include "mqc.h"
 #include "../../read-config/read-config.h"

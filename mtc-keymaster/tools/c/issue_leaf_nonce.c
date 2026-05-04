@@ -45,6 +45,7 @@
 
 #include "mqc.h"
 #include "mqc_peer.h"
+#include "mtc_domain.h"
 #include "../../read-config/read-config.h"
 
 /* Explicit path — there's also a server-side config.h on the include
@@ -433,6 +434,24 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
+
+    /* Canonicalize early so pathological domains (wildcards, IDN
+     * raw bytes, _-prefixed labels, trailing dots, mixed case)
+     * fail before the network round-trip — same gate the server
+     * applies, just earlier.  See README-issues.md issue #6. */
+    {
+        static char domain_canon[256];
+        if (mtc_canonicalize_domain(domain, domain_canon,
+                                    sizeof(domain_canon)) != 0) {
+            fprintf(stderr,
+                "Error: --domain '%s' is not a valid lowercase ASCII "
+                "LDH name (no wildcards, no underscore-prefixed labels, "
+                "no IDN — punycode to xn--... yourself).\n", domain);
+            return 1;
+        }
+        domain = domain_canon;
+    }
+
     /* Two modes:
      *   - immediate:    --key-file or --fingerprint (fp-bound, 15-min TTL)
      *   - reservation:  --label + --ttl-days (fp late-bound at consume)
