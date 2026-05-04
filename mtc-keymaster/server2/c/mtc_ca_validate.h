@@ -9,6 +9,17 @@
  * validation (see mtc_ca_validate.c file header for the deprecated
  * pre-mqc-3 res_query path).
  *
+ * @par Trust model
+ * The submitted X.509 ca_certificate_pem is a STRUCTURED CONTAINER,
+ * not a real X.509 trust object.  Its signature chain is
+ * intentionally not verified (NO_VERIFY).  The trust authority is
+ * the DNSSEC-pinned SPKI hash at _mqc-ca.<domain>.  The cert is
+ * mined for two pieces of structured data only: the SAN DNS name
+ * (where to look up the DNSSEC TXT) and the SubjectPublicKeyInfo
+ * DER (whose SHA3-256 must equal the published `kh=sha3-256:<HEX>`).
+ * See the mtc_ca_validate.c file header for the full rationale and
+ * its relation to README-issues.md issues #4 and #5.
+ *
  * @date 2026-04-14
  */
 
