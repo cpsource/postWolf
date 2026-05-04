@@ -473,57 +473,11 @@ static void handle_get_certificate(client_io *io, MtcStore *store, int index)
 /* DNS TXT validation for CA certificates                              */
 /* ------------------------------------------------------------------ */
 
-/******************************************************************************
- * Function:    validate_ca_dns_txt
- *
- * Description:
- *   Queries DNS for _mtc-ca.<domain> TXT records and validates against
- *   the expected fingerprint (and optionally a nonce).
- *
- *   Two TXT record formats are supported:
- *     v=mtc-ca1; fp=sha256:<hex>                   — legacy (fp-only)
- *     v=mtc-ca2; fp=sha256:<hex>; n=<nonce>        — nonce-bound
- *
- *   Field matching is exact (split on ';', trim whitespace) to prevent
- *   crafted records from bypassing validation.
- *
- * Input Arguments:
- *   domain          - Domain name (e.g. "example.com").  The query is
- *                     for _mtc-ca.<domain>.
- *   fp_hex          - Expected SHA-256 fingerprint (64 hex chars).
- *   expected_nonce  - If non-NULL, require v=mtc-ca2 with matching nonce.
- *                     If NULL, accept legacy v=mtc-ca1 (fp-only).
- *
- * Returns:
- *   1  if a matching TXT record is found.
- *   0  if no match, DNS query failed, or parse error.
- ******************************************************************************/
-/* validate_ca_dns_txt — now in mtc_ca_validate.c (mtc_validate_ca_dns_txt) */
-
-/******************************************************************************
- * Function:    validate_ca_cert_if_present
- *
- * Description:
- *   If the request extensions contain a ca_certificate_pem, parses the
- *   X.509 certificate, verifies CA:TRUE in Basic Constraints, extracts
- *   the SAN DNS name and SPKI SHA-256 fingerprint, and validates domain
- *   ownership via DNS TXT record.
- *
- *   Root CAs (pathlen absent or > 0) skip DNS validation — only
- *   intermediate CAs (pathlen == 0) require a _mtc-ca.<domain> record.
- *
- *   If no ca_certificate_pem is present, the request is not a CA
- *   enrollment and validation is trivially passed.
- *
- * Input Arguments:
- *   extensions       - Request extensions json_object (may be NULL).
- *   enrollment_nonce - Nonce for v=mtc-ca2 validation (NULL = legacy).
- *
- * Returns:
- *   1  if not a CA request, or CA validated successfully.
- *   0  if CA validation failed (rejected).
- ******************************************************************************/
-/* validate_ca_cert_if_present — now in mtc_ca_validate.c (mtc_validate_ca_cert) */
+/* validate_ca_dns_txt / validate_ca_cert_if_present — now in
+ * mtc_ca_validate.c (mtc_validate_ca_dns_txt /
+ * mtc_validate_ca_cert).  The shared module switched in mqc-3
+ * from libresolv `_mtc-ca./fp=sha256:` to libunbound-DNSSEC
+ * `_mqc-ca./kh=sha3-256:`; see mtc_ca_validate.c file header. */
 
 /******************************************************************************
  * Function:    handle_enrollment_nonce
@@ -598,11 +552,16 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
 
     /* Optional fingerprint.  Required for CA nonces and short-lived
      * leaf nonces; may be omitted for long-lived leaf reservations
-     * (fp late-binds at consume). */
+     * (fp late-binds at consume).
+     *
+     * mqc-3: the canonical hash is SHA3-256 over the SubjectPublicKey
+     * Info DER, advertised on the wire as the prefix `sha3-256:`.
+     * The legacy `sha256:` prefix and SHA-256-of-SPKI form were
+     * dropped as part of the _mtc-ca. → _mqc-ca. cutover. */
     if (json_object_object_get_ex(req, "public_key_fingerprint", &val)) {
         fp_raw = json_object_get_string(val);
-        if (strncmp(fp_raw, "sha256:", 7) == 0)
-            fp_raw += 7;
+        if (strncmp(fp_raw, "sha3-256:", 9) == 0)
+            fp_raw += 9;
         if (strlen(fp_raw) != 64) {
             http_send_error(io, 400, "fingerprint must be exactly 64 hex chars");
             json_object_put(req);
@@ -717,11 +676,19 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
                                json_object_new_string(label_canon));
 
     if (!is_leaf) {
-        /* CA nonce: include DNS record to create */
+        /* CA nonce: include DNS record to create.  mqc-3 wire
+         * format — see mtc_ca_validate.c file header for the
+         * deprecated _mtc-ca./SHA-256/res_query form.  The
+         * server-side validator only requires kh=sha3-256:<fp>;
+         * we still emit the issued nonce + expiry as bonus
+         * tokens for operators who want to audit-trail when a
+         * pin was minted, but mqc_dnssec_validate_ca_kh ignores
+         * unknown tokens. */
         char dns_name[256], dns_value[512];
-        snprintf(dns_name, sizeof(dns_name), "_mtc-ca.%s.", domain);
+        snprintf(dns_name, sizeof(dns_name), "_mqc-ca.%s.", domain);
         snprintf(dns_value, sizeof(dns_value),
-                 "v=mtc-ca2; fp=sha256:%s; n=%s; exp=%ld",
+                 "v=MQC1; role=ca; alg=ML-DSA-87; "
+                 "kh=sha3-256:%s; n=%s; exp=%ld",
                  fp_hex, nonce, expires);
         json_object_object_add(resp, "dns_record_name",
                                json_object_new_string(dns_name));

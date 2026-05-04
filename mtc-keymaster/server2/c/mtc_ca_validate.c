@@ -1,42 +1,63 @@
 /******************************************************************************
  * File:        mtc_ca_validate.c
- * Purpose:     Shared CA certificate validation (DNS TXT + X.509 parsing).
+ * Purpose:     Shared CA certificate validation (DNSSEC TXT + X.509 parsing).
  *
  * Description:
  *   Validates CA enrollment requests by parsing the X.509 certificate,
  *   checking Basic Constraints (CA:TRUE), extracting the SAN DNS name
- *   and SPKI fingerprint, and verifying domain ownership via DNS TXT
- *   record at _mtc-ca.<domain>.
+ *   and SPKI fingerprint, and verifying domain ownership via a
+ *   DNSSEC-validated TXT record at _mqc-ca.<domain>.
  *
  *   Extracted from mtc_http.c so both the HTTP endpoint and the DH
  *   bootstrap port share the same validation logic.
  *
+ *   Wire-format history (this file is the canonical record of the
+ *   change since the README files describe it from the MQC side):
+ *
+ *   - PRE-mqc-3 (deprecated, removed): _mtc-ca.<domain> TXT
+ *     containing `v=mtc-ca1; fp=sha256:<HEX>`, queried via
+ *     libresolv `res_query` with NO DNSSEC validation.  An MITM
+ *     between the server and the recursive resolver could
+ *     substitute the TXT and pin any key.
+ *
+ *   - mqc-3 (current): _mqc-ca.<domain> TXT containing
+ *     `v=MQC1; role=ca; alg=ML-DSA-87; kh=sha3-256:<HEX>`,
+ *     queried via libunbound with full DNSSEC chain validation
+ *     (root anchor + per-zone DNSKEY/RRSIG).  An unsigned or
+ *     bogus zone fails closed; the SPKI hash is SHA3-256 over
+ *     the canonical SubjectPublicKeyInfo DER (encoding-stable;
+ *     matches TODO #53's resolution).
+ *
+ *   No backwards compat — single-deployment cutover; servers
+ *   and operators upgrade together.  Operators publish the new
+ *   record using mtc-keymaster/tools/python/ca_dns_txt.py
+ *   pointed at the CA cert's pubkey.
+ *
  * Dependencies:
  *   mtc_ca_validate.h
+ *   mtc_dnssec_pin.h              (DNSSEC-validated TXT lookup)
  *   mtc_log.h                     (LOG_* macros)
- *   resolv.h, arpa/nameser.h     (DNS TXT lookups)
  *   wolfssl/wolfcrypt/asn.h       (X.509 parsing)
- *   wolfssl/wolfcrypt/sha256.h    (SPKI fingerprint)
+ *   wolfssl/wolfcrypt/sha3.h      (SPKI fingerprint, SHA3-256)
  *   json-c/json.h                 (extensions parsing)
  *
  * Created:     2026-04-14
+ * Modified:    2026-05-04  (mqc-3: drop _mtc-ca./SHA-256/res_query;
+ *              switch to _mqc-ca./SHA3-256/libunbound DNSSEC)
  ******************************************************************************/
 
 #include "mtc_ca_validate.h"
+#include "mtc_dnssec_pin.h"
 #include "mtc_log.h"
 
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
 
-#include <netdb.h>
-#include <resolv.h>
-#include <arpa/nameser.h>
-
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/asn.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
-#include <wolfssl/wolfcrypt/sha256.h>
+#include <wolfssl/wolfcrypt/sha3.h>
 #include <wolfssl/wolfcrypt/coding.h>
 #include <wolfssl/wolfcrypt/types.h>
 
@@ -57,121 +78,47 @@ static void ca_to_hex(const uint8_t *data, int sz, char *out)
  * Function:    mtc_validate_ca_dns_txt
  *
  * Description:
- *   Queries DNS for _mtc-ca.<domain> TXT records and validates against
- *   the expected fingerprint.
+ *   Verifies domain ownership for a CA-enrollment request by checking
+ *   that _mqc-ca.<domain> publishes a DNSSEC-validated TXT record
+ *   containing kh=sha3-256:<expected_fp>.
  *
- *   TXT record format:
- *     v=mtc-ca1; fp=sha256:<hex>
+ *   Calls into mqc_dnssec_validate_ca_kh in mtc_dnssec_pin.c, which
+ *   does the libunbound query + chain validation; only the *value*
+ *   match logic and logging live here.
+ *
+ *   TXT record format (mqc-3, see file header for the deprecated
+ *   pre-mqc-3 format):
+ *     v=MQC1; role=ca; alg=ML-DSA-87; kh=sha3-256:<HEX>
+ *
+ *   The DNSSEC chain is mandatory: an unsigned or bogus zone fails
+ *   closed.  This closes the DNS-resolver-MITM attack class that
+ *   the prior libresolv path left open.
  *
  * Input Arguments:
  *   domain  - Domain name (e.g. "example.com").
- *   fp_hex  - Expected SHA-256 fingerprint (64 hex chars).
+ *   fp_hex  - Expected SHA3-256 fingerprint of the CA cert SPKI DER
+ *             (64 lowercase-hex chars).
  *
  * Returns:
- *   1  if a matching TXT record is found.
- *   0  if no match, DNS query failed, or parse error.
+ *   1  if the DNSSEC chain validates AND a matching TXT record is found.
+ *   0  on any failure (mismatch, bogus chain, insecure zone, no record,
+ *      resolver error, parse error).
  ******************************************************************************/
 int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex)
 {
-    char qname[256];
-    unsigned char answer[4096];
-    int ans_len, i;
-    ns_msg msg;
-    ns_rr rr;
+    mqc_dnssec_status_t st;
 
-    snprintf(qname, sizeof(qname), "_mtc-ca.%s", domain);
+    LOG_INFO("DNSSEC lookup: _mqc-ca.%s", domain);
+    LOG_INFO("  expecting: kh=sha3-256:%s", fp_hex);
 
-    LOG_INFO("DNS lookup: %s", qname);
-    LOG_INFO("  expecting: v=mtc-ca1; fp=sha256:%s", fp_hex);
-
-    ans_len = res_query(qname, ns_c_in, ns_t_txt, answer, sizeof(answer));
-    if (ans_len < 0) {
-        int err = h_errno;
-        const char *reason;
-        switch (err) {
-            case HOST_NOT_FOUND: reason = "domain not found (NXDOMAIN)"; break;
-            case NO_DATA:        reason = "no TXT records exist"; break;
-            case TRY_AGAIN:      reason = "DNS timeout or temporary failure"; break;
-            case NO_RECOVERY:    reason = "DNS server error (non-recoverable)"; break;
-            default:             reason = "unknown error"; break;
-        }
-        LOG_WARN("DNS query failed for %s: %s (h_errno=%d)", qname, reason, err);
-        return 0;
+    st = mqc_dnssec_validate_ca_kh(domain, fp_hex);
+    if (st == MQC_DNSSEC_OK) {
+        LOG_INFO("  MATCH: kh=sha3-256:%.16s... at _mqc-ca.%s",
+                 fp_hex, domain);
+        return 1;
     }
-
-    if (ns_initparse(answer, ans_len, &msg) < 0) {
-        LOG_WARN("failed to parse DNS response for %s", qname);
-        return 0;
-    }
-
-    {
-        int txt_count = 0;
-        int total = ns_msg_count(msg, ns_s_an);
-        LOG_DEBUG("DNS response: %d answer records for %s", total, qname);
-
-        for (i = 0; i < total; i++) {
-            if (ns_parserr(&msg, ns_s_an, i, &rr) == 0 &&
-                ns_rr_type(rr) == ns_t_txt) {
-                const unsigned char *rdata = ns_rr_rdata(rr);
-                int rdlen = ns_rr_rdlen(rr);
-                if (rdlen > 1) {
-                    int txt_len = rdata[0];
-                    if (txt_len <= rdlen - 1) {
-                        char txt[512];
-                        if (txt_len >= (int)sizeof(txt))
-                            txt_len = (int)sizeof(txt) - 1;
-                        memcpy(txt, rdata + 1, txt_len);
-                        txt[txt_len] = '\0';
-                        txt_count++;
-                        LOG_INFO("  found TXT[%d]: \"%s\"", txt_count, txt);
-
-                        /* Parse TXT record fields by splitting on ';'
-                         * and matching exact key=value pairs. */
-                        {
-                            char tmp[512];
-                            char *field, *saveptr;
-                            const char *v_val = NULL, *fp_val = NULL;
-
-                            snprintf(tmp, sizeof(tmp), "%s", txt);
-                            for (field = strtok_r(tmp, ";", &saveptr);
-                                 field != NULL;
-                                 field = strtok_r(NULL, ";", &saveptr)) {
-                                while (*field == ' ') field++;
-                                if (strncmp(field, "v=", 2) == 0)
-                                    v_val = field + 2;
-                                else if (strncmp(field, "fp=sha256:", 10) == 0)
-                                    fp_val = field + 10;
-                            }
-
-                            /* Log what we parsed vs what we need */
-                            if (v_val)
-                                LOG_DEBUG("    parsed: v=%s fp=%s",
-                                          v_val, fp_val ? fp_val : "(none)");
-
-                            if (v_val && strcmp(v_val, "mtc-ca1") == 0 &&
-                                fp_val && strcmp(fp_val, fp_hex) == 0) {
-                                LOG_INFO("  MATCH: v=mtc-ca1 for %s", qname);
-                                return 1;
-                            }
-
-                            /* Log mismatch details */
-                            if (v_val && fp_val) {
-                                if (strcmp(fp_val, fp_hex) != 0)
-                                    LOG_WARN("  mismatch: fingerprint differs");
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (txt_count == 0)
-            LOG_WARN("no TXT records found in DNS response for %s", qname);
-        else
-            LOG_WARN("no matching TXT record for %s (%d record(s) checked)",
-                     qname, txt_count);
-    }
-
+    LOG_WARN("DNSSEC validation failed for _mqc-ca.%s: %s",
+             domain, mqc_dnssec_status_string(st));
     return 0;
 }
 
@@ -181,8 +128,9 @@ int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex)
  * Description:
  *   If extensions contain ca_certificate_pem, parses the X.509 cert,
  *   verifies CA:TRUE in Basic Constraints, extracts the SAN DNS name
- *   and SPKI SHA-256 fingerprint, and validates domain ownership via
- *   DNS TXT record (v=mtc-ca1; fp=sha256:<hex>).
+ *   and SPKI SHA3-256 fingerprint, and validates domain ownership via
+ *   a DNSSEC-validated TXT record at _mqc-ca.<domain> in the form
+ *   `v=MQC1; role=ca; alg=ML-DSA-87; kh=sha3-256:<HEX>`.
  *
  *   All CAs require DNS validation (no root CA bypass).
  *   CA enrollment does not use a nonce — only leaf enrollment does.
@@ -285,10 +233,13 @@ int mtc_validate_ca_cert(struct json_object *extensions,
             snprintf(san_out, san_out_sz, "%s", domain);
         }
 
-        /* Compute SHA-256 fingerprint of SubjectPublicKeyInfo DER */
+        /* Compute SHA3-256 fingerprint of SubjectPublicKeyInfo DER.
+         * Switched from SHA-256 in mqc-3 to align with the wire
+         * format on _mqc-ca.<domain> TXT (kh=sha3-256:<HEX>) and
+         * with TODO #53's "hash the canonical SPKI DER" resolution. */
         {
-            wc_Sha256 sha;
-            uint8_t h[32];
+            wc_Sha3 sha;
+            uint8_t h[WC_SHA3_256_DIGEST_SIZE];
             uint8_t spki_buf[4096];  /* ML-DSA-87 SPKI is ~2.6KB */
             word32 spki_sz = sizeof(spki_buf);
 
@@ -300,11 +251,11 @@ int mtc_validate_ca_cert(struct json_object *extensions,
                 return 0;
             }
 
-            wc_InitSha256(&sha);
-            wc_Sha256Update(&sha, spki_buf, spki_sz);
-            wc_Sha256Final(&sha, h);
-            wc_Sha256Free(&sha);
-            ca_to_hex(h, 32, fp_hex);
+            wc_InitSha3_256(&sha, NULL, INVALID_DEVID);
+            wc_Sha3_256_Update(&sha, spki_buf, spki_sz);
+            wc_Sha3_256_Final(&sha, h);
+            wc_Sha3_256_Free(&sha);
+            ca_to_hex(h, WC_SHA3_256_DIGEST_SIZE, fp_hex);
         }
 
         LOG_DEBUG("public key fingerprint: %.16s...", fp_hex);

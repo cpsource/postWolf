@@ -8,8 +8,12 @@
  *   CA certificate in extensions), receives the MTC certificate, and
  *   stores it in ~/.TPM/<subject>/.
  *
- *   The server performs DNS TXT validation at _mtc-ca.<domain> for
- *   intermediate CAs.  Root CAs skip DNS validation.
+ *   The server performs DNSSEC-validated TXT validation at
+ *   _mqc-ca.<domain> for every CA enrollment (no root bypass);
+ *   the published TXT must contain
+ *   `v=MQC1; role=ca; alg=ML-DSA-87; kh=sha3-256:<HEX>` where
+ *   <HEX> is SHA3-256 of the cert's SPKI DER.  Generate the
+ *   record with `ca_dns_txt.py --cert <PATH> --domain <DOMAIN>`.
  *
  *   Usage:
  *     bootstrap_ca --server HOST:PORT --domain DOMAIN \
@@ -443,9 +447,12 @@ static void usage(const char *prog)
     printf("  --dry-run            Do everything but don't save to TPM\n");
     printf("  -v, --verbose        Verbose output\n");
     printf("  -h, --help           Show this help\n");
-    printf("\nNote: Intermediate CAs require a DNS TXT record at\n");
-    printf("  _mtc-ca.<domain> with format:\n");
-    printf("  v=mtc-ca1; fp=sha256:<fingerprint>\n");
+    printf("\nNote: CA enrollment requires a DNSSEC-signed DNS TXT\n");
+    printf("  record at _mqc-ca.<domain> with format:\n");
+    printf("  v=MQC1; role=ca; alg=ML-DSA-87; kh=sha3-256:<fingerprint>\n");
+    printf("  where <fingerprint> is SHA3-256 over the CA cert's SPKI DER.\n");
+    printf("  Generate the record with:\n");
+    printf("    ca_dns_txt.py --domain <DOMAIN> --cert <PATH-TO-CA-CERT>\n");
 }
 
 /******************************************************************************

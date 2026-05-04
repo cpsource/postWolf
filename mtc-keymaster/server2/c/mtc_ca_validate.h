@@ -1,10 +1,13 @@
 /**
  * @file mtc_ca_validate.h
- * @brief Shared CA certificate validation (DNS TXT + X.509 parsing).
+ * @brief Shared CA certificate validation (DNSSEC TXT + X.509 parsing).
  *
  * @details
  * Extracted from mtc_http.c so that both the HTTP endpoint and the DH
- * bootstrap port can validate CA enrollment requests.
+ * bootstrap port can validate CA enrollment requests.  As of mqc-3
+ * the DNS leg goes through libunbound with full DNSSEC chain
+ * validation (see mtc_ca_validate.c file header for the deprecated
+ * pre-mqc-3 res_query path).
  *
  * @date 2026-04-14
  */
@@ -24,8 +27,8 @@
  * DNS validation (no root CA bypass).  CA enrollment does not use
  * an enrollment nonce — only leaf enrollment does.
  *
- * When @p spki_fp_out is non-NULL, writes the hex-encoded SHA-256 of
- * the X.509's SPKI (64 chars + NUL) so the caller can cross-check
+ * When @p spki_fp_out is non-NULL, writes the hex-encoded SHA3-256
+ * of the X.509's SPKI (64 chars + NUL) so the caller can cross-check
  * that the separately-submitted `public_key_pem` field in the
  * enrollment body has the same fingerprint.  Without this check an
  * attacker could submit a legitimate operator's public X.509 in
@@ -51,12 +54,22 @@ int mtc_validate_ca_cert(struct json_object *extensions,
                          char *san_out, size_t san_out_sz);
 
 /**
- * @brief  Validate DNS TXT record at _mtc-ca.<domain>.
+ * @brief  Validate the DNSSEC-signed TXT record at _mqc-ca.<domain>.
+ *
+ * @details
+ * Looks up _mqc-ca.<domain> via libunbound (full DNSSEC chain
+ * validation, no fall-back to unsigned answers) and accepts iff
+ * any TXT RR contains a `kh=sha3-256:<fp_hex>` token.
  *
  * @param[in] domain  Domain name to query.
- * @param[in] fp_hex  Expected SHA-256 fingerprint (64 hex chars).
+ * @param[in] fp_hex  Expected SHA3-256 fingerprint of the SPKI DER
+ *                    (64 lowercase-hex chars).
  *
- * @return  1 if matching TXT record found.  0 if no match.
+ * @return  1 if the chain validates AND a matching TXT is found.
+ *          0 on any failure (mismatch, bogus chain, insecure zone,
+ *          no record, resolver error, parse error).  All failure
+ *          modes log a corresponding LOG_WARN; the caller should
+ *          treat 0 as a hard reject.
  */
 int mtc_validate_ca_dns_txt(const char *domain, const char *fp_hex);
 

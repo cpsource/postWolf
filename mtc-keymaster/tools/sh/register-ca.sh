@@ -202,24 +202,32 @@ else
 fi
 
 # --- 2. extract TXT record ---
-# ca_dns_txt.py emits:
-#   _mtc-ca.<domain>.  IN TXT  "v=mtc-ca1; fp=sha256:<hex>"
-TXT_LINE="$(ca_dns_txt.py "$CA_DATA/ca_cert.pem" \
+# ca_dns_txt.py --cert emits the mqc-3 wire format:
+#   _mqc-ca.<domain>.  IN TXT  "v=MQC1; role=ca; alg=ML-DSA-87; kh=sha3-256:<hex>"
+# The kh value is SHA3-256 of the CA cert's SPKI DER, matching what
+# mtc_ca_validate.c::mtc_validate_ca_cert recomputes server-side.
+TXT_LINE="$(ca_dns_txt.py --cert "$CA_DATA/ca_cert.pem" \
+                          --domain "$DOMAIN" \
              | awk -F'"' '/IN TXT/ { print $2; exit }')"
 [ -n "$TXT_LINE" ] || {
     echo "ERROR: could not parse ca_dns_txt.py output" >&2; exit 1;
 }
 EXPECTED_FP="$(echo "$TXT_LINE" \
-    | sed -n 's/.*fp=sha256:\([a-f0-9]*\).*/\1/p')"
+    | sed -n 's/.*kh=sha3-256:\([a-f0-9]*\).*/\1/p')"
 [ -n "$EXPECTED_FP" ] || {
-    echo "ERROR: no fingerprint in TXT record" >&2; exit 1;
+    echo "ERROR: no kh=sha3-256 fingerprint in TXT record" >&2; exit 1;
 }
 
 cat <<BANNER
 
-Publish this DNS TXT record at your DNS provider:
+Publish this DNSSEC-signed DNS TXT record at your DNS provider:
 
-    _mtc-ca.$DOMAIN.  IN  TXT  "$TXT_LINE"
+    _mqc-ca.$DOMAIN.  IN  TXT  "$TXT_LINE"
+
+The zone MUST have a DS record at its parent (.com / .org / etc.)
+and an active KSK/ZSK signing the TXT.  An unsigned zone will be
+rejected by the server's libunbound DNSSEC validator with
+"DNSSEC insecure or unsigned".
 
 BANNER
 
@@ -239,8 +247,8 @@ poll_dns_cycle() {
     while [ "$i" -lt "$POLL_ROUNDS" ]; do
         i=$((i + 1))
         got="$(dig @"$RESOLVER" +short +time=3 +tries=1 TXT \
-               "_mtc-ca.$DOMAIN" 2>/dev/null \
-               | tr -d '"' | grep -F "fp=sha256:$EXPECTED_FP" || true)"
+               "_mqc-ca.$DOMAIN" 2>/dev/null \
+               | tr -d '"' | grep -F "kh=sha3-256:$EXPECTED_FP" || true)"
         if [ -n "$got" ]; then
             draw_bar "$POLL_ROUNDS" "$POLL_ROUNDS" "visible ✓"
             [ -t 1 ] && printf "\n"

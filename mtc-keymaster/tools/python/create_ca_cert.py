@@ -201,20 +201,25 @@ subjectAltName = DNS:{domain}
             if not line.startswith("-----")
         )
         spki_der = base64.b64decode(b64_data)
-        spki_fp = hashlib.sha256(spki_der).hexdigest()
+        spki_fp = hashlib.sha3_256(spki_der).hexdigest()
 
-    print(f"\nDNS TXT record required for enrollment:")
-    print(f"  Record name:  _mtc-ca.{domain}")
-    print(f"  Record value: v=mtc-ca1; fp=sha256:{spki_fp}")
-    print(f"\n  (For nonce-bound enrollment, use v=mtc-ca2 with the nonce)")
+    record_value = (f"v=MQC1; role=ca; alg=ML-DSA-87; "
+                    f"kh=sha3-256:{spki_fp}")
+    print(f"\nDNSSEC-signed DNS TXT record required for enrollment:")
+    print(f"  Record name:  _mqc-ca.{domain}")
+    print(f"  Record value: {record_value}")
+    print(f"\n  The zone hosting _mqc-ca.{domain} MUST have a DS record at")
+    print(f"  its parent and an active KSK signing the TXT, otherwise the")
+    print(f"  server's libunbound check rejects with 'DNSSEC insecure or")
+    print(f"  unsigned'.")
 
     # Save DNS record info
     dns_path = out_dir / "dns_record.txt"
     with open(dns_path, "w") as f:
-        f.write(f"# DNS TXT record for MTC CA enrollment\n")
+        f.write(f"# DNSSEC-signed DNS TXT record for MQC CA enrollment\n")
         f.write(f"# Add this as a TXT record at your DNS provider\n")
-        f.write(f"Name:  _mtc-ca.{domain}\n")
-        f.write(f"Value: v=mtc-ca1; fp=sha256:{spki_fp}\n")
+        f.write(f"Name:  _mqc-ca.{domain}\n")
+        f.write(f"Value: {record_value}\n")
     print(f"  Saved to:     {dns_path}")
 
     print(f"\nTo enroll via bootstrap:")
