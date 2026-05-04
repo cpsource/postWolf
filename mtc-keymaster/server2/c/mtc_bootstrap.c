@@ -795,13 +795,21 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
              * subject is revoked, the server operator has explicitly
              * said "no" to this domain.  Refuse re-enrollment.  The
              * CA subject is "<domain>-ca" (per bootstrap_ca.c's
-             * convention). */
+             * convention) — `subject` already carries that suffix
+             * because the earlier expected-subject check above
+             * required `subject == <x509_san>-ca`.
+             *
+             * Pre-fix this block re-appended "-ca" and looked up
+             * "<domain>-ca-ca" in the cert store; nothing ever
+             * matched, so the revocation gate was a no-op and
+             * revoked CAs could silently re-enroll.
+             * README-issues.md issue #2. */
             {
                 char ca_subject[520];
                 int latest_idx = -1;
                 int k;
 
-                snprintf(ca_subject, sizeof(ca_subject), "%s-ca", subject);
+                snprintf(ca_subject, sizeof(ca_subject), "%s", subject);
                 for (k = 0; k < store->cert_count; k++) {
                     struct json_object *entry = store->certificates[k];
                     struct json_object *sc_j, *tbs_j, *subj_j;
