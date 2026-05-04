@@ -60,6 +60,8 @@
 #include <wolfssl/wolfcrypt/curve25519.h>
 #include <wolfssl/wolfcrypt/hmac.h>
 #include <wolfssl/wolfcrypt/sha256.h>
+#include <wolfssl/wolfcrypt/sha3.h>
+#include <wolfssl/wolfcrypt/asn_public.h>
 #include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/types.h>
 #include <wolfssl/wolfcrypt/dilithium.h>
@@ -715,18 +717,55 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
              * attacker could submit the legitimate operator's public X.509
              * (which passes DNS validation) in ca_certificate_pem while
              * planting their own public_key_pem at the top level — the
-             * minted cert would then bind to the attacker's key. */
+             * minted cert would then bind to the attacker's key.
+             *
+             * Both sides MUST use the same canonical hash:
+             * SHA3-256 over the SubjectPublicKeyInfo DER.  The cert
+             * side (mtc_validate_ca_cert in mtc_ca_validate.c)
+             * computes that via wc_GetSubjectPubKeyInfoDerFromCert +
+             * wc_Sha3_256_*; the PEM side decodes the PEM with
+             * wc_PubKeyPemToDer (which produces the same SPKI DER)
+             * and runs the same SHA3-256.  Pre-mqc-3-server this
+             * arm hashed SHA-256(PEM text bytes), which can never
+             * match SHA3-256(SPKI DER) — the cross-check was a
+             * no-op (always rejected) for any well-formed CA
+             * enrollment.  README-issues.md issue #1. */
             if (x509_spki_fp[0]) {
-                wc_Sha256 sha_pk;
-                uint8_t pk_h[32];
+                unsigned char spki_der[4096]; /* ML-DSA-87 SPKI ~2.6 KB */
+                int spki_der_sz;
+                wc_Sha3 sha_pk;
+                uint8_t pk_h[WC_SHA3_256_DIGEST_SIZE];
                 char pk_fp[65];
                 int pi;
-                wc_InitSha256(&sha_pk);
-                wc_Sha256Update(&sha_pk, (const uint8_t *)pub_key_pem,
-                                (word32)strlen(pub_key_pem));
-                wc_Sha256Final(&sha_pk, pk_h);
-                wc_Sha256Free(&sha_pk);
-                for (pi = 0; pi < 32; pi++)
+
+                spki_der_sz = wc_PubKeyPemToDer(
+                    (const unsigned char *)pub_key_pem,
+                    (int)strlen(pub_key_pem),
+                    spki_der, (int)sizeof(spki_der));
+                if (spki_der_sz <= 0) {
+                    LOG_WARN("bootstrap: CA enrollment refused — "
+                             "public_key_pem PEM-to-DER failed (%d)",
+                             spki_der_sz);
+                    {
+                        const char *err_json = "{\"status\":\"error\","
+                            "\"message\":\"public_key_pem is not a "
+                            "valid PEM-encoded public key.\"}";
+                        unsigned int err_enc_len = sizeof(enc_buf);
+                        if (mtc_crypt_encode(crypt_ctx,
+                                (unsigned char *)err_json,
+                                (unsigned int)strlen(err_json),
+                                enc_buf, &err_enc_len) == 0) {
+                            send_length_prefixed(fd, enc_buf, err_enc_len);
+                        }
+                    }
+                    goto cleanup;
+                }
+
+                wc_InitSha3_256(&sha_pk, NULL, INVALID_DEVID);
+                wc_Sha3_256_Update(&sha_pk, spki_der, (word32)spki_der_sz);
+                wc_Sha3_256_Final(&sha_pk, pk_h);
+                wc_Sha3_256_Free(&sha_pk);
+                for (pi = 0; pi < WC_SHA3_256_DIGEST_SIZE; pi++)
                     snprintf(pk_fp + pi * 2, 3, "%02x", pk_h[pi]);
                 pk_fp[64] = '\0';
 
