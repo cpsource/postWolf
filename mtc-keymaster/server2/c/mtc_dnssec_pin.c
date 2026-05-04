@@ -396,59 +396,130 @@ const char *mqc_dnssec_status_string(mqc_dnssec_status_t st)
 /*
  * Caller-supplied expected_hash variant — used by the
  * mtc-keymaster bootstrap port (8445) to validate CA-enrollment
- * requests.  Same DNSSEC fetch as mqc_pin_ca_key_from_dnssec but
- * compares the published kh value to a hash the caller already
- * has in hand (e.g., SHA3-256 of the requester's CA cert SPKI
- * DER), instead of hashing a local PEM file.
+ * requests.  expected_hash MUST be a 64-character lowercase-hex
+ * SHA3-256 (typically SHA3-256 of the requester's CA cert SPKI
+ * DER).
  *
- * expected_hash MUST be a 64-character lowercase-hex SHA3-256.
- * Returns MQC_DNSSEC_OK iff the chain validates AND the joined
- * TXT contains a kh=sha3-256:<expected_hash> token (any RR,
- * any position).  Returns the most specific error status
- * otherwise.
+ * Returns MQC_DNSSEC_OK iff:
+ *   - the DNSSEC chain to _mqc-ca.<domain> validates, AND
+ *   - some single TXT RR at that name contains the FULL MQC
+ *     pin record:
+ *         v=MQC1
+ *         role=ca
+ *         alg=ML-DSA-87
+ *         kh=sha3-256:<expected_hash>
+ *
+ * Per-RR matching is load-bearing.  An earlier version of this
+ * function joined every RR's tokens into one ;-separated soup
+ * and accepted any kh=sha3-256:<expected_hash> across the soup;
+ * an unrelated DNSSEC-secure TXT at the same name carrying just
+ * the kh= token (no v=, no role=, no alg=) could authorise
+ * enrollment, OR the v= and kh= could come from different RRs
+ * and still cross-validate.  README-issues.md issue #3.  This
+ * implementation queries libunbound directly so it can walk
+ * each result->data[i] independently — the existing
+ * mqc_dnssec_fetch_ca_txt is intentionally not used because its
+ * RR-joining contract serves the simpler file-bytes pin path.
+ *
+ * Returns the most specific error status on the failure paths
+ * (resolve / bogus / insecure / no_data / parse / mismatch).
  */
 mqc_dnssec_status_t mqc_dnssec_validate_ca_kh(const char *domain,
                                               const char *expected_hash)
 {
-    char txt[MQC_MAX_TXT_LEN];
-    char tmp[MQC_MAX_TXT_LEN];
-    char *saveptr = NULL;
-    char *tok;
-    const char *prefix = "kh=sha3-256:";
-    size_t prefix_len = strlen(prefix);
-    mqc_dnssec_status_t st;
+    struct ub_ctx *ctx = NULL;
+    struct ub_result *result = NULL;
+    char qname[512];
+    int rc, i;
+    mqc_dnssec_status_t out_st = MQC_DNSSEC_HASH_MISMATCH;
 
     if (!domain || !expected_hash ||
         strlen(expected_hash) != MQC_HASH_HEX_LEN)
         return MQC_DNSSEC_PARSE_ERROR;
-
-    st = mqc_dnssec_fetch_ca_txt(domain, txt, sizeof(txt));
-    if (st != MQC_DNSSEC_OK)
-        return st;
-
-    /* Walk every ;-separated token across all RRs (the fetch
-     * helper joins multiple RRs with ';' for exactly this
-     * reason — see commit 39b22a422).  Match any kh=sha3-256:
-     * value against expected_hash so domains that publish
-     * multiple pins (different keys, same name) still validate
-     * for whichever pin the caller asked about. */
-    if (strlen(txt) >= sizeof(tmp))
+    if (snprintf(qname, sizeof(qname), "_mqc-ca.%s", domain)
+        >= (int)sizeof(qname))
         return MQC_DNSSEC_PARSE_ERROR;
-    strncpy(tmp, txt, sizeof(tmp));
-    tmp[sizeof(tmp) - 1] = '\0';
 
-    for (tok = strtok_r(tmp, ";", &saveptr); tok;
-         tok = strtok_r(NULL, ";", &saveptr)) {
-        tok = trim_left(tok);
-        trim_right(tok);
-        if (strncmp(tok, prefix, prefix_len) != 0)
-            continue;
-        if (strlen(tok + prefix_len) != MQC_HASH_HEX_LEN)
-            continue;
-        if (strcmp(tok + prefix_len, expected_hash) == 0)
-            return MQC_DNSSEC_OK;
+    ctx = ub_ctx_create();
+    if (!ctx) return MQC_DNSSEC_RESOLVE_ERROR;
+
+    /* Same trust-anchor probe as mqc_dnssec_fetch_ca_txt — see
+     * commit 8625d41f0 for why we stat() each candidate path
+     * before calling ub_ctx_add_ta_file. */
+    {
+        static const char *const ta_paths[] = {
+            "/var/lib/unbound/root.key",
+            "/usr/share/dns/root.key",
+            "/etc/unbound/root.key",
+            NULL
+        };
+        const char *anchor = NULL;
+        const char *const *p;
+        for (p = ta_paths; *p; p++) {
+            if (access(*p, R_OK) == 0) { anchor = *p; break; }
+        }
+        if (!anchor || ub_ctx_add_ta_file(ctx, anchor) != 0) {
+            ub_ctx_delete(ctx);
+            return MQC_DNSSEC_RESOLVE_ERROR;
+        }
     }
-    return MQC_DNSSEC_HASH_MISMATCH;
+
+    rc = ub_resolve(ctx, qname, 16 /* TXT */, 1 /* IN */, &result);
+    if (rc != 0 || !result) {
+        if (result) ub_resolve_free(result);
+        ub_ctx_delete(ctx);
+        return MQC_DNSSEC_RESOLVE_ERROR;
+    }
+    if (result->bogus)   { out_st = MQC_DNSSEC_BOGUS;    goto done; }
+    if (!result->secure) { out_st = MQC_DNSSEC_INSECURE; goto done; }
+    if (!result->havedata || !result->data || !result->data[0]) {
+        out_st = MQC_DNSSEC_NO_DATA;
+        goto done;
+    }
+
+    /* Per-RR validation.  Each RR must satisfy ALL FOUR required
+     * tokens.  If any RR does, accept; otherwise mismatch. */
+    for (i = 0; result->data[i]; i++) {
+        char rr_text[MQC_MAX_TXT_LEN];
+        char tmp[MQC_MAX_TXT_LEN];
+        char *saveptr = NULL, *tok;
+        int got_v = 0, got_role = 0, got_alg = 0, got_kh = 0;
+        size_t cl;
+
+        if (join_txt_rdata((const unsigned char *)result->data[i],
+                           result->len[i], rr_text, sizeof(rr_text)) != 0)
+            continue;
+        cl = strlen(rr_text);
+        if (cl == 0 || cl >= sizeof(tmp)) continue;
+        memcpy(tmp, rr_text, cl + 1);
+
+        for (tok = strtok_r(tmp, ";", &saveptr); tok;
+             tok = strtok_r(NULL, ";", &saveptr)) {
+            tok = trim_left(tok);
+            trim_right(tok);
+            if (strcmp(tok, "v=MQC1") == 0) {
+                got_v = 1;
+            } else if (strcmp(tok, "role=ca") == 0) {
+                got_role = 1;
+            } else if (strcmp(tok, "alg=ML-DSA-87") == 0) {
+                got_alg = 1;
+            } else if (strncmp(tok, "kh=sha3-256:", 12) == 0 &&
+                       strlen(tok + 12) == MQC_HASH_HEX_LEN &&
+                       strcmp(tok + 12, expected_hash) == 0) {
+                got_kh = 1;
+            }
+        }
+
+        if (got_v && got_role && got_alg && got_kh) {
+            out_st = MQC_DNSSEC_OK;
+            goto done;
+        }
+    }
+
+done:
+    if (result) ub_resolve_free(result);
+    if (ctx) ub_ctx_delete(ctx);
+    return out_st;
 }
 
 #ifdef MQC_DNSSEC_PIN_TEST
