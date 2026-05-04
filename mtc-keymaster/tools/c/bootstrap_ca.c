@@ -51,7 +51,21 @@
 #include <wolfssl/wolfcrypt/curve25519.h>
 #include <wolfssl/wolfcrypt/hmac.h>
 #include <wolfssl/wolfcrypt/random.h>
+#include <wolfssl/wolfcrypt/sha3.h>
+#include <wolfssl/wolfcrypt/asn_public.h>
+#include <wolfssl/wolfcrypt/dilithium.h>
 #include <wolfssl/wolfcrypt/types.h>
+
+/* Proof-of-possession constants — MUST match the server's
+ * mtc-keymaster/server2/c/mtc_bootstrap.c.  See
+ * mtc-keymaster/server2/c/README-issues.md issue #5 for the
+ * design.  No header is shared because client and server live
+ * in separate compilation units that don't otherwise depend on
+ * each other; both sides assert this label is exactly 16 bytes. */
+#define BOOTSTRAP_POP_NONCE_SZ 32
+#define MTC_CA_POP_LABEL       "mtc-ca-pop/v1\n\x00"
+#define MTC_CA_POP_LABEL_LEN   16
+#define MTC_CA_POP_PREFIX      "MQC-CA-REGISTER"
 
 #include <json-c/json.h>
 
@@ -489,6 +503,7 @@ int main(int argc, char *argv[])
     uint8_t server_pub[CURVE25519_KEYSIZE];
     uint8_t salt[SALT_SZ];
     uint8_t aes_key[AES_KEY_SZ];
+    char    pop_nonce_hex[BOOTSTRAP_POP_NONCE_SZ * 2 + 1] = {0};
 
     /* I/O */
     int sock_fd = -1;
@@ -749,9 +764,34 @@ int main(int argc, char *argv[])
             goto done;
         }
 
+        /* PoP nonce (issue #5).  Server includes 32 random bytes
+         * here that the client must sign with the CA private key
+         * to prove possession.  A server that doesn't ship the
+         * issue-#5 fix will omit this field; we treat the
+         * absence as a hard error rather than silently falling
+         * back, because the absence of PoP is exactly the bug
+         * issue #5 closes. */
+        if (!json_object_object_get_ex(resp, "pop_nonce", &val)) {
+            LOG("ERROR: server response is missing pop_nonce — "
+                "the server is older than the README-issues.md "
+                "issue #5 fix; upgrade the server before "
+                "enrolling a CA.");
+            json_object_put(resp);
+            goto done;
+        }
+        hex_str = json_object_get_string(val);
+        if (!hex_str ||
+            strlen(hex_str) != BOOTSTRAP_POP_NONCE_SZ * 2) {
+            LOG("ERROR: pop_nonce must be exactly %d hex chars",
+                BOOTSTRAP_POP_NONCE_SZ * 2);
+            json_object_put(resp);
+            goto done;
+        }
+        snprintf(pop_nonce_hex, sizeof(pop_nonce_hex), "%s", hex_str);
+
         json_object_put(resp);
     }
-    LOG("server DH public key + salt received");
+    LOG("server DH public key + salt + pop_nonce received");
 
     /* --- Compute shared secret --- */
     if (wc_curve25519_init(&server_key) != 0) {
@@ -794,14 +834,12 @@ int main(int argc, char *argv[])
     {
         struct json_object *enroll = json_object_new_object();
         const char *enroll_str;
+        char ca_subject[512];
 
         /* CA subject convention: <domain>-ca */
-        {
-            char ca_subject[512];
-            snprintf(ca_subject, sizeof(ca_subject), "%s-ca", subject);
-            json_object_object_add(enroll, "subject",
-                json_object_new_string(ca_subject));
-        }
+        snprintf(ca_subject, sizeof(ca_subject), "%s-ca", subject);
+        json_object_object_add(enroll, "subject",
+            json_object_new_string(ca_subject));
         json_object_object_add(enroll, "public_key_pem",
             json_object_new_string(pub_key_pem));
         json_object_object_add(enroll, "key_algorithm",
@@ -809,7 +847,8 @@ int main(int argc, char *argv[])
         json_object_object_add(enroll, "validity_days",
             json_object_new_int(validity_days));
         /* CA enrollment does not use an enrollment nonce — DNS TXT
-         * is the proof of domain control. */
+         * is the proof of domain control, and the PoP signature
+         * below proves possession of the CA private key. */
 
         /* CA-specific: add ca_certificate_pem in extensions */
         {
@@ -819,6 +858,122 @@ int main(int argc, char *argv[])
             json_object_object_add(ext, "is_ca",
                 json_object_new_boolean(1));
             json_object_object_add(enroll, "extensions", ext);
+        }
+
+        /* Proof-of-possession (issue #5).  Compute SHA3-256 of
+         * the SPKI DER from the local CA cert (same canonical
+         * value the server will recompute), build the canonical
+         * signed string, sign it under the CA private key with
+         * ML-DSA-87/ctx=MTC_CA_POP_LABEL, and embed the hex
+         * signature as `pop_signature`. */
+        {
+            unsigned char  cert_der[16384];
+            int            cert_der_sz;
+            unsigned char  spki_der[4096];
+            word32         spki_sz = sizeof(spki_der);
+            wc_Sha3        sha3;
+            unsigned char  spki_h[WC_SHA3_256_DIGEST_SIZE];
+            char           spki_hex[WC_SHA3_256_DIGEST_SIZE * 2 + 1];
+            char           pop_msg[1024];
+            int            pop_msg_len;
+            char           *priv_pem = NULL;
+            int            priv_pem_len = 0;
+            unsigned char  priv_der[16384];
+            int            priv_der_sz;
+            dilithium_key  dil_priv;
+            int            dil_priv_init = 0;
+            unsigned char  pop_sig[DILITHIUM_LEVEL5_SIG_SIZE];
+            word32         pop_sig_len = sizeof(pop_sig);
+            char           pop_sig_hex[DILITHIUM_LEVEL5_SIG_SIZE * 2 + 1];
+            int            pop_ok = 0;
+            unsigned int   pi;
+
+            cert_der_sz = wc_CertPemToDer(
+                (const unsigned char *)ca_cert_pem,
+                (int)strlen(ca_cert_pem),
+                cert_der, (int)sizeof(cert_der), CERT_TYPE);
+            if (cert_der_sz <= 0) {
+                LOG("ERROR: PoP cert PEM->DER failed (%d)", cert_der_sz);
+                goto pop_done;
+            }
+            if (wc_GetSubjectPubKeyInfoDerFromCert(
+                    cert_der, (word32)cert_der_sz,
+                    spki_der, &spki_sz) != 0) {
+                LOG("ERROR: PoP SPKI extract failed");
+                goto pop_done;
+            }
+            wc_InitSha3_256(&sha3, NULL, INVALID_DEVID);
+            wc_Sha3_256_Update(&sha3, spki_der, spki_sz);
+            wc_Sha3_256_Final(&sha3, spki_h);
+            wc_Sha3_256_Free(&sha3);
+            for (pi = 0; pi < WC_SHA3_256_DIGEST_SIZE; pi++)
+                snprintf(spki_hex + pi * 2, 3, "%02x", spki_h[pi]);
+            spki_hex[WC_SHA3_256_DIGEST_SIZE * 2] = '\0';
+
+            pop_msg_len = snprintf(pop_msg, sizeof(pop_msg),
+                "%s|%s|%s|%s|%s",
+                MTC_CA_POP_PREFIX, subject, ca_subject,
+                spki_hex, pop_nonce_hex);
+            if (pop_msg_len <= 0 ||
+                pop_msg_len >= (int)sizeof(pop_msg)) {
+                LOG("ERROR: PoP msg too large");
+                goto pop_done;
+            }
+
+            priv_pem_len = read_file(priv_key_path, &priv_pem);
+            if (priv_pem_len <= 0 || !priv_pem) {
+                LOG("ERROR: cannot read private key %s", priv_key_path);
+                goto pop_done;
+            }
+            priv_der_sz = wc_KeyPemToDer(
+                (const unsigned char *)priv_pem, priv_pem_len,
+                priv_der, (int)sizeof(priv_der), NULL);
+            if (priv_der_sz <= 0) {
+                LOG("ERROR: PoP priv PEM->DER failed (%d)", priv_der_sz);
+                goto pop_done;
+            }
+            wc_dilithium_init(&dil_priv);
+            dil_priv_init = 1;
+            wc_dilithium_set_level(&dil_priv, WC_ML_DSA_87);
+            {
+                word32 idx = 0;
+                if (wc_Dilithium_PrivateKeyDecode(priv_der, &idx,
+                        &dil_priv, (word32)priv_der_sz) != 0) {
+                    LOG("ERROR: ML-DSA-87 priv decode failed");
+                    goto pop_done;
+                }
+            }
+
+            if (wc_dilithium_sign_ctx_msg(
+                    (const byte *)MTC_CA_POP_LABEL,
+                    MTC_CA_POP_LABEL_LEN,
+                    (const byte *)pop_msg, (word32)pop_msg_len,
+                    pop_sig, &pop_sig_len,
+                    &dil_priv, &rng) != 0) {
+                LOG("ERROR: PoP signature failed");
+                goto pop_done;
+            }
+            for (pi = 0; pi < pop_sig_len; pi++)
+                snprintf(pop_sig_hex + pi * 2, 3, "%02x", pop_sig[pi]);
+            pop_sig_hex[pop_sig_len * 2] = '\0';
+
+            json_object_object_add(enroll, "pop_signature",
+                json_object_new_string(pop_sig_hex));
+            LOG("PoP signature attached (%u bytes)", pop_sig_len);
+            pop_ok = 1;
+
+        pop_done:
+            if (dil_priv_init) wc_dilithium_free(&dil_priv);
+            if (priv_pem) {
+                secure_zero((void *)priv_pem,
+                            (unsigned int)priv_pem_len);
+                free(priv_pem);
+            }
+            secure_zero(priv_der, sizeof(priv_der));
+            if (!pop_ok) {
+                json_object_put(enroll);
+                goto done;
+            }
         }
 
         enroll_str = json_object_to_json_string(enroll);

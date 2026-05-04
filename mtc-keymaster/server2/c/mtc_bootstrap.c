@@ -74,6 +74,25 @@
 #define BOOTSTRAP_SALT_SZ    16
 #define BOOTSTRAP_AES_KEY_SZ 16
 
+/* Proof-of-possession (README-issues.md issue #5).
+ *
+ * The server includes BOOTSTRAP_POP_NONCE_SZ random bytes in its
+ * DH reply (hex-encoded as `pop_nonce`).  The client signs
+ *
+ *     MQC-CA-REGISTER|<domain>|<subject>|<spki_hash_hex>|<pop_nonce_hex>
+ *
+ * with the CA private key (ML-DSA-87, ctx=MTC_CA_POP_LABEL) and
+ * returns the signature in the encrypted enrollment JSON as
+ * `pop_signature` (hex).  The server re-builds the same canonical
+ * string from the request fields and verifies the signature
+ * against the submitted public_key_pem.  Bootstrap_leaf does not
+ * use this — the leaf flow proves possession via the issued
+ * nonce. */
+#define BOOTSTRAP_POP_NONCE_SZ 32
+#define MTC_CA_POP_LABEL      "mtc-ca-pop/v1\n\x00"
+#define MTC_CA_POP_LABEL_LEN  16
+#define MTC_CA_POP_PREFIX     "MQC-CA-REGISTER"
+
 /******************************************************************************
  * Thread argument — passed from mtc_bootstrap_start to bootstrap_thread.
  ******************************************************************************/
@@ -396,6 +415,8 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
     uint8_t client_pub[CURVE25519_KEYSIZE];
     uint8_t salt[BOOTSTRAP_SALT_SZ];
     uint8_t aes_key[BOOTSTRAP_AES_KEY_SZ];
+    uint8_t pop_nonce[BOOTSTRAP_POP_NONCE_SZ];
+    char    pop_nonce_hex[BOOTSTRAP_POP_NONCE_SZ * 2 + 1];
 
     /* I/O buffers */
     char json_buf[BOOTSTRAP_MAX_MSG];
@@ -538,6 +559,15 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
         goto cleanup;
     }
 
+    /* Generate random PoP nonce (issue #5) — included in the
+     * plaintext DH reply; the CA-enrollment client signs it under
+     * the submitted CA private key to prove possession. */
+    if (wc_RNG_GenerateBlock(&rng, pop_nonce, BOOTSTRAP_POP_NONCE_SZ) != 0) {
+        LOG_ERROR("bootstrap: pop_nonce generation failed");
+        goto cleanup;
+    }
+    to_hex(pop_nonce, BOOTSTRAP_POP_NONCE_SZ, pop_nonce_hex);
+
     /* Derive AES key via HKDF */
     if (wc_HKDF(WC_SHA256, shared_secret, shared_sz,
                  salt, BOOTSTRAP_SALT_SZ,
@@ -560,7 +590,9 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
         to_hex(salt, BOOTSTRAP_SALT_SZ, salt_hex);
 
         json_len = snprintf(json_buf, sizeof(json_buf),
-            "{\"dh_public_key\":\"%s\",\"salt\":\"%s\"}", pub_hex, salt_hex);
+            "{\"dh_public_key\":\"%s\",\"salt\":\"%s\","
+            "\"pop_nonce\":\"%s\"}",
+            pub_hex, salt_hex, pop_nonce_hex);
 
         if (write_all(fd, (unsigned char *)json_buf, (unsigned int)json_len) != 0) {
             LOG_WARN("bootstrap: failed to send DH response");
@@ -844,6 +876,128 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                                 enc_buf, &err_enc_len) == 0) {
                             send_length_prefixed(fd, enc_buf, err_enc_len);
                         }
+                    }
+                    goto cleanup;
+                }
+            }
+
+            /* Proof-of-possession (issue #5): verify the client
+             * signed `MQC-CA-REGISTER|<domain>|<subject>|<spki_hash>|
+             * <pop_nonce_hex>` with the CA private key whose public
+             * half is in public_key_pem.  DNSSEC pinning (issue #3)
+             * proves the published TXT names this SPKI; this PoP
+             * proves the requester actually controls the matching
+             * private key. */
+            {
+                struct json_object *sig_val = NULL;
+                const char *sig_hex = NULL;
+                size_t sig_hex_len;
+                unsigned char sig_bin[DILITHIUM_LEVEL5_SIG_SIZE];
+                size_t sig_bin_len = 0;
+                unsigned char spki_der[4096];
+                int spki_der_sz;
+                dilithium_key dil_pub;
+                int dil_pub_init = 0;
+                int verified = 0;
+                char pop_msg[1024];
+                int pop_msg_len;
+                int pop_ok = 0;
+
+                if (!json_object_object_get_ex(req, "pop_signature",
+                                               &sig_val) ||
+                    (sig_hex = json_object_get_string(sig_val)) == NULL) {
+                    LOG_WARN("bootstrap: CA enrollment refused — "
+                             "missing pop_signature");
+                    goto pop_fail;
+                }
+                sig_hex_len = strlen(sig_hex);
+                if (sig_hex_len != DILITHIUM_LEVEL5_SIG_SIZE * 2) {
+                    LOG_WARN("bootstrap: CA enrollment refused — "
+                             "pop_signature wrong length: %zu (expect %d)",
+                             sig_hex_len, DILITHIUM_LEVEL5_SIG_SIZE * 2);
+                    goto pop_fail;
+                }
+                if (hex_to_bytes(sig_hex, sig_bin,
+                                 DILITHIUM_LEVEL5_SIG_SIZE)
+                    != DILITHIUM_LEVEL5_SIG_SIZE) {
+                    LOG_WARN("bootstrap: CA enrollment refused — "
+                             "pop_signature is not valid hex");
+                    goto pop_fail;
+                }
+                sig_bin_len = DILITHIUM_LEVEL5_SIG_SIZE;
+
+                /* Build the canonical signed message.  Both sides
+                 * MUST construct the same byte sequence here.
+                 *   PREFIX|domain|subject|spki_hash_hex|pop_nonce_hex
+                 * domain = SAN extracted from the cert (no -ca);
+                 * subject = the wire-subject ("<domain>-ca"). */
+                pop_msg_len = snprintf(pop_msg, sizeof(pop_msg),
+                    "%s|%s|%s|%s|%s",
+                    MTC_CA_POP_PREFIX, x509_san, subject,
+                    x509_spki_fp, pop_nonce_hex);
+                if (pop_msg_len <= 0 ||
+                    pop_msg_len >= (int)sizeof(pop_msg)) {
+                    LOG_WARN("bootstrap: CA enrollment refused — "
+                             "pop_msg too large");
+                    goto pop_fail;
+                }
+
+                /* Decode the operator-supplied PEM to SPKI DER and
+                 * load it as an ML-DSA-87 public key. */
+                spki_der_sz = wc_PubKeyPemToDer(
+                    (const unsigned char *)pub_key_pem,
+                    (int)strlen(pub_key_pem),
+                    spki_der, (int)sizeof(spki_der));
+                if (spki_der_sz <= 0) {
+                    LOG_WARN("bootstrap: CA enrollment refused — "
+                             "public_key_pem PEM-to-DER for PoP failed (%d)",
+                             spki_der_sz);
+                    goto pop_fail;
+                }
+                wc_dilithium_init(&dil_pub);
+                dil_pub_init = 1;
+                wc_dilithium_set_level(&dil_pub, WC_ML_DSA_87);
+                {
+                    word32 idx = 0;
+                    if (wc_Dilithium_PublicKeyDecode(spki_der, &idx,
+                            &dil_pub, (word32)spki_der_sz) != 0) {
+                        LOG_WARN("bootstrap: CA enrollment refused — "
+                                 "ML-DSA-87 public-key decode failed for PoP");
+                        goto pop_fail;
+                    }
+                }
+
+                if (wc_dilithium_verify_ctx_msg(
+                        sig_bin, (word32)sig_bin_len,
+                        (const byte *)MTC_CA_POP_LABEL,
+                        MTC_CA_POP_LABEL_LEN,
+                        (const byte *)pop_msg, (word32)pop_msg_len,
+                        &verified, &dil_pub) != 0 || !verified) {
+                    LOG_WARN("bootstrap: CA enrollment refused — "
+                             "PoP signature INVALID under submitted "
+                             "public_key_pem (subject=%s)", subject);
+                    goto pop_fail;
+                }
+
+                LOG_INFO("bootstrap: PoP signature verified for '%s'",
+                         subject);
+                pop_ok = 1;
+
+            pop_fail:
+                if (dil_pub_init) wc_dilithium_free(&dil_pub);
+                if (!pop_ok) {
+                    const char *err_json = "{\"status\":\"error\","
+                        "\"message\":\"CA enrollment refused: "
+                        "proof-of-possession signature missing or "
+                        "invalid.  Rebuild bootstrap_ca from a tree "
+                        "that includes the README-issues.md issue #5 "
+                        "fix.\"}";
+                    unsigned int err_enc_len = sizeof(enc_buf);
+                    if (mtc_crypt_encode(crypt_ctx,
+                            (unsigned char *)err_json,
+                            (unsigned int)strlen(err_json),
+                            enc_buf, &err_enc_len) == 0) {
+                        send_length_prefixed(fd, enc_buf, err_enc_len);
                     }
                     goto cleanup;
                 }
