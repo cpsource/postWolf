@@ -2378,6 +2378,81 @@ is one box (server + bundled tools) and a release wave to leaves.
   be wrapped in the `.md` source before datatracker submission;
   the renderer does not silently mangle them.
 
+### 53. MQC DNSSEC pin: hash the SPKI DER, not the PEM file bytes
+
+**Severity:** Medium — operationally fragile, not exploitable.
+The pin still binds to the right key on a happy-path
+republication, but trivially-equivalent PEM re-encodings
+silently invalidate the pin.
+
+**Where it sits today** (mqc-3 staging,
+[`socket-level-wrapper-MQC/mqc_dnssec_pin.c`](../socket-level-wrapper-MQC/mqc_dnssec_pin.c)
++ [`mtc-keymaster/tools/python/ca_dns_txt.py`](tools/python/ca_dns_txt.py),
+commits `7059511b8`/`8625d41f0`/`39b22a422`/`774c2db7f`):
+both sides hash the *raw bytes of the cosigner PEM file* with
+SHA3-256.  Probe: `EVP_DigestUpdate(ctx, file_bytes, n)`.
+Publisher: `hashlib.sha3_256(open(pem,"rb").read())`.  They
+agree because they hash the same bytes — that's a syntactic
+match, not a semantic one.
+
+**Why it's fragile.**  Every byte of the file is in the hash
+preimage:
+
+- Trailing newline (we hit this during the Phase-2 negative
+  test — `printf '\n' >> ...` flipped the hash).
+- BEGIN/END marker text.  postWolf currently writes
+  `-----BEGIN ML_DSA_LEVEL5 PRIVATE KEY-----` for what is
+  actually a SubjectPublicKeyInfo public key (see
+  `pem_extract_mldsa_raw` in `mqc_peer.c`); switching to the
+  standard `-----BEGIN PUBLIC KEY-----` marker would change
+  the pin even though the key is identical.
+- Base64 wrap width.  Re-emitting the same DER as PEM with a
+  different wrap (some tools use 64 chars, some 76, some
+  none) changes the pin.
+- Line-ending convention (LF vs CRLF on a sync from Windows).
+
+Any of these would force every operator who has cached the
+old pin to re-fetch it, even though the underlying key is
+the same.
+
+**The fix.**  Hash the canonical SPKI DER bytes
+(`SubjectPublicKeyInfo`: AlgorithmIdentifier + raw key BIT
+STRING).  That's a single well-defined byte sequence per key,
+encoding-independent.
+
+Both sides change:
+
+- `socket-level-wrapper-MQC/mqc_dnssec_pin.c::sha3_256_file_hex`
+  → load the PEM, extract the SPKI DER (matching the parse
+  `pem_extract_mldsa_raw` already does for the raw 2592-byte
+  body — but here we want the *full* SPKI DER, not just the
+  raw key suffix), SHA3-256 that.
+- `mtc-keymaster/tools/python/ca_dns_txt.py::sha3_256_file_hex`
+  → same change in Python (use `cryptography` to load the
+  PEM and `key.public_bytes(Encoding.DER, PublicFormat.
+  SubjectPublicKeyInfo)`, hash the DER).
+- Both sides bump the `kh` algorithm tag — keep `sha3-256` if
+  we want the bytes-vs-DER difference to be a silent flag-day
+  cutover (single-deployment), or move to `kh=spki-sha3-256`
+  if we want to make the binding form explicit on the wire
+  (probably worth it for clarity).
+- Spec §10.x for the pin format (when written) needs to call
+  out the canonical input to the hash.
+
+**Migration runbook (factsorlie.com).**  The publish format
+changes; under the no-backwards-compat constraint, ship both
+sides + republish the TXT in one window.  Verify with the
+existing `tests/mqc_dnssec_pin factsorlie.com
+~/.TPM/ca-cosigner.pem` — it should still print `OK` against
+the re-published record.  Negative test: re-emit the same key
+PEM with a different wrap-width, confirm the pin still
+matches (with the fix; today it would mismatch).
+
+**Out of scope.**  None — this is a self-contained mqc-3
+follow-up.  Do it before mqc-3 grows additional callers of
+`sha3_256_file_hex`, since each new caller would have to be
+re-pointed.
+
 ---
 
 ## Appendix: Server Directory Layout
