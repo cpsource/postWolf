@@ -1514,9 +1514,17 @@ int mqc_enc_recv(int fd,
         mqc_read_all(fd, tag, MQC_GCM_TAG_SZ) != 0) {
         free(ct); return -1;
     }
+    /* Spec §9.2: increment recv_seq ONLY on successful AEAD verify
+     * (mqc-2 master plan Phase 3 / second-review issue #7 /
+     * mqc-4 highest-priority fix #6).  Today the connection is
+     * torn down on any verify failure so the off-by-one nonce
+     * never gets reused, but spec wording matters and a future
+     * refactor that tries to keep the connection alive across an
+     * auth failure would otherwise reopen this as a real
+     * (key, nonce) collision.  Failure logs now name the actually-
+     * failing sequence number, not the post-increment value. */
     mqc_make_nonce(iv, *seq, nonce);
     mqc_build_aad(aad, direction, frame_type, *seq, (uint32_t)ct_sz);
-    (*seq)++;
     ret = wc_AesInit(&aes, NULL, INVALID_DEVID);
     if (ret != 0) { free(ct); return -1; }
     ret = wc_AesGcmSetKey(&aes, key, MQC_AES_KEY_SZ);
@@ -1527,9 +1535,10 @@ int mqc_enc_recv(int fd,
     free(ct);
     if (ret != 0) {
         MQC_SECURITY("GCM_AUTH_FAILED: decryption failed (tampered data or wrong key, seq=%lu)",
-                     (unsigned long)(*seq - 1));
+                     (unsigned long)(*seq));
         return -1;
     }
+    (*seq)++;
     return ct_sz;
 }
 
@@ -1682,12 +1691,14 @@ int mqc_read(mqc_conn_t *conn, void *buf, int sz)
         return -1;
     }
 
+    /* See the matching comment in mqc_enc_recv: spec §9.2 says
+     * recv_seq increments only on successful AEAD verify
+     * (mqc-2 P3 / second-review #7 / mqc-4 fix #6). */
     mqc_make_nonce(conn->recv_iv, conn->recv_seq, nonce);
     /* Receiver's AAD direction is the *peer's* direction. */
     direction = conn->is_client ? MQC_DIR_S2C : MQC_DIR_C2S;
     mqc_build_aad(aad, direction, MQC_FRAME_TYPE_APP_DATA,
                   conn->recv_seq, (uint32_t)ct_sz);
-    conn->recv_seq++;
 
     ret = wc_AesInit(&aes, NULL, INVALID_DEVID);
     if (ret != 0) { free(ct); return -1; }
@@ -1703,10 +1714,11 @@ int mqc_read(mqc_conn_t *conn, void *buf, int sz)
     if (ret != 0) {
         MQC_SECURITY("GCM_AUTH_FAILED: data decryption failed "
                      "(tampered data or wrong key, peer=%d seq=%lu)",
-                     conn->peer_index, (unsigned long)(conn->recv_seq - 1));
+                     conn->peer_index, (unsigned long)conn->recv_seq);
         return -1;
     }
 
+    conn->recv_seq++;
     return ct_sz;
 }
 
