@@ -1,10 +1,9 @@
 /******************************************************************************
  * File:        mqc.c
- * Purpose:     MQC public-API dispatcher (Phase 7 commit 1).
+ * Purpose:     MQC public-API dispatcher.
  *
  * Description:
- *   Phase 7's file split moved the bulk of the MQC implementation
- *   into three sibling files:
+ *   The MQC implementation is split across three sibling files:
  *
  *     mqc_common.c     — shared machinery (transcript hash, key
  *                        schedule, AEAD frames, JSON parsers, Redis
@@ -12,22 +11,21 @@
  *     mqc_clear.c      — clear-identity-mode handshake bodies
  *                        (mqc_connect_clear, mqc_accept_clear)
  *     mqc_encrypted.c  — encrypted-identity-mode handshake bodies
- *                        (currently stubs; bodies arrive in Phase 7
- *                        commit 2)
+ *                        (mqc_connect_encrypted, mqc_accept_encrypted)
  *
  *   This file is the thin shell that the public mqc.h API surface
  *   binds to.  mqc_connect / mqc_accept read ctx->encrypt_identity
- *   and route to the correct mode.  mqc_accept_auto stays a thin
- *   alias for mqc_accept (true mode auto-detection by peeking at the
- *   first frame's `mode` field is restored in Phase 7 commit 2).
- *
- *   No semantic change vs the pre-split mqc.c: callers that did
- *   nothing with `cfg.encrypt_identity` still get the clear-mode
- *   bodies; callers that opt in via cfg.encrypt_identity = 1 still
- *   get the (NULL-returning) encrypted stub until commit 2 lands.
+ *   and route to the correct mode.  mqc_accept_auto reads the first
+ *   length-prefixed handshake frame, strict-parses the JSON, and
+ *   dispatches on the parsed `mode` field — see the auto-detect
+ *   block below for the full sequence.
  *
  * Created:     2026-04-15
  *              2026-05-03  split into dispatcher + per-mode files
+ *              2026-05-03  encrypted-mode bodies shipped (commit
+ *                          a287aa8d0; mqc-1 Phase 7 commit 2)
+ *              2026-05-03  mqc_accept_auto rewritten for length-
+ *                          prefixed dispatch (mqc-2 Phase 1)
  ******************************************************************************/
 
 #include "mqc_internal.h"

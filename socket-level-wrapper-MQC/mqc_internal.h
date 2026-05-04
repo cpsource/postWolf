@@ -3,8 +3,8 @@
  * Shared between mqc.c (the dispatcher), mqc_common.c (the shared
  * machinery: rate limits, JSON parsers, transcript hash, key
  * schedule, AEAD frames, runtime cfg), mqc_clear.c (the clear-mode
- * handshake bodies), and mqc_encrypted.c (the encrypted-mode bodies
- * — currently stubs; bodies arrive in Phase 7 commit 2).
+ * handshake bodies), and mqc_encrypted.c (the encrypted-mode
+ * handshake bodies — shipped in commit a287aa8d0).
  *
  * Nothing in this file is part of the public API contract.  The
  * public API is defined in mqc.h; opaque-handle types declared
