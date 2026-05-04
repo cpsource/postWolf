@@ -33,12 +33,12 @@ But the **implementation is still weaker than TLS 1.3 mainly because of parsing/
 
 ## Highest-priority MQC fixes
 
-1. **Replace brace-count JSON reads with length-prefixed frames.**
-2. **Bind public keys to certs by checking `hash(pubkey) == subject_public_key_hash`.**
-3. **Make DNSSEC TXT pinning mandatory for 8445 bootstrap.**
-4. **Hash exact canonical handshake frames into the transcript.**
-5. **Require Merkle inclusion proof before accepting CA/leaf certs.**
-6. **Increment AEAD receive sequence only after successful decrypt/auth.**
+1. **Replace brace-count JSON reads with length-prefixed frames.** — DONE (mqc-2 P1, commit `45e8390d4`)
+2. **Bind public keys to certs by checking `hash(pubkey) == subject_public_key_hash`.** — DONE (mqc-2 P2, commit `dfd06d187`)
+3. **Make DNSSEC TXT pinning mandatory for 8445 bootstrap.** — DONE (mqc-3 server, commit `bf21e4fc9`; tightened in `bdbf08309`)
+4. **Hash exact canonical handshake frames into the transcript.** — DEFERRED as TODO #54 in `mtc-keymaster/README-bugsandtodo.md`; field-based transcript stays for now (see commit `705ccbc21` for the rationale).
+5. **Require Merkle inclusion proof before accepting CA/leaf certs.** — DONE (already in tree at `socket-level-wrapper-MQC/mqc_peer.c::mqc_peer_verify` step 3 + cosignature verify at step 4; both client and server reject with `MQC_SECURITY("PROOF_INVALID: cert N")` on failure).
+6. **Increment AEAD receive sequence only after successful decrypt/auth.** — open (mqc-2 master plan Phase 3, trivial).
 
 After those, MQC becomes much closer to a real TLS-like authenticated key exchange.
 
