@@ -293,13 +293,39 @@ static mqc_dnssec_status_t mqc_dnssec_fetch_ca_txt(const char *domain,
         return MQC_DNSSEC_NO_DATA;
     }
 
-    if (join_txt_rdata((const unsigned char *)result->data[0],
-                       result->len[0],
-                       out_txt,
-                       out_txt_len) != 0) {
-        ub_resolve_free(result);
-        ub_ctx_delete(ctx);
-        return MQC_DNSSEC_PARSE_ERROR;
+    /* The query name can hold multiple TXT RRs (libunbound exposes
+     * each as a separate result->data[i]/result->len[i] entry, NULL-
+     * terminated).  Each RR's RDATA is itself a sequence of one or
+     * more length-prefixed character-strings.  We need ALL of them
+     * concatenated so a TXT record split into multiple RRs (as
+     * Route 53 does for some publish styles) parses the same as a
+     * record built from one RR with multiple internal strings.
+     * Without this loop the probe was non-deterministically reading
+     * whichever RR the resolver returned first. */
+    {
+        size_t pos = 0;
+        int i;
+        for (i = 0; result->data[i]; i++) {
+            char chunk[MQC_MAX_TXT_LEN];
+            size_t cl;
+            if (join_txt_rdata((const unsigned char *)result->data[i],
+                               result->len[i],
+                               chunk, sizeof(chunk)) != 0) {
+                ub_resolve_free(result);
+                ub_ctx_delete(ctx);
+                return MQC_DNSSEC_PARSE_ERROR;
+            }
+            cl = strlen(chunk);
+            if (pos + cl + 2 > out_txt_len) {
+                ub_resolve_free(result);
+                ub_ctx_delete(ctx);
+                return MQC_DNSSEC_PARSE_ERROR;
+            }
+            if (pos > 0) out_txt[pos++] = ';';  /* RR separator */
+            memcpy(out_txt + pos, chunk, cl);
+            pos += cl;
+        }
+        out_txt[pos] = '\0';
     }
 
     ub_resolve_free(result);
