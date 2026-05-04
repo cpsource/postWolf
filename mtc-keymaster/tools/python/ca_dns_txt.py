@@ -1,23 +1,37 @@
 #!/usr/bin/env python3
 """
-Generate the DNS TXT record for MTC CA domain validation.
+Generate the DNS TXT record for MQC CA cosigner-key pinning.
 
-Given a CA certificate (PEM or DER), extracts the SAN DNS names and
-prints the TXT record the domain owner must publish at
-_mtc-ca.<domain> to prove they control the domain.
+Given the cosigner public-key PEM file (typically
+~/.TPM/ca-cosigner.pem), prints the TXT record the domain
+owner publishes at _mqc-ca.<domain>.  An MQC client validates
+the record via DNSSEC and refuses to trust any cosigner PEM
+whose SHA3-256 doesn't match the published `kh` value.
 
-The TXT record binds the domain to a specific public key via its
-SHA-256 fingerprint.  An attacker who can modify the DNS record can
-publish any fingerprint they like — so domain control *is* the
-check.  No nonce, no expiration, no signature.
+The record format matches what
+socket-level-wrapper-MQC/mqc_dnssec_pin.c parses:
+
+    v=MQC1; role=ca; alg=ML-DSA-87; kh=sha3-256:<64-hex>
+
+Hashes the *raw bytes of the PEM file*, not the SPKI DER —
+this is what the probe does, so the two must agree.
+
+DNSSEC is mandatory for the publish-side too: the zone holding
+_mqc-ca.<domain> MUST have a DS record at its parent and a
+signed RRSIG on the TXT, otherwise the probe will refuse with
+"DNSSEC insecure or unsigned".  Publish the TXT as a single
+character-string when possible; the probe also handles the
+case where the resolver returns multiple TXT RRs at the same
+name.
 
 Usage:
-    python3 ca_dns_txt.py ~/masterKey/factsorlieCA.crt
-    python3 ca_dns_txt.py --domain factsorlie.com ~/masterKey/factsorlieCA.crt
-    python3 ca_dns_txt.py --check ~/masterKey/factsorlieCA.crt
+    python3 ca_dns_txt.py --domain factsorlie.com \\
+        ~/.TPM/ca-cosigner.pem
+    python3 ca_dns_txt.py --domain factsorlie.com --check \\
+        ~/.TPM/ca-cosigner.pem
 
 Output:
-    _mtc-ca.factsorlie.com.  IN TXT  "v=mtc-ca1; fp=sha256:a1b2..."
+    _mqc-ca.factsorlie.com.  IN TXT  "v=MQC1; role=ca; ..."
 """
 
 import argparse
@@ -25,72 +39,26 @@ import hashlib
 import subprocess
 import sys
 
-from cryptography import x509
-from cryptography.x509.oid import ExtensionOID
 
-OPENSSL = "openssl40"
+VERSION_TAG = "MQC1"
+ROLE_TAG = "ca"
+ALG_TAG = "ML-DSA-87"
+HASH_TAG = "sha3-256"
 
 
-def load_cert(path: str) -> x509.Certificate:
-    """Load a certificate from PEM or DER file."""
+def sha3_256_file_hex(path: str) -> str:
+    """SHA3-256 over the raw bytes of the file, lowercase hex."""
+    h = hashlib.sha3_256()
     with open(path, "rb") as f:
-        data = f.read()
-
-    if b"-----BEGIN CERTIFICATE-----" in data:
-        return x509.load_pem_x509_certificate(data)
-    return x509.load_der_x509_certificate(data)
-
-
-def get_san_dns_names(cert: x509.Certificate) -> list[str]:
-    """Extract DNS names from Subject Alternative Name extension."""
-    try:
-        san = cert.extensions.get_extension_for_oid(
-            ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
-        return san.value.get_values_for_type(x509.DNSName)
-    except x509.ExtensionNotFound:
-        return []
-
-
-def is_ca(cert: x509.Certificate) -> tuple[bool, int | None]:
-    """Check Basic Constraints. Returns (is_ca, pathlen)."""
-    try:
-        bc = cert.extensions.get_extension_for_oid(
-            ExtensionOID.BASIC_CONSTRAINTS)
-        return bc.value.ca, bc.value.path_length
-    except x509.ExtensionNotFound:
-        return False, None
-
-
-def public_key_fingerprint(cert_path: str) -> str:
-    """SHA-256 fingerprint of the public key (DER-encoded SPKI).
-
-    Shells out to openssl40 so ML-DSA-{44,65,87} certs — which
-    python-cryptography does not yet parse — work alongside classical
-    RSA/EC/Ed25519 CAs.
-    """
-    try:
-        pem = subprocess.run(
-            [OPENSSL, "x509", "-in", cert_path, "-pubkey", "-noout"],
-            capture_output=True, check=True).stdout
-        der = subprocess.run(
-            [OPENSSL, "pkey", "-pubin",
-             "-inform", "PEM", "-outform", "DER"],
-            input=pem, capture_output=True, check=True).stdout
-    except FileNotFoundError:
-        print(f"ERROR: {OPENSSL} not in PATH; install OpenSSL 3.5+ "
-              "(buildopenssl3.5.sh in kit-CA/kit-leaf)",
-              file=sys.stderr)
-        sys.exit(1)
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: {OPENSSL} failed to extract SPKI: "
-              f"{e.stderr.decode(errors='replace').strip()}",
-              file=sys.stderr)
-        sys.exit(1)
-    return hashlib.sha256(der).hexdigest()
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def parse_txt_fields(txt: str) -> dict:
-    """Parse a TXT record value into a dict of key=value fields."""
+    """Parse a TXT value into a dict of `key=value` fields, joining
+    multiple character-strings the resolver returned with `;` as the
+    record separator (matches mqc_dnssec_pin's join logic)."""
     fields = {}
     for part in txt.split(";"):
         part = part.strip()
@@ -100,13 +68,18 @@ def parse_txt_fields(txt: str) -> dict:
     return fields
 
 
-def check_dns_txt(domain: str, expected_fp: str) -> tuple[bool, str]:
+def check_dns_txt(domain: str, expected_hash: str) -> tuple[bool, str]:
     """
-    Query DNS for _mtc-ca.<domain> TXT record and verify the fingerprint.
+    Query DNS for _mqc-ca.<domain> TXT.  Walks every RR returned (the
+    name can hold multiple RRs, and the probe concatenates them) and
+    accepts when any v=MQC1 entry has kh=sha3-256:<expected_hash>.
+    Returns (matched, detail).
 
-    Shells out to `dig +short TXT ...`.  Returns (matched, detail).
+    Note: this does NOT validate DNSSEC — it just compares the value.
+    Run the C probe (tests/mqc_dnssec_pin) for a full DNSSEC-aware
+    check.
     """
-    qname = f"_mtc-ca.{domain}"
+    qname = f"_mqc-ca.{domain}"
     try:
         result = subprocess.run(
             ["dig", "+short", "TXT", qname],
@@ -123,97 +96,87 @@ def check_dns_txt(domain: str, expected_fp: str) -> tuple[bool, str]:
     if not raw:
         return False, f"no TXT record found at {qname}"
 
+    # Concatenate every RR-line's strings the way the probe does.
+    pieces = []
     for line in raw.splitlines():
-        txt = line.strip().strip('"')
-        fields = parse_txt_fields(txt)
+        # dig +short prints one line per RR, each line a sequence of
+        # quoted character-strings.  Strip the quotes per piece.
+        pieces.append(" ".join(s.strip('"') for s in line.split('" "')))
+    joined = ";".join(pieces)
+    fields = parse_txt_fields(joined)
 
-        if fields.get("v", "") != "mtc-ca1":
-            continue
-
-        fp = fields.get("fp", "").replace("sha256:", "")
-        if fp == expected_fp:
-            return True, f"MATCH at {qname}"
-
-    return False, f"TXT record found but no matching v=mtc-ca1 entry at {qname}"
+    if fields.get("v", "") != VERSION_TAG:
+        return False, (f"TXT at {qname} has no v={VERSION_TAG} "
+                       f"(found: {fields.get('v', '<missing>')})")
+    kh = fields.get("kh", "")
+    prefix = f"{HASH_TAG}:"
+    if not kh.startswith(prefix):
+        return False, f"TXT at {qname} has no kh={prefix}<hex>"
+    actual = kh[len(prefix):].lower()
+    if actual == expected_hash:
+        return True, f"MATCH at {qname}"
+    return False, (f"TXT at {qname}: kh={actual[:16]}... "
+                   f"!= expected {expected_hash[:16]}...")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate and verify DNS TXT record for MTC CA domain validation")
-    parser.add_argument("cert", help="Path to CA certificate (PEM or DER)")
-    parser.add_argument("--domain", default=None,
-                        help="Override domain (default: from SAN)")
+        description="Generate the MQC cosigner-pin DNS TXT record")
+    parser.add_argument("pem",
+                        help="Path to the cosigner public-key PEM "
+                             "(e.g., ~/.TPM/ca-cosigner.pem)")
+    parser.add_argument("--domain", required=True,
+                        help="Domain to publish under "
+                             "(_mqc-ca.<domain>)")
     parser.add_argument("--check", action="store_true",
-                        help="Query DNS and verify the TXT record exists")
+                        help="Query DNS and verify the published TXT "
+                             "matches the local PEM (does NOT verify "
+                             "DNSSEC — use tests/mqc_dnssec_pin for "
+                             "the full chain check)")
     args = parser.parse_args()
 
-    cert = load_cert(args.cert)
-
-    # Verify it's a CA
-    ca, pathlen = is_ca(cert)
-    if not ca:
-        print("ERROR: Certificate does not have CA:TRUE in Basic Constraints",
-              file=sys.stderr)
-        sys.exit(1)
-
-    print(f"Subject:           {cert.subject.rfc4514_string()}")
-    print(f"Basic Constraints: CA:TRUE, pathlen:{pathlen}")
-
-    # Get domains
-    dns_names = get_san_dns_names(cert)
-    if args.domain:
-        domains = [args.domain]
-    elif dns_names:
-        domains = dns_names
-    else:
-        # Fall back to CN
-        cns = cert.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)
-        if cns:
-            domains = [cns[0].value]
-        else:
-            print("ERROR: No SAN DNS names or CN found, use --domain",
-                  file=sys.stderr)
-            sys.exit(1)
-
-    fp = public_key_fingerprint(args.cert)
-    print(f"Public key SHA-256: {fp}")
+    fp = sha3_256_file_hex(args.pem)
+    print(f"PEM file:           {args.pem}")
+    print(f"Domain:             {args.domain}")
+    print(f"PEM SHA3-256:       {fp}")
     print()
 
-    # Output DNS records
-    print("Required DNS TXT record(s):")
+    record_name = f"_mqc-ca.{args.domain}."
+    record_value = (f"v={VERSION_TAG}; role={ROLE_TAG}; "
+                    f"alg={ALG_TAG}; kh={HASH_TAG}:{fp}")
+    print("Required DNS TXT record:")
     print()
-    for domain in domains:
-        record_name = f"_mtc-ca.{domain}."
-        record_value = f"v=mtc-ca1; fp=sha256:{fp}"
-        print(f"  {record_name}  IN TXT  \"{record_value}\"")
+    print(f"  {record_name}  IN TXT  \"{record_value}\"")
     print()
     print("Token fields:")
-    print("  v   — version (mtc-ca1)")
-    print("  fp  — SHA-256 of public key SPKI (binds the domain to this key)")
+    print(f"  v     — version ({VERSION_TAG})")
+    print(f"  role  — record role ({ROLE_TAG})")
+    print(f"  alg   — signing algorithm of the pinned key "
+          f"({ALG_TAG})")
+    print(f"  kh    — SHA3-256 of the cosigner PEM file bytes "
+          "(matches what the probe hashes)")
     print()
 
-    # Check DNS if requested
     if args.check:
-        print("DNS Verification:")
-        all_ok = True
-        for domain in domains:
-            matched, detail = check_dns_txt(domain, fp)
-            status = "PASS" if matched else "FAIL"
-            print(f"  [{status}] {domain} — {detail}")
-            if not matched:
-                all_ok = False
+        matched, detail = check_dns_txt(args.domain, fp)
+        print("DNS Verification (value-only, no DNSSEC):")
+        status = "PASS" if matched else "FAIL"
+        print(f"  [{status}] {args.domain} — {detail}")
         print()
-        if not all_ok:
-            print("RESULT: REJECTED — DNS validation failed")
+        if not matched:
+            print("RESULT: REJECTED — DNS value mismatch")
             sys.exit(1)
-        else:
-            print("RESULT: ACCEPTED — DNS validation passed")
+        print("RESULT: ACCEPTED — DNS value matches")
+        print("To verify the full DNSSEC chain, run:")
+        print(f"  socket-level-wrapper-MQC/tests/mqc_dnssec_pin "
+              f"{args.domain} {args.pem}")
     else:
         print("Verify with:")
-        for domain in domains:
-            print(f"  dig TXT _mtc-ca.{domain}")
+        print(f"  dig TXT _mqc-ca.{args.domain}")
         print()
-        print("Or run this tool with --check to verify automatically")
+        print("Or run this tool with --check to compare values, ")
+        print("or run socket-level-wrapper-MQC/tests/mqc_dnssec_pin")
+        print("for the full DNSSEC-validated check.")
 
 
 if __name__ == "__main__":
