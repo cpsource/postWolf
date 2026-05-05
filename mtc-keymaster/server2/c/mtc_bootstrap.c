@@ -1318,8 +1318,18 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
             json_object_put(ser);
         }
 
-        /* Add to log */
+        /* Add to log.  Failure here means the DB write didn't commit
+         * — abort the enrollment cleanly rather than continue with
+         * an in-memory-only entry that will silently disappear at the
+         * next service restart (TODO #57 item 4). */
         index = mtc_store_add_entry(store, entry_buf, entry_sz);
+        if (index < 0) {
+            LOG_ERROR("bootstrap: mtc_store_add_entry failed for '%s' "
+                      "(DB persist error) — aborting enrollment", subject);
+            json_object_put(tbs);
+            free(entry_buf);
+            goto cleanup;
+        }
 
         /* Checkpoint */
         checkpoint = mtc_store_checkpoint(store);

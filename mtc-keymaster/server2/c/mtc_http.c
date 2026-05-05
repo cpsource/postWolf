@@ -1053,8 +1053,21 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
             json_object_put(ser);
         }
 
-        /* Add to log */
+        /* Add to log.  -1 means the DB persist failed; abort the
+         * renewal cleanly rather than continue with an in-memory-only
+         * entry that vanishes on the next service restart (TODO #57
+         * item 4). */
         new_index = mtc_store_add_entry(store, entry_buf, entry_sz);
+        if (new_index < 0) {
+            LOG_ERROR("renew-cert: mtc_store_add_entry failed for '%s' "
+                      "(DB persist error) — aborting renewal",
+                      old_subject);
+            http_send_error(io, 500, "DB persist failed");
+            json_object_put(tbs);
+            free(entry_buf);
+            json_object_put(req);
+            return;
+        }
 
         /* Checkpoint */
         checkpoint = mtc_store_checkpoint(store);

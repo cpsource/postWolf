@@ -821,41 +821,75 @@ int mtc_store_load(MtcStore *store)
  *   (if connected).  Automatically records a landmark if the new tree
  *   size is a multiple of MTC_LANDMARK_INTERVAL.
  *
+ *   Persistence happens BEFORE the in-memory tree append (TODO #57
+ *   item 4): DB write failures abort the operation without leaving
+ *   the in-memory tree ahead of the DB.  Without this ordering, a
+ *   silent DB failure would persist into a divergent state where
+ *   in-memory tree size > DB row count, with the next service
+ *   restart silently rolling back the apparently-issued entry.
+ *
  * Input Arguments:
  *   store    - Target store.
  *   entry    - Serialised entry bytes (0x01 prefix = TBS, 0x00 = null).
  *   entrySz  - Size in bytes.
  *
  * Returns:
- *   0-based log index of the new entry.
+ *    0-based log index of the new entry on success.
+ *   -1 if the DB persist failed (caller MUST treat as fatal — the
+ *      in-memory tree is unchanged and the caller should abort the
+ *      enrollment / log-append it was performing).
  *
  * Side Effects:
- *   Appends to tree, may write to DB, may add a landmark.
+ *   On success: appends to tree, writes DB row, may add a landmark.
+ *   On failure: no state change.
  ******************************************************************************/
 int mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz)
 {
-    int idx = mtc_tree_append(&store->tree, entry, entrySz);
+    int idx_target = store->tree.size;  /* slot mtc_tree_append will use */
+    int idx_actual;
 
-    /* Persist entry to DB */
+    /* Persist to DB FIRST.  If it fails we return -1 without mutating
+     * the in-memory tree; the caller aborts and there's nothing to
+     * roll back. */
     if (store->use_db && store->db) {
         uint8_t lh[MTC_HASH_SIZE];
         int entry_type = (entrySz > 0 && entry[0] == 0x01) ? 1 : 0;
         const char *tbs_json = NULL;
         char *tbs_str = NULL;
+        int rc;
 
         mtc_hash_leaf(entry, entrySz, lh);
 
         if (entry_type == 1 && entrySz > 1) {
-            tbs_str = (char*)malloc((size_t)entrySz);
+            tbs_str = (char *)malloc((size_t)entrySz);
+            if (!tbs_str) return -1;
             memcpy(tbs_str, entry + 1, (size_t)(entrySz - 1));
             tbs_str[entrySz - 1] = 0;
             tbs_json = tbs_str;
         }
 
-        if (mtc_db_save_entry(store->db, idx, entry_type, tbs_json,
-                entry, entrySz, lh) != 0)
-            fprintf(stderr, "[store] WARNING: DB save_entry failed for index %d\n", idx);
+        rc = mtc_db_save_entry(store->db, idx_target, entry_type,
+                               tbs_json, entry, entrySz, lh);
         free(tbs_str);
+        if (rc != 0) {
+            fprintf(stderr,
+                "[store] DB save_entry failed for index %d — aborting "
+                "the append (in-memory tree unchanged)\n", idx_target);
+            return -1;
+        }
+    }
+
+    /* DB write succeeded (or DB is disabled); now mutate the tree. */
+    idx_actual = mtc_tree_append(&store->tree, entry, entrySz);
+
+    /* Sanity: idx_actual must match what we told the DB.  An
+     * mtc_tree_append return that disagrees with idx_target indicates
+     * a concurrent mutation we didn't expect; log loudly. */
+    if (store->use_db && store->db && idx_actual != idx_target) {
+        fprintf(stderr,
+            "[store] CRITICAL: mtc_tree_append returned %d but DB row "
+            "is at %d — concurrent mutation detected, in-memory and DB "
+            "are now divergent\n", idx_actual, idx_target);
     }
 
     /* Check for landmark */
@@ -864,12 +898,14 @@ int mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz)
         store->landmarks[store->landmark_count++] = store->tree.size;
         if (store->use_db && store->db) {
             if (mtc_db_save_landmark(store->db, store->tree.size) != 0)
-                fprintf(stderr, "[store] WARNING: DB save_landmark failed for size %d\n",
-                        store->tree.size);
+                fprintf(stderr,
+                    "[store] WARNING: DB save_landmark failed for size "
+                    "%d (non-fatal — landmark is a cache, can be "
+                    "re-derived)\n", store->tree.size);
         }
     }
 
-    return idx;
+    return idx_actual;
 }
 
 /******************************************************************************

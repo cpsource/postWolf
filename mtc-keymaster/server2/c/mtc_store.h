@@ -177,14 +177,22 @@ int  mtc_store_load(MtcStore *store);
  * @brief    Append a serialised entry to the Merkle tree and persist it.
  *
  * @details
- * Appends to the tree, saves to DB if connected, and records a landmark
- * if the new tree size is a multiple of MTC_LANDMARK_INTERVAL.
+ * Persists to DB FIRST (if connected), then appends to the tree, then
+ * records a landmark if the new tree size is a multiple of
+ * MTC_LANDMARK_INTERVAL.  This ordering means a DB write failure
+ * leaves the in-memory tree untouched (TODO #57 item 4).
+ *
+ * Callers MUST check the return value: a -1 indicates the DB persist
+ * failed and the operation has been aborted with no state change.
+ * The caller is expected to surface the failure (e.g. abort the
+ * enrollment) rather than continue as if the entry had been issued.
  *
  * @param[in,out] store    Target store.
  * @param[in]     entry    Serialised entry bytes.
  * @param[in]     entrySz  Size of entry in bytes.
  *
- * @return  0-based log index of the new entry.
+ * @return   0-based log index of the new entry on success.
+ *          -1 if DB persistence failed (in-memory tree is unchanged).
  */
 int  mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz);
 
