@@ -2563,6 +2563,108 @@ some other reason, OR a third reviewer flags it again with
 fresh evidence that the field-based form actually misses
 something.
 
+### 55. DNSSEC trust anchor: static `dns-root-data` vs `unbound` daemon
+
+**Severity:** Medium — operational, becomes a hard outage at the
+next IANA root-KSK roll if left unaddressed on long-lived
+deployments.
+
+**What we ship today.**  Every install kit (`kit-CA/`, `kit-leaf/`,
+`kit-server/`, `kit-developer/`) apt-installs the **`dns-root-data`**
+package, which drops a static IANA root trust anchor file at
+`/usr/share/dns/root.key`.  `mtc_dnssec_pin.c`'s
+`mqc_dnssec_validate_ca_kh` opens that file via libunbound's
+`ub_ctx_add_ta_file` for every `_mqc-ca.<domain>` TXT validation.
+Trust anchor only updates when the operator runs `apt upgrade`.
+
+**Alternative — install the full `unbound` daemon.**
+`sudo apt install unbound` adds the validating-recursive-resolver
+daemon, an `unbound-anchor` updater (RFC 5011 trust-anchor
+rollover), and a managed trust anchor file at
+`/var/lib/unbound/root.key`.  The daemon listens on
+`127.0.0.1:53`, recurses from the root, and validates every
+answer.  `mqc_dnssec_pin.c` already prefers
+`/var/lib/unbound/root.key` over `/usr/share/dns/root.key` when
+both exist, so a side-by-side install just works.
+
+**What option 2 buys us:**
+
+1. **Automatic RFC 5011 KSK rollover.**  When IANA rolls the
+   root KSK, the static file is only as fresh as the last apt
+   upgrade.  `unbound-anchor` polls and updates.  This matters
+   for any deployment that's expected to run unattended across a
+   roll (factsorlie.com is exactly such a deployment).
+2. **Local recursive cache.**  TXT lookups for `_mqc-ca.<domain>`
+   hit a 127.0.0.1 cache after first resolution; cuts CA
+   enrollment latency and avoids hammering upstream resolvers
+   under burst.
+3. **Independence from the host's resolver.**  Cloud images,
+   captive portals, and ISP resolvers vary wildly in DNSSEC
+   behaviour.  Running our own recursing validator decouples
+   correctness from whatever `/etc/resolv.conf` happens to
+   point at.
+4. **Validation everywhere on the box.**  Pointing the system
+   resolver at `127.0.0.1` makes every program get
+   DNSSEC-validated answers, not just `mtc_server`'s libunbound
+   calls.  Belt-and-suspenders.
+5. **Better diagnostic surface.**  The daemon logs validation
+   failures with context (`SERVFAIL` + AD-bit reasoning); a
+   linked-libunbound failure inside `mtc_server` returns a bool
+   to the caller and the operator has to grep `journalctl`.
+
+**Costs:**
+
+- Daemon on port 53 — must stay loopback-bound (default) or you
+  become a public open recursor / DDoS amplifier.  Verify
+  `interface: 127.0.0.1` in `/etc/unbound/unbound.conf` after
+  install.
+- Conflicts with `systemd-resolved`'s stub listener on Ubuntu
+  24.04.  Resolve via `DNSStubListener=no` in
+  `/etc/systemd/resolved.conf` (and restart `systemd-resolved`),
+  or run unbound on a non-53 port and have `mtc_server` resolve
+  through that.
+- More configuration surface (one daemon, one config file) than
+  a static file — but minimal once standing.
+
+**Recommendation.**
+
+- **For factsorlie.com and any production-grade `mtc_server`
+  deployment**: install the unbound daemon.  This is a
+  long-lived public service and silently degrading at the next
+  KSK roll is the failure mode we should *not* sign up for.
+- **For developer / leaf / CA-only boxes that re-pull apt
+  regularly**: the static-file path is fine; `apt upgrade` keeps
+  the anchor current.  No change needed unless we want to
+  unify.
+
+**Proposed work:**
+
+1. Update `kit-server/install-server-kit.sh` to install
+   `unbound` (not just `dns-root-data`) by default, with a
+   flag to opt out.  Also handle the systemd-resolved port-53
+   conflict in the installer (detect, prompt, set
+   `DNSStubListener=no`).
+2. Update `kit-server/README-server.md` to document the choice
+   and the rationale.
+3. Leave kit-CA / kit-leaf / kit-developer on the static-file
+   path — those boxes don't run as long-lived publicly-reachable
+   services and the static anchor is fine.
+4. Add a one-time runbook step for the live factsorlie.com box:
+   stop mtc-ca, install unbound, verify
+   `unbound-control list-local-zones | head` works, restart
+   mtc-ca, confirm `_mqc-ca.factsorlie.com` lookups still
+   validate.
+
+**Files:**
+
+- `kit-server/install-server-kit.sh` (apt list + systemd-resolved
+  handling)
+- `kit-server/README-server.md` (document the choice)
+- `mtc-keymaster/server2/c/mtc_dnssec_pin.c` — no code change;
+  the file-path probe already prefers `/var/lib/unbound/root.key`
+  when present.
+- This README (mark closed when factsorlie.com migrates).
+
 ---
 
 ## Appendix: Server Directory Layout
