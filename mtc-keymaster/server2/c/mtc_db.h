@@ -233,6 +233,34 @@ int  mtc_db_save_certificate(PGconn *conn, int index, const char *cert_json);
 struct json_object *mtc_db_load_certificate(PGconn *conn, int index);
 
 /**
+ * @brief    Look up the live (non-revoked, in-validity-window) cert
+ *           index for a given (subject, spk_hash) pair.
+ *
+ * @details
+ * Used by the bootstrap enrollment path to make CA / leaf enrollment
+ * idempotent (TODO #57): if the same subject re-enrolls with the same
+ * public key (because the operator re-ran register-ca.sh, or the
+ * earlier response got dropped on the wire), return the existing cert
+ * verbatim instead of issuing a new entry — preventing the
+ * duplicate-idx / fork-after-accept divergence the original bug
+ * exhibited.
+ *
+ * Live = present in mtc_certificates AND not in mtc_revocations AND
+ * tbs_entry.not_after > now().
+ *
+ * @param[in] conn      Active PostgreSQL connection.
+ * @param[in] subject   tbs_entry.subject (e.g. "frflashy.com-ca").
+ * @param[in] spk_hash  64-char lowercase-hex sha256 of the PEM, the
+ *                      same form stored in tbs_entry.subject_public_key_hash.
+ *
+ * @return  Cert index >= 0 if a matching live cert exists.
+ *          -1 if no match, on query error, or if @p conn is NULL.
+ */
+int  mtc_db_find_live_cert_by_pubkey_hash(PGconn *conn,
+                                           const char *subject,
+                                           const char *spk_hash);
+
+/**
  * @brief    Load all certificates into an index-addressed array.
  *
  * @details

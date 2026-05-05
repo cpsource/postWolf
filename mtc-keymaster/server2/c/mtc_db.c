@@ -819,6 +819,61 @@ struct json_object *mtc_db_load_certificate(PGconn *conn, int index)
 }
 
 /******************************************************************************
+ * Function:    mtc_db_find_live_cert_by_pubkey_hash
+ *
+ * Description:
+ *   Idempotency lookup for CA / leaf enrollment (TODO #57).  Returns
+ *   the index of the most-recently-issued live cert that matches the
+ *   given (subject, spk_hash) pair, or -1 if none found.  Live means:
+ *     - row exists in mtc_certificates
+ *     - row's index is NOT in mtc_revocations
+ *     - tbs_entry.not_after is in the future (current time + 0 skew —
+ *       we want to issue a new cert if the existing one is about to
+ *       expire anyway)
+ *
+ *   Uses JSONB path-operators on the certificate column (which is
+ *   typed JSONB per mtc_certificates schema), so no pre-extraction is
+ *   needed.
+ *
+ * Returns:
+ *    Cert index >= 0 if a matching live cert exists.
+ *   -1                if no match, on query error, or NULL inputs.
+ ******************************************************************************/
+int mtc_db_find_live_cert_by_pubkey_hash(PGconn *conn,
+                                          const char *subject,
+                                          const char *spk_hash)
+{
+    PGresult   *res;
+    const char *params[2];
+    int         idx;
+
+    if (!conn || !subject || !spk_hash) return -1;
+
+    params[0] = subject;
+    params[1] = spk_hash;
+    res = PQexecParams(conn,
+        "SELECT index FROM mtc_certificates "
+        "WHERE certificate->'standalone_certificate'->'tbs_entry'"
+        "        ->>'subject' = $1 "
+        "  AND certificate->'standalone_certificate'->'tbs_entry'"
+        "        ->>'subject_public_key_hash' = $2 "
+        "  AND index NOT IN (SELECT cert_index FROM mtc_revocations) "
+        "  AND (certificate->'standalone_certificate'->'tbs_entry'"
+        "        ->>'not_after')::float > extract(epoch from now()) "
+        "ORDER BY index DESC LIMIT 1",
+        2, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
+        PQclear(res);
+        return -1;
+    }
+
+    idx = atoi(PQgetvalue(res, 0, 0));
+    PQclear(res);
+    return idx;
+}
+
+/******************************************************************************
  * Function:    mtc_db_load_all_certificates
  *
  * Description:

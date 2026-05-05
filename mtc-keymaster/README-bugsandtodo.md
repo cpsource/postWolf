@@ -2737,7 +2737,7 @@ later as part of #57's enrollment-idempotency work.
 - `mtc-keymaster/server2/c/mtc_store.c` (an idempotent reload
   routine, shared between cold-start and warm-reload paths)
 
-### 57. Enrollment dedup + TBS-timestamp determinism + cert/leaf consistency
+### 57. Enrollment dedup + TBS-timestamp determinism + cert/leaf consistency — **IDEMPOTENCY DONE 2026-05-05** (items 2-4 deferred)
 
 **Severity:** High — produces silently-corrupt log state under
 duplicate enrollment.  `cert N`'s published cosignature commits

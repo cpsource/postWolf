@@ -1203,6 +1203,74 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
             to_hex(h, 32, spk_hash);
         }
 
+        /* TODO #57 idempotency check.
+         *
+         * If a live (non-revoked, in-validity-window) cert already
+         * exists for this (subject, spk_hash) pair, return it
+         * verbatim instead of issuing a fresh entry.  Closes the
+         * fork-after-accept duplicate-idx race that produced the
+         * cert/leaf divergence on frflashy.com's enrollment: same
+         * (subject, public_key) re-enrollment used to append a new
+         * row at idx N+1 with a different not_before timestamp,
+         * causing the cosignature to be over a tree state that
+         * didn't match the leaf actually persisted in the DB.  Now
+         * the second invocation just gets the first one's cert
+         * back. */
+        if (store->use_db && store->db) {
+            int existing_idx =
+                mtc_db_find_live_cert_by_pubkey_hash(store->db,
+                                                     subject, spk_hash);
+            if (existing_idx >= 0) {
+                struct json_object *existing =
+                    mtc_db_load_certificate(store->db, existing_idx);
+                if (existing) {
+                    /* Refresh the response's outer checkpoint to the
+                     * current STH (the cert's own cosignature is
+                     * self-contained over its issue-time subtree, so
+                     * stale outer checkpoint is not load-bearing for
+                     * verification, but a fresh one keeps clients
+                     * happier when they cross-reference). */
+                    struct json_object *cur_ckpt =
+                        mtc_store_checkpoint(store);
+                    if (cur_ckpt) {
+                        json_object_object_add(existing, "checkpoint",
+                            json_object_get(cur_ckpt));
+                        json_object_put(cur_ckpt);
+                    }
+
+                    /* Add the (in-flight only) label if requested. */
+                    if (bootstrap_label[0]) {
+                        json_object_object_add(existing, "label",
+                            json_object_new_string(bootstrap_label));
+                    }
+
+                    {
+                        const char *resp_str =
+                            json_object_to_json_string(existing);
+                        enc_len = sizeof(enc_buf);
+                        if (mtc_crypt_encode(crypt_ctx,
+                                (unsigned char *)resp_str,
+                                (unsigned int)strlen(resp_str),
+                                enc_buf, &enc_len) == 0 &&
+                            send_length_prefixed(fd, enc_buf, enc_len) == 0)
+                        {
+                            LOG_INFO("bootstrap: idempotent re-enroll for "
+                                     "'%s' returned existing cert at "
+                                     "index %d (TODO #57)",
+                                     subject, existing_idx);
+                        } else {
+                            LOG_WARN("bootstrap: failed to send idempotent "
+                                     "response for existing cert %d",
+                                     existing_idx);
+                        }
+                    }
+
+                    json_object_put(existing);
+                    goto cleanup;
+                }
+            }
+        }
+
         /* Build TBS JSON */
         tbs = json_object_new_object();
         json_object_object_add(tbs, "subject",
