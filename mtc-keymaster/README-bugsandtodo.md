@@ -2665,6 +2665,176 @@ both exist, so a side-by-side install just works.
   when present.
 - This README (mark closed when factsorlie.com migrates).
 
+### 56. Fork-after-accept parent staleness — children commit, parent doesn't see
+
+**Severity:** High — both an availability bug (cert 404 from parent
+after a fresh enrollment, fixed only by service restart) and a
+correctness/state-consistency bug (root-cause of the cosignature
+corruption documented in #57).
+
+**Architecture today.**  `mtc_server` is fork-after-accept: the
+parent process owns the listening sockets on 8444/8445/8446, and
+each accepted connection is handled in a fresh `fork()`'d child.
+The store (`MtcStore`, including `MtcMerkleTree`, `certificates[]`,
+landmarks, etc.) is loaded into the parent at startup and inherited
+by every child via copy-on-write.
+
+**The gap.**  Children mutate their own copy of the store
+(`mtc_store_add_entry` appends to local `store->tree`, persists to
+DB, writes `certificates.json`, exits).  The parent's in-memory
+state is never updated — only the on-disk DB and JSON files reflect
+the child's commit.
+
+**Two observed symptoms** (both surfaced during the frflashy.com
+CA enrollment on 2026-05-05):
+
+1. **HTTP `/certificate/N` 404 right after enrollment.**  Bootstrap
+   child wrote cert N=75 to `certificates.json` and exited.  Parent
+   serving `/certificate/N` had `tree.size==75` in memory and
+   replied 404.  MQC peer-verify on the same cert hit the same 404
+   chain (`http_get` proxies via parent), failed
+   `PEER_VERIFY_FAILED`, leaving frflashy.com unable to connect on
+   8446.  Manual `systemctl restart mtc-ca.service` cleared it.
+2. **Duplicate enrollment landed at the same index.**  When
+   `register-ca.sh` ran twice (operator-prompted "register again?
+   Y") the two bootstrap children both forked from the parent's
+   stale `tree.size==75` state, both got `idx=75` from
+   `mtc_store_add_entry` on their local copies, and both committed
+   different bytes to disk.  See #57 for the downstream
+   cert/leaf-divergence corruption that produced.
+
+**Fix options, ranked by cost:**
+
+1. **Cheap workaround — SIGHUP-on-child-commit.**  After each
+   bootstrap child writes the cert, send `SIGHUP` to the parent
+   (the parent already knows its own pid).  Parent's signal
+   handler re-reads the certificates/entries from DB.  Closes
+   symptom 1 (404 after enrollment).  Does not close symptom 2
+   (concurrent forks still race).
+2. **Per-request reload.**  Parent always re-fetches from DB on
+   `/certificate/N` lookup instead of serving from in-memory
+   cache.  Closes symptom 1 cleanly, slower throughput for
+   read-heavy workloads.
+3. **Single-writer architecture.**  The bootstrap append + cert
+   commit happens in the parent (or in a designated worker
+   process), not in fork()'d connection-handlers.  Children proxy
+   write requests to the writer over a pipe.  Closes both
+   symptoms; bigger change.
+4. **Optimistic concurrency in `mtc_store_add_entry`.**  DB-side
+   `INSERT … ON CONFLICT (idx) DO NOTHING` returning the
+   *winning* idx, with the child re-reading "what got persisted"
+   before computing path/cosig.  Closes symptom 2 specifically.
+
+**Recommendation:** start with (1) for an immediate fix (parent
+re-loads on SIGHUP, sent by every committing child), and add (4)
+later as part of #57's enrollment-idempotency work.
+
+**Files:**
+- `mtc-keymaster/server2/c/mtc_server.c` (signal handler that
+  re-loads `MtcStore` state from DB on SIGHUP)
+- `mtc-keymaster/server2/c/mtc_bootstrap.c` (raise SIGHUP to
+  getppid() at the end of each successful enrollment commit)
+- `mtc-keymaster/server2/c/mtc_store.c` (an idempotent reload
+  routine, shared between cold-start and warm-reload paths)
+
+### 57. Enrollment dedup + TBS-timestamp determinism + cert/leaf consistency
+
+**Severity:** High — produces silently-corrupt log state under
+duplicate enrollment.  `cert N`'s published cosignature commits
+to a tree-state that doesn't match the leaf actually persisted
+at index N; MQC peer-verify fails with `PROOF_INVALID` against
+that cert and the holder cannot connect.  Hit on factsorlie.com
+when registering frflashy.com-ca on 2026-05-05.
+
+**Mechanism (root-cause analysis from the live data):**
+
+1. `register-ca.sh` ran twice (the operator was prompted "register
+   again? Y" after the first attempt's polling-display didn't
+   visibly progress).  Two `bootstrap_ca` invocations against
+   factsorlie.com:8445, 111 seconds apart.
+2. Each invocation forked a `mtc_server` child off the parent's
+   stale view of `tree.size==75` (per #56).
+3. `mtc_bootstrap.c:1213-1216` builds the TBS with
+   `not_before = (double)time(NULL)` — *non-deterministic*.
+   Child A's TBS has `not_before=14:28:08`; child B's has
+   `not_before=14:29:59`.  Different TBS bytes → different
+   leaf-hash → different leaf at the same logical position.
+4. Both children's `mtc_store_add_entry` returned `idx=75` from
+   their local trees.  Postgres `INSERT INTO mtc_log_entries(idx,…)`
+   from A succeeded first; B's was rejected/no-op'd by the unique
+   constraint, but `[store] WARNING: DB save_entry failed for
+   index N` is only printed to stderr (not handled).
+5. `certificates.json` is written wholesale by the bootstrap path
+   (no locking, no per-cert concurrency control).  B finished
+   writing after A, so B's cert + B's cosignature over `R_B`
+   overwrote A's.  **DB has A's leaf; certificates.json has B's
+   cosignature over a never-existed-anywhere root.**  The
+   inclusion path published is also B's, but it walks correctly
+   to the actual current root because the proof structure for
+   "leaf at idx 75 in a 76-tree" only depends on tree shape, not
+   on the leaf bytes themselves at idx 75.  So the path is
+   "consistent with reality" but the cosigned `subtree_hash`
+   isn't.
+
+**Fixes, all of which should land:**
+
+1. **Enrollment idempotency.**  In `mtc_bootstrap.c`'s CA-enrollment
+   handler, before building a fresh TBS, query the DB for an
+   existing live (non-revoked, in-validity-window) certificate
+   with the same `(subject, subject_public_key_hash)`.  If found,
+   return that existing cert verbatim — same index, same TBS,
+   same cosignature.  Same idea for leaf enrollment.  Bonus:
+   this also closes the "ghost log entry" warning the operator
+   sees when re-running `register-ca.sh`.
+2. **TBS-timestamp determinism.**  Quantize `not_before` to a
+   coarser-than-process-lifetime granularity (e.g., minute or
+   hour) keyed off the *enrollment request* rather than
+   `time(NULL)` at TBS-build time.  Even better: derive
+   `not_before` from a deterministic function of
+   `(subject, subject_public_key_hash, today's-date)` so
+   accidental retries within a day produce identical TBS bytes.
+   Either approach ensures duplicate enrollments produce the
+   same leaf hash, neutralizing the divergence vector even if
+   idempotency-check (1) somehow misses.
+3. **Startup invariant: certificates[i].tbs_entry must hash to
+   entries[i].leaf_hash.**  Add a check in `mtc_store_load` that
+   re-serializes each `certificates[i].tbs_entry` per the
+   enrollment serializer's rules and compares to the stored
+   leaf hash; flag any divergence and either auto-repair (use
+   the leaf data, rewrite the tbs_entry) or refuse to start with
+   a clear error.  This converts silent log corruption into an
+   immediate failure mode.
+4. **Treat `mtc_db_save_entry` failure as fatal during
+   enrollment.**  The current `fprintf(stderr, "[store] WARNING:
+   DB save_entry failed for index %d", idx)` is too quiet — a
+   failed DB write means the in-memory tree has an entry the DB
+   doesn't, and we just keep going.  The bootstrap thread should
+   abort the enrollment on DB write failure (return an error to
+   the client), so the operator at least knows.
+
+**Recovery for the existing factsorlie.com state:**
+- Use `admin_recosign --write` to refresh every cert's cosignature
+  to the current tree's actual root.  This unblocks
+  frflashy.com-ca verification because the new cosignature is
+  over the leaf that's actually in the tree (A's), and the
+  inclusion path is rebuilt from the same canonical tree state.
+- (Optional, deeper repair) Extend `admin_recosign` with a
+  `--repair-tbs` flag that detects `certificates[i].tbs_entry !=
+  entry-data-at-i` and rewrites the TBS from the canonical leaf
+  bytes before recosigning.  This brings the on-disk state to a
+  fully consistent state, not just one that happens to verify
+  given today's verifier behavior.
+
+**Files:**
+- `mtc-keymaster/server2/c/mtc_bootstrap.c` (idempotency check
+  before append; deterministic TBS timestamps; treat DB write
+  failure as fatal)
+- `mtc-keymaster/server2/c/mtc_store.c` (startup invariant
+  check; reload path for #56)
+- `mtc-keymaster/server2/c/mtc_db.c` (lookup-by-(subject,
+  spk_hash) accessor)
+- `mtc-keymaster/tools/c/admin_recosign.c` (`--repair-tbs`)
+
 ---
 
 ## Appendix: Server Directory Layout

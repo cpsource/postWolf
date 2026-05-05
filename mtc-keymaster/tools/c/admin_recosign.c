@@ -62,6 +62,10 @@ static void usage(const char *prog)
     printf("  --log-id ID        Log identifier (default: 32473.2)\n");
     printf("  --dry-run          Print per-cert diff; write nothing (default)\n");
     printf("  --write            Apply changes to certificates.json + Neon\n");
+    printf("  --repair-tbs       Also detect+rewrite cert.tbs_entry when it\n");
+    printf("                     doesn't match the canonical leaf bytes in\n");
+    printf("                     the tree (recovers from the fork-after-accept\n");
+    printf("                     duplicate-enrollment corruption — TODO #57).\n");
     printf("  -v, --verbose      Print full sig hex on each STALE entry\n");
     printf("  -h, --help         Show this help\n\n");
     printf("Exit codes: 0 = success, 2 = stale entries found in dry-run,\n");
@@ -87,6 +91,47 @@ static struct json_object *build_cosig(const char *cosigner_id,
     return co;
 }
 
+/* Rebuild a tbs_entry-shaped JSON object from the canonical leaf bytes
+ * stored in the tree.  The leaf payload format produced by
+ * mtc_bootstrap.c is `0x01 || alphabetical-keyed JSON` with the keys
+ * renamed (`spk_algorithm`, `spk_hash`).  This reverses the renaming
+ * to produce the cert.standalone_certificate.tbs_entry shape.  Returns
+ * NULL on any failure; caller owns the result. */
+static struct json_object *tbs_from_entry_bytes(const uint8_t *entry, int entry_sz)
+{
+    if (!entry || entry_sz < 2 || entry[0] != 0x01) return NULL;
+
+    char *buf = (char *)malloc((size_t)entry_sz);
+    if (!buf) return NULL;
+    memcpy(buf, entry + 1, (size_t)(entry_sz - 1));
+    buf[entry_sz - 1] = '\0';
+
+    struct json_object *src = json_tokener_parse(buf);
+    free(buf);
+    if (!src) return NULL;
+
+    struct json_object *tbs = json_object_new_object();
+    struct json_object *v;
+
+    if (json_object_object_get_ex(src, "subject", &v))
+        json_object_object_add(tbs, "subject", json_object_get(v));
+    if (json_object_object_get_ex(src, "spk_algorithm", &v))
+        json_object_object_add(tbs, "subject_public_key_algorithm",
+                               json_object_get(v));
+    if (json_object_object_get_ex(src, "spk_hash", &v))
+        json_object_object_add(tbs, "subject_public_key_hash",
+                               json_object_get(v));
+    if (json_object_object_get_ex(src, "not_before", &v))
+        json_object_object_add(tbs, "not_before", json_object_get(v));
+    if (json_object_object_get_ex(src, "not_after", &v))
+        json_object_object_add(tbs, "not_after", json_object_get(v));
+    if (json_object_object_get_ex(src, "extensions", &v))
+        json_object_object_add(tbs, "extensions", json_object_get(v));
+
+    json_object_put(src);
+    return tbs;
+}
+
 int main(int argc, char *argv[])
 {
     const char *data_dir  = "/home/ubuntu/.mtc-ca-data";
@@ -95,6 +140,12 @@ int main(int argc, char *argv[])
     const char *log_id    = "32473.2";
     int  write_mode = 0;  /* 0 = dry-run (default), 1 = apply */
     int  verbose    = 0;
+    int  repair_tbs = 0;  /* If set, also rewrite cert.tbs_entry from the
+                           * canonical leaf bytes when they diverge.
+                           * Targets the corruption pattern documented in
+                           * TODO #57 (fork-after-accept duplicate
+                           * enrollment writes mismatched cert/leaf
+                           * pairs).                                       */
     int  i;
 
     MtcStore store;
@@ -117,6 +168,8 @@ int main(int argc, char *argv[])
             write_mode = 1;
         else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0)
             verbose = 1;
+        else if (strcmp(argv[i], "--repair-tbs") == 0)
+            repair_tbs = 1;
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             return 0;
@@ -175,6 +228,97 @@ int main(int argc, char *argv[])
         if (!json_object_object_get_ex(cert, "standalone_certificate", &sc)) {
             printf("cert %d: SKIP (no standalone_certificate)\n", i);
             continue;
+        }
+
+        /* TBS-vs-leaf consistency check (TODO #57 recovery path).
+         *
+         * Compare the scalar fields in cert.tbs_entry against the same
+         * fields in the canonical leaf payload at the cert's
+         * stated log index (sc.index).  The cert *array* may or may
+         * not be flat-packed — DB load is sparse (NULLs in gaps),
+         * file load is compact — so always re-derive the real log
+         * index from sc.index.  store.tree.entries[] is always
+         * indexed by log index, so once we have the right log index
+         * the rest is straightforward.
+         *
+         * We deliberately don't byte-compare the full re-serialised
+         * forms, because nested objects (notably `extensions`) can
+         * have keys in different orders between entries.json and
+         * certificates.json — same data, but
+         * `JSON_C_TO_STRING_PLAIN` honours insertion order, so
+         * round-tripped objects can serialise differently.  The
+         * fork-after-accept corruption we're targeting (TODO #57)
+         * always changes a SCALAR field (not_before, not_after,
+         * subject, spk_*), so scalar-only comparison catches it
+         * without flagging the spurious extensions-reorder cases. */
+        int cert_log_idx = -1;
+        {
+            struct json_object *idx_val;
+            if (json_object_object_get_ex(sc, "index", &idx_val))
+                cert_log_idx = json_object_get_int(idx_val);
+        }
+        if (cert_log_idx >= 0 && cert_log_idx < store.tree.size &&
+            store.tree.entries && store.tree.entries[cert_log_idx]) {
+            struct json_object *cur_tbs = NULL;
+            int tbs_divergent = 0;
+
+            if (json_object_object_get_ex(sc, "tbs_entry", &cur_tbs)) {
+                struct json_object *canonical =
+                    tbs_from_entry_bytes(store.tree.entries[cert_log_idx],
+                                         store.tree.entry_sizes[cert_log_idx]);
+                if (canonical) {
+                    /* Compare scalar fields by their JSON string form. */
+                    static const char *scalar_keys[] = {
+                        "subject",
+                        "subject_public_key_algorithm",
+                        "subject_public_key_hash",
+                        "not_before",
+                        "not_after",
+                        NULL
+                    };
+                    int k;
+                    for (k = 0; scalar_keys[k]; k++) {
+                        struct json_object *a = NULL, *b = NULL;
+                        json_object_object_get_ex(cur_tbs,
+                            scalar_keys[k], &a);
+                        json_object_object_get_ex(canonical,
+                            scalar_keys[k], &b);
+                        const char *as = a
+                            ? json_object_to_json_string_ext(a,
+                                JSON_C_TO_STRING_PLAIN)
+                            : "";
+                        const char *bs = b
+                            ? json_object_to_json_string_ext(b,
+                                JSON_C_TO_STRING_PLAIN)
+                            : "";
+                        if (strcmp(as, bs) != 0) {
+                            tbs_divergent = 1;
+                            if (!verbose) break;
+                            printf("cert %d: TBS DIVERGENT field '%s': "
+                                   "cert=%s leaf=%s\n", i,
+                                   scalar_keys[k], as, bs);
+                        }
+                    }
+
+                    if (tbs_divergent) {
+                        printf("cert %d: TBS DIVERGENT (scalar fields "
+                               "differ from canonical leaf at log "
+                               "index %d)\n", cert_log_idx, cert_log_idx);
+
+                        if (repair_tbs && write_mode) {
+                            json_object_object_add(sc, "tbs_entry",
+                                json_object_get(canonical));
+                            printf("        TBS REPAIRED from canonical "
+                                   "leaf bytes\n");
+                            changed = 1; /* force the recosign path */
+                        } else if (!repair_tbs) {
+                            printf("        (pass --repair-tbs --write "
+                                   "to fix)\n");
+                        }
+                    }
+                    json_object_put(canonical);
+                }
+            }
         }
 
         /* Snapshot the old values we care about (still present in memory). */

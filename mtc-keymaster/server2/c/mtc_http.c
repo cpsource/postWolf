@@ -1400,6 +1400,30 @@ static void handle_public_key_lookup(client_io *io, MtcStore *store,
         return;
     }
 
+    /* Ensure the PEM ends with a newline.  The cert's
+     * subject_public_key_hash field is sha256(pem_bytes), computed at
+     * enrollment time over the PEM as the operator wrote it (text
+     * file, trailing '\n').  The DB round-trip and certain JSON
+     * encoders strip that final newline, so when a peer-verifier
+     * fetches via /public-key/<name> and hashes the result, the
+     * sha256 differs by exactly one byte.  Re-adding the newline
+     * here keeps the served bytes aligned with the cert's claim.
+     * (Same class of whitespace-sensitive PEM hashing as TODO #53,
+     * different code path.) */
+    {
+        size_t plen = strlen(pem);
+        if (plen == 0 || pem[plen - 1] != '\n') {
+            char *fixed = (char *)malloc(plen + 2);
+            if (fixed) {
+                memcpy(fixed, pem, plen);
+                fixed[plen]     = '\n';
+                fixed[plen + 1] = '\0';
+                free(pem);
+                pem = fixed;
+            }
+        }
+    }
+
     {
         struct json_object *obj = json_object_new_object();
         json_object_object_add(obj, "key_name",
