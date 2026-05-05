@@ -17,6 +17,10 @@
 #include <ctype.h>
 #include <unistd.h>
 
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+
 #include <unbound.h>
 #include <openssl/evp.h>
 
@@ -50,54 +54,66 @@ static int hex_encode(const unsigned char *in, size_t in_len,
     return 0;
 }
 
-static int sha3_256_file_hex(const char *path, char out_hex[MQC_HASH_HEX_LEN + 1])
+/* SHA3-256 over the SubjectPublicKeyInfo DER of a public key PEM file.
+ * Shells out to openssl40 (the postWolf OpenSSL 4.0.0 build with PQC
+ * support) to extract the DER, since system libcrypto doesn't know
+ * ML-DSA-87.  Matches the kh= hash published by ca_dns_txt.py. */
+static int sha3_256_spki_der_hex(const char *path, char out_hex[MQC_HASH_HEX_LEN + 1])
 {
-    FILE *fp = fopen(path, "rb");
-    if (!fp)
+    int pipefd[2];
+    if (pipe(pipefd) != 0)
         return -1;
 
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    if (!ctx) {
-        fclose(fp);
-        return -1;
-    }
-
-    if (EVP_DigestInit_ex(ctx, EVP_sha3_256(), NULL) != 1) {
-        EVP_MD_CTX_free(ctx);
-        fclose(fp);
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
         return -1;
     }
 
-    unsigned char buf[8192];
-    size_t n;
-
-    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
-        if (EVP_DigestUpdate(ctx, buf, n) != 1) {
-            EVP_MD_CTX_free(ctx);
-            fclose(fp);
-            return -1;
+    if (pid == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
         }
+        execlp("openssl40", "openssl40",
+               "pkey", "-pubin", "-inform", "PEM", "-outform", "DER",
+               "-in", path, NULL);
+        _exit(127);
     }
 
-    if (ferror(fp)) {
-        EVP_MD_CTX_free(ctx);
-        fclose(fp);
+    close(pipefd[1]);
+
+    unsigned char der[65536];
+    size_t total = 0;
+    ssize_t n;
+    while (total < sizeof(der) &&
+           (n = read(pipefd[0], der + total, sizeof(der) - total)) > 0)
+        total += (size_t)n;
+    close(pipefd[0]);
+
+    int wstatus;
+    waitpid(pid, &wstatus, 0);
+
+    if (!WIFEXITED(wstatus) || WEXITSTATUS(wstatus) != 0 || total == 0)
         return -1;
-    }
 
     unsigned char digest[EVP_MAX_MD_SIZE];
     unsigned int digest_len = 0;
-
-    if (EVP_DigestFinal_ex(ctx, digest, &digest_len) != 1) {
-        EVP_MD_CTX_free(ctx);
-        fclose(fp);
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx)
         return -1;
-    }
 
+    int ok = EVP_DigestInit_ex(ctx, EVP_sha3_256(), NULL) == 1 &&
+             EVP_DigestUpdate(ctx, der, total) == 1 &&
+             EVP_DigestFinal_ex(ctx, digest, &digest_len) == 1;
     EVP_MD_CTX_free(ctx);
-    fclose(fp);
 
-    if (digest_len != 32)
+    if (!ok || digest_len != 32)
         return -1;
 
     return hex_encode(digest, digest_len, out_hex, MQC_HASH_HEX_LEN + 1);
@@ -344,7 +360,7 @@ mqc_dnssec_status_t mqc_dnssec_fetch_ca_txt(const char *domain,
  *   - DNSSEC validation succeeds
  *   - TXT record exists
  *   - kh=sha3-256:<hash> is present
- *   - hash(public-key-file) matches DNS TXT hash
+ *   - SHA3-256(SPKI DER of public key) matches DNS TXT hash
  */
 mqc_dnssec_status_t mqc_pin_ca_key_from_dnssec(const char *domain,
                                                const char *ca_pubkey_path)
@@ -362,7 +378,7 @@ mqc_dnssec_status_t mqc_pin_ca_key_from_dnssec(const char *domain,
     if (extract_kh_sha3_256(txt, dns_hash) != 0)
         return MQC_DNSSEC_PARSE_ERROR;
 
-    if (sha3_256_file_hex(ca_pubkey_path, file_hash) != 0)
+    if (sha3_256_spki_der_hex(ca_pubkey_path, file_hash) != 0)
         return MQC_DNSSEC_PARSE_ERROR;
 
     if (strcmp(dns_hash, file_hash) != 0)
