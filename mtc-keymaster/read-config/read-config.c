@@ -24,7 +24,17 @@ int init_augeas(void) {
      * open across batch reads) collapsed the 14× re-scan to a
      * single one-second hit; this fix makes the single hit go
      * away too. */
-    aug = aug_init(NULL, NULL, AUG_NO_MODL_AUTOLOAD);
+    /* loadpath: include both /usr/local/share/augeas/lenses (where
+     * the postWolf kit / Makefile.tools install lays down myconf.aug)
+     * and /usr/share/augeas/lenses (Ubuntu's distro default).
+     * augeas's compile-time default varies — Ubuntu's default
+     * doesn't include /usr/local on some builds, which silently
+     * makes the Myconf module unloadable and `read_config_url`
+     * always returns NULL.  Naming both paths explicitly makes the
+     * lookup work regardless of how libaugeas was compiled. */
+    aug = aug_init(NULL,
+                   "/usr/local/share/augeas/lenses:/usr/share/augeas/lenses",
+                   AUG_NO_MODL_AUTOLOAD);
     if (!aug)
         return -1;
     if (aug_set(aug, "/augeas/load/Myconf/lens", "Myconf.lns") < 0 ||
