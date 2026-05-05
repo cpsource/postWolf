@@ -301,6 +301,12 @@ int mtc_store_init(MtcStore *store, const char *data_dir,
         mtc_tree_append(&store->tree, &null_entry, 1);
     }
 
+    /* Sanity-check cert/leaf consistency (TODO #57 item 3).  Does not
+     * fail the init — operator may want to run admin_recosign first
+     * and then restart — but ensures any silent corruption is visible
+     * in the journal at startup time. */
+    mtc_store_check_invariants(store);
+
     return 0;
 }
 
@@ -334,6 +340,137 @@ void mtc_store_free(MtcStore *store)
 /* ------------------------------------------------------------------ */
 /* Persistence (JSON files)                                            */
 /* ------------------------------------------------------------------ */
+
+/******************************************************************************
+ * Function:    tbs_matches_leaf_scalar
+ *
+ * Description:
+ *   Helper for mtc_store_check_invariants.  Returns 1 if the cert's
+ *   tbs_entry scalar fields (subject, spk_algorithm, spk_hash,
+ *   not_before, not_after) match the equivalent fields in the
+ *   canonical leaf payload at the same tree index.  Returns 0 on
+ *   mismatch or any parse failure.
+ *
+ *   Deliberately scalar-only: the `extensions` sub-object can have
+ *   keys in different orders between certificates.json and
+ *   entries.json (json-c preserves insertion order, and round-trips
+ *   through different code paths can re-order), but those reorders
+ *   don't represent a corruption — only scalar-field divergence
+ *   indicates the fork-after-accept duplicate-enrollment bug we
+ *   actually want to flag.
+ ******************************************************************************/
+static int tbs_matches_leaf_scalar(struct json_object *tbs,
+                                    const uint8_t *entry, int entry_sz)
+{
+    static const struct {
+        const char *tbs_key;
+        const char *src_key;
+    } keys[] = {
+        { "subject",                      "subject"       },
+        { "subject_public_key_algorithm", "spk_algorithm" },
+        { "subject_public_key_hash",      "spk_hash"      },
+        { "not_before",                   "not_before"    },
+        { "not_after",                    "not_after"     },
+        { NULL, NULL }
+    };
+
+    char *buf;
+    struct json_object *src;
+    int match = 1;
+    int k;
+
+    if (!tbs || !entry || entry_sz < 2 || entry[0] != 0x01) return 0;
+
+    buf = (char *)malloc((size_t)entry_sz);
+    if (!buf) return 0;
+    memcpy(buf, entry + 1, (size_t)(entry_sz - 1));
+    buf[entry_sz - 1] = '\0';
+
+    src = json_tokener_parse(buf);
+    free(buf);
+    if (!src) return 0;
+
+    for (k = 0; keys[k].tbs_key; k++) {
+        struct json_object *a = NULL, *b = NULL;
+        const char *as, *bs;
+        json_object_object_get_ex(tbs, keys[k].tbs_key, &a);
+        json_object_object_get_ex(src, keys[k].src_key, &b);
+        as = a
+            ? json_object_to_json_string_ext(a, JSON_C_TO_STRING_PLAIN)
+            : "";
+        bs = b
+            ? json_object_to_json_string_ext(b, JSON_C_TO_STRING_PLAIN)
+            : "";
+        if (strcmp(as, bs) != 0) {
+            match = 0;
+            break;
+        }
+    }
+
+    json_object_put(src);
+    return match;
+}
+
+/******************************************************************************
+ * Function:    mtc_store_check_invariants
+ *
+ * Description:
+ *   Walk every loaded cert and verify its tbs_entry agrees with the
+ *   canonical leaf at the same tree index (TODO #57 item 3 — the
+ *   startup "cert/leaf consistency" check).  Logs WARN per divergent
+ *   cert and a summary line if any were found.  Read-only: does not
+ *   touch state.
+ *
+ * Returns:
+ *   Number of divergent cert indices (0 = clean).
+ ******************************************************************************/
+int mtc_store_check_invariants(MtcStore *store)
+{
+    int i, mismatches = 0;
+
+    if (!store) return 0;
+
+    for (i = 0; i < store->cert_count; i++) {
+        struct json_object *cert = store->certificates[i];
+        struct json_object *sc = NULL, *tbs = NULL, *idx_val = NULL;
+        int log_idx;
+
+        if (!cert) continue;
+        if (!json_object_object_get_ex(cert, "standalone_certificate", &sc))
+            continue;
+        if (!json_object_object_get_ex(sc, "tbs_entry", &tbs))
+            continue;
+
+        /* Use the cert's stated log index (not the loop counter):
+         * the cert array can be sparse (DB load — NULLs in gaps) or
+         * compact (file load — packed), so the loop variable doesn't
+         * always equal the log index.  store->tree.entries[] is
+         * always indexed by log index, so once we have it the leaf
+         * lookup is straightforward. */
+        if (!json_object_object_get_ex(sc, "index", &idx_val))
+            continue;
+        log_idx = json_object_get_int(idx_val);
+        if (log_idx < 0 || log_idx >= store->tree.size) continue;
+        if (!store->tree.entries || !store->tree.entries[log_idx]) continue;
+
+        if (!tbs_matches_leaf_scalar(tbs, store->tree.entries[log_idx],
+                                      store->tree.entry_sizes[log_idx])) {
+            LOG_WARN("[store] INVARIANT: cert %d tbs_entry diverges from "
+                     "canonical leaf bytes (run "
+                     "`admin_recosign --tokenpath <env> --repair-tbs "
+                     "--write` to repair)", log_idx);
+            mismatches++;
+        }
+    }
+
+    if (mismatches > 0) {
+        LOG_WARN("[store] %d cert/leaf invariant violation(s) detected; "
+                 "MQC peer-verify will fail PROOF_INVALID for these "
+                 "indices until repaired (see TODO #57)", mismatches);
+    }
+
+    return mismatches;
+}
 
 /******************************************************************************
  * Function:    mtc_store_reload
@@ -400,6 +537,10 @@ int mtc_store_reload(MtcStore *store)
         uint8_t null_entry = 0x00;
         mtc_tree_append(&store->tree, &null_entry, 1);
     }
+
+    /* Re-check the cert/leaf invariant after reload — silent
+     * corruption could have appeared since the last load. */
+    mtc_store_check_invariants(store);
 
     return 0;
 }

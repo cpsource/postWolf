@@ -143,6 +143,28 @@ int  mtc_store_save(MtcStore *store);
 int  mtc_store_reload(MtcStore *store);
 
 /**
+ * @brief    Sanity-check the cert/leaf invariant after load (TODO #57
+ *           item 3).
+ *
+ * @details
+ * For every non-NULL @p store->certificates[i] with a corresponding
+ * leaf at @p store->tree.entries[i], compare the cert's
+ * standalone_certificate.tbs_entry scalar fields (subject,
+ * subject_public_key_algorithm, subject_public_key_hash, not_before,
+ * not_after) to the same fields in the canonical leaf payload at
+ * that index.  Any mismatch is logged at WARN with a pointer at the
+ * `admin_recosign --repair-tbs --write` recovery path.
+ *
+ * Called automatically from mtc_store_init() and mtc_store_reload();
+ * exposed so admin tools can run the check on demand.
+ *
+ * @param[in] store  Loaded store.
+ *
+ * @return  Count of divergent cert indices (0 = clean).
+ */
+int  mtc_store_check_invariants(MtcStore *store);
+
+/**
  * @brief    Load state from DB (if available) or from data_dir JSON files.
  *
  * @param[in,out] store  Store to populate.
