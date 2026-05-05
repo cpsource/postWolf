@@ -39,7 +39,7 @@ apt-get update -q >/dev/null 2>&1 || true
 apt-get install -y --no-install-recommends \
     libjson-c5 libcurl4 libpq5 \
     libhiredis1.1.0 libhiredis1.0.0 libhiredis0.14 \
-    libunbound8 dns-root-data \
+    libunbound8 dns-root-data libaugeas0 \
     python3 python3-cryptography dnsutils \
     2>/dev/null || {
     echo "Warning: apt-get could not install every runtime lib; check ldd output below." >&2

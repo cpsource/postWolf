@@ -218,7 +218,8 @@ afterward, which is covered by the two sections that follow.
 
 ```bash
 sudo apt install -y build-essential pkg-config autoconf automake libtool \
-    libjson-c-dev libpq-dev libcurl4-openssl-dev libhiredis-dev libunbound-dev
+    libjson-c-dev libpq-dev libcurl4-openssl-dev libhiredis-dev libunbound-dev \
+    libaugeas-dev
 
 cd ~/postWolf
 ./make-all.sh

@@ -9,7 +9,7 @@
 #   - autotools + build essentials (build-essential, pkg-config,
 #     autoconf, automake, libtool)
 #   - libpostWolf / mtc_server / MQC build-time deps (-dev variants of
-#     json-c, pq, curl, hiredis, unbound)
+#     json-c, pq, curl, hiredis, unbound, augeas)
 #   - Runtime services for full testing on the same box
 #     (postgresql-client, redis-server, dnsutils, dns-root-data)
 #   - Python tooling (cryptography, psycopg2-binary via pip3)
@@ -33,7 +33,7 @@ apt-get install -y --no-install-recommends \
     build-essential pkg-config autoconf automake libtool \
     git wget perl zlib1g-dev libssl-dev \
     libjson-c-dev libpq-dev libcurl4-openssl-dev \
-    libhiredis-dev libunbound-dev \
+    libhiredis-dev libunbound-dev libaugeas-dev \
     postgresql-client redis-server \
     dnsutils dns-root-data \
     python3 python3-pip python3-cryptography

@@ -52,7 +52,8 @@ The installer:
 
 1. apt-installs runtime libs (`libjson-c5`, `libcurl4`, `libpq5`,
    a `libhiredis` variant, `libunbound8` + `dns-root-data` for
-   DNSSEC TXT-pin verification) plus `redis-server` and
+   DNSSEC TXT-pin verification, `libaugeas0` for the
+   `/etc/postWolf/config` parser) plus `redis-server` and
    `postgresql-client` (the daemon's external services).
 2. Builds OpenSSL 4.0.0 into `/usr/local/openssl4/` and drops a
    wrapper at `/usr/local/bin/openssl40` (idempotent — skipped if

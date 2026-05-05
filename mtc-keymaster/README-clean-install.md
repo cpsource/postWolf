@@ -10,7 +10,7 @@ sudo apt update
 sudo apt install -y \
     build-essential pkg-config autoconf automake libtool \
     libjson-c-dev libpq-dev libcurl4-openssl-dev \
-    libhiredis-dev libunbound-dev \
+    libhiredis-dev libunbound-dev libaugeas-dev \
     python3 python3-pip postgresql-client \
     dnsutils dns-root-data
 
@@ -19,8 +19,10 @@ pip3 install cryptography psycopg2-binary
 
 `libhiredis-dev` is the redis client (MQC rate limiting); `libunbound-dev`
 + `dns-root-data` are the DNSSEC validator and root trust anchor used by
-the `_mqc-ca.<domain>` TXT-pin verification in `mtc_dnssec_pin.c`.
-`dnsutils` provides `dig` for manual TXT-record troubleshooting.
+the `_mqc-ca.<domain>` TXT-pin verification in `mtc_dnssec_pin.c`;
+`libaugeas-dev` is the Augeas config parser used by `read-config.c` to
+read `/etc/postWolf/config`.  `dnsutils` provides `dig` for manual
+TXT-record troubleshooting.
 
 ## 2. Install OpenSSL 4.0.0 (for ML-DSA-87 support)
 

@@ -18,7 +18,7 @@ That's the whole flow.
 |-------|----------|
 | Build | `build-essential pkg-config autoconf automake libtool` |
 | Source-fetch | `git wget perl zlib1g-dev libssl-dev` (also covers `kit-CA/buildopenssl4.0.sh`) |
-| postWolf `-dev` deps | `libjson-c-dev libpq-dev libcurl4-openssl-dev libhiredis-dev libunbound-dev` |
+| postWolf `-dev` deps | `libjson-c-dev libpq-dev libcurl4-openssl-dev libhiredis-dev libunbound-dev libaugeas-dev` |
 | Runtime services (for local testing) | `postgresql-client redis-server` |
 | DNSSEC validation runtime | `dnsutils dns-root-data` |
 | Python tooling | `python3 python3-pip python3-cryptography` plus `pip3 install psycopg2-binary` |

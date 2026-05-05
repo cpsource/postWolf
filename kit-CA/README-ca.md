@@ -41,7 +41,8 @@ The installer:
 
 1. apt-installs runtime libs (`libjson-c5`, `libcurl4`, `libpq5`,
    a `libhiredis` variant, `libunbound8` + `dns-root-data` for the
-   DNSSEC TXT-pin verification path).
+   DNSSEC TXT-pin verification path, `libaugeas0` for the
+   `/etc/postWolf/config` parser).
 2. **Builds OpenSSL 3.5 from source** the first time through (5–10 min)
    and exposes it as `/usr/local/bin/openssl35`. Re-runs are no-ops.
 3. Installs `libpostWolf.so*` → `/usr/local/lib/` + `ldconfig`.
