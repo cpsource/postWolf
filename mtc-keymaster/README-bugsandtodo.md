@@ -2835,6 +2835,74 @@ when registering frflashy.com-ca on 2026-05-05.
   spk_hash) accessor)
 - `mtc-keymaster/tools/c/admin_recosign.c` (`--repair-tbs`)
 
+### 58. First-contact MQC handshake fails on revocation cache miss
+
+**Severity:** Medium — user-facing UX, not a security bug.  Every
+fresh peer-to-peer MQC connection from a client that has never
+talked to the specific peer before fails on the first attempt
+with `REVOCATION_QUERY_FAILED policy=mandatory cert=N` and
+`PEER_VERIFY_FAILED`, dropping the socket; the second attempt
+succeeds against the now-warm cache.  Hit on every cross-host
+test today (frflashy.com → factsorlie.com over the example
+echo_server, and `show-tpm --verify` for any first-time
+identity).
+
+**Why it happens.**  `mqc_peer_verify` (mqc_peer.c:1608)
+enforces the operator's `mqc-revocation-policy` (default
+`mandatory`).  Cache miss + policy=mandatory triggers a fresh
+`/revoked/N` query through the bootstrap proxy.  The query
+either succeeds (caches the answer) or fails (transport hiccup,
+slow DNS, etc.) — but the implementation drops the connection
+on the FIRST failure regardless of whether it just populated
+the cache.  The error message itself promises
+`(dropping; peer will retry with fresh cache)`, but the design
+puts the burden on the caller (or the operator) to actually
+retry.  The vast majority of real-world calls do not retry —
+they surface the error to the user.
+
+**Reproduces against:**
+
+- `show-tpm --verify` with no cached peer entry under
+  `~/.TPM/peers/<N>/`.
+- The MQC echo examples on first contact between two peers
+  whose certs aren't already cached on the verifier.
+- Any new MQC client doing its first handshake against a server
+  whose cert it hasn't fetched before.
+
+**Fix candidates (any one of these would close the bug):**
+
+1. **Auto-retry inside `mqc_peer_verify`.**  On the first
+   `REVOCATION_QUERY_FAILED` that the function itself caused
+   by triggering a fresh fetch, retry the verification one
+   more time (at most one) against the now-populated cache
+   before returning failure.  The retry has zero network cost
+   (cache is warm).  Single localized change in mqc_peer.c.
+2. **Eager cache prime alongside the cert fetch.**  When
+   `bootstrap_http_get(/certificate/N)` runs to fetch a
+   peer-cert that isn't cached, immediately also fetch
+   `/revoked/N` and populate the revocation cache.  Then
+   policy=mandatory finds a cache HIT on its first lookup.
+   Slightly more invasive but eliminates the failure mode
+   entirely; the per-handshake cost is the same (one extra
+   HTTP GET that we're going to do anyway).
+3. **Differentiate "query never tried" from "query failed
+   permanently".**  Today both return `rev == -1`, which
+   policy=mandatory treats as fatal.  If we explicitly mark
+   the FIRST attempt's outcome as "cache primed; please
+   retry" and only fail-closed after that, the existing
+   message becomes truthful.
+
+Recommendation: do (1) for the immediate UX fix (small,
+localized) and consider (2) as the durable design — fewer
+network round trips on warm peers and zero "first contact
+fails" calls.
+
+**Files:**
+
+- `socket-level-wrapper-MQC/mqc_peer.c` (the `mqc_peer_verify`
+  call site at line 1608, plus the surrounding
+  `check_revoked` / fetch flow).
+
 ---
 
 ## Appendix: Server Directory Layout
