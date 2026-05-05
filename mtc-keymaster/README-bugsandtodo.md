@@ -2665,7 +2665,7 @@ both exist, so a side-by-side install just works.
   when present.
 - This README (mark closed when factsorlie.com migrates).
 
-### 56. Fork-after-accept parent staleness — children commit, parent doesn't see
+### 56. Fork-after-accept parent staleness — children commit, parent doesn't see — **DONE 2026-05-05** (option 1; the duplicate-idx race remains scoped to #57)
 
 **Severity:** High — both an availability bug (cert 404 from parent
 after a fresh enrollment, fixed only by service restart) and a

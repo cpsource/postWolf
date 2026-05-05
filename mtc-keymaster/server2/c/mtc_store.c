@@ -336,6 +336,75 @@ void mtc_store_free(MtcStore *store)
 /* ------------------------------------------------------------------ */
 
 /******************************************************************************
+ * Function:    mtc_store_reload
+ *
+ * Description:
+ *   Resync the in-memory tree/cert/landmark/revocation state from the
+ *   DB (or files when DB is unavailable).  Used by the SIGHUP-driven
+ *   reload thread to close TODO #56 (fork-after-accept parent
+ *   staleness): after a forked bootstrap child commits a new entry,
+ *   the parent's in-memory store is stale until the next restart
+ *   without this hook.
+ *
+ *   Frees the dynamic state (tree contents, certs, landmarks,
+ *   revocations) but preserves the CA key, cosigner key, DB
+ *   connection, and configuration fields — those don't change at
+ *   runtime.
+ *
+ * Returns:
+ *    0  on success.
+ *   -1  on NULL @p store or load failure.
+ ******************************************************************************/
+int mtc_store_reload(MtcStore *store)
+{
+    int i;
+
+    if (!store) return -1;
+
+    /* Drop tree contents and re-init.  mtc_tree_free zeroes the
+     * struct, so the subsequent re-init / load can repopulate from
+     * scratch. */
+    mtc_tree_free(&store->tree);
+    mtc_tree_init(&store->tree);
+
+    /* Drop the cert array's contents but keep the buffer; load will
+     * grow it via realloc if needed. */
+    for (i = 0; i < store->cert_count; i++) {
+        if (store->certificates[i])
+            json_object_put(store->certificates[i]);
+    }
+    if (store->cert_capacity > 0 && store->certificates) {
+        memset(store->certificates, 0,
+               (size_t)store->cert_capacity *
+                   sizeof(struct json_object *));
+    }
+    store->cert_count = 0;
+
+    /* Revocations + landmarks reset to empty. */
+    if (store->revoked_indices) {
+        free(store->revoked_indices);
+        store->revoked_indices = NULL;
+    }
+    store->revocation_count = 0;
+    store->revocation_capacity = 0;
+    store->landmark_count = 0;
+
+    /* Re-run the standard load path. */
+    if (mtc_store_load(store) != 0)
+        return -1;
+
+    /* If the load path produced an empty tree (cold-start case from
+     * mtc_store_init's perspective), re-add the genesis null entry so
+     * indexing stays consistent. */
+    if (store->tree.size == 0) {
+        uint8_t null_entry = 0x00;
+        mtc_tree_append(&store->tree, &null_entry, 1);
+    }
+
+    return 0;
+}
+
+/******************************************************************************
  * Function:    mtc_store_save
  *
  * Description:

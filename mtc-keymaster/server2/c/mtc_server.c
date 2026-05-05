@@ -37,6 +37,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <errno.h>
+#include <pthread.h>
 
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
@@ -51,6 +53,54 @@
 #include "mtc_log.h"
 #include "mtc_ratelimit.h"
 #include "../../read-config/read-config.h"
+
+/******************************************************************************
+ * Function:    reload_thread
+ *
+ * Description:
+ *   sigwait()-based reload worker (TODO #56 fix).  Runs as a dedicated
+ *   pthread inside the parent process; sigwait blocks until SIGHUP is
+ *   delivered, then calls mtc_store_reload(store) to refresh the
+ *   parent's in-memory tree/cert state from the DB.
+ *
+ *   The motivating bug: bootstrap children fork off the parent, mutate
+ *   the DB on enrollment commit, and exit; the parent's in-memory
+ *   MtcStore never sees those mutations until the next service
+ *   restart.  Subsequent /certificate/N lookups handled by NEW forked
+ *   children inherit the parent's stale state and serve 404 for an
+ *   index that's already in the DB.
+ *
+ *   Bootstrap children raise SIGHUP to getppid() right after a
+ *   successful commit; this thread picks it up and resyncs.
+ *
+ *   Blocks SIGHUP must be set up in the main thread BEFORE listener
+ *   threads are created so listeners inherit the block and SIGHUP is
+ *   only ever delivered to this thread (via sigwait).
+ ******************************************************************************/
+static void *reload_thread(void *arg)
+{
+    MtcStore *store = (MtcStore *)arg;
+    sigset_t set;
+    int sig;
+
+    sigemptyset(&set);
+    sigaddset(&set, SIGHUP);
+
+    while (1) {
+        if (sigwait(&set, &sig) != 0)
+            continue;
+        if (sig != SIGHUP) continue;
+
+        LOG_INFO("reload: SIGHUP received, refreshing store from DB");
+        if (mtc_store_reload(store) != 0) {
+            LOG_WARN("reload: mtc_store_reload failed");
+        } else {
+            LOG_INFO("reload: store now at %d entries, %d certs",
+                     store->tree.size, store->cert_count);
+        }
+    }
+    return NULL;
+}
 
 /* Pull port number out of [global] <key> in /etc/postWolf/config.
  * The value is a URL like https://host:8446 — split on the last ':'
@@ -288,6 +338,34 @@ int main(int argc, char *argv[])
     if (mtc_store_init(&store, data_dir, ca_name, log_id) != 0) {
         fprintf(stderr, "Failed to initialize MTC store\n");
         return 1;
+    }
+
+    /* 7a. SIGHUP-driven store reload (TODO #56 fix).
+     *
+     * Block SIGHUP in the main thread BEFORE creating any listener
+     * threads.  pthread_sigmask is per-thread, but child threads
+     * inherit the parent's mask at creation, so blocking SIGHUP here
+     * propagates to mtc_bootstrap_start's bootstrap_thread, MQC's
+     * listener thread, and HTTP serve in the main thread.
+     *
+     * Then spawn a dedicated reload thread that sigwait()s on SIGHUP
+     * and calls mtc_store_reload to refresh the in-memory store.
+     * Bootstrap children raise SIGHUP to getppid() after a successful
+     * enrollment commit, which gets delivered to this thread (the
+     * only one with SIGHUP unblocked, by virtue of sigwait pulling it
+     * off the queue).                                                  */
+    {
+        sigset_t set;
+        pthread_t reload_tid;
+        sigemptyset(&set);
+        sigaddset(&set, SIGHUP);
+        pthread_sigmask(SIG_BLOCK, &set, NULL);
+        if (pthread_create(&reload_tid, NULL, reload_thread, &store) != 0) {
+            LOG_WARN("reload thread failed to start (errno=%d), "
+                     "store will go stale after enrollments", errno);
+        } else {
+            pthread_detach(reload_tid);
+        }
     }
 
     /* 8. Set up TLS config (NULL if no --tls-cert → plain HTTP mode) */

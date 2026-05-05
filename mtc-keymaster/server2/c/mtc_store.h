@@ -125,6 +125,24 @@ void mtc_store_free(MtcStore *store);
 int  mtc_store_save(MtcStore *store);
 
 /**
+ * @brief    Reload tree/cert/landmark/revocation state from DB (or files).
+ *
+ * @details
+ * Used by the parent's SIGHUP-driven reload thread (TODO #56 fix).
+ * After a fork-after-accept child commits a new entry to the DB and
+ * exits, the parent's in-memory state is stale; raising SIGHUP to the
+ * parent triggers this function, which frees the per-state contents
+ * (tree, certs, landmarks, revocations) and re-runs the DB load path
+ * to resync.  The CA key, cosigner key, DB connection, and
+ * configuration fields are NOT touched.
+ *
+ * @param[in,out] store  Store to refresh in place.
+ *
+ * @return  0 on success, -1 if @p store is NULL or load fails.
+ */
+int  mtc_store_reload(MtcStore *store);
+
+/**
  * @brief    Load state from DB (if available) or from data_dir JSON files.
  *
  * @param[in,out] store  Store to populate.

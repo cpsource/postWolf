@@ -51,6 +51,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
+#include <signal.h>
 #include <time.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -1413,6 +1414,18 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                          subject, index,
                          bootstrap_label[0] ? ", label=" : "",
                          bootstrap_label[0] ? bootstrap_label : "");
+
+                /* Tell the parent its in-memory MtcStore is now stale
+                 * (TODO #56 fix).  We're a forked child; the parent's
+                 * reload_thread sigwait()s on SIGHUP and calls
+                 * mtc_store_reload to refresh the tree/cert arrays
+                 * from the DB.  Without this, /certificate/N for the
+                 * just-issued index returns 404 from the parent's
+                 * stale view until the next service restart. */
+                if (kill(getppid(), SIGHUP) != 0) {
+                    LOG_WARN("bootstrap: kill(getppid, SIGHUP) failed: %s",
+                             strerror(errno));
+                }
             }
         }
 
