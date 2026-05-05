@@ -1984,32 +1984,91 @@ docker bridge gateway IP) from the Flask container.  No container
 to orchestrate, no `docker compose up` dependency during host
 reboot, less cognitive overhead.
 
+**Current state (snapshot 2026-05-05):**
+- Container is `redis:7-alpine` 7.4.7 on `127.0.0.1:6379`,
+  no password, anonymous Docker volume mounted at `/data`,
+  `appendonly no`, default RDB save policy.
+- Native `redis-server` 7.0.15 (Ubuntu 24.04 stock package) is
+  installed, user/group `redis` (uid 111) provisioned,
+  `/etc/redis/redis.conf` and `/var/lib/redis/` already exist,
+  `redis-server.service` is `inactive`.
+- Live data is essentially trivial: a single string key `hits`
+  (factsorlie page-view counter, INCR'd by Flask).  RDB
+  forward-compat covers 7.4 → 7.0 reads for plain string keys, so
+  no version concern in practice — but document the procedure
+  for later when there's real data.
+
 **Proposed work:**
 
-1. Re-enable the native service:
+1. **Preserve the data first** (do this before touching anything
+   that might restart the container and lose RAM-only state):
+   ```bash
+   docker exec redis redis-cli SAVE
+   sudo cp /var/lib/docker/volumes/<vol-id>/_data/dump.rdb \
+           /var/lib/redis/dump.rdb
+   sudo chown redis:redis /var/lib/redis/dump.rdb
+   sudo chmod 0660       /var/lib/redis/dump.rdb
+   ```
+   Native `redis-server` reads `dir /var/lib/redis` +
+   `dbfilename dump.rdb` from `/etc/redis/redis.conf` by default,
+   so dropping the file in place is enough — the daemon picks it
+   up on first start.
+2. **Configure native redis bindings.** Edit
+   `/etc/redis/redis.conf`:
+   - `bind 127.0.0.1 -::1 172.17.0.1` (loopback for mtc_server +
+     docker0 gateway so the Flask container can reach it).
+     Confirm `172.17.0.1` is the actual `docker0` IP at cutover
+     time — `ip addr show docker0` — it can shift.
+   - Leave `protected-mode yes`; explicit `bind` interfaces with
+     `protected-mode` works as long as we're not binding `0.0.0.0`
+     and not adding a password.  Verify by trying `redis-cli -h
+     172.17.0.1 PING` from a container after start.
+   - Or, simpler: `bind 0.0.0.0`, `protected-mode no`, and rely on
+     host firewall to keep 6379 off the public internet.  The
+     box is single-tenant so this is acceptable; matches what the
+     container effectively did (no auth, host-firewall-gated).
+3. **Start native, stop container** (in this order to keep the
+   write window short):
    ```bash
    sudo systemctl enable --now redis-server
+   redis-cli -h 127.0.0.1 GET hits        # confirm value loaded
+   docker compose -f /home/ubuntu/factsorlie/docker-compose.yml \
+       stop redis
    ```
-   (Package is already installed from the earlier TODO #27 phase;
-   we only ran `systemctl disable` on it.)
-2. Remove the `redis:` block entirely from
-   `/home/ubuntu/factsorlie/docker-compose.yml`.
-3. Update the `flask:` service in that compose file to reach the
-   host's redis.  Two reasonable options:
-   - Add `extra_hosts: ["host.docker.internal:host-gateway"]` to
-     the flask service and set `REDIS_HOST=host.docker.internal` in
-     its env (works on Linux Docker 20.10+).
-   - Or move flask to `network_mode: host` and set
-     `REDIS_HOST=127.0.0.1`.  Simpler but defeats the current
-     Apache → Flask isolation on the `factsorlie_default`
-     network — re-audit the Apache vhost proxy config before doing
-     this.
-4. `docker compose up -d flask` to recreate with the new config.
-5. Verify with `/usr/local/bin/redis-status` (already installed;
-   override `REDIS_CONTAINER` to skip the docker-exec path, or
-   rewrite the script to `redis-cli -h 127.0.0.1` — see below).
-6. Delete the dangling docker volume (`redis` volume that held the
-   RDB dump) once we're confident nothing there was load-bearing.
+   **Do not remove the Docker volume yet** — it's the rollback
+   path if step 4 surfaces a Flask-reachability problem.
+4. **Update Flask's network path.** Edit
+   `/home/ubuntu/factsorlie/docker-compose.yml`:
+   - Remove the `redis:` service block.
+   - Drop `depends_on: [redis]` from `flask:`.
+   - Two ways to keep Flask's `REDIS_HOST=redis` working without
+     a code change:
+     - **Pinned alias** (preferred — explicit):
+       `extra_hosts: ["redis:host-gateway"]` on the flask service.
+       `host-gateway` resolves to the docker0 IP at container
+       runtime, so the container's `redis` hostname now points at
+       the host where native `redis-server` is listening.
+     - **`host.docker.internal`**: same mechanism but a less
+       specific alias; requires touching Flask's env to
+       `REDIS_HOST=host.docker.internal`.
+   - `network_mode: host` is also viable and simpler, but it
+     defeats the `factsorlie_default` Apache → Flask isolation.
+     Re-audit the Apache vhost proxy config before going that way.
+   Then `docker compose up -d --force-recreate flask`.
+5. **Verify.** `redis-cli -h 127.0.0.1 GET hits` must equal the
+   pre-cutover value, and must `INCR` on a fresh page view to
+   factsorlie.com (`curl -k https://factsorlie.com/` then re-GET).
+   Run `/usr/local/bin/redis-status` after fixing it for the
+   native daemon (next bullet).
+6. **Rollback path** (if Flask can't reach the host redis):
+   `sudo systemctl stop redis-server &&
+    docker compose up -d redis` brings the container back; the
+   data continues to be served from the un-deleted Docker volume.
+   No data lost because the cutover snapshot in step 1 captured
+   the RDB before the volume was retired.
+7. **Once confident, delete the Docker volume**
+   (`docker volume rm <vol-id>`) and remove the rollback note
+   from the runbook.
 
 **Tool updates needed:**
 - `mtc-keymaster/tools/sh/redis-status.sh` hardcodes
@@ -2021,10 +2080,17 @@ reboot, less cognitive overhead.
 - Service-start ordering during reboot — `mtc-ca.service` and
   `redis-server.service` have an implicit dependency we should
   make explicit via `After=redis-server.service` in
-  `/etc/systemd/system/mtc-ca.service`.  MQC's current fail-open
-  behaviour (rate limiting silently disabled on redis miss) means
-  an out-of-order boot doesn't hard-fail, but we'd lose the gate
-  until something restarts the process.
+  `/etc/systemd/system/mtc-ca.service`.  Under the current
+  `mqc-redis-fail-policy=closed-after:8s` default (commit
+  369a33ffa), an out-of-order boot will start *failing* MQC
+  handshakes 8 seconds after redis-miss begins, not silently
+  fail-open as previously.  So the explicit ordering matters
+  more now than it did under the old default.
+- Brief MQC-handshake outage during the cutover window in step 3
+  (between `docker compose stop redis` and the native daemon
+  binding `127.0.0.1:6379`).  Empirically <1s if both commands
+  are run back-to-back; well within `closed-after:8s`'s tolerance,
+  so handshakes in flight won't trip the closed-gate.
 
 **Files:** `factsorlie/docker-compose.yml` (remove redis, tweak
 flask), `/etc/systemd/system/mtc-ca.service` (add `After=`),
