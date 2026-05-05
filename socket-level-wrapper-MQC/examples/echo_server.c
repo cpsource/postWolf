@@ -8,6 +8,7 @@
 
 #include "mqc.h"
 #include "mqc_peer.h"
+#include "read-config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,8 +17,22 @@
 #include <wolfssl/wolfcrypt/dilithium.h>
 
 #define DEFAULT_PORT    4433
-#define DEFAULT_SERVER  "localhost:8444"
+#define FALLBACK_SERVER "localhost:8444"
 #define BUF_SZ          4096
+
+/* Resolve the MTC-server URL.  Caller must free() the returned
+ * pointer.  Tries /etc/postWolf/config global/url-server first
+ * (matches every other postWolf tool — only "the server port" the
+ * leaf is allowed to access), falls back to FALLBACK_SERVER for
+ * unconfigured boxes (e.g. the host that runs mtc_server itself,
+ * where localhost:8444 works). */
+static char *resolve_mtc_server(void)
+{
+    char *cfg = read_config_url("global/url-server");
+    if (cfg && *cfg) return cfg;
+    if (cfg) free(cfg);
+    return strdup(FALLBACK_SERVER);
+}
 
 static unsigned char ca_pubkey[DILITHIUM_LEVEL5_PUB_KEY_SIZE];
 static int ca_pubkey_sz = 0;
@@ -50,12 +65,16 @@ int main(int argc, char *argv[])
     if (argc > 2)
         port = atoi(argv[2]);
 
-    load_ca_pubkey(DEFAULT_SERVER);
+    /* cfg.mtc_server is borrowed; mtc_url is leaked on purpose so
+     * it stays alive for the process lifetime. */
+    char *mtc_url = resolve_mtc_server();
+    printf("MTC server: %s\n", mtc_url);
+    load_ca_pubkey(mtc_url);
 
     memset(&cfg, 0, sizeof(cfg));
     cfg.role       = MQC_SERVER;
     cfg.tpm_path   = tpm_path;
-    cfg.mtc_server = DEFAULT_SERVER;
+    cfg.mtc_server = mtc_url;
     cfg.ca_pubkey  = ca_pubkey;
     cfg.ca_pubkey_sz = ca_pubkey_sz;
 
