@@ -66,8 +66,8 @@ ROLE_TAG = "ca"
 ALG_TAG = "ML-DSA-87"
 HASH_TAG = "sha3-256"
 
-# postWolf ships an OpenSSL 3.5+ build with PQC algorithms
-# (kit-CA/buildopenssl3.5.sh).  Stock /usr/bin/openssl on most
+# postWolf ships an OpenSSL 4.0.0 build with PQC algorithms
+# (kit-CA/buildopenssl4.0.sh).  Stock /usr/bin/openssl on most
 # distros doesn't know ML-DSA-87, so prefer the bundled binary
 # when extracting SPKI from a CA cert.
 OPENSSL = "openssl40"
@@ -95,8 +95,8 @@ def sha3_256_spki_der_from_cert(cert_path: str) -> str:
              "-inform", "PEM", "-outform", "DER"],
             input=pem, capture_output=True, check=True).stdout
     except FileNotFoundError:
-        print(f"ERROR: {OPENSSL} not in PATH; install OpenSSL 3.5+ "
-              "(buildopenssl3.5.sh in kit-CA/kit-leaf)",
+        print(f"ERROR: {OPENSSL} not in PATH; install OpenSSL 4.0.0 "
+              "(buildopenssl4.0.sh in kit-CA/kit-leaf)",
               file=sys.stderr)
         sys.exit(1)
     except subprocess.CalledProcessError as e:

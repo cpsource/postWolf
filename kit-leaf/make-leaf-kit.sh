@@ -47,7 +47,7 @@ if (( missing )); then
 fi
 
 # --- 2. Source scripts next to this one --------------------------------
-for src in install-leaf-kit.sh buildopenssl3.5.sh README-leaf.md; do
+for src in install-leaf-kit.sh buildopenssl4.0.sh README-leaf.md; do
     if [[ ! -f "$SELF_DIR/$src" ]]; then
         echo "Missing: $SELF_DIR/$src" >&2
         exit 1
@@ -81,7 +81,7 @@ install -m 644 "$SELF_DIR/README-leaf.md"                       "$STAGE/doc/READ
 install -m 644 "$REPO_ROOT/mtc-keymaster/README-leaf-registration.md" \
                                                                 "$STAGE/doc/README-leaf-registration.md"
 install -m 755 "$SELF_DIR/install-leaf-kit.sh"  "$STAGE/install-leaf-kit.sh"
-install -m 755 "$SELF_DIR/buildopenssl3.5.sh"   "$STAGE/buildopenssl3.5.sh"
+install -m 755 "$SELF_DIR/buildopenssl4.0.sh"   "$STAGE/buildopenssl4.0.sh"
 echo "$VERSION" > "$STAGE/VERSION"
 
 # --- 3a. Bundle socket-level-wrapper-MQC source + libmqc.a ------------

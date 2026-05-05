@@ -5,7 +5,7 @@
 #
 # Assumes all binaries are already built (./make-all.sh).  Stages the
 # six CA-side tools, libpostWolf.so, the MQC source + prebuilt libmqc.a,
-# pkg-config, buildopenssl3.5.sh, install-ca-kit.sh, docs — then tars
+# pkg-config, buildopenssl4.0.sh, install-ca-kit.sh, docs — then tars
 # as postWolf-ca-kit-<version>.tar.gz.
 #
 # CA vs leaf kit: this one adds bootstrap_ca, issue_leaf_nonce, and
@@ -61,7 +61,7 @@ if (( missing )); then
 fi
 
 # --- 2. Source scripts next to this one --------------------------------
-for src in install-ca-kit.sh buildopenssl3.5.sh README-ca.md; do
+for src in install-ca-kit.sh buildopenssl4.0.sh README-ca.md; do
     if [[ ! -f "$SELF_DIR/$src" ]]; then
         echo "Missing: $SELF_DIR/$src" >&2
         exit 1
@@ -122,7 +122,7 @@ install -m 644 "$REPO_ROOT/mtc-keymaster/README-ca-registration.md" \
 install -m 644 "$REPO_ROOT/mtc-keymaster/README-leaf-registration.md" \
                                                                 "$STAGE/doc/README-leaf-registration.md"
 install -m 755 "$SELF_DIR/install-ca-kit.sh"    "$STAGE/install-ca-kit.sh"
-install -m 755 "$SELF_DIR/buildopenssl3.5.sh"   "$STAGE/buildopenssl3.5.sh"
+install -m 755 "$SELF_DIR/buildopenssl4.0.sh"   "$STAGE/buildopenssl4.0.sh"
 echo "$VERSION" > "$STAGE/VERSION"
 
 # --- 4. Pack ----------------------------------------------------------

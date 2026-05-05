@@ -19,13 +19,13 @@ or of your own.
 | `bin/admin_recosign`    | Operational tool to re-cosign subtrees (maintenance). |
 | `bin/bootstrap_leaf`    | Leaf enrollment (included for completeness — run it if this host also has leaf identities). |
 | `bin/show-tpm`          | Inspect local identities (CA or leaf); `--verify` walks the full trust chain against the log. |
-| `bin/create_ca_cert.py` | Generate the CA's ML-DSA-87 keypair + self-signed X.509 cert (uses `openssl35`). |
+| `bin/create_ca_cert.py` | Generate the CA's ML-DSA-87 keypair + self-signed X.509 cert (uses `openssl40`). |
 | `bin/create_leaf_keypair.py` | Generate an ML-DSA-87 (or EC-P256 / Ed25519) keypair for a leaf under your domain. |
 | `bin/ca_dns_txt.py`     | Compute the DNS TXT record value that proves domain ownership during `bootstrap_ca`. |
 | `lib/libpostWolf.so*`   | wolfSSL-derived shared library. |
 | `socket-level-wrapper-MQC.tar.gz` | Source + prebuilt `libmqc.a` for the MQC wrapper. |
 | `mqc.pc`                | pkg-config descriptor for downstream C code that links `libmqc`. |
-| `buildopenssl3.5.sh`    | Builds OpenSSL 3.5 into `/usr/local/ssl/` and drops `/usr/local/bin/openssl35`. |
+| `buildopenssl4.0.sh`    | Builds OpenSSL 4.0.0 into `/usr/local/openssl4/` and drops `/usr/local/bin/openssl40`. |
 | `install-ca-kit.sh`     | Installs everything to `/usr/local/` — must be run with sudo. |
 | `VERSION`               | Git describe of the source tree. |
 
@@ -144,8 +144,8 @@ sudo rm -rf /usr/local/include/mqc
 sudo rm -rf /usr/local/share/doc/postWolf-ca
 sudo ldconfig
 
-# Optional: wipe openssl35 too
-sudo rm -rf /usr/local/ssl /usr/local/bin/openssl35 /usr/local/src/openssl-3.5.0
+# Optional: wipe openssl40 too
+sudo rm -rf /usr/local/openssl4 /usr/local/bin/openssl40 /usr/local/src/openssl-4.0.0
 
 # Optional: rm -rf ~/.TPM/   (deletes your CA and leaf identities!)
 ```

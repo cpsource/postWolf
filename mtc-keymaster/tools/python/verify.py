@@ -182,7 +182,7 @@ def verify_cosignature(
     if openssl is None:
         raise RuntimeError(
             "verify_cosignature: no openssl40/openssl binary on PATH "
-            "(install via buildopenssl3.5.sh from the postWolf kit)"
+            "(install via buildopenssl4.0.sh from the postWolf kit)"
         )
 
     with tempfile.TemporaryDirectory() as td:

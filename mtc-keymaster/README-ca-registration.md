@@ -182,7 +182,7 @@ with fresh keys).
 | Symptom | Cause | Fix |
 |---|---|---|
 | `register-ca.sh: dig: command not found` | `dnsutils` missing | `sudo apt install dnsutils` (should be installed by `install-ca-kit.sh`) |
-| `ca_dns_txt.py ... ERROR: openssl35 not in PATH` | OpenSSL 3.5+ not installed | `buildopenssl3.5.sh` from the kit (installed by `install-ca-kit.sh`) |
+| `ca_dns_txt.py ... ERROR: openssl40 not in PATH` | OpenSSL 4.0.0 not installed | `buildopenssl4.0.sh` from the kit (installed by `install-ca-kit.sh`) |
 | Publish-gate prompt loops with wrong-key fingerprint | TXT record for a stale key | delete stale TXT, publish the one `register-ca.sh` just printed |
 | DNS poll times out | propagation slow; wrong TXT value; DNS API hasn't committed | answer `Y` to wait another 5 min; verify with `dig @8.8.8.8 TXT _mtc-ca.<domain>` manually |
 | Server rejects with `CA certificate rejected: DNS validation failed` | client-side poll saw the record but server's resolver still sees old/cached data | wait a minute and re-run; keys are reused |

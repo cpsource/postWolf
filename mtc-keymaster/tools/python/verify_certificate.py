@@ -122,7 +122,7 @@ def verify_cosignature(cosig: dict, pubkey_pem_path: Path | None):
     openssl = shutil.which("openssl40") or shutil.which("openssl")
     if openssl is None:
         result["reason"] = (
-            "no openssl40/openssl on PATH — run buildopenssl3.5.sh from "
+            "no openssl40/openssl on PATH — run buildopenssl4.0.sh from "
             "the postWolf kit"
         )
         return result

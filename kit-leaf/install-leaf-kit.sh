@@ -26,7 +26,7 @@ for d in bin lib doc; do
         exit 1
     fi
 done
-for f in socket-level-wrapper-MQC.tar.gz mqc.pc buildopenssl3.5.sh; do
+for f in socket-level-wrapper-MQC.tar.gz mqc.pc buildopenssl4.0.sh; do
     if [[ ! -f "$HERE/$f" ]]; then
         echo "Error: expected $HERE/$f not found in kit." >&2
         exit 1
@@ -47,13 +47,13 @@ apt-get install -y --no-install-recommends \
     echo "Warning: apt-get could not install every runtime lib; check ldd output below." >&2
 }
 
-# --- 1a. OpenSSL 3.5 (openssl35) --------------------------------------
+# --- 1a. OpenSSL 4.0.0 (openssl40) ------------------------------------
 # Leaf key generation (ML-DSA-44/65/87) requires OpenSSL 3.5+, which
-# Ubuntu 24.04 doesn't ship.  buildopenssl3.5.sh handles the build +
-# wrapper install and is itself idempotent (no-op if openssl35 is
-# already 3.5+).
-echo ">>> Running buildopenssl3.5.sh (first-time build takes ~5–10 min) ..."
-bash "$HERE/buildopenssl3.5.sh"
+# Ubuntu 24.04 doesn't ship; we install 4.0.0.  buildopenssl4.0.sh
+# handles the build + wrapper install and is itself idempotent (no-op
+# if openssl40 is already 4.x).
+echo ">>> Running buildopenssl4.0.sh (first-time build takes ~5–10 min) ..."
+bash "$HERE/buildopenssl4.0.sh"
 
 # --- 2. libpostWolf ---------------------------------------------------
 echo ">>> Installing libpostWolf.so → /usr/local/lib/ ..."

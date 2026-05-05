@@ -16,29 +16,44 @@ sudo apt install -y \
 pip3 install cryptography psycopg2-binary
 ```
 
-## 2. Install OpenSSL 3.5 (for ML-DSA-87 support)
+## 2. Install OpenSSL 4.0.0 (for ML-DSA-87 support)
 
 The system OpenSSL does not support post-quantum algorithms. OpenSSL 3.5+
-includes ML-DSA-44/65/87 (CRYSTALS-Dilithium) natively.
+includes ML-DSA-44/65/87 (CRYSTALS-Dilithium) natively; 4.0.0 is the
+current preferred build for postWolf and is what `factsorlie.com` runs.
+Install it under its own prefix and expose it as `openssl40` so the
+system OpenSSL is left untouched.
 
 ```bash
-# Build from source (~/openssl-master or download openssl-3.5.0)
-cd ~/openssl-master
-./Configure --prefix=/usr/local --openssldir=/usr/local/ssl
-make -j$(nproc)
+# Download and unpack
+cd ~
+curl -LO https://github.com/openssl/openssl/releases/download/openssl-4.0.0/openssl-4.0.0.tar.gz
+tar xzf openssl-4.0.0.tar.gz
+cd openssl-4.0.0
+
+# Build into a private prefix (NOT /usr/local — that's the system OpenSSL)
+./Configure --prefix=/usr/local/openssl4 --openssldir=/usr/local/openssl4/ssl
+make -j"$(nproc)"
 sudo make install
 
-# Create the openssl35 symlink so system openssl is not replaced
-sudo ln -sf /usr/local/bin/openssl /usr/local/bin/openssl35
+# Wrapper that pins LD_LIBRARY_PATH so the new libcrypto/libssl resolve
+sudo tee /usr/local/bin/openssl40 > /dev/null <<'EOF'
+#!/bin/sh
+LD_LIBRARY_PATH=/usr/local/openssl4/lib64 exec /usr/local/openssl4/bin/openssl "$@"
+EOF
+sudo chmod +x /usr/local/bin/openssl40
 
 # Verify
-openssl35 version
-# OpenSSL 3.5.0 8 Apr 2025
+openssl40 version
+# OpenSSL 4.0.0 ...
 
 # Confirm ML-DSA-87 is available
-openssl35 list -signature-algorithms | grep ML-DSA-87
+openssl40 list -signature-algorithms | grep ML-DSA-87
 # { 2.16.840.1.101.3.4.3.19, id-ml-dsa-87, ML-DSA-87, MLDSA87 } @ default
 ```
+
+Earlier 3.5.x builds installed the same way under `/usr/local/ssl` and
+exposed as `openssl35` continue to work; postWolf accepts either name.
 
 ## 3. Set Up Neon Database
 
@@ -95,7 +110,7 @@ python3 create_server_cert.py factsorlie.com
 ```
 
 This generates `~/.mtc-ca-data/server-key.pem` (mode 0600) and
-`~/.mtc-ca-data/server-cert.pem` using `openssl35` under the hood.
+`~/.mtc-ca-data/server-cert.pem` using `openssl40` under the hood.
 
 Options:
 ```bash

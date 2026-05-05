@@ -10,7 +10,7 @@ database, no Redis, no server daemon.
 |------|---------|
 | `bin/bootstrap_leaf` | First-time leaf enrollment (needs a CA-issued nonce). |
 | `bin/show-tpm`       | Inspect the local identity; `--verify` walks the full trust chain (including revocation) against the CA's log. |
-| `bin/create_leaf_keypair.py` | Generate a post-quantum keypair (default ML-DSA-87; EC-P256 / Ed25519 also supported) via `openssl35`. |
+| `bin/create_leaf_keypair.py` | Generate a post-quantum keypair (default ML-DSA-87; EC-P256 / Ed25519 also supported) via `openssl40`. |
 | `lib/libpostWolf.so*` | wolfSSL-derived shared library used by the tools. |
 | `socket-level-wrapper-MQC.tar.gz` | Source + prebuilt `libmqc.a` for the MQC wrapper. The installer extracts headers (`/usr/local/include/mqc/`) and the static library (`/usr/local/lib/libmqc.a`). |
 | `mqc.pc`             | pkg-config file installed to `/usr/local/lib/pkgconfig/mqc.pc` so downstream C code can `pkg-config --cflags --libs mqc`. |
@@ -29,13 +29,13 @@ The installer:
 
 1. apt-installs the runtime library dependencies (`libjson-c5`,
    `libcurl4`, `libpq5`, a `libhiredis` variant).
-2. **Builds OpenSSL 3.5 from source** the first time through, into
-   `/usr/local/ssl/`, and drops a wrapper at `/usr/local/bin/openssl35`
+2. **Builds OpenSSL 4.0.0 from source** the first time through, into
+   `/usr/local/openssl4/`, and drops a wrapper at `/usr/local/bin/openssl40`
    (the system `openssl` on your distro almost certainly pre-dates
    ML-DSA-87 and stays untouched). Expect ~5–10 minutes on first run;
-   subsequent re-installs detect the existing `openssl35` and skip the
-   rebuild. Source tree lives at `/usr/local/src/openssl` so `git pull`
-   picks up upstream patches next time.
+   subsequent re-installs detect the existing `openssl40` and skip the
+   rebuild. Source tree lives at `/usr/local/src/openssl-4.0.0` so a
+   re-extract picks up tarball updates next time.
 3. Copies `libpostWolf.so*` to `/usr/local/lib/` and runs `ldconfig`.
 4. Installs the MQC library: headers to `/usr/local/include/mqc/`,
    `libmqc.a` to `/usr/local/lib/`, `mqc.pc` to
@@ -150,8 +150,8 @@ sudo rm -rf /usr/local/include/mqc
 sudo rm -rf /usr/local/share/doc/postWolf-leaf
 sudo ldconfig
 
-# Optional: wipe openssl35 too (the installer built it into /usr/local/ssl)
-sudo rm -rf /usr/local/ssl /usr/local/bin/openssl35 /usr/local/src/openssl
+# Optional: wipe openssl40 too (the installer built it into /usr/local/openssl4)
+sudo rm -rf /usr/local/openssl4 /usr/local/bin/openssl40 /usr/local/src/openssl-4.0.0
 
 # Optional: rm -rf ~/.TPM/   (deletes your identity!)
 ```

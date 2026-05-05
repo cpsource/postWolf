@@ -269,8 +269,9 @@ chmod 600 ~/.env
 
 Tables are auto-created on first start.
 
-**2. OpenSSL 3.5** (for ML-DSA-87 keygen — the system OpenSSL is typically
-older). Install as `openssl35` alongside the system one; see
+**2. OpenSSL 4.0.0** (for ML-DSA-87 keygen — the system OpenSSL is typically
+older and lacks ML-DSA support). Install as `openssl40` alongside the system
+one (`openssl35` from earlier 3.5.x builds is also supported); see
 `mtc-keymaster/README-clean-install.md §2` for the build recipe.
 
 **3. Server TLS certificate** for port 8444 (retained for ad-hoc `curl`
