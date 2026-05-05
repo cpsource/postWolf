@@ -18,6 +18,7 @@
 
 #include "mqc_peer.h"
 #include "mqc.h"
+#include "read-config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -955,8 +956,28 @@ static int pem_extract_mldsa_raw(const char *pem, byte *out_raw)
     return 0;
 }
 
-/* MQC_BOOTSTRAP_PORT — port the DH bootstrap listener / generic
- * http_get proxy runs on (defined in config.h, default 8445). */
+/* MQC_BOOTSTRAP_PORT is the compile-time fallback (config.h, default
+ * 8445).  At runtime, prefer the port from /etc/postWolf/config
+ * global/url-bootstrap so an operator can move services around
+ * without rebuilding.  bootstrap_port() caches the resolved value
+ * to avoid re-parsing the config + URL on every lookup. */
+static int bootstrap_port(void)
+{
+    static int cached = -1;
+    if (cached > 0) return cached;
+
+    char *url = read_config_url("global/url-bootstrap");
+    if (url) {
+        const char *colon = strrchr(url, ':');
+        if (colon) {
+            int p = atoi(colon + 1);
+            if (p > 0 && p < 65536) cached = p;
+        }
+        free(url);
+    }
+    if (cached <= 0) cached = MQC_BOOTSTRAP_PORT;
+    return cached;
+}
 
 /******************************************************************************
  * Function:    bootstrap_exchange  (static)
@@ -1061,12 +1082,15 @@ static char *bootstrap_http_get(const char *mtc_server, const char *path,
     snprintf(req, sizeof(req), "{\"op\":\"http_get\",\"path\":\"%s\"}",
              path);
 
-    outer_str = bootstrap_exchange(host, MQC_BOOTSTRAP_PORT, req);
-    if (!outer_str) {
-        fprintf(stderr, "[mqc] bootstrap http_get transport failed "
-                        "(%s:%d %s)\n",
-                host, MQC_BOOTSTRAP_PORT, path);
-        return NULL;
+    {
+        int bp = bootstrap_port();
+        outer_str = bootstrap_exchange(host, bp, req);
+        if (!outer_str) {
+            fprintf(stderr, "[mqc] bootstrap http_get transport failed "
+                            "(%s:%d %s)\n",
+                    host, bp, path);
+            return NULL;
+        }
     }
 
     outer = json_tokener_parse(outer_str);
@@ -1180,13 +1204,14 @@ int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out_raw)
         char host[256];
         char *body;
         struct json_object *obj = NULL, *val;
+        int bp = bootstrap_port();
 
         extract_host(mtc_server, host, sizeof(host));
-        body = bootstrap_fetch_ca_pubkey(host, MQC_BOOTSTRAP_PORT);
+        body = bootstrap_fetch_ca_pubkey(host, bp);
         if (!body) {
             fprintf(stderr,
                     "[mqc] cannot fetch CA pubkey from %s:%d (bootstrap)\n",
-                    host, MQC_BOOTSTRAP_PORT);
+                    host, bp);
             return -1;
         }
         obj = json_tokener_parse(body);
