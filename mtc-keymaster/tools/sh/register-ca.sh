@@ -285,6 +285,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 echo "==> running bootstrap_ca ..."
+mkdir -p "$TPM_DIR"
 set -- bootstrap_ca --domain "$DOMAIN" --server "$SERVER"
 [ -n "$LABEL" ] && set -- "$@" --label "$LABEL"
 [ "$MAKE_DEFAULT" -eq 1 ] && set -- "$@" --make-default
