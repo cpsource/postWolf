@@ -66,25 +66,25 @@ backfill-pubkey: backfill-pubkey.c \
 		$(SERVER_DIR)/mtc_log.c \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) -lcurl
 
-bootstrap_ca: bootstrap_ca.c mtc_pubkey_db.c mtc_pubkey_db.h \
+bootstrap_ca: bootstrap_ca.c \
               $(SERVER_DIR)/mtc_crypt.c $(SERVER_DIR)/mtc_crypt.h \
               $(SERVER_DIR)/mtc_domain.c $(SERVER_DIR)/mtc_domain.h \
               $(READ_CONFIG_SRC)
 	$(CC) $(CFLAGS) -o $@ \
-		bootstrap_ca.c mtc_pubkey_db.c $(SERVER_DIR)/mtc_crypt.c \
+		bootstrap_ca.c $(SERVER_DIR)/mtc_crypt.c \
 		$(SERVER_DIR)/mtc_domain.c \
 		$(READ_CONFIG_SRC) \
-		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) $(AUGEAS_LIBS)
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS)
 
-bootstrap_leaf: bootstrap_leaf.c mtc_pubkey_db.c mtc_pubkey_db.h \
+bootstrap_leaf: bootstrap_leaf.c \
                 $(SERVER_DIR)/mtc_crypt.c $(SERVER_DIR)/mtc_crypt.h \
                 $(SERVER_DIR)/mtc_domain.c $(SERVER_DIR)/mtc_domain.h \
                 $(READ_CONFIG_SRC)
 	$(CC) $(CFLAGS) -o $@ \
-		bootstrap_leaf.c mtc_pubkey_db.c $(SERVER_DIR)/mtc_crypt.c \
+		bootstrap_leaf.c $(SERVER_DIR)/mtc_crypt.c \
 		$(SERVER_DIR)/mtc_domain.c \
 		$(READ_CONFIG_SRC) \
-		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) $(AUGEAS_LIBS)
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS)
 
 show-tpm: show-tpm.c $(READ_CONFIG_SRC) $(MQC_LIB)
 	$(CC) $(CFLAGS) -o $@ show-tpm.c $(READ_CONFIG_SRC) $(MQC_LIB) \

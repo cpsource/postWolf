@@ -23,7 +23,6 @@
  ******************************************************************************/
 
 #include "mtc_crypt.h"
-#include "mtc_pubkey_db.h"
 #include "mtc_domain.h"
 #include "../../read-config/read-config.h"
 
@@ -894,9 +893,12 @@ int main(int argc, char *argv[])
         json_object_put(resp);
     }
 
-    /* Store public key in Neon mtc_public_keys table */
-    if (!g_trial_run && pub_key_pem)
-        mtc_store_public_key(subject, pub_key_pem);
+    /* Server-side enrollment already wrote the leaf pubkey to Neon
+     * (mtc_bootstrap.c:1367 mtc_db_save_public_key) — the client
+     * doesn't (and shouldn't) have Neon credentials, so the prior
+     * client-side mtc_store_public_key() call was vestigial and just
+     * produced a noisy "MERKLE_NEON not found, skipping key store"
+     * message on every leaf-side enrollment.  Removed. */
 
     LOG("enrollment complete!");
     exit_code = 0;
