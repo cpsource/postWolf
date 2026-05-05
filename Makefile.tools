@@ -110,6 +110,18 @@ install: all
 		$(DESTDIR)/usr/local/bin/register-ca.sh
 	install -m 755 mtc-keymaster/tools/sh/register-leaf.sh \
 		$(DESTDIR)/usr/local/bin/register-leaf.sh
+	install -m 755 mtc-keymaster/tools/python/create_ca_cert.py \
+		$(DESTDIR)/usr/local/bin/create_ca_cert.py
+	install -m 755 mtc-keymaster/tools/python/create_leaf_keypair.py \
+		$(DESTDIR)/usr/local/bin/create_leaf_keypair.py
+	install -m 755 mtc-keymaster/tools/python/ca_dns_txt.py \
+		$(DESTDIR)/usr/local/bin/ca_dns_txt.py
+	install -m 755 mtc-keymaster/tools/python/create_server_cert.py \
+		$(DESTDIR)/usr/local/bin/create_server_cert.py
+	install -m 755 mtc-keymaster/tools/python/verify.py \
+		$(DESTDIR)/usr/local/bin/verify.py
+	install -m 755 mtc-keymaster/tools/python/verify_certificate.py \
+		$(DESTDIR)/usr/local/bin/verify_certificate.py
 
 clean:
 	$(MAKE) -C $(SLC_DIR) clean
