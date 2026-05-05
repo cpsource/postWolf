@@ -28,7 +28,8 @@ sudo bash install-leaf-kit.sh
 The installer:
 
 1. apt-installs the runtime library dependencies (`libjson-c5`,
-   `libcurl4`, `libpq5`, a `libhiredis` variant).
+   `libcurl4`, `libpq5`, a `libhiredis` variant, `libunbound8` +
+   `dns-root-data` for the DNSSEC TXT-pin verification path).
 2. **Builds OpenSSL 4.0.0 from source** the first time through, into
    `/usr/local/openssl4/`, and drops a wrapper at `/usr/local/bin/openssl40`
    (the system `openssl` on your distro almost certainly pre-dates
