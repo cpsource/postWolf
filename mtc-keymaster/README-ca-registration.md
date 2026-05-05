@@ -76,7 +76,7 @@ Useful flags:
 |---|---|
 | `--label L` | store under `~/.TPM/<domain>-<label>-ca/` so you can run prod + staging CAs side by side |
 | `--make-default` | atomically re-point `~/.TPM/default` at this new identity even if one already exists |
-| `--force-keygen` | regenerate the keypair even if `~/.mtc-ca-data/<domain>/` already has material |
+| `--force-keygen` | regenerate the keypair even if `~/.mtc-ca-data/<domain>-ca/` already has material |
 | `--no-prompt` | non-interactive: accept defaults at every prompt, DNS timeout becomes fatal (cron/CI safe) |
 | `--dry-run` | run through keygen + TXT + DNS poll, skip `bootstrap_ca` |
 | `RESOLVER=1.1.1.1 …` | env override for the DNS poll resolver |
@@ -115,10 +115,10 @@ commands with polling and safety checks glued between them.
 
 | Path | Written by | Purpose |
 |---|---|---|
-| `~/.mtc-ca-data/<domain>/private_key.pem` | `create_ca_cert.py` | ML-DSA-87 private key (mode 0600) |
-| `~/.mtc-ca-data/<domain>/public_key.pem` | `create_ca_cert.py` | ML-DSA-87 public key |
-| `~/.mtc-ca-data/<domain>/public_key.txt` | `create_ca_cert.py` | human-readable dump for auditing |
-| `~/.mtc-ca-data/<domain>/ca_cert.pem` | `create_ca_cert.py` | X.509 self-signed CA cert wrapping the public key |
+| `~/.mtc-ca-data/<domain>-ca/private_key.pem` | `create_ca_cert.py` | ML-DSA-87 private key (mode 0600) |
+| `~/.mtc-ca-data/<domain>-ca/public_key.pem` | `create_ca_cert.py` | ML-DSA-87 public key |
+| `~/.mtc-ca-data/<domain>-ca/public_key.txt` | `create_ca_cert.py` | human-readable dump for auditing |
+| `~/.mtc-ca-data/<domain>-ca/ca_cert.pem` | `create_ca_cert.py` | X.509 self-signed CA cert wrapping the public key |
 | `~/.TPM/<domain>-ca/certificate.json` | `bootstrap_ca` | MTC standalone_certificate (Merkle log entry + inclusion proof + cosignature) |
 | `~/.TPM/<domain>-ca/index` | `bootstrap_ca` | log index (plain text) |
 | `~/.TPM/<domain>-ca/private_key.pem` | `bootstrap_ca` | copied from `~/.mtc-ca-data/` |
@@ -133,7 +133,7 @@ cert renewal (`check-renewal-cert` rewrites `~/.mtc-ca-data/`
 with fresh keys).
 
 > **Security note.** The private key lives in two places today
-> (`~/.mtc-ca-data/<domain>/private_key.pem` and
+> (`~/.mtc-ca-data/<domain>-ca/private_key.pem` and
 > `~/.TPM/<domain>-ca/private_key.pem`). Tracked as TODO #33 in
 > `README-bugsandtodo.md`.
 

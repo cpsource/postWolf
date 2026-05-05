@@ -588,7 +588,15 @@ int main(int argc, char *argv[])
         server_arg = cfg ? cfg : "factsorlie.com:8445";
     }
 
-    /* Default paths from ~/.mtc-ca-data/<domain>/ if not specified */
+    /* Default paths from ~/.mtc-ca-data/<domain>-ca/ if not specified.
+     *
+     * The `-ca` suffix matches the CA's actual TBS subject (the wire
+     * subject is `<domain>-ca`, not bare `<domain>`).  Without the
+     * suffix, the same directory was being used by both create_ca_cert.py
+     * (writing) and create_leaf_keypair.py / register-leaf.sh (reading
+     * for a same-domain leaf) — collision: register-leaf.sh on the
+     * same box would find the CA's keypair and try to register the
+     * CA's public key as a leaf with subject == bare domain. */
     {
         static char def_pub[512], def_priv[512], def_cert[512];
         const char *home = getenv("HOME");
@@ -596,17 +604,17 @@ int main(int argc, char *argv[])
 
         if (!pub_key_path) {
             snprintf(def_pub, sizeof(def_pub),
-                     "%s/.mtc-ca-data/%s/public_key.pem", home, subject);
+                     "%s/.mtc-ca-data/%s-ca/public_key.pem", home, subject);
             pub_key_path = def_pub;
         }
         if (!priv_key_path) {
             snprintf(def_priv, sizeof(def_priv),
-                     "%s/.mtc-ca-data/%s/private_key.pem", home, subject);
+                     "%s/.mtc-ca-data/%s-ca/private_key.pem", home, subject);
             priv_key_path = def_priv;
         }
         if (!ca_cert_path) {
             snprintf(def_cert, sizeof(def_cert),
-                     "%s/.mtc-ca-data/%s/ca_cert.pem", home, subject);
+                     "%s/.mtc-ca-data/%s-ca/ca_cert.pem", home, subject);
             ca_cert_path = def_cert;
         }
     }

@@ -32,7 +32,7 @@ Options:
   --algorithm ALG     Key algorithm (default: ML-DSA-87)
   --make-default      Atomically re-point ~/.TPM/default at this new
                       identity even if one already exists
-  --force-keygen      Regenerate keypair even if ~/.mtc-ca-data/<dom>/
+  --force-keygen      Regenerate keypair even if ~/.mtc-ca-data/<dom>-ca/
                       already has material
   --no-prompt         Non-interactive: accept prompt defaults and
                       treat DNS timeout as fatal
@@ -190,7 +190,10 @@ WARN
 fi
 
 # --- 1. keygen or reuse ---
-CA_DATA="$HOME/.mtc-ca-data/$DOMAIN"
+# CA pre-bootstrap material lives under <DOMAIN>-ca/ (matches the CA's
+# actual TBS subject and avoids a collision with the same-domain leaf,
+# whose pre-bootstrap material is at <DOMAIN>/).
+CA_DATA="$HOME/.mtc-ca-data/$DOMAIN-ca"
 if [ -f "$CA_DATA/private_key.pem" ] \
    && [ -f "$CA_DATA/public_key.pem" ] \
    && [ -f "$CA_DATA/ca_cert.pem" ] \

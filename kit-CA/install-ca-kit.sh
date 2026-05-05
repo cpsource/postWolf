@@ -134,11 +134,11 @@ Next steps for a fresh CA operator:
 
     1. Generate your CA's keypair + self-signed cert:
          create_ca_cert.py --domain <DOMAIN>
-         # → ~/.mtc-ca-data/<DOMAIN>/{private_key,public_key,ca_cert}.pem
+         # → ~/.mtc-ca-data/<DOMAIN>-ca/{private_key,public_key,ca_cert}.pem
 
     2. Compute and publish the DNSSEC-signed TXT record at
        _mqc-ca.<DOMAIN>:
-         ca_dns_txt.py --cert ~/.mtc-ca-data/<DOMAIN>/ca_cert.pem \\
+         ca_dns_txt.py --cert ~/.mtc-ca-data/<DOMAIN>-ca/ca_cert.pem \\
                        --domain <DOMAIN>
        (the zone MUST be DNSSEC-signed with a DS record at the parent;
         an unsigned zone is rejected by the server's libunbound check)

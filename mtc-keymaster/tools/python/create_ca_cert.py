@@ -4,9 +4,9 @@ Generate an ML-DSA-87 self-signed X.509 CA certificate for MTC enrollment
 via the DH bootstrap port.
 
 Creates the key and certificate files needed by bootstrap_ca:
-    ~/.mtc-ca-data/<domain>/private_key.pem
-    ~/.mtc-ca-data/<domain>/public_key.pem
-    ~/.mtc-ca-data/<domain>/ca_cert.pem
+    ~/.mtc-ca-data/<domain>-ca/private_key.pem
+    ~/.mtc-ca-data/<domain>-ca/public_key.pem
+    ~/.mtc-ca-data/<domain>-ca/ca_cert.pem
 
 Usage:
     python3 create_ca_cert.py --domain factsorlie.com
@@ -48,8 +48,17 @@ def check_openssl40():
 
 
 def generate_ca_cert(domain, out_base, days, algorithm):
-    """Generate CA key + self-signed CA certificate using openssl40."""
-    out_dir = Path(out_base) / domain
+    """Generate CA key + self-signed CA certificate using openssl40.
+
+    Writes under <out_base>/<domain>-ca/ to match the CA's actual TBS
+    subject (`<domain>-ca`).  Earlier versions wrote under
+    <out_base>/<domain>/, which collided with create_leaf_keypair.py's
+    output for a same-domain leaf — register-leaf.sh would then pick
+    up the CA's keys and try to register the CA's public key as a
+    leaf with subject == bare domain.  See TODO in
+    `register-leaf.sh` for the safety check that catches the legacy
+    layout."""
+    out_dir = Path(out_base) / f"{domain}-ca"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     key_path = out_dir / "private_key.pem"

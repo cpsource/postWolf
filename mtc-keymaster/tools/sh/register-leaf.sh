@@ -189,11 +189,35 @@ WARN
 fi
 
 # --- 1. keygen or reuse ---
-CA_DATA="$HOME/.mtc-ca-data/$DOMAIN"
+# Leaf pre-bootstrap material lives at <DOMAIN>/ (matches the leaf's
+# bare-domain subject).  CA material now lives at <DOMAIN>-ca/ — but
+# legacy installs (before that split) wrote CA keys to <DOMAIN>/, so
+# detect and refuse if we find CA-shaped files (`ca_cert.pem`) here:
+# proceeding would register the CA's public key as a leaf and create
+# a duplicate-key log entry under a different subject.
+LEAF_DATA="$HOME/.mtc-ca-data/$DOMAIN"
+if [ -f "$LEAF_DATA/ca_cert.pem" ]; then
+    cat >&2 <<EOF
+ERROR: $LEAF_DATA contains ca_cert.pem (legacy layout where the CA's
+       pre-bootstrap material was written under <DOMAIN>/ instead of
+       <DOMAIN>-ca/).  Refusing to proceed because the leaf and CA
+       would share a public key.
+
+       Migrate by renaming the dir to match the new layout:
+
+         mv $LEAF_DATA $HOME/.mtc-ca-data/$DOMAIN-ca
+
+       Then re-run register-leaf.sh.  create_leaf_keypair.py will
+       generate a fresh leaf keypair under $LEAF_DATA.
+EOF
+    exit 1
+fi
+
+CA_DATA="$LEAF_DATA"   # keep the existing variable name for compatibility
 if [ -f "$CA_DATA/private_key.pem" ] \
    && [ -f "$CA_DATA/public_key.pem" ] \
    && [ "$FORCE_KEYGEN" -eq 0 ]; then
-    echo "==> reusing existing key material at $CA_DATA"
+    echo "==> reusing existing leaf key material at $CA_DATA"
 else
     echo "==> generating $ALGO keypair for $DOMAIN"
     create_leaf_keypair.py --domain "$DOMAIN" --algorithm "$ALGO"
