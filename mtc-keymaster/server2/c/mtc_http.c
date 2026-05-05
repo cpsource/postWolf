@@ -574,8 +574,22 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
      * dropped as part of the _mtc-ca. → _mqc-ca. cutover. */
     if (json_object_object_get_ex(req, "public_key_fingerprint", &val)) {
         fp_raw = json_object_get_string(val);
+        /* Accept either prefix (or none).  Two canonical forms in
+         * play here:
+         *   - `sha3-256:<hex>` — SHA3-256 over the SPKI DER, used
+         *     for CA-side fingerprints (mqc-3, matches what
+         *     mtc_validate_ca_cert recomputes from a PEM/X.509).
+         *   - `sha256:<hex>` — SHA-256 over the raw PEM text, used
+         *     for LEAF-nonce binding (matches what mtc_bootstrap.c's
+         *     consume-nonce path recomputes via wc_Sha256 over
+         *     `strlen(pub_key_pem)` bytes).
+         * The handler stores the 64 hex chars verbatim and the
+         * downstream consume code knows which canonical form to
+         * recompute against — so both prefixes are valid here. */
         if (strncmp(fp_raw, "sha3-256:", 9) == 0)
             fp_raw += 9;
+        else if (strncmp(fp_raw, "sha256:", 7) == 0)
+            fp_raw += 7;
         if (strlen(fp_raw) != 64) {
             http_send_error(io, 400, "fingerprint must be exactly 64 hex chars");
             json_object_put(req);
