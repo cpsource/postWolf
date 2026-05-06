@@ -3182,11 +3182,33 @@ propagates).
 
 ---
 
-### 62. Replace `mtc_crypt.c` with AEAD (AES-256-GCM)
+### 62. Replace `mtc_crypt.c` with AEAD (AES-256-GCM) — **DONE 2026-05-06**
 
 **Severity:** P0 — bootstrap-port confidentiality.  Filed
 2026-05-06 from ChatGPT review (see
 `README-chatgpt-issues.md`).
+
+**Resolution (2026-05-06):** `mtc_crypt.{c,h}` rewritten in
+commit `265178701`.  Wire format per AEAD frame:
+`[12-byte nonce][N-byte ciphertext][16-byte GCM tag]`.  AAD =
+`"mtc-bootstrap-aead/v1\n"` (23 bytes incl. NUL) || direction
+byte || 4-byte BE plaintext_length.  HKDF call now produces 64
+bytes total (c2s_key || s2c_key) — per-direction keys eliminate
+GCM nonce-collision risk across directions.  API broke cleanly
+(flag-day cutover); no version-negotiation code added per
+CLAUDE.md.
+
+Verified: localhost AEAD round-trip on factsorlie (bootstrap_ca
+--no-pin against localhost:8445) succeeded end-to-end; cross-
+host frflashy → factsorlie register-leaf.sh succeeded after
+deploying the new code on both boxes.
+
+Removed dead code: byte-rotation layer, "find last `}`" padding
+strip, bit-7 noise padding — all pure obfuscation that GCM
+makes structurally unnecessary.
+
+Spec updated: `README-detail-design-spec.md` §4.3 — AEAD wire
+format documented inline.
 
 **Current state:** `mtc_crypt.c` (~480 lines) implements AES-CBC
 with **zero IV**, **no MAC/AEAD**, a custom byte-rotation layer,

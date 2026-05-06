@@ -492,16 +492,39 @@ field.
 ```
 
 Both peers compute `shared_secret = X25519(my_priv, their_pub)`,
-then derive an AES-128 key:
+then derive **two** AES-256 keys (one per direction) via HKDF:
 ```
-aes_key = HKDF-SHA256(shared_secret, salt, "mtc-dh-bootstrap")[:16]
+keys[0..63] = HKDF-SHA256(shared_secret, salt, "mtc-dh-bootstrap", 64)
+c2s_key     = keys[0..31]
+s2c_key     = keys[32..63]
 ```
+Per-direction keys eliminate any GCM-nonce collision risk
+across directions even with random per-message nonces.  Closes
+TODO #62 — replaces the historical AES-CBC zero-IV no-MAC
+construction.
 
 `pop_nonce` is the 32-byte proof-of-possession nonce the client
 must sign with the CA private key (CA enrollment only — leaf
 enrollment proves possession via the issued nonce).
 
-#### Message 3 — client → server (AES-encrypted, length-prefixed)
+**AEAD frame format (TODO #62).**  Each AES-256-GCM frame on the
+wire is `[12-byte nonce][N-byte ciphertext][16-byte GCM tag]`,
+length-prefixed with the existing 4-byte big-endian frame
+header.  Total wire bytes per frame = `4 + 12 + plaintext_length
++ 16`.  AAD bound into every tag:
+
+```
+"mtc-bootstrap-aead/v1\n"   (23 bytes incl. compiler NUL)
+|| direction_byte            (1 byte: 0x01 c2s, 0x02 s2c)
+|| plaintext_length          (4 bytes BE)
+```
+
+Direction is in the AAD AND selects the per-direction key, so a
+MitM cannot replay a request frame as a response.  Nonces are
+freshly RNG-generated per encode; per-direction keys make
+nonce-collision-across-directions a non-event.
+
+#### Message 3 — client → server (AES-256-GCM, length-prefixed)
 
 CA enrollment payload (no `enrollment_nonce`; the server detects
 this is a CA by the presence of `ca_certificate_pem` inside
@@ -543,7 +566,7 @@ Server-side validation depending on the path:
   `mtc_enrollment_nonces`, matches `(domain, fp)`, marks
   consumed atomically.
 
-#### Message 4 — server → client (AES-encrypted, length-prefixed)
+#### Message 4 — server → client (AES-256-GCM, length-prefixed)
 
 ```json
 {

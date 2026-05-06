@@ -2,11 +2,15 @@ I reviewed the uploaded `s2.tar.gz`. Priority fixes:
 
 ## P0 — fix before exposing this server
 
-1. **Replace `mtc_crypt.c` entirely**
+1. **Replace `mtc_crypt.c` entirely** — **DONE 2026-05-06 (commit `265178701`)**
 
-   * Current bootstrap encryption uses AES-CBC, **zero IV**, no MAC/AEAD, custom byte rotation, and “find last `}`” padding removal.
-   * This is malleable and not authenticated. Use `XChaCha20-Poly1305`, `AES-GCM`, or wolfSSL’s AEAD with fresh nonce per message.
-   * Files: `mtc_crypt.c:370-483`, `mtc_bootstrap.c:725-735`.
+   * `mtc_crypt.{c,h}` rewritten as AES-256-GCM AEAD with
+     random 96-bit nonces, per-direction keys (c2s/s2c), and
+     28-byte AAD binding label + direction + plaintext length.
+   * Byte-rotation, find-last-`}` padding strip, and zero-IV
+     all gone.  Flag-day cutover; both factsorlie and
+     frflashy deployed.
+   * See appendix below for the cross-host verification trace.
 
 2. **Add authentication to the DH bootstrap handshake**
 
@@ -104,30 +108,28 @@ reflect HEAD.
 
 ## P0
 
-### 1. Replace `mtc_crypt.c` (AES-CBC zero-IV no-MAC) — **OPEN**
+### 1. Replace `mtc_crypt.c` (AES-CBC zero-IV no-MAC) — **DONE 2026-05-06** (commit `265178701`)
 
-`mtc_crypt.c` is still AES-CBC with byte-rotation, zero IV, no
-authentication tag, and "find last `}`" padding strip
-(`mtc_crypt.c:6-11`).  The DH-bootstrap port is the only consumer.
+Closed.  `mtc_crypt.{c,h}` rewritten as AES-256-GCM AEAD.
 
-Why we got away with it so far: the bootstrap response (P0 #9b
-leaf branch) is signed under the cosigner ML-DSA-87 key, so an
-attacker who can decrypt + tamper with the AES-CBC layer cannot
-forge a successful enrollment — the signature mismatches and
-the client refuses.  But ChatGPT is correct that:
+Wire format per AEAD frame:
+`[12-byte nonce][N-byte ciphertext][16-byte GCM tag]`.
+AAD binds `"mtc-bootstrap-aead/v1\n"` + direction byte +
+plaintext_length BE — so a MitM cannot replay a request frame
+as a response (different direction → different AAD → tag fails).
 
-- The encrypted enrollment REQUEST (client → server) carries the
-  leaf's ML-DSA private-key holder's pubkey + nonce in the clear
-  to a MitM with the AES-CBC key.  Confidentiality is broken.
-- Padding-oracle / malleability against the response could let a
-  MitM mutate non-signed metadata if any ever sneaks in.
+HKDF call extended to produce 64 bytes (c2s_key || s2c_key).
+Per-direction keys eliminate any GCM nonce-reuse risk across
+directions.  Random 96-bit nonces per message; collision
+probability negligible within a single short DH session.
 
-**Recommendation:** open as TODO #62.  Replace `mtc_crypt_encode`
-/ `mtc_crypt_decode` with `wc_AesGcmEncrypt` / `wc_AesGcmDecrypt`
-using a fresh 96-bit nonce per message (counter is fine — single
-session).  Reuse the existing HKDF output for the AEAD key; bump
-key size to 256 bits while we're at it.  Wire-format change →
-flag-day cutover per CLAUDE.md.
+Removed dead code:
+- byte-rotation layer (pure obfuscation)
+- "find last `}`" padding strip (GCM doesn't pad)
+- bit-7 noise padding (same)
+
+Verified: localhost AEAD round-trip on factsorlie + cross-host
+register-leaf from frflashy after deploying the new code.
 
 ### 2. Sign the bootstrap DH transcript — **PARTIAL**
 
@@ -378,13 +380,21 @@ cert.
 ## Recommended attack queue
 
 Prioritized by impact-per-effort against the current code.
-TODO #64 closed 2026-05-06 (commit `6ec344bf1`).  Remaining:
+TODOs closed 2026-05-06: #64 (commit `6ec344bf1`),
+#62 (commit `265178701`).  Remaining:
 
-1. **TODO #62** — replace `mtc_crypt` with AES-256-GCM.  Closes
-   the worst remaining cryptographic primitive in the stack.
-   ~1 day + flag-day cutover.  Only DH-bootstrap-port traffic
-   is affected; an in-log peer is not required to reach this
-   surface.
+1. **TODO #65** — bootstrap fork backpressure.  One-line fix
+   to call `mtc_wait_for_child_slot()` before the bootstrap
+   thread's `fork()`.  Contains the fork-storm DoS surface.
+2. **TODO #69** — fail-closed on persistence errors during
+   enrollment.  Local-only change in `mtc_bootstrap.c`.
+3. **TODO #68** — server-side label canonicalization.
+   Local-only.
+4. **TODO #66** — HTTP read timeout (`SO_RCVTIMEO`).
+   Local-only.
+5. **TODO #63** — DH-transcript signature.  Defense-in-depth
+   on top of the now-shipped AEAD.
+6. **TODO #67, #70, #71** — defense-in-depth / hygiene.
 3. **TODO #65** — bootstrap fork backpressure.  One-line fix,
    contains the fork-storm DoS vector.
 4. **TODO #69** — fail-closed on persistence errors during
