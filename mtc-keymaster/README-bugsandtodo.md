@@ -866,7 +866,7 @@ above.
 **Priority:** Low–Medium — current behavior is safe but noisy.  The
 binding check in `mtc_db_validate_and_consume_nonce` (`mtc_db.c:1222`)
 already rejects a nonce submitted with the wrong `domain` or `fp` —
-that discussion is captured in `README-nonce.md`.  We deliberately
+that discussion is captured in `server2/README-detail-design-spec.md §3.2 / §7.6`.  We deliberately
 chose *not* to invalidate the nonce on failure because that would
 create a DoS primitive: anyone who learned the nonce (leaked log
 line, chat paste, email) could burn a legitimate holder's enrollment
@@ -920,7 +920,7 @@ above.  The nonce's natural 15-minute TTL is the correct bound.
   the HTTP handler and the bootstrap handler can both call it.
 - `mtc-keymaster/server2/c/mtc_ratelimit.{c,h}` — confirm `RL_ENROLL`
   already covers failed attempts, or add `RL_ENROLL_FAILED`.
-- `mtc-keymaster/README-nonce.md` — add a "Observability" section
+- `mtc-keymaster/server2/README-detail-design-spec.md §3.2 / §7.6` — add a "Observability" section
   once implemented, so the doc matches the shipped behavior.
 
 ### 14. Purge main.py references from the docs
@@ -1845,14 +1845,14 @@ modulo bias).  `--file PATH` autodetects encode/decode by sniffing
 the first KB for a valid `"v":"mqc-1"` envelope.
 
 Ships in both `kit-CA` and `kit-leaf`.  Full docs at
-`mtc-keymaster/README-mqc-cli.md`.
+`mtc-keymaster/server2/README-detail-design-spec.md`.
 
 **Files:** `mtc-keymaster/tools/c/mqc.c` (NEW),
 `mtc-keymaster/tools/c/Makefile` (+target, +install, +clean),
 `mtc-keymaster/tools/c/.gitignore` (+mqc),
 `kit-CA/make-ca-kit.sh` + `install-ca-kit.sh` (+mqc),
 `kit-leaf/make-leaf-kit.sh` + `install-leaf-kit.sh` (+mqc),
-`mtc-keymaster/README-mqc-cli.md` (NEW).
+`mtc-keymaster/server2/README-detail-design-spec.md` (NEW).
 
 ### 41. `mqc`: streaming/chunked AEAD for large inputs
 
@@ -1874,7 +1874,7 @@ Bump envelope version to `mqc-2` for the streaming form, keep
 `mqc-1` single-shot for small inputs (autodetect on file size).
 
 **Files:** `mtc-keymaster/tools/c/mqc.c`,
-`mtc-keymaster/README-mqc-cli.md`.
+`mtc-keymaster/server2/README-detail-design-spec.md`.
 
 ### 42. `mqc`: rotate / scrub the cached password file
 
@@ -1900,7 +1900,7 @@ Also add `mqc --scrub-cache [--domain D]` that does an `shred`-style
 overwrite of the cache file and removes it.
 
 **Files:** `mtc-keymaster/tools/c/mqc.c`,
-`mtc-keymaster/README-mqc-cli.md`.
+`mtc-keymaster/server2/README-detail-design-spec.md`.
 
 ### 43. `mqc`: cross-host password sync
 
@@ -1933,7 +1933,7 @@ should propagate to peers.
 **Files:** `mtc-keymaster/tools/c/mqc.c`,
 `mtc-keymaster/server2/c/mtc_http.c` (if option 1),
 `socket-level-wrapper-MQC/mqc.c` (new peer op),
-`mtc-keymaster/README-mqc-cli.md`.
+`mtc-keymaster/server2/README-detail-design-spec.md`.
 
 ### 44. Gmail extension — encode/decode button that calls `mqc` via WSL
 
@@ -2328,7 +2328,7 @@ needs code changes; just intellectual hygiene.
 ### 49. Replace X25519 with ML-KEM-768 on the bootstrap port (8445)
 
 **Priority:** Medium — last pre-quantum primitive in active code.
-The full audit is in `mtc-keymaster/README-insecure-report.md`.
+The full audit is in `mtc-keymaster/server2/README-detail-design-spec.md`.
 
 `server2/c/mtc_bootstrap.c:498-549` performs a classical X25519 KEX
 to derive an AES-256-GCM session key for the pre-TLS enrollment
@@ -2368,7 +2368,7 @@ transitively force them on.  `nm -D` on the installed
 `libpostWolf.so` reports zero exported symbols for any of the
 seven hash/cipher families.  ECDSA / Ed25519 acceptance was
 dropped from `handle_revoke` at the same time (see TODO #19 row).
-Full audit and rationale: `mtc-keymaster/README-insecure-report.md`.
+Full audit and rationale: `mtc-keymaster/server2/README-detail-design-spec.md`.
 
 ### 51. Split out an MQC-only library target (drop the TLS surface for MQC consumers)
 

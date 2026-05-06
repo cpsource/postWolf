@@ -1,0 +1,918 @@
+# postWolf `mtc_server` — detailed design spec
+
+This document is the consolidated reference for the C `mtc_server`
+process (`mtc-keymaster/server2/c/mtc_server`).  It describes
+the three TCP ports, the protocol on each port, every endpoint,
+and the JSON message format flowing in each direction.
+
+It supersedes and absorbs the following files (now deleted; the
+original content is recoverable via `git show <commit>~1:<path>`
+on the commit that introduced this spec):
+
+| Absorbed file | What it covered |
+|---|---|
+| `mtc-keymaster/README.md` | top-level overview, three keys, identity dirs |
+| `mtc-keymaster/README-ca-registration.md` | CA enrollment workflow + state |
+| `mtc-keymaster/README-leaf-registration.md` | leaf enrollment + reservation nonces |
+| `mtc-keymaster/README-nonce.md` | enrollment-nonce data model |
+| `mtc-keymaster/README-mqc-cli.md` | `mqc` CLI tool surface |
+| `mtc-keymaster/README-parsing.md` | JSON parsing invariants |
+| `mtc-keymaster/README-db-schema.md` | Neon schema |
+| `mtc-keymaster/README-insecure-report.md` | observed insecurities + status |
+
+Files that intentionally stay separate:
+
+| File | Why |
+|---|---|
+| `mtc-keymaster/README-bugsandtodo.md` | open-work tracker, not design |
+| `mtc-keymaster/README-clean-install.md` | install procedure, not design |
+| `mtc-keymaster/augeas/README.md` | config-parser package, separate concern |
+
+---
+
+## 1. Process model
+
+`mtc_server` runs as a single multithreaded systemd-managed
+process (`mtc-ca.service`).  At startup it:
+
+1. Loads ML-DSA-87 keypair from `~/.mtc-ca-data/ca_key.der`.
+   This single key is used both to issue certs (CA role) and to
+   cosign Merkle subtree roots (cosigner role).  Same key, two
+   roles.
+2. Connects to Neon Postgres via `MERKLE_NEON` DSN read from
+   `~/.env`.
+3. Loads the Merkle log: entries, certificates, landmarks,
+   revocations.
+4. Spawns three listener threads on three ports.
+5. Spawns a SIGHUP-handler thread that reloads the in-memory
+   store from DB on demand (TODO #56 + #60).
+6. fork()s a child per accepted connection on each port.
+
+The fork-after-accept model means the in-memory store is shared
+copy-on-write to children.  When a child commits a new entry, it
+sends `SIGHUP` to the parent so the parent's in-memory cache
+catches up — see TODO #56 + #60 in `README-bugsandtodo.md`.
+
+---
+
+## 2. Listener overview
+
+| Port | Protocol | Default bind | Purpose | Source |
+|---|---|---|---|---|
+| **8444** | HTTPS over TLS 1.3 | `0.0.0.0:8444` | Public read-only API + CA-/operator-authenticated POSTs | `mtc_http.c::mtc_http_serve` |
+| **8445** | Plaintext TCP + per-connection X25519 DH for confidentiality | `0.0.0.0:8445` | Pre-trust-anchor enrollment (CA + leaf), public-key fetch, HTTP-API proxy for clients without TLS | `mtc_bootstrap.c::bootstrap_thread` |
+| **8446** | MQC (post-quantum authenticated transport) | `0.0.0.0:8446` | Same endpoint set as 8444 + MQC-only endpoints (issue-leaf-nonce, cancel-nonce) — caller's MQC peer cert is the auth token | `mtc_http.c::mtc_http_serve` (TLS off) |
+
+All three ports are operator-tunable via `/etc/postWolf/config`
+(`global/url-local`, `global/url-bootstrap`, `global/url-server`).
+Wire-format invariants are NOT operator-tunable per CLAUDE.md.
+
+---
+
+## 3. Port 8444 — HTTPS API (TLS 1.3)
+
+Standard HTTP/1.1 wrapped in TLS 1.3.  The server presents a
+publicly-issued X.509 certificate (e.g., Let's Encrypt) for
+authenticity and confidentiality; clients verify it against the
+system CA store.  All endpoints below are also reachable on port
+**8446** under MQC; the MQC variant skips TLS overhead and binds
+the caller's identity to the request.
+
+Buffer cap: `HTTP_BUF_SZ` (~64 KB) holds headers + body for a
+single request.  `Content-Length` over 1 MB is rejected with
+`413`.
+
+Rate-limit classes referenced below:
+
+| Class | Default bucket |
+|---|---|
+| `RL_READ` | 60 / min per IP |
+| `RL_BOOTSTRAP` | 3 / min per IP (8445 enroll) |
+| `RL_NONCE_LEAF` | 10 / min, 100 / hr per IP |
+| `RL_NONCE_CA` | 3 / min, 10 / hr per IP |
+| `RL_ENROLL` | per IP, see `mtc_ratelimit.c` |
+| `RL_REVOKE` | per IP, see `mtc_ratelimit.c` |
+
+### 3.1 GET endpoints (read-only, public)
+
+#### `GET /`
+Server identity banner.
+
+Response (`200 application/json`):
+```json
+{
+  "service": "MTC CA/Log Server",
+  "ca_name": "MTC-CA-C",
+  "log_id":  "32473.2",
+  "log_size": 79
+}
+```
+
+#### `GET /log`
+Current log state.
+
+Response: `{"tree_size": <int>, "root_hash": "<hex>"}`.
+
+#### `GET /log/entry/<index>`
+Fetch a single log entry.
+
+Response: `{"index": N, "entry_type": 1, "tbs_data": {...}, "serialized_hex": "...", "leaf_hash_hex": "..."}`.
+
+`404` if `index >= tree_size` or the entry is sparse-deleted.
+
+#### `GET /log/proof/<index>`
+Inclusion proof for a single leaf against the current root.
+
+Response: `{"index": N, "audit_path": ["<hex>", ...], "tree_size": M, "root_hash": "<hex>"}`.
+
+#### `GET /log/checkpoint`
+Cosigned tree-root checkpoint.
+
+Response:
+```json
+{
+  "log_id":     "32473.2",
+  "tree_size":  N,
+  "root_hash":  "<hex>",
+  "ts":         <unix-double>,
+  "cosignatures": [
+    {
+      "cosigner_id": "<log_id>.ca",
+      "subtree_start": 0,
+      "subtree_end":   M,
+      "subtree_hash":  "<hex>",
+      "signature":     "<9254-hex-char ML-DSA-87 sig>",
+      "algorithm":     "ML-DSA-87"
+    }
+  ]
+}
+```
+
+#### `GET /log/consistency?from=N&to=M`
+Consistency proof between two tree sizes.  `from <= to <= tree_size`.
+
+Response: `{"from": N, "to": M, "proof": ["<hex>", ...]}`.
+
+#### `GET /certificate/search?q=<subject>`
+Find live certs by subject string.
+
+Response: `{"matches": [<cert_index>, ...]}`.
+
+#### `GET /certificate/<index>`
+Fetch the full standalone-certificate JSON for a given log index.
+This is the canonical wire representation of an MTC cert — see §8.
+
+Response (`200`): the full `{"index": N, "standalone_certificate": {...}, "checkpoint": {...}}` object.
+`404` if the index is unknown or sparse-deleted.
+
+#### `GET /trust-anchors`
+Server's trust-anchor metadata (log_id, cosigner pubkey).
+
+Response: `{"log_id": "...", "cosigner_pubkey_pem": "..."}`.
+
+#### `GET /revoked`
+Full revocation list.
+
+Response: `{"revoked": [<cert_index>, ...]}`.
+
+#### `GET /revoked/<index>`
+Single-cert revocation status.  Used by `mqc_peer_verify` for
+mandatory revocation checks.
+
+Response: `{"revoked": false}` or `{"revoked": true, "reason": "..."}`.
+
+#### `GET /ca/public-key`
+The CA-cosigner ML-DSA-87 public key in PEM form.
+
+Response:
+```json
+{
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n"
+}
+```
+
+PEM header is `-----BEGIN PUBLIC KEY-----` (PUBLICKEY_TYPE) post-TODO #9a — earlier emissions used the misleading `BEGIN ML_DSA_LEVEL5 PRIVATE KEY` label.  Header-agnostic clients that only `strstr("-----END")` continue to work.
+
+#### `GET /public-key/<name>`
+Fetch the leaf or CA public key by name (subject, optionally
+`<subject>-<label>`).
+
+Response: `{"public_key_pem": "..."}` (response always ends with a
+trailing newline — fixed in TODO #53/post-#9a hygiene).
+
+`404 public key not found` if no `mtc_public_keys` row matches.
+
+#### `GET /ech/configs`
+Encrypted Client Hello config blob (base64).  Used by the SLC
+(TLS 1.3 wrapper) layer in `socket-level-wrapper/`.
+
+### 3.2 POST endpoints
+
+#### `POST /enrollment/nonce`
+Mint a new enrollment nonce.
+
+**Auth:** none on port 8444; **MQC peer cert** required on port
+8446 for leaf nonces (caller must be a CA and the CA must
+authorize this domain).  Per-IP rate-limited via `RL_NONCE_LEAF`
+or `RL_NONCE_CA`.
+
+Request (CA nonce, default):
+```json
+{
+  "domain": "example.com",
+  "public_key_fingerprint": "sha3-256:<64-hex>"
+}
+```
+
+Request (leaf nonce, fp-bound):
+```json
+{
+  "domain": "example.com",
+  "type":   "leaf",
+  "public_key_fingerprint": "sha256:<64-hex>",
+  "label":  "alice"               // optional
+}
+```
+
+Request (leaf reservation nonce, late-binding):
+```json
+{
+  "domain":    "example.com",
+  "type":      "leaf",
+  "label":     "alice",
+  "ttl_days":  7
+}
+```
+
+`public_key_fingerprint` accepts `sha3-256:` (CA-side, SPKI DER)
+or `sha256:` (leaf-side, PEM-text) prefix; both are valid.  Bare
+hex (no prefix) is also accepted.
+
+`ttl_days` (or `ttl_seconds`) is clamped to the range
+`[MTC_NONCE_TTL_SECS, MTC_NONCE_MAX_TTL_DAYS*86400]` (default
+caps: 15 min minimum, 30 days maximum).  Long-lived reservations
+require a `label`.
+
+Response (`200`):
+```json
+{
+  "nonce":          "<64-hex>",
+  "expires":        <unix-int>,
+  "type":           "ca" | "leaf",
+  "ca_index":       <int>,           // leaf only
+  "label":          "alice",         // if provided
+  "ca_cosigner_fp": "<64-hex>",      // SHA-256(DER(SPKI(cosigner pem)))
+                                     // P0 / TODO #9b leaf branch
+  "dns_record_name":  "_mqc-ca.example.com.",     // CA only
+  "dns_record_value": "v=MQC1; role=ca; alg=ML-DSA-87; kh=sha3-256:<hex>; n=<nonce>; exp=<unix>"
+}
+```
+
+`409 Conflict` if a pending nonce for the same `(domain,
+fingerprint)` already exists (or `(domain, label)` for a
+reservation).
+
+#### `POST /certificate/request`
+Removed in phase-23.  Always returns `410 Gone — endpoint removed
+— use DH bootstrap port for enrollment`.
+
+#### `POST /renew-cert`
+Re-issue an expiring cert at a new log index.  MQC-authenticated
+on 8446.
+
+Request:
+```json
+{
+  "new_public_key_pem": "-----BEGIN PUBLIC KEY-----\n...",
+  "validity_days":      90       // optional, default = source cert's window length
+}
+```
+
+The caller's MQC peer cert identifies which existing cert is
+being renewed.  Server validates the caller still controls the
+subject, mints a new cert at the next free index, and returns
+the standalone_certificate.
+
+Response: same shape as `GET /certificate/<index>` but for the
+new index.
+
+#### `POST /cancel-nonce`
+Retract a pending reservation nonce early.  **MQC-only**
+(returns `403` on plain HTTP).
+
+Request:
+```json
+{
+  "domain": "example.com",
+  "label":  "alice"
+}
+```
+
+Authorization: caller's MQC peer must be the same CA that issued
+the reservation (the cancel is gated by `ca_index == peer_idx`
+in the DB).  Cannot cancel a CA's reservation if you're not that
+CA.
+
+Response (`200`):
+```json
+{
+  "cancelled": true,
+  "domain":    "example.com",
+  "label":     "alice"
+}
+```
+
+`404` if no matching pending nonce (already consumed, expired,
+or wrong CA).
+
+#### `POST /revoke`
+Revoke a cert by index.
+
+Request:
+```json
+{
+  "ca_cert_index":     <int>,    // index of the CA submitting the revocation
+  "cert_index":        <int>,    // target cert index to revoke
+  "reason":            "key compromise",   // optional
+  "timestamp":         <unix-int>,
+  "ca_public_key_pem": "-----BEGIN PUBLIC KEY-----\n...",
+  "signature":         "<hex>"   // CA-key signature over the canonical revocation message
+}
+```
+
+Server verifies the signature is valid under `ca_public_key_pem`,
+checks the public key matches `mtc_certificates[ca_cert_index]`,
+checks `ca_cert_index` has authority over `cert_index` (target's
+subject is a child of the CA's subject), and appends a row to
+`mtc_revocations`.
+
+Response (`200`): `{"revoked": true, "cert_index": N, "ca_cert_index": M, "target_subject": "...", "reason": "..."}`.
+
+---
+
+## 4. Port 8445 — DH bootstrap
+
+Plaintext TCP.  Intended for clients that do NOT yet have a
+trusted MQC identity AND cannot rely on the system CA store
+(e.g., they're enrolling for the first time).  Confidentiality
+comes from a per-connection X25519 DH exchange; authenticity of
+the server's response comes from an ML-DSA-87 signature under the
+cosigner key bound to a DNSSEC-published TXT record (P0 / TODO
+#9b).
+
+Three top-level message types — the first two are plaintext-only
+ops, the third is the multi-step DH-encrypted enrollment flow.
+
+### 4.1 `{"op":"ca_pubkey"}` — fetch CA cosigner pubkey
+
+Plaintext request:
+```json
+{"op": "ca_pubkey"}
+```
+
+Plaintext response:
+```json
+{
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n"
+}
+```
+
+Used by `mqc_load_ca_pubkey` (`socket-level-wrapper-MQC/mqc_peer.c`)
+when the client has no per-leaf cosigner pin.  Combined with the
+DNSSEC pin at `_mqc-cosigner.<host>` the response is authenticated
+against MitM.
+
+### 4.2 `{"op":"http_get","path":"<path>"}` — HTTP-API proxy
+
+Plaintext request:
+```json
+{"op": "http_get", "path": "/certificate/72"}
+```
+
+Plaintext response: the JSON body that `GET <path>` would return
+on port 8444, plus a trailing line with the HTTP status code.
+
+Used by clients that want to reach the read-only API without
+having a TLS trust anchor.  Internally calls
+`mtc_http_dispatch_get_capture` so the response shape exactly
+matches port 8444.
+
+### 4.3 DH-encrypted enrollment (CA + leaf)
+
+A four-message exchange.  Triggered when the client's first
+plaintext message contains `dh_public_key` instead of an `op`
+field.
+
+#### Message 1 — client → server (plaintext)
+```json
+{"dh_public_key": "<X25519 pubkey hex, 64 chars>"}
+```
+
+#### Message 2 — server → client (plaintext)
+```json
+{
+  "dh_public_key": "<X25519 pubkey hex>",
+  "salt":          "<32-hex>",
+  "pop_nonce":     "<64-hex>"
+}
+```
+
+Both peers compute `shared_secret = X25519(my_priv, their_pub)`,
+then derive an AES-128 key:
+```
+aes_key = HKDF-SHA256(shared_secret, salt, "mtc-dh-bootstrap")[:16]
+```
+
+`pop_nonce` is the 32-byte proof-of-possession nonce the client
+must sign with the CA private key (CA enrollment only — leaf
+enrollment proves possession via the issued nonce).
+
+#### Message 3 — client → server (AES-encrypted, length-prefixed)
+
+CA enrollment payload (no `enrollment_nonce`):
+```json
+{
+  "subject":          "example.com-ca",
+  "public_key_pem":   "-----BEGIN PUBLIC KEY-----\n...",
+  "ca_certificate_pem": "-----BEGIN CERTIFICATE-----\n...",
+  "key_algorithm":    "ML-DSA-87",
+  "validity_days":    365,
+  "extensions":       {"is_ca": true},
+  "pop_signature":    "<hex>"        // ML-DSA-87 sig over MQC-CA-REGISTER|<domain>|<subject>|<spki_hash_hex>|<pop_nonce_hex>
+}
+```
+
+Leaf enrollment payload (`enrollment_nonce` required):
+```json
+{
+  "subject":          "example.com",
+  "public_key_pem":   "-----BEGIN PUBLIC KEY-----\n...",
+  "key_algorithm":    "ML-DSA-87",
+  "validity_days":    90,
+  "enrollment_nonce": "<64-hex>",
+  "label":            "alice"        // optional, mirrors the label baked into the reservation
+}
+```
+
+Both forms support optional `extensions` for arbitrary metadata.
+
+Server-side validation depending on the path:
+
+- **CA enrollment**: parses + validates the X.509 cert (matches
+  `<domain>-ca` subject and SPKI matches `public_key_pem`),
+  fetches `_mqc-ca.<domain>` TXT via DNSSEC and matches
+  `kh=sha3-256:<SHA3-256(SPKI DER)>`, verifies the PoP signature.
+- **Leaf enrollment**: looks up the nonce in
+  `mtc_enrollment_nonces`, matches `(domain, fp)`, marks
+  consumed atomically.
+
+#### Message 4 — server → client (AES-encrypted, length-prefixed)
+
+```json
+{
+  "status":                 "ok",
+  "index":                  <int>,
+  "standalone_certificate": {... see §8 ...},
+  "checkpoint":             {... cosigned tree-root ...},
+  "label":                  "alice",                // leaf only, in-flight metadata
+  "ca_cosigner_pem":        "-----BEGIN PUBLIC KEY-----\n...",  // P0 #9b
+  "ca_response_sig":        "<9254-hex ML-DSA-87 sig>"          // P0 #9b
+}
+```
+
+`ca_response_sig` covers the canonical JSON of the response with
+the `ca_response_sig` field absent, signed under the cosigner key
+with ctx label `"mtc-bootstrap/v1\n\x00"`.  Verifier strips the
+field, re-serializes with `JSON_C_TO_STRING_PLAIN`, and verifies.
+Both sides use json-c's PLAIN flag, which preserves insertion
+order across the parse → mutate → serialize cycle.
+
+Error response:
+```json
+{
+  "status":  "error",
+  "message": "<human-readable diagnostic>"
+}
+```
+
+(Error responses are NOT signed — an attacker can fake a `status:
+error` reply, but cannot inject a successful enrollment.  This is
+an availability-only attack surface, equivalent to dropping the
+TCP connection.)
+
+---
+
+## 5. Port 8446 — MQC API
+
+MQC = Merkle Quantum Connect.  Post-quantum authenticated
+transport defined in
+`socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md`.
+Briefly:
+
+- ML-KEM-768 key exchange.
+- ML-DSA-87 signed identity (ClientHello + ServerHello carry
+  the peer's `cert_index`; both sides verify Merkle proofs +
+  cosignatures against the in-log cert at that index).
+- AES-256-GCM session encryption with per-direction keys.
+- HMAC-SHA256 Finished MAC committing to the full transcript.
+- 31-byte AAD on every AEAD frame (LABEL || version || direction
+  || frame_type || sequence || plaintext_length).
+
+Once the handshake completes, the server runs the SAME HTTP
+dispatcher as port 8444 — same paths, same JSON, same response
+shapes.  The MQC peer's `cert_index` is exposed to handlers via
+`io->mqc`, so endpoints that need caller-identity-as-auth
+(`/cancel-nonce`, leaf nonces) can introspect it.
+
+### 5.1 MQC-only / MQC-preferred endpoints
+
+| Endpoint | Behavior on 8444 | Behavior on 8446 |
+|---|---|---|
+| `POST /enrollment/nonce` (leaf type) | works without identity gate (just rate-limited) | caller must be a `<domain>-ca` cert; nonces issue under that CA's authority |
+| `POST /cancel-nonce` | `403` on plain HTTP | requires MQC identity; only the issuing CA can cancel its own reservations |
+| `POST /renew-cert` | works (signature-authenticated) | works; MQC peer cert serves as identity |
+
+Tools that always speak MQC (port 8446):
+
+- `issue_leaf_nonce` — CA operator mints a leaf nonce.
+- `cancel-nonce` — CA operator retracts a reservation.
+- `renew-cert` / `check-renewal-cert` — leaf or CA renewal.
+- `show-tpm --verify` — verifies all local identities against
+  the live server.
+- `revoke-key` — operator-side cert revocation.
+
+### 5.2 MQC handshake mode dispatch
+
+`mqc_accept_auto` reads the first length-prefixed frame, parses
+its `mode` field, and dispatches:
+
+- `"mode": "clear"` — single-roundtrip identity-in-the-clear
+  handshake.  Carries `cert_index` in plaintext ServerHello.
+- `"mode": "encrypted"` — two-phase 4-frame handshake.  Phase 1
+  is anonymous KEM; phase 2 is AEAD-sealed identity under an
+  early secret derived from phase 1.  A passive observer learns
+  ML-KEM bytes only.
+
+The dispatcher refuses clear-mode handshakes when the listener's
+`ctx->encrypt_identity == 1` (MQC-01 guard, see Gemini triage in
+`socket-level-wrapper-MQC/README-gemini.txt`).
+
+Full wire format: `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md`.
+
+---
+
+## 6. Authentication chain
+
+```
+IANA root KSK (DNSSEC root of trust)
+        │
+        │  signs
+        ▼
+parent zone (e.g. com)
+        │
+        │  signs DS for example.com
+        ▼
+example.com zone
+        │
+        │  signs:
+        │    _mqc-cosigner.example.com TXT  (cosigner SPKI fingerprint)
+        │    _mqc-ca.<sub>.example.com TXT  (each enrolled CA's SPKI fingerprint)
+        ▼
+DNSSEC-validated TXT records consumed by:
+    - bootstrap_ca       (enrolling CAs verify cosigner pin)
+    - mqc_load_ca_pubkey (every libmqc tool verifies cosigner pin)
+    - mtc_server         (validates enrolling CA's domain control)
+        │
+        ▼
+Cosigner ML-DSA-87 key  ←  cosigns Merkle subtree roots
+        │
+        ▼
+Domain CA cert (e.g. example.com-ca)  ←  in-log entry, cosigned
+        │
+        │  signs MQC handshakes for its own identity
+        ▼
+Leaf cert (e.g. example.com)  ←  in-log entry, cosigned
+        │
+        │  signs MQC handshakes for its own identity
+        ▼
+Authenticated MQC sessions
+```
+
+Every step is post-quantum-signed (ML-DSA-87) except the DNSSEC
+chain itself, which is classical RSA/ECDSA per IANA.  TODO #47
+already migrated the cosigner from Ed25519 to ML-DSA-87; closing
+the DNSSEC algorithm dependency is a separate IETF concern.
+
+---
+
+## 7. Database schema (Neon Postgres)
+
+Connection: `MERKLE_NEON` env var or `~/.env` `MERKLE_NEON=...`
+line.  All tables live in the default Neon database; none require
+extensions.
+
+### 7.1 `mtc_log_entries` — append-only Merkle log
+
+```sql
+CREATE TABLE mtc_log_entries (
+    index       INTEGER PRIMARY KEY,
+    entry_type  SMALLINT NOT NULL,
+    tbs_data    JSONB,
+    serialized  BYTEA NOT NULL,
+    leaf_hash   BYTEA NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+```
+
+| Column | Description |
+|---|---|
+| `index` | 0-based log position |
+| `entry_type` | `0x01` for TBS entries (only type today) |
+| `tbs_data` | Parsed TBS (subject, algorithm, validity, extensions) |
+| `serialized` | Raw bytes for Merkle hashing |
+| `leaf_hash` | `SHA-256(0x00 \|\| serialized)` |
+
+### 7.2 `mtc_certificates` — issued standalone certs
+
+```sql
+CREATE TABLE mtc_certificates (
+    index       INTEGER PRIMARY KEY,
+    certificate JSONB NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+```
+
+`certificate` carries the full standalone form (see §8).  Sparse
+deletes (testing) leave `mtc_log_entries` rows orphaned but keep
+the tree structurally consistent.
+
+### 7.3 `mtc_checkpoints` — tree-state snapshots
+
+```sql
+CREATE TABLE mtc_checkpoints (
+    id          SERIAL PRIMARY KEY,
+    log_id      TEXT NOT NULL,
+    tree_size   INTEGER NOT NULL,
+    root_hash   TEXT NOT NULL,
+    ts          DOUBLE PRECISION NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+```
+
+### 7.4 `mtc_landmarks` — power-of-2 cosignature points
+
+```sql
+CREATE TABLE mtc_landmarks (
+    id         SERIAL PRIMARY KEY,
+    tree_size  INTEGER NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+```
+
+The cosigner only signs subtree roots at power-of-2 sizes (1, 2,
+4, 8, 16, …).  Landmarks record which sizes have been cosigned.
+
+### 7.5 `mtc_revocations`
+
+```sql
+CREATE TABLE mtc_revocations (
+    id          SERIAL PRIMARY KEY,
+    cert_index  INTEGER NOT NULL,
+    reason      TEXT,
+    revoked_at  DOUBLE PRECISION NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+```
+
+### 7.6 `mtc_enrollment_nonces`
+
+```sql
+CREATE TABLE mtc_enrollment_nonces (
+    nonce       TEXT PRIMARY KEY,             -- 64 lowercase-hex chars
+    domain      TEXT NOT NULL,
+    fp          TEXT,                         -- nullable for reservation mode
+    ca_index    INTEGER NOT NULL DEFAULT -1,
+    label       TEXT,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_nonce_domain_fp
+    ON mtc_enrollment_nonces (domain, fp)
+    WHERE status = 'pending';
+
+CREATE UNIQUE INDEX ux_nonce_domain_label_pending
+    ON mtc_enrollment_nonces (domain, label)
+    WHERE status = 'pending' AND label IS NOT NULL;
+```
+
+State machine:
+
+```
+        POST /enrollment/nonce
+                │
+                ▼
+            pending  ──── TTL elapses ────►  expired
+                │
+                │  bootstrap_leaf consumes (atomic UPDATE)
+                ▼
+            consumed  (terminal)
+```
+
+Constants:
+
+| Name | Value | Source |
+|---|---|---|
+| `MTC_NONCE_HEX_LEN` | 64 | `mtc_db.h` |
+| `MTC_NONCE_TTL_SECS` | 900 (15 min) | `mtc_db.h` |
+| `MTC_NONCE_MAX_TTL_DAYS` | 30 | `mtc_db.h` |
+
+### 7.7 `mtc_public_keys` — peer-key resolution
+
+```sql
+CREATE TABLE mtc_public_keys (
+    idx         BIGSERIAL PRIMARY KEY,
+    key_name    VARCHAR(255) UNIQUE NOT NULL,
+    key_value   TEXT NOT NULL,
+    created_utc TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+`key_name` is the directory-style identity (`<subject>` for
+unlabeled identities, `<subject>-<label>` for labeled ones, plus
+`<subject>-ca` for CA certs).  Backs `GET /public-key/<name>`.
+
+### 7.8 `abuseipdb` — IP-reputation cache
+
+```sql
+CREATE TABLE abuseipdb (
+    idx                     SERIAL PRIMARY KEY,
+    ipaddr                  TEXT NOT NULL,
+    response                JSONB,
+    abuse_confidence_score  INTEGER NOT NULL,
+    requested_at            TIMESTAMPTZ DEFAULT now(),
+    updated_at              TIMESTAMPTZ DEFAULT now()
+);
+CREATE UNIQUE INDEX abuseipdb_ipaddr_idx ON abuseipdb (ipaddr);
+```
+
+Score thresholds: enrollment rejected at ≥ 25; all connections
+rejected at ≥ 75.  TTL = 5 days.  Implementation in
+`mtc_checkendpoint.c`.
+
+---
+
+## 8. Canonical JSON forms
+
+### 8.1 `tbs_entry` (the TBS object inside a cert)
+
+```json
+{
+  "subject":                       "example.com",
+  "subject_public_key_algorithm":  "ML-DSA-87",
+  "subject_public_key_hash":       "<hex>",
+  "not_before":                    <unix-double>,
+  "not_after":                     <unix-double>,
+  "extensions":                    { "is_ca": true, ... }
+}
+```
+
+`subject_public_key_hash` is `SHA-256(PEM-text-bytes)` of the
+public-key PEM.  Verifiers re-hash the loaded PEM and constant-
+time-compare.
+
+### 8.2 Merkle-tree leaf serialization
+
+`serialized` field of `mtc_log_entries`:
+
+```
+0x01   (entry_type byte)
+   ||  JSON({"extensions": {...},
+              "not_after":  <double>,
+              "not_before": <double>,
+              "spk_algorithm": "...",
+              "spk_hash":   "...",
+              "subject":    "..."},
+            JSON_C_TO_STRING_PLAIN, alphabetical-key-order)
+```
+
+Used both for `serialized` storage and for SHA-256 leaf-hash
+input: `leaf_hash = SHA-256(0x00 || serialized)`.
+
+### 8.3 Standalone certificate
+
+```json
+{
+  "tbs_entry":      { ... },
+  "log_id":         "32473.2",
+  "log_index":      <int>,
+  "inclusion_proof": ["<hex>", ...],
+  "tree_size":      <int>,
+  "checkpoint": {
+    "log_id":     "32473.2",
+    "tree_size":  <int>,
+    "root_hash":  "<hex>",
+    "ts":         <unix-double>
+  },
+  "cosignatures": [
+    {
+      "cosigner_id":   "<log_id>.ca",
+      "subtree_start": 0,
+      "subtree_end":   <power-of-2>,
+      "subtree_hash":  "<hex>",
+      "signature":     "<9254-hex-char ML-DSA-87 sig>",
+      "algorithm":     "ML-DSA-87"
+    }
+  ],
+  "trust_anchor_id": "<log_id>"
+}
+```
+
+The cosigner signature payload (per `mtc_store.c::mtc_store_cosign`):
+
+```
+"mtc-subtree/v1\n\x00"   (16 bytes incl. NUL)
+||  cosigner_id          (e.g. "32473.2.ca")
+||  log_id               (e.g. "32473.2")
+||  start  (8 bytes BE)
+||  end    (8 bytes BE)
+||  subtree_hash         (32 bytes)
+```
+
+Signed by `wc_dilithium_sign_ctx_msg(NULL, 0, ...)` (no ctx
+label; the prefix is part of the message).
+
+### 8.4 Bootstrap-response signature (P0 / TODO #9b)
+
+`ca_response_sig` payload:
+
+```
+ctx_label   = "mtc-bootstrap/v1\n\x00"   (16 bytes)
+message     = json_object_to_json_string_ext(response,
+                                              JSON_C_TO_STRING_PLAIN)
+              with ca_response_sig field absent
+```
+
+Signed by `wc_dilithium_sign_ctx_msg(MTC_BOOTSTRAP_LABEL, 16, ...)`.
+
+### 8.5 Strict JSON parsing
+
+Every handshake / handler that parses untrusted JSON applies the
+same strict-mode pipeline (see `socket-level-wrapper-MQC/mqc_common.c`
+and `mtc_http.c`):
+
+1. `json_tokener_set_flags(tok, JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8)`
+2. Length-prefixed framing — no buffer rolling, no implicit
+   continuation.
+3. `mqc_json_no_duplicates` — every named field appears exactly once.
+4. `mqc_json_no_unknown_keys` — fields not in the allow-list reject.
+5. `mqc_json_get_int_strict` — explicit `ERANGE` check, bounds
+   `[min, max]` enforced.
+6. Pre-crypto length filters on hex-string fields (KEM / signature
+   / fingerprint sizes are exact-match before any ML-KEM or
+   ML-DSA invocation).
+
+Closes Gemini MQC-03 (ERANGE desync) and the duplicate-key
+smuggling class flagged by every reviewer pass.
+
+---
+
+## 9. File layout summary
+
+| Path | Role |
+|---|---|
+| `~/.mtc-ca-data/ca_key.der` | Server's ML-DSA-87 cosigner private key |
+| `~/.mtc-ca-data/<domain>-ca/` | CA-side enrollment workspace (keys, X.509 cert, nonce.txt) |
+| `~/.mtc-ca-data/server-cert.pem` | TLS 1.3 cert for port 8444 (Let's Encrypt) |
+| `~/.mtc-ca-data/server-key.pem` | TLS 1.3 private key for port 8444 |
+| `~/.mtc-ca-data/entries.json` | On-disk Merkle log mirror (Neon is canonical) |
+| `~/.mtc-ca-data/certificates.json` | On-disk cert mirror |
+| `~/.mtc-ca-data/landmarks.json` | On-disk landmark mirror |
+| `~/.mtc-ca-data/revocations.json` | On-disk revocation mirror |
+| `~/.TPM/<subject>[-<label>][-ca]/` | Client-side identity (per-leaf or per-CA) |
+| `~/.TPM/<id>/ca-cosigner.pem` | Per-leaf or per-CA pinned cosigner PEM (P0 #9b) |
+| `~/.TPM/ca-cosigner.pem` | Global cosigner cache (DNSSEC-verified post-#9b) |
+| `~/.TPM/default` | Symlink to the active identity dir |
+| `~/.TPM/peers/<cert_index>/` | Cached MQC-peer state (cert, pubkey, cosigner-fp, revocation status) |
+| `/etc/postWolf/config` | Operator-tunable knobs (Augeas-managed) |
+
+---
+
+## 10. Source map
+
+| Concern | File(s) |
+|---|---|
+| Process entry + signal handling | `mtc_server.c` |
+| TLS 8444 + MQC 8446 dispatcher | `mtc_http.c` |
+| 8445 DH bootstrap | `mtc_bootstrap.c` |
+| Merkle store (in-memory + DB) | `mtc_store.c`, `mtc_merkle.c` |
+| Neon DB layer | `mtc_db.c` |
+| AbuseIPDB cache | `mtc_checkendpoint.c` |
+| Rate-limit buckets | `mtc_ratelimit.c` |
+| AES-GCM helpers (8445) | `mtc_crypt.c` |
+| CA X.509 validation | `mtc_ca_validate.c` |
+| DNSSEC TXT validation | `mtc_dnssec_pin.c` |
+| Domain canonicalisation | `mtc_domain.c` |
+| Augeas config parser | `../read-config/read-config.{c,h}` |
+

@@ -8,7 +8,7 @@
 #   ./bin/mqc
 #   ./lib/libpostWolf.so*
 #   ./doc/README.md
-#   ./doc/README-mqc-cli.md
+#   ./doc/README-detail-design-spec.md
 #   ./VERSION
 #
 set -euo pipefail
@@ -57,8 +57,8 @@ install -m 755 "$HERE/bin/mqc"  /usr/local/bin/mqc
 
 # --- 4. Docs ----------------------------------------------------------
 install -d /usr/local/share/doc/postWolf-mqc
-install -m 644 "$HERE/doc/README.md"          /usr/local/share/doc/postWolf-mqc/README.md
-install -m 644 "$HERE/doc/README-mqc-cli.md"  /usr/local/share/doc/postWolf-mqc/README-mqc-cli.md
+install -m 644 "$HERE/doc/README.md"                       /usr/local/share/doc/postWolf-mqc/README.md
+install -m 644 "$HERE/doc/README-detail-design-spec.md"    /usr/local/share/doc/postWolf-mqc/README-detail-design-spec.md
 
 # --- 5. Verify ldd -----------------------------------------------------
 missing_libs=0
@@ -96,5 +96,5 @@ Next steps:
          ln -sfn mydomain ~/.TPM/default
 
 Full docs:
-  /usr/local/share/doc/postWolf-mqc/README-mqc-cli.md
+  /usr/local/share/doc/postWolf-mqc/README-detail-design-spec.md
 EOF

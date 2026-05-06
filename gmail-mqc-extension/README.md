@@ -322,7 +322,7 @@ them by hand if you're retiring the whole setup.
 
 - `host/README.md` — shim install + troubleshooting
 - `extension/README.md` — extension load + known limits
-- `../mtc-keymaster/README-mqc-cli.md` — full `mqc` CLI reference
+- `../mtc-keymaster/server2/README-detail-design-spec.md` — server endpoint reference (incl. mqc CLI surface in §5)
 - `../kit-mqc/README-mqc.md` — kit-mqc install (mqc inside WSL)
 - `../mtc-keymaster/README-bugsandtodo.md` §44 — the original
   design sketch this implements

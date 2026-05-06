@@ -78,8 +78,8 @@ install -m 755 "$REPO_ROOT/mtc-keymaster/tools/sh/register-leaf.sh" "$STAGE/bin/
 cp -a "$REPO_ROOT/src/.libs/"libpostWolf.so*  "$STAGE/lib/"
 
 install -m 644 "$SELF_DIR/README-leaf.md"                       "$STAGE/doc/README.md"
-install -m 644 "$REPO_ROOT/mtc-keymaster/README-leaf-registration.md" \
-                                                                "$STAGE/doc/README-leaf-registration.md"
+install -m 644 "$REPO_ROOT/mtc-keymaster/server2/README-detail-design-spec.md" \
+                                                                "$STAGE/doc/README-detail-design-spec.md"
 install -m 755 "$SELF_DIR/install-leaf-kit.sh"  "$STAGE/install-leaf-kit.sh"
 install -m 755 "$SELF_DIR/buildopenssl4.0.sh"   "$STAGE/buildopenssl4.0.sh"
 echo "$VERSION" > "$STAGE/VERSION"

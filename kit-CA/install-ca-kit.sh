@@ -97,10 +97,8 @@ install -m 755 "$HERE/sbin/setup-recert-crond.sh" \
 install -d /usr/local/share/doc/postWolf-ca
 install -m 644 "$HERE/doc/README.md" \
     /usr/local/share/doc/postWolf-ca/README.md
-install -m 644 "$HERE/doc/README-ca-registration.md" \
-    /usr/local/share/doc/postWolf-ca/README-ca-registration.md
-install -m 644 "$HERE/doc/README-leaf-registration.md" \
-    /usr/local/share/doc/postWolf-ca/README-leaf-registration.md
+install -m 644 "$HERE/doc/README-detail-design-spec.md" \
+    /usr/local/share/doc/postWolf-ca/README-detail-design-spec.md
 
 # --- 5. Verify ldd -----------------------------------------------------
 missing_libs=0
@@ -158,7 +156,8 @@ Next steps for a fresh CA operator:
          # Send the printed 64-hex nonce to Alice over a secure channel.
          # If you need to retract a pending reservation early:
          cancel-nonce --domain <DOMAIN> --label Alice
-         # See /usr/local/share/doc/postWolf-ca/README-leaf-registration.md
+         # See /usr/local/share/doc/postWolf-ca/README-detail-design-spec.md
+         # § 3.2 POST /enrollment/nonce
 
     5. Revoke a leaf under your domain (authenticated, CA-signed):
          revoke-key --target-index N --reason "key compromise"
@@ -175,5 +174,5 @@ Next steps for a fresh CA operator:
 
 Full docs:
   /usr/local/share/doc/postWolf-ca/README.md
-  /usr/local/share/doc/postWolf-ca/README-ca-registration.md
+  /usr/local/share/doc/postWolf-ca/README-detail-design-spec.md
 EOF

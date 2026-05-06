@@ -21,7 +21,7 @@ TARBALL="$SELF_DIR/postWolf-mqc-kit-${VERSION}.tar.gz"
 # --- 1. Sanity: required build artifacts must exist --------------------
 required=(
     "mtc-keymaster/tools/c/mqc"
-    "mtc-keymaster/README-mqc-cli.md"
+    "mtc-keymaster/server2/README-detail-design-spec.md"
 )
 missing=0
 for f in "${required[@]}"; do
@@ -73,7 +73,8 @@ echo "Copying libpostWolf.so* from $LIB_SRC/"
 cp -a "$LIB_SRC/"libpostWolf.so*  "$STAGE/lib/"
 
 install -m 644 "$SELF_DIR/README-mqc.md"                          "$STAGE/doc/README.md"
-install -m 644 "$REPO_ROOT/mtc-keymaster/README-mqc-cli.md"       "$STAGE/doc/README-mqc-cli.md"
+install -m 644 "$REPO_ROOT/mtc-keymaster/server2/README-detail-design-spec.md" \
+                                                                  "$STAGE/doc/README-detail-design-spec.md"
 install -m 755 "$SELF_DIR/install-mqc-kit.sh"  "$STAGE/install-mqc-kit.sh"
 echo "$VERSION" > "$STAGE/VERSION"
 

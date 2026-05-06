@@ -11,7 +11,7 @@ payload/
   bin/mqc                          the CLI
   lib/libpostWolf.so*              wolfSSL-derived crypto (AES-256-GCM, scrypt)
   doc/README.md                    this file
-  doc/README-mqc-cli.md            full mqc reference
+  doc/README-detail-design-spec.md            full mqc reference
   install-mqc-kit.sh               one-shot installer (sudo bash)
   VERSION                          git describe at build time
 ```
@@ -66,7 +66,7 @@ echo hello | mqc --encode --env --no-cache | mqc --decode --env --no-cache
 
 Full flag reference and every supported flow (streaming, `--file`
 autodetect, `--out`, `--complex-password`, `--dry-run`, etc.) is in
-`/usr/local/share/doc/postWolf-mqc/README-mqc-cli.md`.
+`/usr/local/share/doc/postWolf-mqc/README-detail-design-spec.md`.
 
 ## Uninstall
 

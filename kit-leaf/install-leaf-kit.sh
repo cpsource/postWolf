@@ -99,8 +99,8 @@ install -m 755 "$HERE/sbin/setup-recert-crond.sh" \
 install -d /usr/local/share/doc/postWolf-leaf
 install -m 644 "$HERE/doc/README.md" \
     /usr/local/share/doc/postWolf-leaf/README.md
-install -m 644 "$HERE/doc/README-leaf-registration.md" \
-    /usr/local/share/doc/postWolf-leaf/README-leaf-registration.md
+install -m 644 "$HERE/doc/README-detail-design-spec.md" \
+    /usr/local/share/doc/postWolf-leaf/README-detail-design-spec.md
 
 # --- 5. Verify ldd -----------------------------------------------------
 missing_libs=0
@@ -156,5 +156,5 @@ need CA credentials; that's the postWolf-ca-kit, not this one.
 
 Full docs:
   /usr/local/share/doc/postWolf-leaf/README.md
-  /usr/local/share/doc/postWolf-leaf/README-leaf-registration.md
+  /usr/local/share/doc/postWolf-leaf/README-detail-design-spec.md
 EOF
