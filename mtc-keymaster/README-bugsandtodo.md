@@ -3118,6 +3118,70 @@ could ever produce the same regression.
 
 ---
 
+### 61. `register-ca.sh` DNS-poll loop falls through instead of waiting
+
+**Severity:** Low — UX wart, not a security bug.  Hit during the
+P0 #9b CA-branch live-test on 2026-05-06 (frflashy.com fresh CA
+enrollment).
+
+**Symptom.**  Each "polling DNS via 8.8.8.8 (up to 5 min)" cycle
+should run 30 iterations × 10s sleep = 5 minutes per cycle.
+Instead the loop completes in under a second and immediately
+re-prompts "Waited 5 min. Wait another 5? [Y/n/q]".  The
+operator sees the same prompt over and over, no actual polling
+happening.
+
+**Why DNS isn't seen.**  The TXT record itself was correctly
+published and DNSSEC-validated — running the exact dig command
+from the script by hand returns the expected
+`v=MQC1; role=ca; alg=ML-DSA-87; kh=sha3-256:<hex>` value.  So
+the failure is internal to `poll_dns_cycle` — either:
+
+1. The 30-iteration loop is exiting early (e.g.,
+   `[ "$i" -lt "$POLL_ROUNDS" ]` evaluates false from the
+   start, or `set -eu` interaction with a transient failure
+   inside the loop body terminates the function).
+2. The `sleep "$POLL_INTERVAL"` call is a no-op for some
+   reason (POLL_INTERVAL=10 is hardcoded; `sleep` is
+   /bin/sleep on dash; should always wait).
+3. The `grep -F "kh=sha3-256:$EXPECTED_FP"` is matching
+   something prematurely and `[ -n "$got" ]` returns true on
+   the first iteration, causing `return 0` from
+   `poll_dns_cycle` — but the outer caller would then proceed
+   to bootstrap_ca, not re-prompt.  So this is unlikely.
+
+**Reproduction:** run `register-ca.sh --domain <test-domain>
+--server <host>:8445` on a box with the TXT already published.
+Hit `y` at the proceed prompt.  Loop spins through all 30
+"iterations" instantly and re-prompts.
+
+**Workaround (today).**  At the "Wait another 5?" prompt, type
+**`n`** instead of `y`.  The script falls through to the
+`bootstrap_ca` invocation, which succeeds because the DNS is
+correctly published (the polling was always optional — it's
+just an operator-friendly progress indicator while DNS
+propagates).
+
+**Investigation notes for next session.**
+
+- Add `set -x` around `poll_dns_cycle` to trace each iteration.
+- Confirm `[ "$i" -lt "$POLL_ROUNDS" ]` evaluates correctly under
+  `dash` (the script's `#!/bin/sh` is dash on Ubuntu).
+- Time the first `sleep "$POLL_INTERVAL"` call — if it returns
+  instantly, the dash-vs-bash variable scoping is suspect.
+- Check whether the `2>/dev/null | tr | grep || true` pipeline's
+  failure-trapping is interacting with `set -eu`.
+- Possibly rewrite the loop body with explicit retval checks
+  instead of relying on shell's `|| true` semantics.
+
+**Files:**
+
+- `mtc-keymaster/tools/sh/register-ca.sh::poll_dns_cycle`
+  (around the `while [ "$i" -lt "$POLL_ROUNDS" ]` loop and the
+  `sleep "$POLL_INTERVAL"` line).
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
