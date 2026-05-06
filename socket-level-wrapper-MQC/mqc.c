@@ -145,6 +145,24 @@ mqc_conn_t *mqc_accept_auto(mqc_ctx_t *ctx, int listen_fd)
     }
     json_object_put(first_obj);
 
+    /* Gemini MQC-01 guard: an operator who set ctx->encrypt_identity=1
+     * has opted out of leaking the server's cert_index in plaintext.
+     * mqc_accept_auto historically dispatched on the client's stated
+     * mode without consulting that flag, so a clear-mode probe would
+     * still get a clear-mode ServerHello (cert_index in cleartext)
+     * even though the operator wanted encrypted-only.  Refuse here:
+     * clear-mode dispatch is incompatible with encrypt_identity=1,
+     * and this fail-loud abort surfaces the operator misconfiguration
+     * instead of silently honoring it. */
+    if (!encrypted && ctx->encrypt_identity) {
+        MQC_SECURITY("auto-detect: REQUIRE_ENCRYPTED_REJECT — client "
+                     "asked for mode=clear but ctx->encrypt_identity=1; "
+                     "use mqc_accept (not mqc_accept_auto) for "
+                     "encrypted-only listeners");
+        mqc_ratelimit_fail_record(client_ip);
+        close(fd); return NULL;
+    }
+
     return encrypted
          ? mqc_accept_encrypted_continue(ctx, fd, client_ip,
                                          first_frame, first_frame_len)

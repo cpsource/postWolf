@@ -148,6 +148,15 @@ field:
 No flag needed on the server. The client chooses the mode; the server
 adapts automatically.
 
+**Privacy trade-off (Gemini MQC-01):** `mqc_accept_auto` serves both
+modes by client choice.  Operators who require **server-identity
+privacy** (no cert_index in plaintext on the wire) MUST call
+`mqc_accept` with `cfg.encrypt_identity = 1`, NOT `mqc_accept_auto`.
+As a fail-loud guard, `mqc_accept_auto` rejects a clear-mode
+ClientHello with `REQUIRE_ENCRYPTED_REJECT` when the listener context
+has `encrypt_identity = 1`, so an accidental misconfiguration aborts
+visibly instead of silently serving cleartext-identity handshakes.
+
 ## Wire Format
 
 ### Handshake Messages (JSON over TCP)

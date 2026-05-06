@@ -2925,6 +2925,67 @@ file one if they want (2) later.
 
 ---
 
+### 59. Pre-auth client puzzle before ML-KEM/ML-DSA on the MQC handshake (Gemini MQC-02 defense-in-depth)
+
+**Severity:** Low — defense-in-depth.  Layered defenses are
+already present (per-IP + per-cert rate limit, mqc-max-children
+fork backpressure, mqc-handshake-total-sec wall-clock budget,
+pre-crypto length filter).  This TODO closes the residual gap:
+one TCP connection per IP-bucket budget still buys exactly one
+ML-KEM decap + one ML-DSA verify, and a coordinated source can
+trade IPs for crypto cycles even with all rate limits intact.
+
+**Source:** `socket-level-wrapper-MQC/README-gemini.txt` MQC-02
+("DoS via Asymmetric Work").
+
+**Why it matters.**  ML-KEM-768 decapsulation and ML-DSA-87
+signature verification are the most expensive operations the
+server runs in the entire handshake.  Today the only thing
+between an unauthenticated TCP connection and those primitives
+is a strict-JSON parse + length filter — both microsecond-scale.
+A pre-auth gate that costs the *client* milliseconds before
+the server runs any asymmetric crypto changes the economics
+of a flood: an attacker has to do real CPU work per connection
+attempt, not just open a socket.
+
+**Recommended approach:**
+
+1. **HMAC-cookie style** (lighter to implement, weaker against
+   distributed flooders).  Server picks a per-process secret K,
+   issues `cookie = HMAC(K, client_ip || timestamp_minute)` in
+   a synthetic first-frame ack, requires the client to echo it
+   in ClientHello.  Cost: one HMAC-SHA256 per accept; eats one
+   round trip on first contact.  Closes the asymmetric-crypto
+   amplification but not the per-connect TCP cost.
+2. **Hashcash / proof-of-work** (heavier, scales further).
+   Server publishes a difficulty target via the bootstrap
+   port (or in the ack frame); client must produce a nonce
+   such that `H(challenge || nonce)` has N leading zero bits.
+   Tunable per-load.
+
+Recommendation: ship (1) first.  The HMAC-cookie cost on the
+server is < 1 µs; on the client it's free; it eliminates the
+"one TCP socket = one ML-KEM decap" amplification.  PoW is a
+separate scope decision once we have telemetry on whether (1)
+is sufficient under real load.
+
+**Files (when implemented):**
+
+- `socket-level-wrapper-MQC/mqc.c` — wire it into
+  `mqc_accept_auto` / `mqc_accept_clear` / `mqc_accept_encrypted`
+  prologues (BEFORE the first ML-KEM call).
+- `socket-level-wrapper-MQC/README-MQC-specifications.md` — bump
+  protocol-version (per CLAUDE.md "MQC wire-format invariants
+  are NOT operator-tunable" — this IS a wire change requiring a
+  flag-day cutover) and document the new ack frame.
+- `socket-level-wrapper-MQC/config.h` + `mqc_common.c` runtime
+  cfg — knob to disable the puzzle for trusted closed networks
+  (default ON).
+
+**Status:** OPEN.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
