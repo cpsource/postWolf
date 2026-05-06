@@ -35,7 +35,7 @@ Files that intentionally stay separate:
 `mtc_server` runs as a single multithreaded systemd-managed
 process (`mtc-ca.service`).  At startup it:
 
-1. Loads ML-DSA-87 keypair from `~/.mtc-ca-data/ca_key.der`.
+1. Loads ML-DSA-87 keypair from `~/.mtc-ca-data/ca_key_mldsa.der`.
    This single key is used both to issue certs (CA role) and to
    cosign Merkle subtree roots (cosigner role).  Same key, two
    roles.
@@ -82,16 +82,17 @@ Buffer cap: `HTTP_BUF_SZ` (~64 KB) holds headers + body for a
 single request.  `Content-Length` over 1 MB is rejected with
 `413`.
 
-Rate-limit classes referenced below:
+Rate-limit classes referenced below (defaults from
+`mtc_ratelimit.c`; the per-IP buckets are `{per-min, per-hr}`):
 
 | Class | Default bucket |
 |---|---|
-| `RL_READ` | 60 / min per IP |
-| `RL_BOOTSTRAP` | 3 / min per IP (8445 enroll) |
+| `RL_READ` | 60 / min, 600 / hr per IP |
 | `RL_NONCE_LEAF` | 10 / min, 100 / hr per IP |
 | `RL_NONCE_CA` | 3 / min, 10 / hr per IP |
-| `RL_ENROLL` | per IP, see `mtc_ratelimit.c` |
-| `RL_REVOKE` | per IP, see `mtc_ratelimit.c` |
+| `RL_ENROLL` | 3 / min, 10 / hr per IP |
+| `RL_REVOKE` | 2 / min, 100 / hr per IP |
+| `RL_BOOTSTRAP` | 3 / min, 30 / hr per IP (port 8445 enrollment) |
 
 ### 3.1 GET endpoints (read-only, public)
 
@@ -101,17 +102,29 @@ Server identity banner.
 Response (`200 application/json`):
 ```json
 {
-  "service": "MTC CA/Log Server",
-  "ca_name": "MTC-CA-C",
-  "log_id":  "32473.2",
-  "log_size": 79
+  "server":    "MTC CA/Log Server (C)",
+  "version":   "0.1.0",
+  "draft":     "draft-ietf-plants-merkle-tree-certs-02",
+  "ca_name":   "MTC-CA-C",
+  "log_id":    "32473.2",
+  "tree_size": 79
 }
 ```
 
 #### `GET /log`
 Current log state.
 
-Response: `{"tree_size": <int>, "root_hash": "<hex>"}`.
+Response:
+```json
+{
+  "log_id":      "32473.2",
+  "ca_name":     "MTC-CA-C",
+  "cosigner_id": "32473.2.ca",
+  "tree_size":   <int>,
+  "root_hash":   "<hex>",
+  "landmarks":   [<int>, ...]
+}
+```
 
 #### `GET /log/entry/<index>`
 Fetch a single log entry.
@@ -123,52 +136,97 @@ Response: `{"index": N, "entry_type": 1, "tbs_data": {...}, "serialized_hex": ".
 #### `GET /log/proof/<index>`
 Inclusion proof for a single leaf against the current root.
 
-Response: `{"index": N, "audit_path": ["<hex>", ...], "tree_size": M, "root_hash": "<hex>"}`.
+Response:
+```json
+{
+  "index":      N,
+  "entry_hash": "<hex>",
+  "subtree":    {"start": 0, "end": <tree_size>},
+  "root_hash":  "<hex>",
+  "proof":      ["<hex>", ...],
+  "valid":      true
+}
+```
 
 #### `GET /log/checkpoint`
-Cosigned tree-root checkpoint.
+Latest tree-root snapshot.
 
 Response:
 ```json
 {
-  "log_id":     "32473.2",
-  "tree_size":  N,
-  "root_hash":  "<hex>",
-  "ts":         <unix-double>,
-  "cosignatures": [
-    {
-      "cosigner_id": "<log_id>.ca",
-      "subtree_start": 0,
-      "subtree_end":   M,
-      "subtree_hash":  "<hex>",
-      "signature":     "<9254-hex-char ML-DSA-87 sig>",
-      "algorithm":     "ML-DSA-87"
-    }
+  "log_id":    "32473.2",
+  "tree_size": N,
+  "root_hash": "<hex>",
+  "timestamp": <unix-double>
+}
+```
+
+Cosignatures are NOT carried in the checkpoint object itself —
+they live inside each `standalone_certificate` (see §8.3) and
+sign the cert's specific power-of-2 subtree root rather than the
+current full-tree root.  Verifiers reconstruct
+"my cert is in this log" by checking the inclusion proof against
+the cosigned subtree root, then optionally cross-checking the
+checkpoint's `root_hash` to confirm the live tree extends that
+subtree.
+
+#### `GET /log/consistency?old=N&new=M`
+Consistency proof between two tree sizes.  `old <= new <= tree_size`.
+
+Response:
+```json
+{
+  "old_size": N,
+  "new_size": M,
+  "old_root": "<hex>",
+  "new_root": "<hex>",
+  "proof":    ["<hex>", ...]
+}
+```
+
+#### `GET /certificate/search?q=<subject>`
+Find live certs whose subject contains the query string
+(case-insensitive substring match).  `400` if `q` is missing or
+empty.
+
+Response:
+```json
+{
+  "query":   "<the q parameter, echoed>",
+  "results": [
+    {"index": N, "subject": "..."},
+    ...
   ]
 }
 ```
 
-#### `GET /log/consistency?from=N&to=M`
-Consistency proof between two tree sizes.  `from <= to <= tree_size`.
-
-Response: `{"from": N, "to": M, "proof": ["<hex>", ...]}`.
-
-#### `GET /certificate/search?q=<subject>`
-Find live certs by subject string.
-
-Response: `{"matches": [<cert_index>, ...]}`.
-
 #### `GET /certificate/<index>`
-Fetch the full standalone-certificate JSON for a given log index.
-This is the canonical wire representation of an MTC cert — see §8.
+Fetch the wire-form cert wrapper at a given log index — see §8.3
+for the full shape.
 
-Response (`200`): the full `{"index": N, "standalone_certificate": {...}, "checkpoint": {...}}` object.
-`404` if the index is unknown or sparse-deleted.
+Response (`200`): `{"status": "ok", "index": N, "standalone_certificate": {...}, "checkpoint": {...}}`.
+`404 certificate not found` if the index is unknown or
+sparse-deleted.
 
 #### `GET /trust-anchors`
-Server's trust-anchor metadata (log_id, cosigner pubkey).
+Trust-anchor list.  One `standalone` entry for the log itself,
+plus one `landmark` entry per cached subtree size.
 
-Response: `{"log_id": "...", "cosigner_pubkey_pem": "..."}`.
+Response:
+```json
+{
+  "trust_anchors": [
+    {"id": "<log_id>",    "type": "standalone"},
+    {"id": "<log_id>.0",  "type": "landmark", "tree_size": 1},
+    {"id": "<log_id>.1",  "type": "landmark", "tree_size": 2},
+    {"id": "<log_id>.2",  "type": "landmark", "tree_size": 4},
+    ...
+  ]
+}
+```
+
+The cosigner public key itself is served at `GET /ca/public-key`
+(below), not on this endpoint.
 
 #### `GET /revoked`
 Full revocation list.
@@ -179,7 +237,8 @@ Response: `{"revoked": [<cert_index>, ...]}`.
 Single-cert revocation status.  Used by `mqc_peer_verify` for
 mandatory revocation checks.
 
-Response: `{"revoked": false}` or `{"revoked": true, "reason": "..."}`.
+Response: `{"cert_index": N, "revoked": <bool>}`.  No `reason`
+field on the GET path — that's only emitted by `POST /revoke`.
 
 #### `GET /ca/public-key`
 The CA-cosigner ML-DSA-87 public key in PEM form.
@@ -187,6 +246,9 @@ The CA-cosigner ML-DSA-87 public key in PEM form.
 Response:
 ```json
 {
+  "ca_name":        "MTC-CA-C",
+  "cosigner_id":    "<log_id>.ca",
+  "algorithm":      "ML-DSA-87",
   "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n"
 }
 ```
@@ -211,10 +273,12 @@ Encrypted Client Hello config blob (base64).  Used by the SLC
 #### `POST /enrollment/nonce`
 Mint a new enrollment nonce.
 
-**Auth:** none on port 8444; **MQC peer cert** required on port
-8446 for leaf nonces (caller must be a CA and the CA must
-authorize this domain).  Per-IP rate-limited via `RL_NONCE_LEAF`
-or `RL_NONCE_CA`.
+**Auth:** none on either port — the nonce is the auth token, not
+the request.  The minted nonce binds `(domain, fingerprint)` and
+is useless without the matching private key during enrollment.
+Per-IP rate-limited via `RL_NONCE_LEAF` or `RL_NONCE_CA`; for
+leaf nonces, the server additionally requires that a registered
+CA exists for the domain (else `403 no registered CA`).
 
 Request (CA nonce, default):
 ```json
@@ -277,21 +341,20 @@ Removed in phase-23.  Always returns `410 Gone — endpoint removed
 — use DH bootstrap port for enrollment`.
 
 #### `POST /renew-cert`
-Re-issue an expiring cert at a new log index.  MQC-authenticated
-on 8446.
+Re-issue an expiring cert at a new log index.  **MQC-only**
+(returns `403 /renew-cert requires MQC transport` on plain HTTP).
 
 Request:
 ```json
 {
   "new_public_key_pem": "-----BEGIN PUBLIC KEY-----\n...",
-  "validity_days":      90       // optional, default = source cert's window length
+  "validity_days":      90       // optional, default 90; bounds [1, 3650]
 }
 ```
 
-The caller's MQC peer cert identifies which existing cert is
-being renewed.  Server validates the caller still controls the
-subject, mints a new cert at the next free index, and returns
-the standalone_certificate.
+The caller's MQC peer `cert_index` identifies which existing
+cert is being renewed; the new cert inherits the old subject and
+algorithm.  Revoked certs are refused (`403`).
 
 Response: same shape as `GET /certificate/<index>` but for the
 new index.
@@ -370,9 +433,12 @@ Plaintext request:
 {"op": "ca_pubkey"}
 ```
 
-Plaintext response:
+Plaintext response (same shape as `GET /ca/public-key` on 8444):
 ```json
 {
+  "ca_name":        "MTC-CA-C",
+  "cosigner_id":    "<log_id>.ca",
+  "algorithm":      "ML-DSA-87",
   "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n"
 }
 ```
@@ -429,20 +495,24 @@ enrollment proves possession via the issued nonce).
 
 #### Message 3 — client → server (AES-encrypted, length-prefixed)
 
-CA enrollment payload (no `enrollment_nonce`):
+CA enrollment payload (no `enrollment_nonce`; the server detects
+this is a CA by the presence of `ca_certificate_pem` inside
+`extensions`):
 ```json
 {
-  "subject":          "example.com-ca",
-  "public_key_pem":   "-----BEGIN PUBLIC KEY-----\n...",
-  "ca_certificate_pem": "-----BEGIN CERTIFICATE-----\n...",
-  "key_algorithm":    "ML-DSA-87",
-  "validity_days":    365,
-  "extensions":       {"is_ca": true},
-  "pop_signature":    "<hex>"        // ML-DSA-87 sig over MQC-CA-REGISTER|<domain>|<subject>|<spki_hash_hex>|<pop_nonce_hex>
+  "subject":        "example.com-ca",
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...",
+  "key_algorithm":  "ML-DSA-87",
+  "validity_days":  365,
+  "extensions": {
+    "ca_certificate_pem": "-----BEGIN CERTIFICATE-----\n..."
+  },
+  "pop_signature": "<hex>"   // ML-DSA-87 sig over MQC-CA-REGISTER|<domain>|<subject>|<spki_hash_hex>|<pop_nonce_hex>
 }
 ```
 
-Leaf enrollment payload (`enrollment_nonce` required):
+Leaf enrollment payload (`enrollment_nonce` required; no
+`ca_certificate_pem` in extensions):
 ```json
 {
   "subject":          "example.com",
@@ -450,11 +520,10 @@ Leaf enrollment payload (`enrollment_nonce` required):
   "key_algorithm":    "ML-DSA-87",
   "validity_days":    90,
   "enrollment_nonce": "<64-hex>",
-  "label":            "alice"        // optional, mirrors the label baked into the reservation
+  "label":            "alice",       // optional; mirrors the label baked into the reservation
+  "extensions":       { ... }         // optional arbitrary metadata
 }
 ```
-
-Both forms support optional `extensions` for arbitrary metadata.
 
 Server-side validation depending on the path:
 
@@ -526,11 +595,21 @@ shapes.  The MQC peer's `cert_index` is exposed to handlers via
 
 ### 5.1 MQC-only / MQC-preferred endpoints
 
-| Endpoint | Behavior on 8444 | Behavior on 8446 |
+| Endpoint | 8444 (TLS HTTP) | 8446 (MQC) |
 |---|---|---|
-| `POST /enrollment/nonce` (leaf type) | works without identity gate (just rate-limited) | caller must be a `<domain>-ca` cert; nonces issue under that CA's authority |
-| `POST /cancel-nonce` | `403` on plain HTTP | requires MQC identity; only the issuing CA can cancel its own reservations |
-| `POST /renew-cert` | works (signature-authenticated) | works; MQC peer cert serves as identity |
+| `POST /enrollment/nonce` (any type) | works (rate-limited only) | works (same code path) |
+| `POST /cancel-nonce` | `403` requires MQC | works; MQC peer must be the CA that issued the reservation |
+| `POST /renew-cert` | `403` requires MQC | works; MQC peer cert is the cert being renewed |
+| `POST /revoke` | works (request body carries CA-key signature) | works (same) |
+
+`POST /enrollment/nonce` is intentionally not MQC-gated on
+either port — the nonce-itself is the auth token: it binds
+(domain, fingerprint) and is meaningless to anyone who can't
+present the matching private key during the subsequent
+DH-bootstrap enrollment.  An attacker who can hit the port can
+mint nonces but can't enroll under them (no key match).  The
+discovery / DoS surface is bounded by `RL_NONCE_LEAF` /
+`RL_NONCE_CA`.
 
 Tools that always speak MQC (port 8446):
 
@@ -800,34 +879,60 @@ time-compare.
 Used both for `serialized` storage and for SHA-256 leaf-hash
 input: `leaf_hash = SHA-256(0x00 || serialized)`.
 
-### 8.3 Standalone certificate
+### 8.3 Cert wire object (what `GET /certificate/<index>` returns)
+
+The cert as persisted in `mtc_certificates` and served to clients
+is a wrapper around the standalone-certificate proper:
 
 ```json
 {
-  "tbs_entry":      { ... },
-  "log_id":         "32473.2",
-  "log_index":      <int>,
-  "inclusion_proof": ["<hex>", ...],
-  "tree_size":      <int>,
+  "status":                 "ok",
+  "index":                  <int>,
+  "standalone_certificate": { ... see below ... },
   "checkpoint": {
-    "log_id":     "32473.2",
-    "tree_size":  <int>,
-    "root_hash":  "<hex>",
-    "ts":         <unix-double>
-  },
+    "log_id":    "<log_id>",
+    "tree_size": <int>,
+    "root_hash": "<hex>",
+    "timestamp": <unix-double>
+  }
+}
+```
+
+The `standalone_certificate` itself:
+
+```json
+{
+  "index":           <int>,
+  "tbs_entry":       { ... see §8.1 ... },
+  "inclusion_proof": ["<hex>", ...],
+  "subtree_start":   <int>,
+  "subtree_end":     <int>,
+  "subtree_hash":    "<hex>",
   "cosignatures": [
     {
-      "cosigner_id":   "<log_id>.ca",
-      "subtree_start": 0,
-      "subtree_end":   <power-of-2>,
-      "subtree_hash":  "<hex>",
-      "signature":     "<9254-hex-char ML-DSA-87 sig>",
-      "algorithm":     "ML-DSA-87"
+      "cosigner_id":  "<log_id>.ca",
+      "log_id":       "<log_id>",
+      "start":        <int>,
+      "end":          <int>,
+      "subtree_hash": "<hex>",
+      "signature":    "<9254-hex-char ML-DSA-87 sig>",
+      "algorithm":    "ML-DSA-87"
     }
   ],
   "trust_anchor_id": "<log_id>"
 }
 ```
+
+Notes:
+- `subtree_start` / `subtree_end` are duplicated inside each
+  `cosignatures[]` element as `start` / `end` — the cosignature
+  field set is independent of the outer cert's because it has to
+  be self-contained for verification.
+- `index` appears at both the top wrapper level and inside the
+  standalone certificate; both refer to the same log index.
+- The outer `checkpoint` is captured at issue time and reflects
+  the live root that included this leaf; it's frozen alongside
+  the cert.
 
 The cosigner signature payload (per `mtc_store.c::mtc_store_cosign`):
 
@@ -858,9 +963,19 @@ Signed by `wc_dilithium_sign_ctx_msg(MTC_BOOTSTRAP_LABEL, 16, ...)`.
 
 ### 8.5 Strict JSON parsing
 
-Every handshake / handler that parses untrusted JSON applies the
-same strict-mode pipeline (see `socket-level-wrapper-MQC/mqc_common.c`
-and `mtc_http.c`):
+The strict-mode pipeline below applies to MQC handshake parsing
+(`socket-level-wrapper-MQC/mqc_common.c`) and to the bootstrap
+port's enrollment-response verifier (`bootstrap_leaf` /
+`bootstrap_ca` client side).  The HTTP-API handlers in
+`mtc_http.c` use plain `json_tokener_parse` for POST request
+bodies — duplicate keys + unknown keys are NOT systematically
+rejected on the public REST surface.  This is acceptable for
+HTTP request bodies because each handler explicitly extracts the
+fields it cares about and ignores the rest, but it does mean the
+HTTP path lacks the depth-of-defense against duplicate-key
+smuggling that the MQC handshake has.
+
+The strict pipeline (where it applies):
 
 1. `json_tokener_set_flags(tok, JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8)`
 2. Length-prefixed framing — no buffer rolling, no implicit
@@ -874,7 +989,9 @@ and `mtc_http.c`):
    ML-DSA invocation).
 
 Closes Gemini MQC-03 (ERANGE desync) and the duplicate-key
-smuggling class flagged by every reviewer pass.
+smuggling class flagged by every reviewer pass — within the
+MQC handshake.  Hardening the HTTP path the same way is open
+follow-up work.
 
 ---
 
