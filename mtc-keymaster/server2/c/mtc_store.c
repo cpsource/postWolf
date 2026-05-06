@@ -495,8 +495,33 @@ int mtc_store_check_invariants(MtcStore *store)
 int mtc_store_reload(MtcStore *store)
 {
     int i;
+    int pre_size, pre_cert_count;
 
     if (!store) return -1;
+
+    /* TODO #60 (HIGH): refresh the DB connection BEFORE clearing the
+     * in-memory state.  Neon idle-closes connections after a few
+     * minutes; if SIGHUP fires on a stale connection,
+     * mtc_db_load_entries returns -1, mtc_store_load silently treats
+     * that as 0 rows, and we'd commit an empty (size=1) store on top
+     * of a healthy (size=N) one.  mtc_db_ensure_connected pings with
+     * SELECT 1 and reconnects on failure; if THAT fails too, we
+     * refuse to touch the in-memory state and let the caller (reload
+     * thread) retry on the next signal. */
+    if (store->use_db) {
+        if (mtc_db_ensure_connected(&store->db) != 0) {
+            fprintf(stderr,
+                    "[store] reload aborted: cannot reach DB; "
+                    "in-memory state preserved\n");
+            return -1;
+        }
+    }
+
+    /* TODO #60: snapshot pre-reload sizes for the regression guard
+     * below.  If the load comes back near-empty when we just had a
+     * populated tree, refuse to commit the new state. */
+    pre_size       = store->tree.size;
+    pre_cert_count = store->cert_count;
 
     /* Drop tree contents and re-init.  mtc_tree_free zeroes the
      * struct, so the subsequent re-init / load can repopulate from
@@ -536,6 +561,24 @@ int mtc_store_reload(MtcStore *store)
     if (store->tree.size == 0) {
         uint8_t null_entry = 0x00;
         mtc_tree_append(&store->tree, &null_entry, 1);
+    }
+
+    /* TODO #60 regression guard: a healthy pre-reload state must
+     * not collapse to genesis-only post-reload.  If it does, the DB
+     * load almost certainly returned 0 rows due to a transient
+     * failure that mtc_db_ensure_connected did not catch.  Log
+     * loud and return -1 so the failure is at least visible —
+     * recovery is `systemctl restart mtc-ca` (the in-memory state
+     * is now broken until then; a future fix could snapshot/swap
+     * to roll back automatically). */
+    if (pre_size > 1 && store->tree.size <= 1) {
+        fprintf(stderr,
+                "[store] RELOAD REGRESSION: tree.size %d -> %d, "
+                "cert_count %d -> %d.  In-memory state is corrupt; "
+                "restart mtc-ca.service to recover (TODO #60).\n",
+                pre_size, store->tree.size,
+                pre_cert_count, store->cert_count);
+        return -1;
     }
 
     /* Re-check the cert/leaf invariant after reload — silent

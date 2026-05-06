@@ -3064,6 +3064,60 @@ is sufficient under real load.
 
 ---
 
+### 60. SIGHUP reload silently empties the in-memory store on a stale Neon connection
+
+**Severity:** HIGH — observed in production during the P0 #9b
+CA-branch live-test on 2026-05-06.  After `bootstrap_ca` issued a
+new cert at index 78, the bootstrap child raised SIGHUP to the
+parent (TODO #56 fix).  The reload thread called
+`mtc_store_reload`, which clears the in-memory tree/cert/landmark
+state and then calls `mtc_store_load` to repopulate from the DB.
+Neon had idle-closed the parent's TCP connection in the
+intervening time; `mtc_db_load_entries` returned -1 with
+`SSL connection has been closed unexpectedly`; `mtc_store_load`
+silently treated that as "0 rows" and returned 0; the genesis
+null-entry guard added a single entry; the in-memory store was
+now at `tree.size=1, cert_count=0` instead of 79 / 78.  Every
+subsequent MQC handshake failed because the server couldn't
+fetch its own certs.
+
+**Reproduction:** any time a child raises SIGHUP after Neon has
+idle-closed the parent's connection (typically a few minutes of
+idleness).  Frequency: every cross-host first-enrollment seen
+on 2026-05-06.
+
+**Recovery (today):** `sudo systemctl restart mtc-ca.service`
+re-runs `mtc_store_init` against a fresh Neon connection.
+
+**Fix candidates (any one closes the bug):**
+
+1. **Refresh the DB connection BEFORE clearing in-memory state.**
+   Call `mtc_db_ensure_connected(&store->db)` at the top of
+   `mtc_store_reload` (it pings with `SELECT 1` and reconnects on
+   failure).  If reconnect fails, abort the reload before
+   touching any state and return -1.  Smallest, safest patch.
+2. **Defensive regression guard.**  Snapshot pre-reload
+   `tree.size` and `cert_count`; after the load, if pre>1 and
+   post<=1 (genesis-only), log a loud `RELOAD REGRESSION` and
+   return -1.  At least the failure mode becomes loud instead of
+   silent.
+3. **Atomic snapshot/swap.**  Build the new state in a parallel
+   `MtcStore` and atomic-pointer-swap on success.  Cleanest but
+   intrusive — touches every reader on the parent thread.
+
+Recommendation: ship (1) + (2) together.  (1) prevents the
+common case (Neon idle-close), (2) catches anything else that
+could ever produce the same regression.
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_store.c::mtc_store_reload` —
+  the destructive-then-load flow.
+- `mtc-keymaster/server2/c/mtc_db.c::mtc_db_ensure_connected` —
+  already exists, just isn't called from the reload path.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
