@@ -326,6 +326,65 @@ static int read_all(int fd, unsigned char *buf, unsigned int len)
 }
 
 /******************************************************************************
+ * Function:    bootstrap_path_allowed  (static)
+ *
+ * Description:
+ *   Allowlist gate for the {"op":"http_get",...} bootstrap proxy
+ *   (TODO #67 / ChatGPT review item #8).  Only the read-only API
+ *   surface that bootstrap clients legitimately need over the
+ *   pre-trust-anchor channel is allowed; anything else (including a
+ *   hypothetical future POST endpoint accidentally added to
+ *   dispatch_get) is refused before reaching dispatch_get_capture.
+ *
+ *   The allowlist intentionally tracks what dispatch_get itself
+ *   exposes.  When a new public GET endpoint is added there, this
+ *   list MUST be extended too — otherwise bootstrap clients lose
+ *   visibility on the new endpoint.
+ ******************************************************************************/
+static int bootstrap_path_allowed(const char *path)
+{
+    if (!path || path[0] != '/')
+        return 0;
+
+    /* Exact-match endpoints. */
+    static const char *const exact[] = {
+        "/log",
+        "/log/checkpoint",
+        "/trust-anchors",
+        "/revoked",
+        "/ca/public-key",
+        "/ech/configs",
+        NULL
+    };
+    for (size_t i = 0; exact[i]; i++) {
+        if (strcmp(path, exact[i]) == 0)
+            return 1;
+    }
+
+    /* Prefix-match endpoints (require something non-empty after
+     * the prefix so e.g. "/certificate/" alone doesn't match — the
+     * dispatch_get layer would 400 it anyway, but rejecting earlier
+     * keeps the failure surface small). */
+    static const char *const prefix[] = {
+        "/log/entry/",
+        "/log/proof/",
+        "/log/consistency",      /* ?from=&to= query string */
+        "/certificate/search",   /* ?subject=...           */
+        "/certificate/",
+        "/revoked/",
+        "/public-key/",
+        NULL
+    };
+    for (size_t i = 0; prefix[i]; i++) {
+        size_t n = strlen(prefix[i]);
+        if (strncmp(path, prefix[i], n) == 0)
+            return 1;
+    }
+
+    return 0;
+}
+
+/******************************************************************************
  * Function:    send_http_get_proxy  (static)
  *
  * Description:
@@ -335,6 +394,8 @@ static int read_all(int fd, unsigned char *buf, unsigned int len)
  *     {"status":<code>,"body":<json_body>}
  *   Used to serve /certificate/<n>, /revoked/<n>, /public-key/<n>,
  *   /log/entry/<n>, etc. over the bootstrap port without TLS.
+ *
+ *   Path is gated by bootstrap_path_allowed (TODO #67 allowlist).
  ******************************************************************************/
 static int send_http_get_proxy(int fd, MtcStore *store, const char *path)
 {
@@ -344,8 +405,8 @@ static int send_http_get_proxy(int fd, MtcStore *store, const char *path)
     const char *json_str;
     int rc = -1;
 
-    if (!path || path[0] != '/') {
-        LOG_WARN("bootstrap: http_get rejected (path='%s')",
+    if (!bootstrap_path_allowed(path)) {
+        LOG_WARN("bootstrap: http_get rejected (path='%s', not in allowlist)",
                  path ? path : "(null)");
         return -1;
     }

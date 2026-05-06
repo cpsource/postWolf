@@ -3563,38 +3563,43 @@ Verified on factsorlie:
 
 ---
 
-### 67. `http_get` bootstrap proxy lacks endpoint allowlist
+### 67. `http_get` bootstrap proxy lacks endpoint allowlist — DONE 2026-05-06
 
-**Severity:** Low — defense-in-depth.  Filed 2026-05-06.
+**Severity:** Low — defense-in-depth.  Filed 2026-05-06,
+closed same day.
 
-**Current state:** `mtc_bootstrap.c::send_http_get_proxy` runs
-any `{"op":"http_get","path":...}` request through
-`dispatch_get`.  Today every `dispatch_get` endpoint is
-read-only and intended for public consumption, so the proxy
-exposes no privilege.  But there's no guard against a
-hypothetical future POST endpoint being accidentally added to
-`dispatch_get`.
-
-**Fix:** explicit allowlist in the proxy:
+**What landed:** new `bootstrap_path_allowed` helper in
+`mtc_bootstrap.c`; `send_http_get_proxy` consults it before
+calling `mtc_http_dispatch_get_capture`.  Allowlist mirrors
+`dispatch_get` exactly:
 
 ```
-/log/checkpoint        /log/consistency
-/log/entry/<n>         /log/proof/<n>
-/log
-/certificate/<n>       /certificate/search
-/public-key/<name>     /ca/public-key
-/revoked               /revoked/<n>
-/trust-anchors
-/ech/configs
+exact:  /log  /log/checkpoint  /trust-anchors  /revoked
+        /ca/public-key  /ech/configs
+prefix: /log/entry/  /log/proof/  /log/consistency
+        /certificate/search  /certificate/
+        /revoked/  /public-key/
 ```
 
-Anything else → 404.
+Anything else logs `bootstrap: http_get rejected (path='X',
+not in allowlist)` and the connection drops.  When a new
+public GET endpoint is added to `dispatch_get`, this list MUST
+be extended in lockstep.
+
+Verified live on factsorlie:
+- `/log/checkpoint` and `/certificate/0` proxied normally.
+- `/enrollment/nonce`, `/../../etc/passwd`, `/admin` all
+  rejected with no body returned.
+- `show-tpm --verify` (which exercises `/revoked`,
+  `/public-key/<name>`, and friends through the proxy)
+  still passes end-to-end.
 
 **Files:**
 
-- `mtc-keymaster/server2/c/mtc_bootstrap.c::send_http_get_proxy`.
+- `mtc-keymaster/server2/c/mtc_bootstrap.c::bootstrap_path_allowed`,
+  `send_http_get_proxy`.
 
-**Status:** OPEN.
+**Status:** DONE.  Local-only change, no protocol impact.
 
 ---
 

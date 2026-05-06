@@ -58,11 +58,12 @@ I reviewed the uploaded `s2.tar.gz`. Priority fixes:
      port 8444 stays closed entirely on this deployment).
    * See appendix item 7 below for verification trace.
 
-8. **`http_get` proxy on bootstrap exposes arbitrary GET dispatcher over plaintext**
+8. **`http_get` proxy on bootstrap exposes arbitrary GET dispatcher over plaintext** — **DONE 2026-05-06** (TODO #67)
 
-   * It rejects non-`/` paths, but otherwise proxies all GETs.
-   * Fix: allowlist only harmless endpoints needed by bootstrap clients.
-   * File: `mtc_bootstrap.c:324-339`.
+   * Static allowlist in `bootstrap_path_allowed`; mirrors
+     `dispatch_get` exactly (read-only public endpoints only).
+     Anything else dropped.
+   * See appendix item 8 below for the verification trace.
 
 ## P2 — correctness / hardening
 
@@ -298,26 +299,28 @@ Verified live: `ss -tlnp` shows only 8445 + 8446 bound; TCP
 connect to 8444 returns "Connection refused".  MQC end-to-end
 smoke (`issue_leaf_nonce`) still succeeds.
 
-### 8. `http_get` proxy on bootstrap exposes GET dispatcher — **BY DESIGN / LOW**
+### 8. `http_get` proxy on bootstrap exposes GET dispatcher — **DONE 2026-05-06** (TODO #67)
 
-`mtc_bootstrap.c::send_http_get_proxy` runs any incoming
-`{"op":"http_get","path":...}` through `dispatch_get`.  All of
-those endpoints ARE public-readable on port 8444 anyway
-(everything in `dispatch_get` is read-only and intended for
-public consumption — log entries, certs, revocation list, etc.).
-The proxy exists to give clients without a TLS trust anchor
-access to the same data.
+`mtc_bootstrap.c::send_http_get_proxy` now consults a static
+allowlist (`bootstrap_path_allowed`) before invoking
+`mtc_http_dispatch_get_capture`.  Mirrors `dispatch_get`
+exactly:
 
-ChatGPT suggests an explicit allowlist.  Marginal value: an
-attacker who compromises the bootstrap port and can speak the
-op format already has full read access.  The allowlist would
-catch a hypothetical future POST endpoint accidentally added to
-`dispatch_get`.
+```
+exact:  /log  /log/checkpoint  /trust-anchors  /revoked
+        /ca/public-key  /ech/configs
+prefix: /log/entry/  /log/proof/  /log/consistency
+        /certificate/search  /certificate/
+        /revoked/  /public-key/
+```
 
-**Recommendation:** open as TODO #67, LOW.  Defense-in-depth
-allowlist of `/log/*`, `/certificate/*`, `/public-key/*`,
-`/revoked/*`, `/ca/public-key`, `/ech/configs`, `/log/checkpoint`,
-`/trust-anchors`, `/log/consistency`, `/certificate/search`.
+Anything else logs `bootstrap: http_get rejected (path='X',
+not in allowlist)` and drops.  Verified live: `/log/checkpoint`
+and `/certificate/0` proxied normally; `/enrollment/nonce`,
+`/../../etc/passwd`, `/admin` all rejected with no body
+returned; `show-tpm --verify` (which legitimately uses the
+proxy for `/revoked` + `/public-key/<name>`) still passes
+end-to-end.
 
 ## P2
 
