@@ -3717,6 +3717,68 @@ spec § "CA X.509 wrapper" (new subsection of §4.3).
 
 ---
 
+### 72. `--no-pin` is honor-system only — no server-side enforcement on port 8445
+
+**Severity:** Low — defense-in-depth; no actual server-side
+exposure today.  Filed 2026-05-06.
+
+**Current state.**  `bootstrap_ca --no-pin` (the self-bootstrap
+escape that skips cosigner-fp + DH-transcript verification) is
+enforced **purely client-side** — the binary refuses to use it
+unless `--server` host is `localhost`, `127.0.0.1`, or `::1`.
+A patched / malicious client could lift that check and connect
+`--no-pin` to an arbitrary remote host.
+
+**Why this is currently low risk.**  A patched client skipping
+verification on a remote host only hurts itself: it ends up
+trusting whatever cosigner PEM the wire delivers, which a MitM
+could forge.  But the SERVER side validates everything per its
+existing rules (DNSSEC TXT for CA enrollment, nonce / fp
+matching for leaf), so the patched client can't enroll for a
+domain it doesn't control.  The patched client gets an
+authenticated cert it can't use for impersonation; the server
+isn't compromised; nobody else's enrollment is affected.
+
+So there's no actual exploit lever here today.  This entry
+exists so the asymmetry is documented and not later misread as
+a defended invariant.
+
+**Fix candidates** (defense-in-depth, none urgent):
+
+1. **Server-side localhost-only knob.**  Add an operator config
+   key `bootstrap-localhost-only=1` (default 0).  When set, the
+   bootstrap thread on 8445 refuses non-loopback `accept()`
+   peers.  Useful for deployments where every legitimate
+   bootstrap really IS loopback (single-box CA + leaf
+   coexisting; cross-host enrollment routed through MQC instead
+   of DH).
+2. **Mandatory transcript_sig regardless of client verification
+   state.**  No-op today (server already always sends the
+   signature); future-proofing for any path that might want to
+   skip it.
+3. **Separate bootstrap port for self-bootstrap vs cross-host.**
+   E.g., 8445 = cross-host (always signs, requires --cosigner-fp
+   on the client); a separate localhost-only socket for
+   self-bootstrap.  Probably overkill.
+
+Recommendation: ship (1) as an operator-tunable knob; default
+OFF so existing cross-host deployments keep working unchanged,
+ON for new deployments that want a tighter perimeter.
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_bootstrap.c::bootstrap_thread`
+  — add the localhost-only check before `accept()` returns.
+- `mtc-keymaster/read-config/config.server` +
+  `mtc-keymaster/read-config/myconf.aug` — register the new
+  `bootstrap-localhost-only` key.
+- `mtc-keymaster/server2/README-detail-design-spec.md` §4 —
+  document the knob.
+
+**Status:** OPEN.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
