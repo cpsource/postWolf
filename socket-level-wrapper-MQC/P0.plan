@@ -1,0 +1,281 @@
+# P0 — TODO #9b leaf branch: operator-paste cosigner-fp
+
+**Drafted:** 2026-05-06 (phase-23, HEAD `960ef4a69`).
+**Source:** `socket-level-wrapper-MQC/README-mqc-issues-summary.md` P0;
+            `mtc-keymaster/README-bugsandtodo.md` §9b;
+            prior design notes in
+            `~/.claude/plans/lets-plan-to-implement-snoopy-rivest.md`
+            (this plan supersedes that document's leaf-branch
+            section).
+**Scope:** close the leaf-side first-contact MitM on the cosigner
+key.  CA-bootstrap branch (`bootstrap_ca` + X.509-chain
+authentication) and the `show-tpm` first-contact surface
+remain open under TODO #9b as separate cutovers.
+
+---
+
+## 1. Problem
+
+Every first-contact MQC client runs `mqc_load_ca_pubkey`
+(`socket-level-wrapper-MQC/mqc_peer.c:1179`).  The cache at
+`~/.TPM/ca-cosigner.pem` is missing on first run, so the
+function fetches the cosigner PEM over plaintext port 8445
+(`bootstrap_fetch_ca_pubkey`), pins whatever it gets, and trusts
+it forever.  An on-path attacker on that fetch substitutes their
+own cosigner PEM; from that point on every Merkle proof and
+tree-root verification — no matter how hardened — verifies under
+the attacker's forged log.
+
+This is the deepest open trust gap in the system; it sits below
+all the wire hardening that landed across mqc-1 / mqc-2 /
+mqc-3 / mqc-4.
+
+The leaf-bootstrap path is the right wedge to close first: the
+operator already pastes a one-shot enrollment nonce out-of-band
+when running `bootstrap_leaf`, so a single extra hex string
+(the cosigner fingerprint) reaches the leaf operator on a
+channel the attacker doesn't control.
+
+---
+
+## 2. Wire-format change (single flag-day cutover)
+
+Two additions to the existing AES-GCM bootstrap response
+(`mtc_bootstrap.c`, leaf-enroll path):
+
+```
+encrypted JSON now includes:
+  ...existing fields (status, index, certificate, ...)
+  "ca_cosigner_pem":  "<full PEM>"
+  "ca_response_sig":  "<base64 ML-DSA-87 signature>"
+```
+
+`ca_response_sig` covers the canonical JSON of the response
+**with `ca_cosigner_pem` set and `ca_response_sig` set to ""**,
+signed under the cosigner's ML-DSA-87 private key.  Context
+label: `"mtc-bootstrap/v1\n\x00"` (16 bytes; matches the
+existing `mtc-subtree/v1\n\x00` style).
+
+Plus one addition to `/enrollment/nonce`'s response
+(`mtc_http.c`):
+
+```
+{
+  ...existing nonce fields...
+  "ca_cosigner_fp": "<sha256 hex of DER(SPKI)>"
+}
+```
+
+**Why DER, not PEM-text:** PEM text varies by line wrap /
+trailing newlines / header capitalization.  DER bytes are
+canonical.  `wc_PubKeyPemToDer` is already linked;
+`wc_Sha256Hash(der, der_len)` gives the stable fingerprint.
+
+This is a wire-format change → flag-day cutover per
+CLAUDE.md ("MQC wire-format invariants are NOT operator-
+tunable").  Single-deployment so flag-day is fine.
+
+---
+
+## 3. Code changes
+
+### 3.1 Server side
+
+**`mtc-keymaster/server2/c/mtc_bootstrap.c`** (response build,
+~line 1126–1208):
+
+1. Read cosigner PEM from the existing `mtc_store` (the same key
+   already used by `mtc_store_cosign`).  Add a small accessor
+   `mtc_store_get_cosigner_pem(store, char**, size_t*)` in
+   `mtc_store.{c,h}` if no equivalent exists.
+2. Build response JSON with `ca_cosigner_pem` set and
+   `ca_response_sig=""`.
+3. Serialize canonically (`JSON_C_TO_STRING_PLAIN`).
+4. `wc_dilithium_sign_ctx_msg(ctx="mtc-bootstrap/v1\n\x00", 16,
+   json, json_len, sig, &sig_len, &cosigner_dil, &rng)` — same
+   pattern as `mqc.c:727`.
+5. Replace `ca_response_sig` with the base64 of the signature.
+6. Re-serialize, AES-GCM-encrypt, send.
+
+**`mtc-keymaster/server2/c/mtc_http.c`** (`/enrollment/nonce`
+handler):
+
+1. Compute the cosigner SPKI DER once at server-start; cache it
+   on `mtc_store`.
+2. SHA-256 the DER → 64-hex `ca_cosigner_fp`.
+3. Add to the nonce response JSON.
+
+### 3.2 Server side — issue tool
+
+**`mtc-keymaster/tools/c/issue_leaf_nonce.c`** (lines ~615–688,
+the print + `nonce.txt` write):
+
+1. Extract `ca_cosigner_fp` from the response.
+2. Print on stdout alongside `Nonce:`:
+   ```
+   Nonce:        <64 hex>
+   Cosigner-fp:  sha256:<64 hex>
+   ```
+3. Append `cosigner_fp=sha256:<hex>` to `nonce.txt`.
+
+### 3.3 Client side — bootstrap
+
+**`mtc-keymaster/tools/c/bootstrap_leaf.c`**:
+
+1. Add CLI flag `--cosigner-fp <sha256-hex>` (required for fresh
+   enrollments; **no `--no-pin` escape hatch** — pin or fail).
+2. After AES-GCM decrypt of the bootstrap response (around lines
+   294–340):
+   1. Parse `ca_cosigner_pem` and `ca_response_sig`.  Both
+      missing ⇒ legacy server, refuse with a clear error.
+   2. `wc_PubKeyPemToDer(pem)` → DER → `wc_Sha256Hash(der,
+      der_len)` → 64-hex.  Reject if it differs from
+      `--cosigner-fp` (constant-time strcmp).
+   3. Re-serialize the response with `ca_response_sig=""`
+      (canonical), then `wc_dilithium_verify_ctx_msg(
+      ctx="mtc-bootstrap/v1\n\x00", 16, …)` against
+      `ca_cosigner_pem`.  Reject on mismatch.
+   4. On success, write `ca_cosigner_pem` to
+      `~/.TPM/<subject>[-<label>]/ca-cosigner.pem` (per-leaf,
+      alongside `certificate.json` / `private_key.pem`).
+
+### 3.4 Client side — MQC peer load
+
+**`socket-level-wrapper-MQC/mqc_peer.c::mqc_load_ca_pubkey`**
+(lines 1179–1241):
+
+1. New per-leaf-first lookup: before the global
+   `~/.TPM/ca-cosigner.pem` cache, check
+   `~/.TPM/<active-subject>/ca-cosigner.pem`.  If present, use
+   it; never fall through to TOFU when a per-leaf pin exists.
+2. Active-subject resolution: there's already
+   `~/.TPM/default` — read its target.  If a caller has
+   explicitly set a subject (`mqc_ctx_t` already carries the
+   leaf identity), prefer that.
+3. Keep the global TOFU fallback for now — it serves
+   `show-tpm` first-contact and the handful of MQC tools that
+   don't go through `bootstrap_leaf`.  That surface stays on
+   TODO #9b until the CA branch lands.
+
+---
+
+## 4. Migration runbook (factsorlie.com)
+
+```bash
+# Build + install + restart on factsorlie.
+cd /home/ubuntu/postWolf && ./make-all.sh
+sudo systemctl restart mtc-ca.service
+
+# CA operator (factsorlie) issues a nonce.  New output line:
+issue_leaf_nonce --domain test9b.invalid --label snoopy --ttl-days 1
+# expected: Cosigner-fp: sha256:<64 hex>
+
+# Leaf operator (frflashy or another box) runs:
+bootstrap_leaf --domain test9b.invalid --label snoopy \
+               --nonce <hex from above> \
+               --cosigner-fp sha256:<hex from above>
+# must succeed; must write
+# ~/.TPM/test9b.invalid-snoopy/ca-cosigner.pem
+
+# Negative test: hand the leaf a wrong --cosigner-fp.
+bootstrap_leaf ... --cosigner-fp sha256:0000...0000
+# must exit non-zero, must write nothing under ~/.TPM/.
+
+# Backwards-compat sanity: a leaf already enrolled before this
+# change keeps using the global ~/.TPM/ca-cosigner.pem and
+# continues working — no re-enrollment required.
+```
+
+---
+
+## 5. Verification
+
+1. **Zero-warning C build** (CLAUDE.md guardrail):
+   `make -f Makefile.tools clean && make -f Makefile.tools 2>&1
+    | grep -cE 'warning:|error:'` ⇒ `0`.
+2. **Service health**:
+   `sudo systemctl restart mtc-ca && sleep 2 &&
+    systemctl is-active mtc-ca.service` ⇒ `active`.
+3. **Happy path**: leaf bootstraps with the right fingerprint,
+   per-leaf `ca-cosigner.pem` lands.
+4. **MitM-rejection**: wrong fingerprint rejected before any
+   state writes — this is the test that proves the hole closed.
+5. **Per-leaf precedence**: delete the global
+   `~/.TPM/ca-cosigner.pem`, run `show-tpm --verify` for the
+   new leaf — must succeed off the per-leaf cosigner.
+6. **MQC end-to-end**:
+   `echo hi | mqc --encode --env --no-cache |
+    mqc --decode --env --no-cache` ⇒ `hi`.
+7. **Smoke trigger** (per memory rule
+   `feedback_mqc_smoke_test_trigger.md`):
+   `issue_leaf_nonce --domain testX.invalid --label x --ttl-days 1`
+   to actually open a real MQC handshake against the live server.
+
+---
+
+## 6. Files to modify, ranked by depth
+
+1. `mtc-keymaster/server2/c/mtc_bootstrap.c` — sign response,
+   two new JSON fields.
+2. `mtc-keymaster/tools/c/bootstrap_leaf.c` — flag, fingerprint
+   check, signature verify, per-leaf PEM write.
+3. `mtc-keymaster/server2/c/mtc_http.c` — emit
+   `ca_cosigner_fp` in nonce response.
+4. `mtc-keymaster/tools/c/issue_leaf_nonce.c` — print +
+   persist the fingerprint.
+5. `mtc-keymaster/server2/c/mtc_store.{c,h}` —
+   `mtc_store_get_cosigner_pem` accessor (only if not already
+   public).
+6. `socket-level-wrapper-MQC/mqc_peer.c` — per-leaf-first
+   lookup in `mqc_load_ca_pubkey`.
+7. `mtc-keymaster/README-bugsandtodo.md` — update TODO #9b
+   status: leaf branch DONE; CA branch + `show-tpm` surface
+   still open.
+8. `socket-level-wrapper-MQC/README-mqc-issues-summary.md` —
+   move mqc-2 #3 from P0 to a "leaf-branch DONE / CA-branch
+   + show-tpm still open" entry.
+
+---
+
+## 7. Out of scope (separate follow-ups)
+
+- **CA-bootstrap branch** (`bootstrap_ca` + X.509-chain auth
+  using parent CA's TLS server cert) — substantial; per the
+  prior snoopy-rivest plan, lands as a second cutover after
+  the leaf branch ships.
+- **`show-tpm` first-contact MQC clients** that didn't go
+  through `bootstrap_leaf` — still TOFU on the global cache.
+  Stays on TODO #9b until OOB distribution covers them
+  (DNSSEC-pinned cosigner fp at `_mqc-cosigner.<domain>`, or
+  bundled-binary).
+- **DNSSEC TXT for cosigner fingerprint** — orthogonal
+  alternative trust channel; doesn't conflict with the
+  operator-paste channel and can be added later as a third.
+- **Cosigner key rotation** — out of scope for this change;
+  existing `migrate-cosigner` + `admin_recosign` tooling
+  (TODO #47) handles that.
+
+---
+
+## 8. Effort estimate
+
+About a day of focused work + a flag-day cutover.  Server-side
+touch is small (one signing call + one accessor + one JSON
+field).  Client-side touch is the bulk: CLI flag + fingerprint
+check + signature verify + path write.  No new dependencies —
+`wc_dilithium_sign_ctx_msg` / `wc_dilithium_verify_ctx_msg` /
+`wc_PubKeyPemToDer` / `wc_Sha256Hash` are all already linked in.
+
+Recommend implementation order:
+1. Server-side signing (mtc_bootstrap.c) + accessor
+   (mtc_store.c).
+2. `issue_leaf_nonce` fingerprint emission + nonce-handler
+   field.
+3. `bootstrap_leaf` verification (this is the big one — CLI,
+   fingerprint check, signature verify, per-leaf write).
+4. `mqc_load_ca_pubkey` per-leaf precedence.
+5. README + summary doc updates.
+
+Each step is independently testable; the flag-day cutover
+happens naturally at step 3 once the client starts requiring
+`--cosigner-fp`.
