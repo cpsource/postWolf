@@ -49,11 +49,14 @@ I reviewed the uploaded `s2.tar.gz`. Priority fixes:
      requests are unchanged.
    * Knob: `mtc-keymaster/server2/c/config.h`.
 
-7. **Plain HTTP mode can expose write endpoints**
+7. **Plain HTTP mode can expose write endpoints** — **DONE 2026-05-06**
 
-   * `handle_request()` permits `/enrollment/nonce`, `/renew-cert`, `/revoke`, etc. based on path checks; only some handlers enforce MQC.
-   * Fix: reject sensitive POSTs unless `io->mqc` or trusted TLS-client-auth is present.
-   * File: `mtc_http.c:2165-2192`.
+   * Combination of TODO #64 (MQC-gate the cross-CA leaf-nonce
+     path; the only real gap once the rest were already
+     MQC-only or payload-signed) and the new
+     `url-local-port-disabled = Yes` knob (default Yes —
+     port 8444 stays closed entirely on this deployment).
+   * See appendix item 7 below for verification trace.
 
 8. **`http_get` proxy on bootstrap exposes arbitrary GET dispatcher over plaintext**
 
@@ -273,20 +276,27 @@ Verified live on factsorlie: idle TLS connect dies at t≈10.6 s;
 partial headers cause a clean dispatch at t≈10.7 s; healthy
 sub-second requests are unchanged.
 
-### 7. Plain HTTP exposes write endpoints — **PARTIAL**
+### 7. Plain HTTP exposes write endpoints — **DONE 2026-05-06**
 
-Inventory:
+Two layers of closure:
 
-- `/enrollment/nonce` — open on both ports (covered by #3 above).
-- `/cancel-nonce` — already MQC-only (`mtc_http.c:814`).
-- `/renew-cert` — already MQC-only (`mtc_http.c:969`).
-- `/revoke` — accepts on both, but the request body carries a
-  CA-key signature that the server verifies — auth is in the
-  payload, not the transport.
+1. **TODO #64** (cross-CA leaf-nonce gate) shrank the residual
+   surface to: `/cancel-nonce` and `/renew-cert` already
+   MQC-only; `/revoke` payload-signed under the CA key
+   (transport-agnostic auth).
+2. **`url-local-port-disabled = Yes`** (new config knob,
+   default Yes) — the local TLS HTTP listener (port 8444)
+   now stays closed entirely on this deployment.  Nothing on
+   factsorlie talks to 8444 over the network: every C client
+   speaks MQC on 8446, the bootstrap port serves its own
+   traffic on 8445, and the bootstrap port's `http_get`
+   proxy hits `dispatch_get` in-process (no socket).
+   Operators with Python tooling that hits the TLS API can
+   flip the knob to `No`.
 
-So #3 (the leaf-nonce open path) is the only real gap.  /revoke
-is acceptably authenticated.  Marking this finding as
-**SUPERSEDED-BY-#3**.
+Verified live: `ss -tlnp` shows only 8445 + 8446 bound; TCP
+connect to 8444 returns "Connection refused".  MQC end-to-end
+smoke (`issue_leaf_nonce`) still succeeds.
 
 ### 8. `http_get` proxy on bootstrap exposes GET dispatcher — **BY DESIGN / LOW**
 

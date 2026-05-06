@@ -39,6 +39,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
@@ -400,8 +401,29 @@ int main(int argc, char *argv[])
             LOG_WARN("MQC listener failed to start on port %d", mqc_port);
     }
 
-    /* 9. Run HTTP server (blocks indefinitely) */
-    mtc_http_serve(host, port, &store, tls_cert ? &tls_cfg : NULL);
+    /* 9. Run HTTP server (blocks indefinitely) — unless the operator
+     *    has disabled the local TLS port via /etc/postWolf/config
+     *    (`url-local-port-disabled`).  Default: Yes (port 8444 off).
+     *
+     *    Nothing on this deployment talks to 8444 — every C client
+     *    speaks MQC on 8446 and the bootstrap port serves its own
+     *    traffic on 8445.  Keeping 8444 off by default removes the
+     *    plain-HTTP attack surface that ChatGPT review item #7 was
+     *    flagging.  Operators with Python tooling that hits the TLS
+     *    API can flip the knob to No.
+     *
+     *    When disabled, the main thread waits forever — the detached
+     *    bootstrap + MQC listener threads continue serving, and
+     *    systemd's Restart=on-failure policy still applies. */
+    int local_disabled = read_config_bool("global/url-local-port-disabled", 1);
+    if (local_disabled) {
+        LOG_INFO("local TLS HTTP port (%d) DISABLED via "
+                 "url-local-port-disabled (config); bootstrap (8445) "
+                 "and MQC (8446) listeners remain active", port);
+        for (;;) pause();
+    } else {
+        mtc_http_serve(host, port, &store, tls_cert ? &tls_cfg : NULL);
+    }
 
     /* Cleanup (unreachable in normal operation) */
     mtc_store_free(&store);

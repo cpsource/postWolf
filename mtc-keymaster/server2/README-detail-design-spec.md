@@ -67,6 +67,17 @@ All three ports are operator-tunable via `/etc/postWolf/config`
 (`global/url-local`, `global/url-bootstrap`, `global/url-server`).
 Wire-format invariants are NOT operator-tunable per CLAUDE.md.
 
+**Port 8444 is disabled by default.**  The operator knob
+`global/url-local-port-disabled` defaults to `Yes` — `mtc_server`
+starts the bootstrap (8445) and MQC (8446) listeners but does not
+bind 8444 at all.  This removes the plain-HTTP attack surface
+that ChatGPT review item #7 flagged.  Nothing internal to
+postWolf needs 8444: the C clients (show-tpm, bootstrap_*, mqc)
+all speak MQC, and the bootstrap port's `http_get` proxy reaches
+`dispatch_get` in-process without a network round-trip.  Flip
+the knob to `No` only if some external tool (e.g., Python
+verify.py) needs the TLS API.
+
 ---
 
 ## 3. Port 8444 — HTTPS API (TLS 1.3)

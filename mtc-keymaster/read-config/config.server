@@ -7,6 +7,16 @@ url-server https://factsorlie.com:8446
 
 url-local https://factsorlie.com:8444
 
+# Disable the local TLS HTTP listener (port 8444) entirely.  Default
+# Yes — nothing on this deployment talks to 8444 over the network
+# (every C client speaks MQC on 8446; the bootstrap port serves its
+# own traffic on 8445; the bootstrap port's `http_get` proxy hits
+# dispatch_get in-process without touching 8444), so leaving the
+# socket closed removes the plain-HTTP attack surface that ChatGPT
+# review item #7 flagged.  Flip to No only if some external tool
+# (e.g., Python verify.py) actually needs the TLS API.
+url-local-port-disabled Yes
+
 # --- MQC operational tunables --------------------------------------
 # Each key is optional.  Omitting a key uses the compiled-in default
 # (shown in the comment).  Spec normative reference: §11 of

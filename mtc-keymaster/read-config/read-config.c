@@ -137,6 +137,35 @@ long read_config_long(const char *key, long default_val) {
     return v;
 }
 
+int read_config_bool(const char *key, int default_val) {
+    if (init_augeas() != 0)
+        return default_val;
+    char *raw = get_augeas(key);
+    if (!raw)
+        return default_val;
+
+    /* Case-insensitive match against the usual Yes/No vocabulary. */
+    int v = -1;
+    if (!strcasecmp(raw, "yes")  || !strcasecmp(raw, "true") ||
+        !strcasecmp(raw, "on")   || !strcmp(raw, "1"))
+        v = 1;
+    else if (!strcasecmp(raw, "no") || !strcasecmp(raw, "false") ||
+             !strcasecmp(raw, "off") || !strcmp(raw, "0"))
+        v = 0;
+
+    if (v < 0) {
+        fprintf(stderr,
+                "[%s] /etc/postWolf/config: invalid bool '%s', "
+                "using default %s\n", key, raw, default_val ? "Yes" : "No");
+        free(raw);
+        return default_val;
+    }
+    fprintf(stderr,
+            "[%s] /etc/postWolf/config: %s\n", key, v ? "Yes" : "No");
+    free(raw);
+    return v;
+}
+
 char *read_config_str(const char *key, const char *default_val) {
     if (init_augeas() != 0)
         return default_val ? strdup(default_val) : NULL;

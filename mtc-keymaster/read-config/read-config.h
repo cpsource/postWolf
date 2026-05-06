@@ -20,6 +20,12 @@ long read_config_long(const char *key, long default_val);
  * default_val if the key is absent.  Logs the source to stderr. */
 char *read_config_str(const char *key, const char *default_val);
 
+/* Read [global] <key> from /etc/postWolf/config as a boolean.  Returns
+ * 1 for {Yes,yes,YES,true,1,on}, 0 for {No,no,NO,false,0,off}, and
+ * default_val for missing or unparseable values.  Logs the source to
+ * stderr. */
+int read_config_bool(const char *key, int default_val);
+
 /* Pure parse helper (exposed for unit testing).  Parses raw as a
  * positive integer.  Returns 0 and writes *out on success; returns -1
  * (out untouched) on invalid input (non-numeric, leading/trailing
