@@ -55,4 +55,41 @@
  */
 int mtc_canonicalize_domain(const char *in, char *out, size_t out_sz);
 
+/**
+ * @brief  Canonicalize and validate an operator-assigned label.
+ *
+ * @details
+ * Labels are stored verbatim in the DB and used by client tools
+ * to name per-leaf TPM directories (`~/.TPM/<domain>-<label>/`),
+ * so the server must validate them before persisting.  Mirrors
+ * the client-side check in bootstrap_leaf / bootstrap_ca /
+ * issue_leaf_nonce so a malicious `/enrollment/nonce` caller
+ * can't bypass it.
+ *
+ * Accepts: 1..MTC_LABEL_MAX bytes from the charset
+ * `[A-Za-z0-9._-]`.  Case is preserved (label dirs are
+ * case-sensitive).
+ *
+ * Rejects (returns -1, leaves @p out cleared, prints `[mtc-label]
+ * ...` to stderr):
+ *   - empty or > MTC_LABEL_MAX bytes
+ *   - any character outside `[A-Za-z0-9._-]`
+ *   - bare `.` or `..` (path-traversal smell)
+ *   - leading `-` or `.`
+ *
+ * @param[in]  in      Input label (NUL-terminated).
+ * @param[out] out     Buffer for the canonical form.
+ * @param[in]  out_sz  Size of @p out.  MUST be >= strlen(in)+1.
+ *
+ * @return  0 on accept (with canonical form written to @p out).
+ *          -1 on reject (with @p out cleared).
+ */
+/* Kept in lockstep with MTC_LABEL_MAX in mtc_db.h.  Defined here so
+ * mtc_domain stays self-contained for the operator tools that link
+ * it without pulling in mtc_db.h's wolfSSL/Postgres header chain. */
+#ifndef MTC_LABEL_MAX
+#define MTC_LABEL_MAX 64
+#endif
+int mtc_canonicalize_label(const char *in, char *out, size_t out_sz);
+
 #endif /* MTC_DOMAIN_H */

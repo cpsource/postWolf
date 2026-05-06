@@ -3603,35 +3603,40 @@ Verified live on factsorlie:
 
 ---
 
-### 68. Server-side label canonicalization
+### 68. Server-side label canonicalization — DONE 2026-05-06
 
-**Severity:** Medium — input validation.  Filed 2026-05-06.
+**Severity:** Medium — input validation.  Filed 2026-05-06,
+closed same day.
 
-**Current state:** `mtc_db_create_nonce` (`mtc_db.c:1088`) accepts
-the operator-supplied `label` parameter verbatim and inserts it
-into `mtc_enrollment_nonces.label`.  No charset / length /
-path-traversal validation.  The client-side `sanitize_label` in
-`bootstrap_leaf` rejects `/`, `..`, etc. — but a malicious
-`/enrollment/nonce` caller can plant a label that downstream
-tooling (or a future bug) might turn into a directory name.
+**What landed:** `mtc_canonicalize_label(in, out, out_sz)` in
+`mtc_domain.{c,h}` (alongside the existing
+`mtc_canonicalize_domain`).  Enforces:
 
-**Fix:** add `mtc_canonicalize_label(in, out, outsz)` next to
-the existing `mtc_canonicalize_domain` in `mtc_domain.c`:
-
-- enforce `[A-Za-z0-9._-]` charset
+- charset `[A-Za-z0-9._-]` (case preserved — labels are
+  used as case-sensitive directory names client-side)
 - length 1..`MTC_LABEL_MAX` (=64)
-- reject `..`, `.`, leading `-`, leading `.`, trailing whitespace
+- bare `.` or `..` rejected (path-traversal smell)
+- leading `-` or `.` rejected
 
-Apply at the top of `handle_enrollment_nonce` BEFORE passing to
-`mtc_db_create_nonce`.
+`handle_enrollment_nonce` calls it before `label_in` is passed
+into `mtc_db_create_nonce`; rejection sends HTTP 400 with a
+diagnostic message to the client.  `MTC_LABEL_MAX` is now
+declared in `mtc_domain.h` (guarded with `#ifndef`) so the
+helper stays self-contained for the operator tools that
+compile `mtc_domain.c` without `mtc_db.h`.
+
+19/19 unit tests pass on the helper (alphanumeric, mixed
+charset, dotted, length boundary at 64/65, all rejection
+classes).  End-to-end MQC smoke (`issue_leaf_nonce` /
+`cancel-nonce`) with a mixed-character label still succeeds.
 
 **Files:**
 
 - `mtc-keymaster/server2/c/mtc_domain.{c,h}` — new helper.
 - `mtc-keymaster/server2/c/mtc_http.c::handle_enrollment_nonce`
-  — call it.
+  — call site.
 
-**Status:** OPEN.
+**Status:** DONE.
 
 ---
 

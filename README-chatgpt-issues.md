@@ -67,10 +67,13 @@ I reviewed the uploaded `s2.tar.gz`. Priority fixes:
 
 ## P2 — correctness / hardening
 
-9. **Label is stored “verbatim”**
+9. **Label is stored "verbatim"** — **DONE 2026-05-06** (TODO #68)
 
-   * Comment says sanitization is client-side. Server should enforce `[A-Za-z0-9._-]`, length, and no path-ish values.
-   * File: `mtc_http.c:620-626`.
+   * `mtc_canonicalize_label` in `mtc_domain.{c,h}` (charset
+     `[A-Za-z0-9._-]`, length 1..64, rejects `.` / `..` /
+     leading `-` / leading `.`); `handle_enrollment_nonce`
+     calls it before `mtc_db_create_nonce`.
+   * See appendix item 9 below for the verification trace.
 
 10. **Persistence failures after in-memory success are not fatal everywhere**
 
@@ -324,22 +327,19 @@ end-to-end.
 
 ## P2
 
-### 9. Server-side label canonicalization — **OPEN**
+### 9. Server-side label canonicalization — **DONE 2026-05-06** (TODO #68)
 
-`mtc_db_create_nonce` (mtc_db.c:1088) accepts the label string
-verbatim and inserts it into the `mtc_enrollment_nonces.label`
-column.  No charset / length / path-traversal validation.  The
-client-side `sanitize_label` in `bootstrap_leaf` rejects labels
-containing `/`, `..`, etc., but a malicious /enrollment/nonce
-caller can plant a label that a future tool might use as a
-directory name.
+`mtc_canonicalize_label` lives in `mtc_domain.{c,h}` next to
+the existing `mtc_canonicalize_domain`.  Enforces charset
+`[A-Za-z0-9._-]`, length 1..`MTC_LABEL_MAX` (=64), rejects
+bare `.` or `..` and leading `-` / `.`.  Case is preserved
+(labels are case-sensitive directory names client-side).
 
-**Recommendation:** open as TODO #68, MEDIUM.  Add
-`mtc_canonicalize_label(in, out, outsz)` (alongside the existing
-`mtc_canonicalize_domain` in `mtc_domain.c`) enforcing
-`[A-Za-z0-9._-]`, length 1..MTC_LABEL_MAX (=64).  Apply at the
-top of `handle_enrollment_nonce` before passing to
-`mtc_db_create_nonce`.
+`handle_enrollment_nonce` calls it before passing the label
+into `mtc_db_create_nonce`; rejection produces HTTP 400 with
+a diagnostic.  19/19 unit tests pass on the helper; live MQC
+smoke (`issue_leaf_nonce` / `cancel-nonce` with
+`valid.label_9-mix`) still succeeds end-to-end.
 
 ### 10. Persistence-fail-after-success warnings — **PARTIAL**
 

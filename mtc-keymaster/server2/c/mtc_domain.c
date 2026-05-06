@@ -126,3 +126,62 @@ int mtc_canonicalize_domain(const char *in, char *out, size_t out_sz)
     out[in_len] = '\0';
     return 0;
 }
+
+int mtc_canonicalize_label(const char *in, char *out, size_t out_sz)
+{
+    size_t in_len, i;
+
+    if (out && out_sz > 0) out[0] = '\0';
+    if (!in || !out || out_sz == 0) return -1;
+
+    in_len = strlen(in);
+    if (in_len == 0) {
+        fprintf(stderr, "[mtc-label] reject: empty\n");
+        return -1;
+    }
+    if (in_len > MTC_LABEL_MAX) {
+        fprintf(stderr,
+                "[mtc-label] reject: %zu bytes > MTC_LABEL_MAX (%d)\n",
+                in_len, MTC_LABEL_MAX);
+        return -1;
+    }
+    if (in_len + 1 > out_sz) {
+        fprintf(stderr,
+                "[mtc-label] reject: out buffer too small (%zu < %zu)\n",
+                out_sz, in_len + 1);
+        return -1;
+    }
+
+    /* Path-traversal smell: bare "." or ".." would let a label
+     * become a parent / current dir reference if a tool ever
+     * `mkdir`s `<domain>-<label>/`. */
+    if (strcmp(in, ".") == 0 || strcmp(in, "..") == 0) {
+        fprintf(stderr, "[mtc-label] reject: bare '%s'\n", in);
+        return -1;
+    }
+
+    if (in[0] == '-') {
+        fprintf(stderr, "[mtc-label] reject: leading '-'\n");
+        return -1;
+    }
+    if (in[0] == '.') {
+        fprintf(stderr, "[mtc-label] reject: leading '.'\n");
+        return -1;
+    }
+
+    for (i = 0; i < in_len; i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (!((c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') ||
+              c == '.' || c == '_' || c == '-')) {
+            fprintf(stderr,
+                    "[mtc-label] reject: invalid char 0x%02x at offset %zu\n",
+                    c, i);
+            return -1;
+        }
+        out[i] = (char)c;
+    }
+    out[in_len] = '\0';
+    return 0;
+}

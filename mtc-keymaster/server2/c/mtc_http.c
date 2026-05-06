@@ -682,12 +682,30 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
         return;
     }
 
-    /* Optional operator-assigned label (leaf-only, stored verbatim).
-     * Sanitization is the client tools' job — see bootstrap_leaf /
-     * bootstrap_ca.  The server only persists and echoes. */
+    /* Optional operator-assigned label (leaf-only).  Server-side
+     * canonicalization gate (TODO #68): even though the client
+     * tools (bootstrap_leaf / bootstrap_ca / issue_leaf_nonce) all
+     * sanitize before sending, a malicious /enrollment/nonce caller
+     * could plant a label that downstream tooling (or a future bug)
+     * turns into a directory name.  mtc_canonicalize_label enforces
+     * the same charset + length + path-traversal rules the client
+     * tools do, so the DB row + on-the-wire echo are guaranteed
+     * safe. */
+    char label_validated[MTC_LABEL_MAX + 1] = {0};
     if (is_leaf && json_object_object_get_ex(req, "label", &val)) {
         const char *s = json_object_get_string(val);
-        if (s && s[0]) label_in = s;
+        if (s && s[0]) {
+            if (mtc_canonicalize_label(s, label_validated,
+                                       sizeof(label_validated)) != 0) {
+                http_send_error(io, 400,
+                    "invalid label (charset [A-Za-z0-9._-], "
+                    "1..64 chars, no leading '-' or '.', "
+                    "not '.' or '..')");
+                json_object_put(req);
+                return;
+            }
+            label_in = label_validated;
+        }
     }
 
     /* Long-lived reservation mode requires a label to pin the slot. */
