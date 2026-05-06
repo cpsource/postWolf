@@ -3261,11 +3261,42 @@ Single-deployment so flag-day is fine.
 
 ---
 
-### 63. Sign the DH bootstrap transcript
+### 63. Sign the DH bootstrap transcript — **DONE 2026-05-06**
 
 **Severity:** P1 — defense-in-depth on top of #62 + the
 existing P0 #9b cosigner response signing.  Filed 2026-05-06
 from ChatGPT review.
+
+**Resolution (2026-05-06):** message 2 of the bootstrap flow
+now carries three new fields: `protocol_version` (=1),
+`ca_cosigner_pem`, and `transcript_sig`.  `transcript_sig` is
+ML-DSA-87 over the 113-byte transcript
+
+```
+client_dh_pub_raw (32) || server_dh_pub_raw (32) ||
+salt_raw          (16) || pop_nonce_raw     (32) ||
+protocol_version_byte (1)
+```
+
+with ctx label `MTC_BOOTSTRAP_DH_LABEL` (16 bytes,
+`"mtc-boot-dh/v1\n\x00"`).  Bidirectional binding (both DH
+pubkeys hashed in) means a MitM substituting EITHER side's DH
+key invalidates the signature.
+
+Client-side (`bootstrap_leaf.c`, `bootstrap_ca.c`): parse the
+new fields, fingerprint-check (`SHA-256(DER(SPKI(pem)))` for
+leaf, `SHA3-256(DER(SPKI(pem)))` for CA), then ML-DSA-87 verify
+the transcript_sig under the now-fingerprint-trusted PEM.  Any
+failure aborts BEFORE deriving AEAD keys.  `--no-pin`
+(bootstrap_ca only, localhost-only) skips verification.
+
+Verified live on factsorlie:
+  - T1 `--no-pin`: SKIPPED message logged, enrollment OK.
+  - T2 correct fp: `DH transcript signature verified (P0 #63)`,
+    enrollment OK.
+  - T3 wrong fp: `step-2 COSIGNER_FP_MISMATCH` BEFORE any AEAD
+    keys are derived (rejection happens in step 2, not step 4
+    as it did under just P0 #9b).
 
 **Current state:** message 2 of the bootstrap flow
 (`mtc_bootstrap.c:705-723`) sends `{dh_public_key, salt,

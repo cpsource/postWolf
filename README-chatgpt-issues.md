@@ -12,10 +12,11 @@ I reviewed the uploaded `s2.tar.gz`. Priority fixes:
      frflashy deployed.
    * See appendix below for the cross-host verification trace.
 
-2. **Add authentication to the DH bootstrap handshake**
+2. **Add authentication to the DH bootstrap handshake** — **DONE 2026-05-06 (TODO #63)**
 
-   * Server DH public key is plaintext and unsigned. A MITM can substitute DH keys, even if later response signing limits some damage.
-   * Fix: sign the server’s ephemeral DH public key, salt, nonce, protocol version, and transcript with the cosigner key, or run bootstrap over MQC/TLS.
+   * Step 2 now carries `transcript_sig` (ML-DSA-87 over both DH pubkeys || salt || pop_nonce || version) under the cosigner key, plus `ca_cosigner_pem` so the client can verify without a prior fetch.
+   * Client aborts BEFORE deriving AEAD keys on any signature/fingerprint mismatch.
+   * See appendix below + TODO #63 in `mtc-keymaster/README-bugsandtodo.md`.
 
 3. **Stop issuing leaf nonces to anyone who merely names an existing CA domain** — **DONE 2026-05-06 (commit `6ec344bf1`)**
 
@@ -132,36 +133,33 @@ Removed dead code:
 Verified: localhost AEAD round-trip on factsorlie + cross-host
 register-leaf from frflashy after deploying the new code.
 
-### 2. Sign the bootstrap DH transcript — **PARTIAL**
+### 2. Sign the bootstrap DH transcript — **DONE 2026-05-06** (TODO #63)
 
-ChatGPT's concern is that a MitM can substitute the server's
-ephemeral DH pubkey in the plaintext message-2 reply
-(`mtc_bootstrap.c:705-723`).  Currently the response signature
-(P0 #9b, `add_cosigner_sig_to_response`) covers the cert JSON
-but NOT the DH-exchange transcript (server_dh_pub, salt,
-pop_nonce).
+Closed.  Step 2 of the DH-bootstrap flow now carries three
+new fields: `protocol_version`, `ca_cosigner_pem`, and
+`transcript_sig`.
 
-What the cosigner-signed response DOES defeat:
-- Substitution of the cert content (cosigner-fp pin verifies).
-- Substitution of `ca_cosigner_pem` itself.
+`transcript_sig` is ML-DSA-87 over the 113-byte transcript:
 
-What it does NOT defeat:
-- Confidentiality of enrollment-request bytes (MitM with
-  substituted DH key sees the leaf's pub_key_pem + nonce
-  before re-encrypting to the real server).
+```
+client_dh_pub_raw (32) || server_dh_pub_raw (32) ||
+salt              (16) || pop_nonce         (32) ||
+version_byte       (1)
+```
 
-The leaf's pub_key_pem is going to be public anyway (it lands in
-the log).  The nonce is more sensitive — leakage to a passive
-attacker means the attacker learns the (domain, fp) binding and
-COULD attempt to consume it... but consumption requires the
-matching private key, which the attacker does not have.
+Bidirectional binding means a MitM substituting EITHER DH key
+invalidates the signature.  The client verifies the embedded
+PEM's fingerprint against its known cosigner pin (DNSSEC for
+CA branch, operator-paste for leaf branch) BEFORE running
+ML-DSA verify under that PEM, then verifies the transcript_sig
+BEFORE deriving any AEAD keys.  Failure aborts step 2 with
+`step-2 COSIGNER_FP_MISMATCH` or `BOOTSTRAP_DH_TRANSCRIPT_INVALID`
+— enrollment-request bytes never leak.
 
-**Recommendation:** open as TODO #63 alongside #62.  Sign
-`H(server_dh_pub || salt || pop_nonce || protocol_version)` under
-the cosigner key in message 2 — gives the client a way to
-constant-time-verify the DH transcript before deriving any
-secrets.  Lower priority than #62; the layered defenses contain
-the actual exploitable paths.
+Verified live with three tests on factsorlie:
+  T1 `--no-pin`: SKIPPED (localhost only)
+  T2 correct fp: VERIFIED, enrollment OK
+  T3 wrong fp: COSIGNER_FP_MISMATCH at step 2
 
 ### 3. Stop issuing leaf nonces to anyone — **DONE 2026-05-06** (TODO #64)
 
@@ -382,7 +380,7 @@ cert.
 ## Recommended attack queue
 
 Prioritized by impact-per-effort against the current code.
-TODOs closed 2026-05-06: #64, #62, #65.  Remaining:
+TODOs closed 2026-05-06: #62, #63, #64, #65.  Remaining:
 
 1. **TODO #69** — fail-closed on persistence errors during
    enrollment.  Local-only change in `mtc_bootstrap.c`.
@@ -390,19 +388,4 @@ TODOs closed 2026-05-06: #64, #62, #65.  Remaining:
    Local-only.
 3. **TODO #66** — HTTP read timeout (`SO_RCVTIMEO`).
    Local-only.
-4. **TODO #63** — DH-transcript signature.  Defense-in-depth
-   on top of the now-shipped AEAD.
-5. **TODO #67, #70, #71** — defense-in-depth / hygiene.
-3. **TODO #65** — bootstrap fork backpressure.  One-line fix,
-   contains the fork-storm DoS vector.
-4. **TODO #69** — fail-closed on persistence errors during
-   enrollment.  Local-only change.
-5. **TODO #68** — server-side label canonicalization.  Local-only.
-6. **TODO #66** — HTTP read timeout.  Local-only.
-7. **TODO #63** — DH-transcript signature.  Defense-in-depth on
-   top of #62.
-8. **TODO #67, #70, #71** — defense-in-depth / hygiene.
-
-Items 1–3 cover the genuine attack surface ChatGPT identified
-that current postWolf code does not already mitigate.  Items 4+
-are good practice but lower urgency.
+4. **TODO #67, #70, #71** — defense-in-depth / hygiene.

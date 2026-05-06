@@ -113,6 +113,18 @@
 #define MTC_BOOTSTRAP_LABEL      "mtc-bootstrap/v1\n\x00"
 #define MTC_BOOTSTRAP_LABEL_LEN  16
 
+/* P0 / TODO #63 — DH-transcript signature label.  Distinct from the
+ * response-signing label above so the same cosigner key signing the
+ * step-2 transcript can never have its signature reused as a response
+ * signature (different ctx → different domain-separated tag). */
+#define MTC_BOOTSTRAP_DH_LABEL      "mtc-boot-dh/v1\n\x00"
+#define MTC_BOOTSTRAP_DH_LABEL_LEN  16
+
+/* Bootstrap-channel protocol version for #63's signed transcript.
+ * Bumping this requires both peers to be rebuilt simultaneously (per
+ * CLAUDE.md "MQC wire-format invariants are NOT operator-tunable"). */
+#define MTC_BOOTSTRAP_PROTO_V1      0x01
+
 /******************************************************************************
  * Function:    add_cosigner_sig_to_response
  *
@@ -707,24 +719,134 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
 
     LOG_DEBUG("bootstrap: DH exchange complete, AES-256-GCM keys derived");
 
-    /* --- Send server DH response (plaintext JSON) --- */
+    /* --- Build + send server DH response (plaintext JSON, P0 #63
+     *     signed-transcript fields added) --- */
     {
+        struct json_object *resp;
         char pub_hex[CURVE25519_KEYSIZE * 2 + 1];
         char salt_hex[BOOTSTRAP_SALT_SZ * 2 + 1];
-        int json_len;
+        char cosigner_pem[8192];
+        int  cosigner_pem_sz;
+        const char *resp_str;
+        size_t resp_len;
 
         to_hex(server_pub, CURVE25519_KEYSIZE, pub_hex);
         to_hex(salt, BOOTSTRAP_SALT_SZ, salt_hex);
 
-        json_len = snprintf(json_buf, sizeof(json_buf),
-            "{\"dh_public_key\":\"%s\",\"salt\":\"%s\","
-            "\"pop_nonce\":\"%s\"}",
-            pub_hex, salt_hex, pop_nonce_hex);
+        resp = json_object_new_object();
+        json_object_object_add(resp, "dh_public_key",
+            json_object_new_string(pub_hex));
+        json_object_object_add(resp, "salt",
+            json_object_new_string(salt_hex));
+        json_object_object_add(resp, "pop_nonce",
+            json_object_new_string(pop_nonce_hex));
+        json_object_object_add(resp, "protocol_version",
+            json_object_new_int(MTC_BOOTSTRAP_PROTO_V1));
 
-        if (write_all(fd, (unsigned char *)json_buf, (unsigned int)json_len) != 0) {
-            LOG_WARN("bootstrap: failed to send DH response");
+        /* P0 #63: include the cosigner PEM so the client can verify
+         * the transcript signature without a prior PEM fetch. */
+        cosigner_pem_sz = mtc_store_get_public_key_pem(
+            store, cosigner_pem, (int)sizeof(cosigner_pem));
+        if (cosigner_pem_sz <= 0) {
+            LOG_ERROR("bootstrap: cannot export cosigner PEM "
+                      "(rc=%d)", cosigner_pem_sz);
+            json_object_put(resp);
             goto cleanup;
         }
+        json_object_object_add(resp, "ca_cosigner_pem",
+            json_object_new_string_len(cosigner_pem, cosigner_pem_sz));
+
+        /* P0 #63: ML-DSA-87 sign the DH transcript so a MitM
+         * substituting either side's DH key invalidates the
+         * signature.  Message:
+         *
+         *   client_dh_pub (32) || server_dh_pub (32) ||
+         *   salt          (16) || pop_nonce     (32) ||
+         *   protocol_version (1 byte)
+         *
+         * Total 113 bytes.  ctx = MTC_BOOTSTRAP_DH_LABEL (16). */
+        {
+            unsigned char sig_msg[CURVE25519_KEYSIZE * 2 +
+                                  BOOTSTRAP_SALT_SZ +
+                                  BOOTSTRAP_POP_NONCE_SZ + 1];
+            unsigned int  sig_msg_len = 0;
+            uint8_t       sig[DILITHIUM_LEVEL5_SIG_SIZE];
+            word32        sig_sz = (word32)sizeof(sig);
+            int           sign_rc = -1;
+
+            memcpy(sig_msg + sig_msg_len, client_pub,
+                   CURVE25519_KEYSIZE);
+            sig_msg_len += CURVE25519_KEYSIZE;
+            memcpy(sig_msg + sig_msg_len, server_pub,
+                   CURVE25519_KEYSIZE);
+            sig_msg_len += CURVE25519_KEYSIZE;
+            memcpy(sig_msg + sig_msg_len, salt, BOOTSTRAP_SALT_SZ);
+            sig_msg_len += BOOTSTRAP_SALT_SZ;
+            memcpy(sig_msg + sig_msg_len, pop_nonce,
+                   BOOTSTRAP_POP_NONCE_SZ);
+            sig_msg_len += BOOTSTRAP_POP_NONCE_SZ;
+            sig_msg[sig_msg_len++] = MTC_BOOTSTRAP_PROTO_V1;
+
+            {
+                dilithium_key dil;
+                WC_RNG        sign_rng;
+                int           ret2;
+                word32        idx_w = 0;
+
+                if ((ret2 = wc_InitRng(&sign_rng)) == 0) {
+                    if ((ret2 = wc_dilithium_init(&dil)) == 0) {
+                        if ((ret2 = wc_dilithium_set_level(
+                                 &dil, WC_ML_DSA_87)) == 0 &&
+                            (ret2 = wc_Dilithium_PrivateKeyDecode(
+                                 store->ca_priv_key, &idx_w, &dil,
+                                 (word32)store->ca_priv_key_sz)) == 0) {
+                            ret2 = wc_dilithium_sign_ctx_msg(
+                                (const byte *)MTC_BOOTSTRAP_DH_LABEL,
+                                MTC_BOOTSTRAP_DH_LABEL_LEN,
+                                sig_msg, sig_msg_len,
+                                sig, &sig_sz, &dil, &sign_rng);
+                            if (ret2 == 0) sign_rc = 0;
+                        }
+                        wc_dilithium_free(&dil);
+                    }
+                    wc_FreeRng(&sign_rng);
+                }
+                if (sign_rc != 0)
+                    LOG_ERROR("bootstrap: DH-transcript sign rc=%d",
+                              ret2);
+            }
+
+            if (sign_rc != 0) {
+                json_object_put(resp);
+                goto cleanup;
+            }
+
+            char *sig_hex = (char *)malloc((size_t)sig_sz * 2 + 1);
+            if (!sig_hex) {
+                json_object_put(resp);
+                goto cleanup;
+            }
+            to_hex(sig, (int)sig_sz, sig_hex);
+            json_object_object_add(resp, "transcript_sig",
+                json_object_new_string(sig_hex));
+            free(sig_hex);
+        }
+
+        resp_str = json_object_to_json_string(resp);
+        resp_len = strlen(resp_str);
+        if (resp_len >= sizeof(json_buf)) {
+            LOG_ERROR("bootstrap: step-2 response too large (%zu)",
+                      resp_len);
+            json_object_put(resp);
+            goto cleanup;
+        }
+        if (write_all(fd, (unsigned char *)resp_str,
+                      (unsigned int)resp_len) != 0) {
+            LOG_WARN("bootstrap: failed to send DH response");
+            json_object_put(resp);
+            goto cleanup;
+        }
+        json_object_put(resp);
     }
 
     /* --- Init mtc_crypt with derived keys (TODO #62 AEAD) --- */

@@ -59,6 +59,11 @@
 #define MTC_BOOTSTRAP_LABEL      "mtc-bootstrap/v1\n\x00"
 #define MTC_BOOTSTRAP_LABEL_LEN  16
 
+/* P0 / TODO #63 — DH-transcript signature label.  Must match
+ * server-side MTC_BOOTSTRAP_DH_LABEL in mtc_bootstrap.c. */
+#define MTC_BOOTSTRAP_DH_LABEL      "mtc-boot-dh/v1\n\x00"
+#define MTC_BOOTSTRAP_DH_LABEL_LEN  16
+
 #define HKDF_INFO        "mtc-dh-bootstrap"
 /* TODO #62: AES-256-GCM AEAD; HKDF produces 64 bytes (c2s||s2c). */
 #define SALT_SZ          16
@@ -806,6 +811,11 @@ int main(int argc, char *argv[])
     {
         struct json_object *resp, *val;
         const char *hex_str;
+        uint8_t pop_nonce[32];
+        int     have_pop_nonce = 0;
+        const char *resp_cosigner_pem = NULL;
+        const char *resp_transcript_sig_hex = NULL;
+        int  resp_proto_version = 0;
 
         resp = json_tokener_parse(json_buf);
         if (!resp) {
@@ -838,9 +848,155 @@ int main(int argc, char *argv[])
             goto done;
         }
 
+        /* P0 / TODO #63 — DH-transcript signature.  Required fields:
+         * pop_nonce (32 bytes), protocol_version (1), ca_cosigner_pem,
+         * transcript_sig (ML-DSA-87, hex).  Refuse to derive any AEAD
+         * keys until both the fingerprint and the signature verify. */
+        if (json_object_object_get_ex(resp, "pop_nonce", &val)) {
+            hex_str = json_object_get_string(val);
+            if (hex_to_bytes(hex_str, pop_nonce, sizeof(pop_nonce))
+                    == (int)sizeof(pop_nonce))
+                have_pop_nonce = 1;
+        }
+        if (!have_pop_nonce) {
+            LOG("ERROR: step-2 missing pop_nonce — server is older "
+                "than the P0 #63 cutover; rebuild + redeploy");
+            json_object_put(resp);
+            goto done;
+        }
+        if (json_object_object_get_ex(resp, "protocol_version", &val))
+            resp_proto_version = json_object_get_int(val);
+        if (resp_proto_version != 1) {
+            LOG("ERROR: step-2 protocol_version=%d, expected 1 — "
+                "incompatible peer", resp_proto_version);
+            json_object_put(resp);
+            goto done;
+        }
+        if (!json_object_object_get_ex(resp, "ca_cosigner_pem", &val)) {
+            LOG("ERROR: step-2 missing ca_cosigner_pem (P0 #63)");
+            json_object_put(resp);
+            goto done;
+        }
+        resp_cosigner_pem = json_object_get_string(val);
+        if (!json_object_object_get_ex(resp, "transcript_sig", &val)) {
+            LOG("ERROR: step-2 missing transcript_sig (P0 #63)");
+            json_object_put(resp);
+            goto done;
+        }
+        resp_transcript_sig_hex = json_object_get_string(val);
+
+        /* (1) Fingerprint check: SHA-256(DER(SPKI(pem))) ==
+         *     cosigner_fp_canon (operator-pasted via
+         *     issue_leaf_nonce). */
+        {
+            unsigned char spki_der[4096];
+            int spki_sz = wc_PubKeyPemToDer(
+                (const unsigned char *)resp_cosigner_pem,
+                (int)strlen(resp_cosigner_pem),
+                spki_der, (int)sizeof(spki_der));
+            if (spki_sz <= 0) {
+                LOG("ERROR: step-2 ca_cosigner_pem rejected by "
+                    "wc_PubKeyPemToDer (rc=%d)", spki_sz);
+                json_object_put(resp);
+                goto done;
+            }
+            unsigned char digest[WC_SHA256_DIGEST_SIZE];
+            if (wc_Sha256Hash(spki_der, (word32)spki_sz, digest) != 0) {
+                LOG("ERROR: SHA-256 over step-2 cosigner SPKI failed");
+                json_object_put(resp);
+                goto done;
+            }
+            char got_fp[WC_SHA256_DIGEST_SIZE * 2 + 1];
+            {
+                static const char hex[] = "0123456789abcdef";
+                int hi;
+                for (hi = 0; hi < (int)sizeof(digest); hi++) {
+                    got_fp[hi * 2]     = hex[(digest[hi] >> 4) & 0xf];
+                    got_fp[hi * 2 + 1] = hex[digest[hi] & 0xf];
+                }
+                got_fp[64] = '\0';
+            }
+            int diff = 0, hi;
+            for (hi = 0; hi < 64; hi++)
+                diff |= got_fp[hi] ^ cosigner_fp_arg[hi];
+            if (diff != 0) {
+                LOG("ERROR: step-2 COSIGNER_FP_MISMATCH — possible "
+                    "MitM on port 8445.\n"
+                    "       expected: sha256:%s\n"
+                    "       got:      sha256:%s",
+                    cosigner_fp_arg, got_fp);
+                json_object_put(resp);
+                goto done;
+            }
+
+            /* (2) Reconstruct the 113-byte signed message and
+             *     ML-DSA-87 verify under the now-fingerprint-trusted
+             *     PEM.  Catches MitM substituting either DH key. */
+            unsigned char sig_msg[CURVE25519_KEYSIZE * 2 + SALT_SZ +
+                                  32 + 1];
+            unsigned int  sig_msg_len = 0;
+            memcpy(sig_msg + sig_msg_len, my_pub, CURVE25519_KEYSIZE);
+            sig_msg_len += CURVE25519_KEYSIZE;
+            memcpy(sig_msg + sig_msg_len, server_pub, CURVE25519_KEYSIZE);
+            sig_msg_len += CURVE25519_KEYSIZE;
+            memcpy(sig_msg + sig_msg_len, salt, SALT_SZ);
+            sig_msg_len += SALT_SZ;
+            memcpy(sig_msg + sig_msg_len, pop_nonce, sizeof(pop_nonce));
+            sig_msg_len += (unsigned int)sizeof(pop_nonce);
+            sig_msg[sig_msg_len++] = (unsigned char)resp_proto_version;
+
+            int sig_hex_len = (int)strlen(resp_transcript_sig_hex);
+            if (sig_hex_len <= 0 || (sig_hex_len & 1) != 0) {
+                LOG("ERROR: transcript_sig odd-length hex (%d)",
+                    sig_hex_len);
+                json_object_put(resp);
+                goto done;
+            }
+            int sig_bin_len = sig_hex_len / 2;
+            unsigned char *sig_bin =
+                (unsigned char *)malloc((size_t)sig_bin_len);
+            if (!sig_bin || hex_to_bytes(resp_transcript_sig_hex,
+                                          sig_bin, sig_bin_len)
+                            != sig_bin_len) {
+                LOG("ERROR: transcript_sig hex decode failed");
+                free(sig_bin);
+                json_object_put(resp);
+                goto done;
+            }
+            dilithium_key dil;
+            int verify_rc = -1, verified = 0;
+            if (wc_dilithium_init(&dil) == 0) {
+                if (wc_dilithium_set_level(&dil, WC_ML_DSA_87) == 0) {
+                    word32 idx = 0;
+                    if (wc_Dilithium_PublicKeyDecode(
+                            spki_der, &idx, &dil,
+                            (word32)spki_sz) == 0) {
+                        verify_rc = wc_dilithium_verify_ctx_msg(
+                            sig_bin, (word32)sig_bin_len,
+                            (const byte *)MTC_BOOTSTRAP_DH_LABEL,
+                            MTC_BOOTSTRAP_DH_LABEL_LEN,
+                            sig_msg, sig_msg_len,
+                            &verified, &dil);
+                    }
+                }
+                wc_dilithium_free(&dil);
+            }
+            free(sig_bin);
+            if (verify_rc != 0 || !verified) {
+                LOG("ERROR: BOOTSTRAP_DH_TRANSCRIPT_INVALID — "
+                    "step-2 signature does not verify under the "
+                    "cosigner PEM whose fingerprint matched the pin "
+                    "(rc=%d, verified=%d).  Aborting before any AEAD "
+                    "keys are derived.", verify_rc, verified);
+                json_object_put(resp);
+                goto done;
+            }
+            LOG("  DH transcript signature verified (P0 #63)");
+        }
+
         json_object_put(resp);
     }
-    LOG("server DH public key + salt received");
+    LOG("server DH public key + salt + pop_nonce received");
 
     /* --- Compute shared secret --- */
     if (wc_curve25519_init(&server_key) != 0) {
