@@ -42,11 +42,14 @@
 
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/sha256.h>
+#include <wolfssl/wolfcrypt/sha3.h>      /* P0 #9b show-tpm: cosigner SPKI hash */
 #include <wolfssl/wolfcrypt/asn_public.h>
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/wolfcrypt/mtc.h>
 #include <wolfssl/wolfcrypt/dilithium.h>
 #include <wolfssl/wolfcrypt/coding.h>
+
+#include "mqc_dnssec_pin.h"               /* P0 #9b show-tpm: DNSSEC pin */
 
 /* Verify a Merkle inclusion proof per RFC 9162 Section 2.1.3.
  *
@@ -1176,6 +1179,46 @@ static char *bootstrap_fetch_ca_pubkey(const char *host, int port)
  *   pubkey should be distributed out-of-band to eliminate the
  *   trust-on-first-use window (tracked in README-bugsandtodo.md §9b).
  ******************************************************************************/
+/* P0 / TODO #9b show-tpm surface — verify a PEM body's SHA3-256
+ * SPKI fingerprint matches the operator's DNSSEC pin.  Returns 0
+ * iff hash(DER(SPKI(pem))) equals the lowercase-hex `expected_fp`.
+ * Returns -1 on any decode/hash error or mismatch — fail-closed.
+ * Mirrors the bootstrap_ca verify check at the wire level so the
+ * library and the CLI tools agree byte-for-byte on what a
+ * "matching" cosigner PEM looks like. */
+static int verify_pem_against_dnssec_fp(const char *pem,
+                                        const char *expected_fp)
+{
+    unsigned char der[4096];
+    int der_sz = wc_PubKeyPemToDer((const unsigned char *)pem,
+                                   (int)strlen(pem),
+                                   der, (int)sizeof(der));
+    if (der_sz <= 0) return -1;
+
+    unsigned char digest[32];
+    wc_Sha3 sha;
+    wc_InitSha3_256(&sha, NULL, INVALID_DEVID);
+    wc_Sha3_256_Update(&sha, der, (word32)der_sz);
+    wc_Sha3_256_Final(&sha, digest);
+    wc_Sha3_256_Free(&sha);
+
+    char got[65];
+    {
+        static const char hexdigits[] = "0123456789abcdef";
+        int i;
+        for (i = 0; i < 32; i++) {
+            got[i * 2]     = hexdigits[(digest[i] >> 4) & 0xf];
+            got[i * 2 + 1] = hexdigits[digest[i] & 0xf];
+        }
+        got[64] = '\0';
+    }
+    /* Constant-time-ish strcmp (both are 64 hex). */
+    int diff = 0, i;
+    for (i = 0; i < 64; i++)
+        diff |= got[i] ^ expected_fp[i];
+    return diff ? -1 : 0;
+}
+
 int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out_raw)
 {
     const char *home = getenv("HOME");
@@ -1187,15 +1230,13 @@ int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out_raw)
     if (!home) home = "/tmp";
 
     /* P0 / TODO #9b leaf branch — per-leaf-first lookup.
-     * bootstrap_leaf now writes a fingerprint-and-signature-verified
-     * cosigner PEM to ~/.TPM/<subject>/ca-cosigner.pem.  Resolve the
-     * ~/.TPM/default symlink (the same mechanism show-tpm /
-     * issue_leaf_nonce / etc. use to pick the active identity) and
-     * try its ca-cosigner.pem before the global TOFU cache.  If
-     * present, every MQC handshake from this host now trusts an
-     * authenticated cosigner pubkey instead of a TOFU'd one — the
-     * entire premise of TODO #9b on the leaf path.  Falls through
-     * to the global cache for legacy / pre-#9b enrollments. */
+     * bootstrap_leaf and bootstrap_ca write a fingerprint-and-
+     * signature-verified cosigner PEM to
+     * ~/.TPM/<subject>[-<label>][-ca]/ca-cosigner.pem.  The
+     * ~/.TPM/default symlink (set by the same bootstrap tools)
+     * resolves to whichever identity this host should use.  Try
+     * its ca-cosigner.pem first; if present, this host already
+     * has an authenticated cosigner pinned and we're done. */
     {
         char per_leaf_path[512];
         snprintf(per_leaf_path, sizeof(per_leaf_path),
@@ -1206,26 +1247,93 @@ int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out_raw)
             free(pem);
             if (rc == 0) return 0;
             fprintf(stderr,
-                    "[mqc] per-leaf %s malformed; falling back to "
-                    "global cache\n", per_leaf_path);
+                    "[mqc] per-leaf %s malformed; falling back\n",
+                    per_leaf_path);
         }
     }
 
     snprintf(cache_path, sizeof(cache_path),
              "%s/.TPM/ca-cosigner.pem", home);
 
+    /* P0 / TODO #9b show-tpm surface — DNSSEC fetch BEFORE TOFU.
+     *
+     * For first-contact MQC clients that didn't go through a
+     * bootstrap_leaf / bootstrap_ca enrollment, the historical
+     * fallback was to TOFU the cosigner PEM from the bootstrap
+     * port and cache it at ~/.TPM/ca-cosigner.pem.  That first
+     * fetch is over plaintext 8445 — an on-path attacker could
+     * substitute their own cosigner key and every subsequent
+     * Merkle-proof verification would trust the attacker's log.
+     *
+     * Closure: if `_mqc-cosigner.<host>` is published as a
+     * DNSSEC-signed TXT record, fetch it FIRST and use the
+     * 64-char SHA3-256 hex it carries to authenticate any PEM
+     * we obtain (cached OR freshly fetched).
+     *
+     * Fall-back policy:
+     *   OK              — strict mode; cache and fetch must hash to fp
+     *   BOGUS           — fail-closed (active attack signal)
+     *   INSECURE/NO_DATA/RESOLVE_ERROR — log and fall through to TOFU
+     *                     (preserves backwards compat for hosts whose
+     *                     parent CA hasn't published the record yet) */
+    char dnssec_fp[65];
+    int  have_dnssec_fp = 0;
+    {
+        char host[256];
+        extract_host(mtc_server, host, sizeof(host));
+        /* localhost / 127.0.0.1 / ::1 — self-bootstrap, skip
+         * DNSSEC.  The mtc_server on the same box is the cosigner
+         * itself; no cross-host MitM surface. */
+        int is_local =
+            (strcmp(host, "localhost") == 0) ||
+            (strcmp(host, "127.0.0.1") == 0) ||
+            (strcmp(host, "::1") == 0);
+        if (!is_local) {
+            mqc_dnssec_status_t st =
+                mqc_dnssec_fetch_cosigner_kh(host, dnssec_fp);
+            if (st == MQC_DNSSEC_OK) {
+                have_dnssec_fp = 1;
+                if (mqc_get_verbose())
+                    fprintf(stderr,
+                            "[mqc] DNSSEC pin _mqc-cosigner.%s "
+                            "-> sha3-256:%s\n", host, dnssec_fp);
+            } else if (st == MQC_DNSSEC_BOGUS) {
+                fprintf(stderr,
+                        "[mqc] DNSSEC BOGUS for _mqc-cosigner.%s — "
+                        "active attack signal; refusing to load "
+                        "cosigner pubkey\n", host);
+                return -1;
+            }
+            /* INSECURE / NO_DATA / RESOLVE_ERROR → fall through
+             * silently to TOFU.  Operators upgrading a deployment
+             * publish the TXT record at their convenience. */
+        }
+    }
+
     /* Try local cache first. */
     pem = read_file_str(cache_path);
     if (pem) {
-        rc = pem_extract_mldsa_raw(pem, (byte *)out_raw);
-        free(pem);
-        if (rc == 0) return 0;
-        fprintf(stderr, "[mqc] cached %s malformed; refetching\n",
-                cache_path);
+        if (have_dnssec_fp &&
+            verify_pem_against_dnssec_fp(pem, dnssec_fp) != 0) {
+            fprintf(stderr,
+                    "[mqc] cached %s does NOT match DNSSEC pin "
+                    "for _mqc-cosigner.<host> — invalidating cache "
+                    "and refetching\n", cache_path);
+            free(pem);
+            pem = NULL;
+            unlink(cache_path);
+        } else {
+            rc = pem_extract_mldsa_raw(pem, (byte *)out_raw);
+            free(pem);
+            if (rc == 0) return 0;
+            fprintf(stderr, "[mqc] cached %s malformed; refetching\n",
+                    cache_path);
+        }
     }
 
-    /* Fetch from DH bootstrap port (TOFU).  No TLS — the payload is a
-     * public key that the caller pins regardless of transport. */
+    /* Fetch from DH bootstrap port.  When have_dnssec_fp == 1 the
+     * DNSSEC pin authenticates the fetched bytes; without it the
+     * fetch is the legacy TOFU path. */
     {
         char host[256];
         char *body;
@@ -1252,6 +1360,17 @@ int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out_raw)
         pem = strdup(json_object_get_string(val));
         json_object_put(obj);
         if (!pem) return -1;
+
+        if (have_dnssec_fp &&
+            verify_pem_against_dnssec_fp(pem, dnssec_fp) != 0) {
+            fprintf(stderr,
+                    "[mqc] fetched cosigner PEM does NOT match "
+                    "DNSSEC pin for _mqc-cosigner.%s — refusing "
+                    "to pin (possible MitM on bootstrap port)\n",
+                    host);
+            free(pem);
+            return -1;
+        }
 
         rc = pem_extract_mldsa_raw(pem, (byte *)out_raw);
         if (rc == 0)

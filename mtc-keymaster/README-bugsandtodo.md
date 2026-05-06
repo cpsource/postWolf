@@ -527,11 +527,11 @@ working since they only look for `-----END`.
 
 **9b. Eliminate TOFU on first `/ca/public-key` fetch**
 
-**LEAF BRANCH DONE 2026-05-06** (operator-paste cosigner-fp on
-`bootstrap_leaf`; signed bootstrap response).  **CA BRANCH DONE
-2026-05-06** (DNSSEC-fetched cosigner-fp on `bootstrap_ca`).
-The `show-tpm` first-contact surface remains open — see "9b
-remaining surface" at the end of this entry.
+**ALL THREE SURFACES DONE 2026-05-06.**  Leaf branch (operator-
+paste cosigner-fp on `bootstrap_leaf`); CA branch (DNSSEC-fetched
+cosigner-fp on `bootstrap_ca`); show-tpm surface (`mqc_load_ca_pubkey`
+in `libmqc.a` does the same DNSSEC pin lookup before TOFU).
+TODO #9b is closed.
 
 Status detail:
 
@@ -582,16 +582,30 @@ CA branch status detail (2026-05-06):
   zero-warning C build at `make -f Makefile.tools clean &&
   make -f Makefile.tools`.
 
-**9b remaining surface — `show-tpm` first-contact TOFU.**
-`show-tpm --mqc` performs a trust-on-first-use fetch of the CA
-cosigner pubkey from the MTC HTTP server and caches it at
-`~/.TPM/ca-cosigner.pem`.  That first fetch is over TLS to the
-same server whose signatures we're about to verify — not ideal.
-Closure: extend `mqc_load_ca_pubkey` to fall back from the
-per-leaf `~/.TPM/<subject>/ca-cosigner.pem` to a DNSSEC fetch of
-`_mqc-cosigner.<parent>` BEFORE the TOFU path.  Same helper the
-CA branch uses; just wired into the library.  Roughly half a
-day of work; opens as the third / final cutover under #9b.
+**show-tpm surface DONE 2026-05-06.**  `mqc_load_ca_pubkey` in
+`libmqc.a` now does a DNSSEC fetch of `_mqc-cosigner.<host>`
+BEFORE the legacy TOFU path:
+
+- DNSSEC OK → strict mode.  The cached PEM (or freshly fetched
+  one) MUST hash to the DNSSEC-pinned SHA3-256 fp, else the
+  cache is invalidated and the fetched PEM is rejected.
+- DNSSEC BOGUS → fail-closed; refuse to load any PEM.
+- DNSSEC INSECURE / NO_DATA / RESOLVE_ERROR → fall through to
+  legacy TOFU (preserves backwards compat for hosts whose
+  parent CA hasn't published the cosigner record yet).
+- localhost / 127.0.0.1 / ::1 → DNSSEC skipped; self-bootstrap
+  needs no cross-host MitM defence.
+
+Verified live: `show-tpm --verify` against factsorlie.com with
+the global cache deleted refetches via DNSSEC, lands a verified
+PEM at `~/.TPM/ca-cosigner.pem`.  Tampered cache (wrong PEM,
+even with a valid PEM-text shape) is detected on the next call,
+cache invalidated, fresh PEM fetched and re-verified.
+
+Library-link footprint: `mqc_dnssec_pin.{c,h}` joined `libmqc.a`;
+all consumers now pull `-lunbound -lcrypto` from the link line
+(see `socket-level-wrapper-MQC/Makefile` LDFLAGS and
+`mtc-keymaster/tools/c/Makefile` per-target lines).
 
 The same vulnerability also exists on port 8445 (DH bootstrap), in
 two forms:

@@ -11,12 +11,13 @@ CFLAGS  += -I../mtc-keymaster/read-config
 LDFLAGS += $(shell pkg-config --libs postWolf)
 LDFLAGS += $(shell pkg-config --libs json-c)
 LDFLAGS += $(shell pkg-config --libs augeas)
-LDFLAGS += -lcurl -lhiredis
+LDFLAGS += -lcurl -lhiredis -lunbound -lcrypto
 
 AR      ?= ar
 
 LIB     = libmqc.a
-OBJS    = mqc.o mqc_common.o mqc_clear.o mqc_encrypted.o mqc_peer.o
+OBJS    = mqc.o mqc_common.o mqc_clear.o mqc_encrypted.o mqc_peer.o \
+          mqc_dnssec_pin.o
 TESTS   = tests/test_name_check tests/mqc_dnssec_pin
 TARGETS = $(LIB) examples/echo_server examples/echo_client $(TESTS)
 
@@ -44,8 +45,11 @@ mqc_clear.o: mqc_clear.c mqc.h mqc_internal.h mqc_peer.h
 mqc_encrypted.o: mqc_encrypted.c mqc.h mqc_internal.h mqc_peer.h
 	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_encrypted.c
 
-mqc_peer.o: mqc_peer.c mqc_peer.h
+mqc_peer.o: mqc_peer.c mqc_peer.h mqc_dnssec_pin.h
 	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_peer.c
+
+mqc_dnssec_pin.o: mqc_dnssec_pin.c mqc_dnssec_pin.h
+	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_dnssec_pin.c
 
 examples/echo_server: examples/echo_server.c $(LIB) mqc.h
 	$(call quiet,CCLD,$@)$(CC) $(CFLAGS) -I. -o $@ $< ../mtc-keymaster/read-config/read-config.c -L. -lmqc $(LDFLAGS)
