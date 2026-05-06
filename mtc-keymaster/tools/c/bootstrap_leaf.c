@@ -44,8 +44,20 @@
 #include <wolfssl/wolfcrypt/hmac.h>
 #include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/types.h>
+#include <wolfssl/wolfcrypt/dilithium.h>     /* P0 #9b: ML-DSA-87 verify */
+#include <wolfssl/wolfcrypt/asn_public.h>    /* P0 #9b: wc_PubKeyPemToDer */
+#include <wolfssl/wolfcrypt/sha256.h>        /* P0 #9b: wc_Sha256Hash */
 
 #include <json-c/json.h>
+
+/* P0 / TODO #9b leaf branch — must match the server-side label
+ * in mtc_bootstrap.c.  The cosigner signs the canonical JSON of
+ * the bootstrap response (with ca_cosigner_pem set, ca_response_sig
+ * absent) under this ctx.  Any divergence between client and
+ * server here breaks every fresh enrollment — handle as a
+ * single-deployment flag-day per CLAUDE.md. */
+#define MTC_BOOTSTRAP_LABEL      "mtc-bootstrap/v1\n\x00"
+#define MTC_BOOTSTRAP_LABEL_LEN  16
 
 #define HKDF_INFO        "mtc-dh-bootstrap"
 #define SALT_SZ          16
@@ -252,7 +264,8 @@ static int sanitize_label(const char *in)
 static int save_to_tpm(const char *tpm_dir, const char *subject,
                        const char *label, int make_default,
                        const char *cert_json, int cert_index,
-                       const char *pub_key_path, const char *priv_key_path)
+                       const char *pub_key_path, const char *priv_key_path,
+                       const char *ca_cosigner_pem)
 {
     char dir_path[256];
     char file_path[256 + 32];  /* dir_path + longest filename */
@@ -340,6 +353,33 @@ static int save_to_tpm(const char *tpm_dir, const char *subject,
         free(key_data);
     }
 
+    /* P0 / TODO #9b leaf branch — pin the now-authenticated CA
+     * cosigner PEM into this leaf's TPM dir so future MQC handshakes
+     * (mqc_load_ca_pubkey) take this per-leaf path instead of TOFUing
+     * over port 8445.  Verification of fingerprint + signature happens
+     * before save_to_tpm is called; by the time the PEM lands here
+     * we've already proven (a) sha256(DER(SPKI)) matches the operator-
+     * pasted fingerprint and (b) the bootstrap response was signed
+     * under this PEM's private key. */
+    if (ca_cosigner_pem && ca_cosigner_pem[0]) {
+        snprintf(file_path, sizeof(file_path),
+                 "%s/ca-cosigner.pem", dir_path);
+        fp = fopen(file_path, "w");
+        if (fp) {
+            fputs(ca_cosigner_pem, fp);
+            /* Ensure trailing newline so readers that strstr for
+             * "-----END" tolerate either form. */
+            size_t pem_len = strlen(ca_cosigner_pem);
+            if (pem_len == 0 || ca_cosigner_pem[pem_len - 1] != '\n')
+                fputc('\n', fp);
+            fclose(fp);
+            LOG("  wrote %s", file_path);
+        } else {
+            LOG("WARN: could not write %s: %s", file_path,
+                strerror(errno));
+        }
+    }
+
     /* ~/.TPM/default symlink policy (plan TODO #26 Phases D + G):
      *   default missing → always create it pointing at this identity
      *   default present + !make_default → leave alone (operator's pin)
@@ -400,6 +440,13 @@ static void usage(const char *prog)
     printf("  --public-key FILE    Path to leaf public key PEM\n");
     printf("  --private-key FILE   Path to leaf private key PEM\n");
     printf("  --nonce NONCE        Enrollment nonce (64-char hex)\n");
+    printf("  --cosigner-fp FP     SHA-256 of DER(SPKI) of the CA's cosigner\n");
+    printf("                       pubkey (sha256:<hex> or raw 64-char hex).\n");
+    printf("                       Required.  Issued by the CA operator\n");
+    printf("                       alongside --nonce; printed by\n");
+    printf("                       issue_leaf_nonce as 'Cosigner-fp:'.\n");
+    printf("                       The bootstrap response is rejected if its\n");
+    printf("                       embedded ca_cosigner_pem doesn't match.\n");
     printf("  --key-algorithm ALG  Key algorithm (default: ML-DSA-87)\n");
     printf("  --validity-days N    Certificate validity (default: 90)\n");
     printf("  --tpm-dir DIR        TPM storage directory (default: ~/.TPM)\n");
@@ -422,6 +469,7 @@ int main(int argc, char *argv[])
     const char *pub_key_path = NULL;
     const char *priv_key_path = NULL;
     const char *nonce = NULL;
+    const char *cosigner_fp_arg = NULL;   /* P0 #9b */
     const char *key_algo = "ML-DSA-87";
     int validity_days = 90;
     const char *tpm_dir_arg = NULL;
@@ -472,6 +520,8 @@ int main(int argc, char *argv[])
             priv_key_path = argv[++i];
         else if (strcmp(argv[i], "--nonce") == 0 && i + 1 < argc)
             nonce = argv[++i];
+        else if (strcmp(argv[i], "--cosigner-fp") == 0 && i + 1 < argc)
+            cosigner_fp_arg = argv[++i];
         else if (strcmp(argv[i], "--key-algorithm") == 0 && i + 1 < argc)
             key_algo = argv[++i];
         else if (strcmp(argv[i], "--validity-days") == 0 && i + 1 < argc)
@@ -520,7 +570,7 @@ int main(int argc, char *argv[])
     /* Default paths from ~/.mtc-ca-data/<domain>/ if not specified */
     {
         static char def_pub[512], def_priv[512], def_nonce_path[512];
-        static char nonce_buf[128];
+        static char nonce_buf[256];
         const char *home = getenv("HOME");
         if (!home) home = ".";
 
@@ -534,28 +584,94 @@ int main(int argc, char *argv[])
                      "%s/.mtc-ca-data/%s/private_key.pem", home, subject);
             priv_key_path = def_priv;
         }
-        if (!nonce) {
+        /* Persistent buffer for cosigner_fp parsed from nonce.txt
+         * (visible to the verify block far below).  Sized to hold a
+         * "sha256:" prefix + 64 hex chars + NUL with comfortable
+         * margin; the further-down --cosigner-fp canonicalizer
+         * length-checks before use. */
+        static char nonce_txt_cosigner_fp[256];
+        nonce_txt_cosigner_fp[0] = '\0';
+
+        if (!nonce || !cosigner_fp_arg) {
             FILE *nf;
             snprintf(def_nonce_path, sizeof(def_nonce_path),
                      "%s/.mtc-ca-data/%s/nonce.txt", home, subject);
             nf = fopen(def_nonce_path, "r");
             if (nf) {
-                if (fgets(nonce_buf, sizeof(nonce_buf), nf)) {
-                    /* Strip trailing newline */
-                    char *nl = strchr(nonce_buf, '\n');
+                char line[256];
+                int line_no = 0;
+                while (fgets(line, sizeof(line), nf)) {
+                    char *nl = strchr(line, '\n');
                     if (nl) *nl = '\0';
-                    nonce = nonce_buf;
+                    line_no++;
+                    /* First line is the nonce hex (matches the file
+                     * format issue_leaf_nonce writes). */
+                    if (line_no == 1 && !nonce && line[0]) {
+                        snprintf(nonce_buf, sizeof(nonce_buf), "%s", line);
+                        nonce = nonce_buf;
+                        continue;
+                    }
+                    /* P0 #9b: cosigner_fp=sha256:<hex> on a later
+                     * line (issue_leaf_nonce emits this when the
+                     * server returns ca_cosigner_fp). */
+                    if (!cosigner_fp_arg &&
+                        strncmp(line, "cosigner_fp=", 12) == 0) {
+                        snprintf(nonce_txt_cosigner_fp,
+                                 sizeof(nonce_txt_cosigner_fp),
+                                 "%s", line + 12);
+                        cosigner_fp_arg = nonce_txt_cosigner_fp;
+                    }
                 }
                 fclose(nf);
             }
             if (!nonce) {
                 fprintf(stderr, "Error: no --nonce given and no nonce.txt "
                         "found at %s\n"
-                        "Run issue_leaf_nonce.py --domain %s first\n",
+                        "Run issue_leaf_nonce --domain %s first\n",
                         def_nonce_path, subject);
                 return 1;
             }
         }
+    }
+
+    /* P0 / TODO #9b leaf branch — require --cosigner-fp.  No
+     * --no-pin escape hatch: pin or fail.  Accept either bare
+     * 64-char hex or "sha256:<hex>"; canonicalize to bare hex
+     * for the comparison further down. */
+    {
+        static char cosigner_fp_canon[65];
+        const char *p = cosigner_fp_arg;
+        if (!p) {
+            fprintf(stderr,
+                    "Error: --cosigner-fp is required (issued by the\n"
+                    "       CA operator alongside --nonce; printed by\n"
+                    "       issue_leaf_nonce as 'Cosigner-fp:' and\n"
+                    "       persisted as cosigner_fp=... in nonce.txt).\n"
+                    "       This pin closes the first-contact MitM hole\n"
+                    "       on port 8445; there is no --no-pin override.\n");
+            return 1;
+        }
+        if (strncmp(p, "sha256:", 7) == 0) p += 7;
+        if (strlen(p) != 64) {
+            fprintf(stderr,
+                    "Error: --cosigner-fp must be 64 hex chars "
+                    "(optionally prefixed with 'sha256:').  Got %zu chars.\n",
+                    strlen(p));
+            return 1;
+        }
+        for (int hi = 0; hi < 64; hi++) {
+            char c = p[hi];
+            char lc = (c >= 'A' && c <= 'F') ? (char)(c - 'A' + 'a') : c;
+            if (!((lc >= '0' && lc <= '9') || (lc >= 'a' && lc <= 'f'))) {
+                fprintf(stderr, "Error: --cosigner-fp contains a "
+                                "non-hex character at position %d ('%c')\n",
+                                hi, c);
+                return 1;
+            }
+            cosigner_fp_canon[hi] = lc;
+        }
+        cosigner_fp_canon[64] = '\0';
+        cosigner_fp_arg = cosigner_fp_canon;
     }
 
     /* Parse host:port */
@@ -820,6 +936,7 @@ int main(int argc, char *argv[])
     {
         struct json_object *resp, *val;
         const char *status;
+        const char *ca_cosigner_pem = NULL;
 
         resp = json_tokener_parse((const char *)dec_buf);
         if (!resp) {
@@ -837,6 +954,190 @@ int main(int argc, char *argv[])
                 json_object_put(resp);
                 goto done;
             }
+        }
+
+        /* P0 / TODO #9b leaf branch — verify the bootstrap response
+         * before trusting any of its other fields.  Steps:
+         *   1. Extract ca_cosigner_pem + ca_response_sig.  Both
+         *      missing  ⇒ legacy server, refuse (operator must
+         *      upgrade the CA before fresh enrollments will land).
+         *   2. SHA-256(DER(SPKI(pem))) must match cosigner_fp_arg.
+         *      This is the operator-pasted pin; it's the link that
+         *      defeats an on-path attacker on port 8445.
+         *   3. wc_dilithium_verify_ctx_msg the response signature
+         *      under the (now-fingerprint-authenticated) PEM, with
+         *      ctx=MTC_BOOTSTRAP_LABEL, over the canonical JSON of
+         *      the response with ca_response_sig removed.  This
+         *      proves the bootstrap response was actually produced
+         *      by the holder of the cosigner private key.
+         *   4. On success, ca_cosigner_pem becomes safe to pin into
+         *      the per-leaf TPM dir (handled in save_to_tpm). */
+        {
+            struct json_object *pem_val, *sig_val;
+            const char *response_sig_hex = NULL;
+            int  have_pem = json_object_object_get_ex(
+                                resp, "ca_cosigner_pem", &pem_val);
+            int  have_sig = json_object_object_get_ex(
+                                resp, "ca_response_sig", &sig_val);
+
+            if (!have_pem || !have_sig) {
+                LOG("ERROR: bootstrap response is missing P0 #9b "
+                    "fields (ca_cosigner_pem / ca_response_sig).  "
+                    "The CA server hasn't been upgraded to the "
+                    "post-#9b protocol; refusing to enroll.");
+                json_object_put(resp);
+                goto done;
+            }
+            ca_cosigner_pem    = json_object_get_string(pem_val);
+            response_sig_hex   = json_object_get_string(sig_val);
+            if (!ca_cosigner_pem || !response_sig_hex) {
+                LOG("ERROR: ca_cosigner_pem or ca_response_sig is "
+                    "not a string in the bootstrap response.");
+                json_object_put(resp);
+                goto done;
+            }
+            /* Copy the sig hex out before json_object_object_del
+             * frees the value below — the const char* returned by
+             * json_object_get_string is borrowed from the json_object
+             * and goes dangling on delete.  ML-DSA-87 hex sig is
+             * 9254 chars + NUL; 16 KB stack buffer is comfortable. */
+            char  response_sig_hex_buf[16384];
+            int   response_sig_hex_len = (int)strlen(response_sig_hex);
+            if (response_sig_hex_len <= 0 ||
+                response_sig_hex_len >= (int)sizeof(response_sig_hex_buf)) {
+                LOG("ERROR: ca_response_sig length %d out of range",
+                    response_sig_hex_len);
+                json_object_put(resp);
+                goto done;
+            }
+            memcpy(response_sig_hex_buf, response_sig_hex,
+                   (size_t)response_sig_hex_len + 1);
+            response_sig_hex = response_sig_hex_buf;
+
+            /* Step 2: fingerprint check. */
+            unsigned char spki_der[4096];
+            int spki_der_sz = wc_PubKeyPemToDer(
+                (const unsigned char *)ca_cosigner_pem,
+                (int)strlen(ca_cosigner_pem),
+                spki_der, (int)sizeof(spki_der));
+            if (spki_der_sz <= 0) {
+                LOG("ERROR: ca_cosigner_pem is not a valid PEM-encoded "
+                    "public key (wc_PubKeyPemToDer rc=%d)", spki_der_sz);
+                json_object_put(resp);
+                goto done;
+            }
+            unsigned char digest[WC_SHA256_DIGEST_SIZE];
+            if (wc_Sha256Hash(spki_der, (word32)spki_der_sz,
+                              digest) != 0) {
+                LOG("ERROR: SHA-256 over cosigner SPKI DER failed");
+                json_object_put(resp);
+                goto done;
+            }
+            char got_fp[WC_SHA256_DIGEST_SIZE * 2 + 1];
+            {
+                static const char hexdigits[] = "0123456789abcdef";
+                int hi;
+                for (hi = 0; hi < (int)sizeof(digest); hi++) {
+                    got_fp[hi * 2]     = hexdigits[(digest[hi] >> 4) & 0xf];
+                    got_fp[hi * 2 + 1] = hexdigits[digest[hi] & 0xf];
+                }
+                got_fp[sizeof(digest) * 2] = '\0';
+            }
+            /* cosigner_fp_arg is already canonicalized to bare 64-char
+             * lowercase hex; constant-time-equal compare. */
+            {
+                int diff = 0, hi;
+                for (hi = 0; hi < 64; hi++)
+                    diff |= got_fp[hi] ^ cosigner_fp_arg[hi];
+                if (diff != 0) {
+                    LOG("ERROR: COSIGNER_FP_MISMATCH — possible MitM "
+                        "on port 8445.\n"
+                        "       expected: sha256:%s\n"
+                        "       got:      sha256:%s\n"
+                        "       (the CA-operator-pasted --cosigner-fp "
+                        "does NOT match the response's ca_cosigner_pem)",
+                        cosigner_fp_arg, got_fp);
+                    json_object_put(resp);
+                    goto done;
+                }
+            }
+            LOG("  cosigner fingerprint matches (sha256:%s)", got_fp);
+
+            /* Step 3: signature verify.
+             * The signed bytes are the canonical JSON of the response
+             * with ca_response_sig REMOVED.  Strip the field, re-
+             * serialize with JSON_C_TO_STRING_PLAIN, and verify. */
+            json_object_object_del(resp, "ca_response_sig");
+            const char *to_verify = json_object_to_json_string_ext(
+                resp, JSON_C_TO_STRING_PLAIN);
+            int  to_verify_len = (int)strlen(to_verify);
+
+            int sig_hex_len = (int)strlen(response_sig_hex);
+            if (sig_hex_len <= 0 || (sig_hex_len & 1) != 0) {
+                LOG("ERROR: ca_response_sig is not even-length hex "
+                    "(len=%d)", sig_hex_len);
+                json_object_put(resp);
+                goto done;
+            }
+            int sig_bin_len = sig_hex_len / 2;
+            unsigned char *sig_bin =
+                (unsigned char *)malloc((size_t)sig_bin_len);
+            if (!sig_bin) {
+                LOG("ERROR: out of memory for response signature");
+                json_object_put(resp);
+                goto done;
+            }
+            {
+                int hi;
+                for (hi = 0; hi < sig_bin_len; hi++) {
+                    int hv, lv;
+                    char hc = response_sig_hex[hi * 2];
+                    char lc = response_sig_hex[hi * 2 + 1];
+                    if      (hc >= '0' && hc <= '9') hv = hc - '0';
+                    else if (hc >= 'a' && hc <= 'f') hv = 10 + hc - 'a';
+                    else if (hc >= 'A' && hc <= 'F') hv = 10 + hc - 'A';
+                    else { free(sig_bin); LOG("ERROR: ca_response_sig "
+                        "contains non-hex char"); json_object_put(resp);
+                        goto done; }
+                    if      (lc >= '0' && lc <= '9') lv = lc - '0';
+                    else if (lc >= 'a' && lc <= 'f') lv = 10 + lc - 'a';
+                    else if (lc >= 'A' && lc <= 'F') lv = 10 + lc - 'A';
+                    else { free(sig_bin); LOG("ERROR: ca_response_sig "
+                        "contains non-hex char"); json_object_put(resp);
+                        goto done; }
+                    sig_bin[hi] = (unsigned char)((hv << 4) | lv);
+                }
+            }
+
+            dilithium_key dil;
+            int verify_rc = -1, verified = 0;
+            if (wc_dilithium_init(&dil) == 0) {
+                if (wc_dilithium_set_level(&dil, WC_ML_DSA_87) == 0) {
+                    word32 idx = 0;
+                    if (wc_Dilithium_PublicKeyDecode(spki_der, &idx,
+                            &dil, (word32)spki_der_sz) == 0) {
+                        verify_rc = wc_dilithium_verify_ctx_msg(
+                            sig_bin, (word32)sig_bin_len,
+                            (const byte *)MTC_BOOTSTRAP_LABEL,
+                            MTC_BOOTSTRAP_LABEL_LEN,
+                            (const byte *)to_verify,
+                            (word32)to_verify_len,
+                            &verified, &dil);
+                    }
+                }
+                wc_dilithium_free(&dil);
+            }
+            free(sig_bin);
+            if (verify_rc != 0 || !verified) {
+                LOG("ERROR: BOOTSTRAP_RESPONSE_SIG_INVALID — "
+                    "signature does not verify under the cosigner "
+                    "PEM whose fingerprint matched the operator pin "
+                    "(rc=%d, verified=%d).  Refusing to enroll.",
+                    verify_rc, verified);
+                json_object_put(resp);
+                goto done;
+            }
+            LOG("  bootstrap response signature verified under cosigner PEM");
         }
 
         if (json_object_object_get_ex(resp, "index", &val)) {
@@ -880,7 +1181,8 @@ int main(int argc, char *argv[])
                         make_default,
                         json_object_to_json_string_ext(resp,
                             JSON_C_TO_STRING_PRETTY),
-                        cert_index, pub_key_path, priv_key_path) == 0) {
+                        cert_index, pub_key_path, priv_key_path,
+                        ca_cosigner_pem) == 0) {
                     LOG("certificate saved to %s/", tpm_dir);
                 } else {
                     LOG("ERROR: failed to save to TPM");

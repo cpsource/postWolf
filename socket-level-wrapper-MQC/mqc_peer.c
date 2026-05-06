@@ -1185,6 +1185,32 @@ int mqc_load_ca_pubkey(const char *mtc_server, unsigned char *out_raw)
 
     if (!mtc_server || !out_raw) return -1;
     if (!home) home = "/tmp";
+
+    /* P0 / TODO #9b leaf branch — per-leaf-first lookup.
+     * bootstrap_leaf now writes a fingerprint-and-signature-verified
+     * cosigner PEM to ~/.TPM/<subject>/ca-cosigner.pem.  Resolve the
+     * ~/.TPM/default symlink (the same mechanism show-tpm /
+     * issue_leaf_nonce / etc. use to pick the active identity) and
+     * try its ca-cosigner.pem before the global TOFU cache.  If
+     * present, every MQC handshake from this host now trusts an
+     * authenticated cosigner pubkey instead of a TOFU'd one — the
+     * entire premise of TODO #9b on the leaf path.  Falls through
+     * to the global cache for legacy / pre-#9b enrollments. */
+    {
+        char per_leaf_path[512];
+        snprintf(per_leaf_path, sizeof(per_leaf_path),
+                 "%s/.TPM/default/ca-cosigner.pem", home);
+        pem = read_file_str(per_leaf_path);
+        if (pem) {
+            rc = pem_extract_mldsa_raw(pem, (byte *)out_raw);
+            free(pem);
+            if (rc == 0) return 0;
+            fprintf(stderr,
+                    "[mqc] per-leaf %s malformed; falling back to "
+                    "global cache\n", per_leaf_path);
+        }
+    }
+
     snprintf(cache_path, sizeof(cache_path),
              "%s/.TPM/ca-cosigner.pem", home);
 

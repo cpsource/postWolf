@@ -639,6 +639,7 @@ int main(int argc, char *argv[])
             }
 
             const char *server_label = NULL;
+            const char *ca_cosigner_fp = NULL;
 
             if (json_object_object_get_ex(resp, "nonce", &jn_val))
                 nonce_str = json_object_get_string(jn_val);
@@ -650,6 +651,12 @@ int main(int argc, char *argv[])
              * --label on idempotent reissue (first call wins). */
             if (json_object_object_get_ex(resp, "label", &jn_val))
                 server_label = json_object_get_string(jn_val);
+            /* P0 / TODO #9b leaf branch — server emits the cosigner
+             * SPKI fingerprint so the operator can paste it next to
+             * the nonce when delivering both out-of-band. */
+            if (json_object_object_get_ex(resp, "ca_cosigner_fp",
+                                          &jn_val))
+                ca_cosigner_fp = json_object_get_string(jn_val);
 
             if (!nonce_str || strlen(nonce_str) != 64) {
                 fprintf(stderr, "Error: malformed nonce in response:\n%s\n",
@@ -661,29 +668,31 @@ int main(int argc, char *argv[])
             }
 
             printf("\nLeaf enrollment nonce issued:\n");
-            printf("  Domain:    %s\n", domain);
-            printf("  Nonce:     %s\n", nonce_str);
+            printf("  Domain:        %s\n", domain);
+            printf("  Nonce:         %s\n", nonce_str);
+            if (ca_cosigner_fp && ca_cosigner_fp[0])
+                printf("  Cosigner-fp:   sha256:%s\n", ca_cosigner_fp);
             {
                 long now_ts = (long)time(NULL);
                 long secs = expires - now_ts;
                 if (secs < 3600)
-                    printf("  Expires:   %ld (%ld min)\n", expires, secs / 60);
+                    printf("  Expires:       %ld (%ld min)\n", expires, secs / 60);
                 else if (secs < 86400)
-                    printf("  Expires:   %ld (%ld hours)\n", expires, secs / 3600);
+                    printf("  Expires:       %ld (%ld hours)\n", expires, secs / 3600);
                 else
-                    printf("  Expires:   %ld (%ld days)\n", expires, secs / 86400);
+                    printf("  Expires:       %ld (%ld days)\n", expires, secs / 86400);
             }
-            printf("  CA index:  %d\n", ca_index);
+            printf("  CA index:      %d\n", ca_index);
             if (server_label && server_label[0]) {
-                printf("  Label:     %s\n", server_label);
-                printf("  TPM dir:   ~/.TPM/%s-%s/ (on the leaf's side)\n",
+                printf("  Label:         %s\n", server_label);
+                printf("  TPM dir:       ~/.TPM/%s-%s/ (on the leaf's side)\n",
                        domain, server_label);
                 if (label_arg && strcmp(label_arg, server_label) != 0)
-                    printf("  Note:      server returned a different label\n"
-                           "             ('%s') than --label ('%s') — a\n"
-                           "             pending nonce already existed\n"
-                           "             for this key; label is immutable\n"
-                           "             until expiry.\n",
+                    printf("  Note:          server returned a different label\n"
+                           "                 ('%s') than --label ('%s') — a\n"
+                           "                 pending nonce already existed\n"
+                           "                 for this key; label is immutable\n"
+                           "                 until expiry.\n",
                            server_label, label_arg);
             }
 
@@ -706,9 +715,12 @@ int main(int argc, char *argv[])
                         fprintf(nf, "%s\n", nonce_str);
                         if (server_label && server_label[0])
                             fprintf(nf, "label=%s\n", server_label);
+                        if (ca_cosigner_fp && ca_cosigner_fp[0])
+                            fprintf(nf, "cosigner_fp=sha256:%s\n",
+                                    ca_cosigner_fp);
                         fclose(nf);
                         chmod(out_file, 0600);
-                        printf("\n  Saved to:  %s\n", out_file);
+                        printf("\n  Saved to:      %s\n", out_file);
                     } else {
                         fprintf(stderr, "Warning: cannot write %s: %s\n",
                                 out_file, strerror(errno));
@@ -716,23 +728,33 @@ int main(int argc, char *argv[])
                 }
             }
 
-            printf("\nSend this nonce to the leaf user. They enroll with:\n");
+            printf("\nSend this nonce AND the cosigner-fp to the leaf "
+                   "user. They enroll with:\n");
             if (ttl_days > 0) {
                 /* Reservation-mode: recipient generates their own keys
                  * locally.  register-leaf.sh cross-machine flow does
                  * exactly that. */
                 printf("  register-leaf.sh --domain \"%s\" %s%s%s \\\n"
-                       "                   --server %s:8445 --nonce %s\n",
+                       "                   --server %s:8445 --nonce %s",
                        domain,
                        label_arg ? "--label \"" : "",
                        label_arg ? label_arg : "",
                        label_arg ? "\"" : "",
                        g_mqc_host, nonce_str);
-                printf("  (long-lived %dd reservation; fp will bind at "
-                       "enrollment)\n", ttl_days);
+                if (ca_cosigner_fp && ca_cosigner_fp[0])
+                    printf(" \\\n"
+                           "                   --cosigner-fp sha256:%s",
+                           ca_cosigner_fp);
+                printf("\n  (long-lived %dd reservation; fp will bind "
+                       "at enrollment)\n", ttl_days);
             } else {
-                printf("  bootstrap_leaf --domain \"%s\" --nonce %s\n",
+                printf("  bootstrap_leaf --domain \"%s\" --nonce %s",
                        domain, nonce_str);
+                if (ca_cosigner_fp && ca_cosigner_fp[0])
+                    printf(" \\\n"
+                           "                 --cosigner-fp sha256:%s",
+                           ca_cosigner_fp);
+                printf("\n");
             }
 
             json_object_put(resp);

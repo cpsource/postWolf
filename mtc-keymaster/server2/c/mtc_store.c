@@ -1086,8 +1086,19 @@ int mtc_store_get_public_key_pem(MtcStore *store, char *out, int maxSz)
 
     if (derSz < 0) return derSz;
 
+    /* Emit as PUBLICKEY_TYPE so the body is wrapped in
+     * `-----BEGIN PUBLIC KEY-----` / `-----END PUBLIC KEY-----`.
+     * Closes TODO #9a — the historical ML_DSA_LEVEL5_TYPE label
+     * read as `BEGIN ML_DSA_LEVEL5 PRIVATE KEY` even though the
+     * body is a SubjectPublicKeyInfo, which made wc_PubKeyPemToDer
+     * reject the file (every consumer had to roll its own
+     * base64-and-slice parser).  PUBLICKEY_TYPE is the standard
+     * label and lets standard wolfSSL helpers parse it directly.
+     * Existing clients that tolerated the bad label (the
+     * header-agnostic pem_extract_mldsa_raw in mqc_peer.c)
+     * continue to work since they just look for "-----END". */
     ret = wc_DerToPem(der, (word32)derSz, (byte*)out, (word32)maxSz,
-        ML_DSA_LEVEL5_TYPE);
+        PUBLICKEY_TYPE);
     return ret;
 }
 

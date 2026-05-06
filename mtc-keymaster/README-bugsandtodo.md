@@ -508,18 +508,47 @@ cosignature verifier in `socket-level-wrapper-MQC/mqc_peer.c`) lands.
 These were explicitly left out of task #2's scope to keep the change
 focused.
 
-**9a. `/ca/public-key` PEM header is mislabelled**
+**9a. `/ca/public-key` PEM header is mislabelled — DONE 2026-05-06**
 
-`mtc_store_get_public_key_pem()` currently produces
-`-----BEGIN EDDSA PRIVATE KEY-----` around the Ed25519 *public* key
-DER.  The DER body is correct; only the label is wrong.  Clients work
-around it by base64-decoding the body and slicing the last 32 bytes.
-Once the label is fixed to `-----BEGIN PUBLIC KEY-----`, clients can
-use `wc_PubKeyPemToDer` + `wc_Ed25519PublicKeyDecode` cleanly.
+Closed as a side-effect of the P0 leaf branch (TODO #9b).  The
+historical `wc_DerToPem(... ML_DSA_LEVEL5_TYPE)` produced
+`-----BEGIN ML_DSA_LEVEL5 PRIVATE KEY-----` around the SPKI body,
+which `wc_PubKeyPemToDer` rejected and forced every consumer to
+roll its own base64-and-slice parser (see
+`mqc_peer.c::pem_extract_mldsa_raw`).  Switching the type to
+`PUBLICKEY_TYPE` emits the standard `-----BEGIN PUBLIC KEY-----`
+label so standard wolfSSL helpers parse it directly — needed for
+`bootstrap_leaf` to verify the new `ca_response_sig`.  Header-
+agnostic clients (the existing `pem_extract_mldsa_raw`) keep
+working since they only look for `-----END`.
 
-**Files:** `mtc-keymaster/server2/c/mtc_store.c` (`mtc_store_get_public_key_pem`)
+**Files:** `mtc-keymaster/server2/c/mtc_store.c`
+(`mtc_store_get_public_key_pem`).
 
 **9b. Eliminate TOFU on first `/ca/public-key` fetch**
+
+**LEAF BRANCH DONE 2026-05-06** (operator-paste cosigner-fp on
+`bootstrap_leaf`; signed bootstrap response).  CA-bootstrap branch
+and the `show-tpm` first-contact surface remain open.
+
+Status detail:
+
+- `issue_leaf_nonce` now emits `ca_cosigner_fp` in the nonce
+  response (SHA-256 over DER(SPKI(cosigner-pem))) and prints +
+  persists it next to the nonce.
+- The bootstrap-leaf response now carries `ca_cosigner_pem` +
+  `ca_response_sig` (ML-DSA-87 signature under the cosigner's
+  private key, ctx=`mtc-bootstrap/v1\n\0`, over the canonical JSON
+  of the response WITHOUT the sig field).
+- `bootstrap_leaf --cosigner-fp` is required.  No `--no-pin`
+  override — pin or fail.  The tool verifies fingerprint, then
+  signature, then writes the now-authenticated PEM to
+  `~/.TPM/<subject>[-<label>]/ca-cosigner.pem`.
+- `mqc_load_ca_pubkey` now looks at `~/.TPM/default/ca-cosigner.pem`
+  before falling through to the global TOFU cache, so future MQC
+  handshakes from a post-#9b leaf use the authenticated PEM.
+- Verified end-to-end on factsorlie.com: happy path enrolls + pins;
+  wrong fingerprint exits non-zero with no state writes.
 
 Currently `show-tpm --mqc` performs a trust-on-first-use fetch of the
 CA cosigner pubkey from the MTC HTTP server and caches it at

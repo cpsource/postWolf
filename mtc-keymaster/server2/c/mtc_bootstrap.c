@@ -94,6 +94,127 @@
 #define MTC_CA_POP_LABEL_LEN  16
 #define MTC_CA_POP_PREFIX     "MQC-CA-REGISTER"
 
+/* P0 / TODO #9b leaf branch — bootstrap-response signing.
+ *
+ * The leaf-enroll response is now signed under the cosigner's
+ * ML-DSA-87 private key.  The signature covers the CANONICAL
+ * JSON of the response with `ca_cosigner_pem` set and
+ * `ca_response_sig` set to the empty string.  The leaf operator
+ * pastes the cosigner SHA-256 fingerprint alongside the
+ * enrollment nonce; bootstrap_leaf verifies the fingerprint
+ * matches `ca_cosigner_pem`, then verifies this signature, then
+ * pins the now-authenticated PEM at
+ * ~/.TPM/<subject>[-<label>]/ca-cosigner.pem.  An on-path
+ * attacker on port 8445 cannot forge this signature without the
+ * cosigner private key. */
+#define MTC_BOOTSTRAP_LABEL      "mtc-bootstrap/v1\n\x00"
+#define MTC_BOOTSTRAP_LABEL_LEN  16
+
+/******************************************************************************
+ * Function:    add_cosigner_sig_to_response
+ *
+ * Description:
+ *   Append `ca_cosigner_pem` and `ca_response_sig` to a bootstrap-leaf
+ *   response object so the leaf can verify the response was actually
+ *   produced by the cosigner-key holder (P0 / TODO #9b leaf branch).
+ *
+ *   `ca_response_sig` covers the canonical JSON of the response
+ *   WITHOUT the signature field — verifier strips it, re-serializes
+ *   with JSON_C_TO_STRING_PLAIN, and verifies.  Both sides use
+ *   json-c's PLAIN flag, which preserves insertion order across
+ *   the parse → mutate → serialize cycle.
+ *
+ * Returns:
+ *   0   on success (resp is mutated in place).
+ *  -1   on signing / encoding failure.  Caller should NOT send the
+ *       response — the leaf would refuse it anyway.
+ ******************************************************************************/
+static int add_cosigner_sig_to_response(MtcStore *store,
+                                        struct json_object *resp)
+{
+    char cosigner_pem[8192];
+    int  cosigner_pem_sz = mtc_store_get_public_key_pem(
+        store, cosigner_pem, (int)sizeof(cosigner_pem));
+    if (cosigner_pem_sz <= 0) {
+        LOG_ERROR("bootstrap: cannot export cosigner PEM (rc=%d)",
+                  cosigner_pem_sz);
+        return -1;
+    }
+    json_object_object_add(resp, "ca_cosigner_pem",
+        json_object_new_string_len(cosigner_pem, cosigner_pem_sz));
+
+    /* Sign the canonical JSON of the response WITHOUT the signature
+     * field.  Verifier rebuilds the same bytes by deleting
+     * ca_response_sig from the parsed object and re-serializing
+     * with the same PLAIN flag. */
+    const char *to_sign = json_object_to_json_string_ext(
+        resp, JSON_C_TO_STRING_PLAIN);
+    int to_sign_len = (int)strlen(to_sign);
+
+    uint8_t  sig[DILITHIUM_LEVEL5_SIG_SIZE];
+    word32   sig_sz = (word32)sizeof(sig);
+    {
+        dilithium_key dil;
+        WC_RNG        rng;
+        int           ret;
+        word32        idx_w = 0;
+
+        if ((ret = wc_InitRng(&rng)) != 0) {
+            LOG_ERROR("bootstrap: wc_InitRng failed (rc=%d)", ret);
+            return -1;
+        }
+        if ((ret = wc_dilithium_init(&dil)) != 0) {
+            wc_FreeRng(&rng);
+            LOG_ERROR("bootstrap: wc_dilithium_init failed (rc=%d)", ret);
+            return -1;
+        }
+        if ((ret = wc_dilithium_set_level(&dil, WC_ML_DSA_87)) != 0) {
+            wc_dilithium_free(&dil);
+            wc_FreeRng(&rng);
+            LOG_ERROR("bootstrap: dilithium_set_level (rc=%d)", ret);
+            return -1;
+        }
+        if ((ret = wc_Dilithium_PrivateKeyDecode(
+                 store->ca_priv_key, &idx_w, &dil,
+                 (word32)store->ca_priv_key_sz)) != 0) {
+            wc_dilithium_free(&dil);
+            wc_FreeRng(&rng);
+            LOG_ERROR("bootstrap: Dilithium_PrivateKeyDecode (rc=%d)",
+                      ret);
+            return -1;
+        }
+        ret = wc_dilithium_sign_ctx_msg(
+            (const byte *)MTC_BOOTSTRAP_LABEL,
+            MTC_BOOTSTRAP_LABEL_LEN,
+            (const byte *)to_sign, (word32)to_sign_len,
+            sig, &sig_sz, &dil, &rng);
+        wc_dilithium_free(&dil);
+        wc_FreeRng(&rng);
+        if (ret != 0) {
+            LOG_ERROR("bootstrap: dilithium_sign (rc=%d)", ret);
+            return -1;
+        }
+    }
+
+    /* Hex-encode signature (consistent with other binary blobs in
+     * this codebase — see cosignatures field in mtc_store_cosign).
+     * 4627 sig bytes → 9254 hex chars + NUL. */
+    char *sig_hex = (char *)malloc((size_t)sig_sz * 2 + 1);
+    if (!sig_hex) {
+        LOG_ERROR("bootstrap: out of memory for sig_hex");
+        return -1;
+    }
+    {
+        int i;
+        for (i = 0; i < (int)sig_sz; i++)
+            snprintf(sig_hex + i * 2, 3, "%02x", sig[i]);
+    }
+    json_object_object_add(resp, "ca_response_sig",
+        json_object_new_string(sig_hex));
+    free(sig_hex);
+    return 0;
+}
+
 /******************************************************************************
  * Thread argument — passed from mtc_bootstrap_start to bootstrap_thread.
  ******************************************************************************/
@@ -1244,6 +1365,20 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                             json_object_new_string(bootstrap_label));
                     }
 
+                    /* P0 / TODO #9b leaf branch — also sign the
+                     * idempotent re-enroll response so a leaf that
+                     * happens to land on this path (same key, same
+                     * subject) still gets a verifiable cosigner PEM
+                     * to pin.  Without this the leaf would refuse
+                     * the reply with "missing P0 #9b fields". */
+                    if (add_cosigner_sig_to_response(store, existing) != 0) {
+                        LOG_WARN("bootstrap: idempotent re-enroll for "
+                                 "'%s' could not sign response — "
+                                 "dropping connection", subject);
+                        json_object_put(existing);
+                        goto cleanup;
+                    }
+
                     {
                         const char *resp_str =
                             json_object_to_json_string(existing);
@@ -1470,6 +1605,22 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                 json_object_object_add(wire_resp, "label",
                     json_object_new_string(bootstrap_label));
         }
+
+        /* P0 / TODO #9b leaf branch — bind cosigner PEM into the
+         * response and sign the canonical JSON.  Helper appends both
+         * ca_cosigner_pem (whole PEM) and ca_response_sig (hex
+         * ML-DSA-87 signature over the canonical JSON of the
+         * response BEFORE the signature field is added). */
+        if (add_cosigner_sig_to_response(store, wire_resp) != 0) {
+            json_object_put(wire_resp);
+            json_object_put(result);
+            json_object_put(tbs);
+            json_object_put(checkpoint);
+            free(proof);
+            free(entry_buf);
+            goto cleanup;
+        }
+
         {
             const char *result_str = json_object_to_json_string(wire_resp);
             enc_len = sizeof(enc_buf);

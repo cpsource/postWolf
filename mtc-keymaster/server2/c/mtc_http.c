@@ -724,6 +724,43 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
                                json_object_new_string(dns_value));
     }
 
+    /* P0 / TODO #9b leaf branch — emit the cosigner-key fingerprint
+     * so the CA operator can paste it alongside the nonce when
+     * delivering both out-of-band to the leaf operator.  The leaf's
+     * bootstrap_leaf consumes --cosigner-fp <hex>, recomputes the
+     * same SHA-256 over DER(SPKI(ca_cosigner_pem)) from the
+     * bootstrap response, and refuses to pin the PEM unless the
+     * fingerprints match.  An attacker on port 8445 cannot replace
+     * the cosigner PEM without breaking the SHA-256 the leaf
+     * operator pasted in. */
+    {
+        char cosigner_pem[8192];
+        int  cosigner_pem_sz = mtc_store_get_public_key_pem(
+            store, cosigner_pem, (int)sizeof(cosigner_pem));
+        if (cosigner_pem_sz > 0) {
+            unsigned char spki_der[4096];     /* ML-DSA-87 SPKI ~2.6 KB */
+            int spki_der_sz = wc_PubKeyPemToDer(
+                (const unsigned char *)cosigner_pem,
+                cosigner_pem_sz, spki_der, (int)sizeof(spki_der));
+            if (spki_der_sz > 0) {
+                unsigned char digest[WC_SHA256_DIGEST_SIZE];
+                if (wc_Sha256Hash(spki_der, (word32)spki_der_sz,
+                                  digest) == 0) {
+                    char hex[WC_SHA256_DIGEST_SIZE * 2 + 1];
+                    int  hi;
+                    static const char hexdigits[] = "0123456789abcdef";
+                    for (hi = 0; hi < (int)sizeof(digest); hi++) {
+                        hex[hi * 2]     = hexdigits[(digest[hi] >> 4) & 0xf];
+                        hex[hi * 2 + 1] = hexdigits[digest[hi] & 0xf];
+                    }
+                    hex[sizeof(digest) * 2] = '\0';
+                    json_object_object_add(resp, "ca_cosigner_fp",
+                        json_object_new_string(hex));
+                }
+            }
+        }
+    }
+
     http_send_json_obj(io, 200, resp);
     json_object_put(resp);
     json_object_put(req);
