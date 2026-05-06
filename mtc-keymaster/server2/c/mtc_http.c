@@ -565,6 +565,71 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
         nonce_type = json_object_get_string(val);
     is_leaf = (strcmp(nonce_type, "leaf") == 0);
 
+    /* TODO #64: leaf-type nonce issuance requires MQC peer-cert
+     * authentication AND the caller must be the CA for the
+     * requested domain.  Without this gate any in-log peer can
+     * mint a leaf nonce for any other CA's domain (cross-CA
+     * leaf hopping — see README-bugsandtodo.md §64).  CA-type
+     * nonces remain open: their auth is the subsequent DNSSEC
+     * TXT validation at consume time.  Mirrors the same pattern
+     * /cancel-nonce already uses. */
+    if (is_leaf) {
+        if (!io->mqc) {
+            LOG_WARN("enrollment-nonce (leaf) rejected: non-MQC "
+                     "transport from %s", io->ip_str);
+            http_send_error(io, 403,
+                "leaf nonce issuance requires MQC peer-cert auth "
+                "(use issue_leaf_nonce, which speaks MQC)");
+            json_object_put(req);
+            return;
+        }
+        int peer_idx = mqc_get_peer_index(io->mqc);
+        if (peer_idx < 0) {
+            LOG_WARN("enrollment-nonce (leaf) rejected: no MQC peer "
+                     "identity from %s", io->ip_str);
+            http_send_error(io, 403, "MQC peer identity unavailable");
+            json_object_put(req);
+            return;
+        }
+        if (peer_idx >= store->cert_count ||
+            store->certificates[peer_idx] == NULL) {
+            http_send_error(io, 404, "caller cert not found in log");
+            json_object_put(req);
+            return;
+        }
+        struct json_object *caller_cert, *sc_j, *tbs_j, *subj_j;
+        caller_cert = store->certificates[peer_idx];
+        if (!json_object_object_get_ex(caller_cert, "standalone_certificate", &sc_j) ||
+            !json_object_object_get_ex(sc_j, "tbs_entry", &tbs_j) ||
+            !json_object_object_get_ex(tbs_j, "subject", &subj_j)) {
+            http_send_error(io, 500, "internal error: malformed caller cert");
+            json_object_put(req);
+            return;
+        }
+        const char *caller_subject = json_object_get_string(subj_j);
+
+        /* Require caller_subject == "<domain>-ca" exactly.  No
+         * cross-CA hopping — a CA for example.com cannot mint
+         * leaf nonces for frflashy.com. */
+        char expected_subject[280];
+        int n = snprintf(expected_subject, sizeof(expected_subject),
+                         "%s-ca", domain);
+        if (n < 0 || n >= (int)sizeof(expected_subject) ||
+            !caller_subject ||
+            strcmp(caller_subject, expected_subject) != 0) {
+            LOG_WARN("enrollment-nonce (leaf) refused: caller '%s' "
+                     "(idx %d) is not the CA for domain '%s' "
+                     "(expected subject '%s')",
+                     caller_subject ? caller_subject : "(null)",
+                     peer_idx, domain, expected_subject);
+            http_send_error(io, 403,
+                "only the CA for this domain (subject "
+                "'<domain>-ca') may mint leaf nonces");
+            json_object_put(req);
+            return;
+        }
+    }
+
     /* Optional fingerprint.  Required for CA nonces and short-lived
      * leaf nonces; may be omitted for long-lived leaf reservations
      * (fp late-binds at consume).

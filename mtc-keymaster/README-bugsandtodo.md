@@ -3296,7 +3296,7 @@ two together form a coherent flag-day cutover.
 
 ---
 
-### 64. MQC-gate `POST /enrollment/nonce` for leaf-type nonces
+### 64. MQC-gate `POST /enrollment/nonce` for leaf-type nonces — **DONE 2026-05-06**
 
 **Severity:** **Medium** — cross-CA leaf hopping by existing
 in-log peers.  (Originally filed 2026-05-06 as HIGH on the
@@ -3304,6 +3304,23 @@ in-log peers.  (Originally filed 2026-05-06 as HIGH on the
 re-scoped 2026-05-06 after the operator clarified that port
 8444 is localhost-only and port 8446 requires an MQC peer
 cert to handshake.)
+
+**Resolution (2026-05-06):** `mtc_http.c::handle_enrollment_nonce`
+now requires (a) MQC transport AND (b) the peer's subject ==
+`<domain>-ca` for any `type=leaf` request.  Plain HTTP returns
+`403 leaf nonce issuance requires MQC peer-cert auth`; an MQC
+peer that's not the CA for the requested domain returns
+`403 only the CA for this domain may mint leaf nonces`.
+CA-type nonces remain open (auth happens at consume time via
+DNSSEC TXT).
+
+Verified live with six tests (HTTP curl, factsorlie-ca → own
+leaf, factsorlie-leaf → own leaf, factsorlie-ca → frflashy
+leaf, frflashy-ca → own leaf, frflashy-ca → factsorlie leaf).
+Cross-CA hopping blocked from both directions.
+
+Spec update: `mtc-keymaster/server2/README-detail-design-spec.md`
+§§3.2 + 5.1 — auth model rewritten to match.
 
 **The actual attack.**  `mtc_http.c:660-674` checks only that a
 registered CA exists for the requested domain, then issues a

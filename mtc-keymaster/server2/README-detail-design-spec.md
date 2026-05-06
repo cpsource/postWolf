@@ -273,10 +273,18 @@ Encrypted Client Hello config blob (base64).  Used by the SLC
 #### `POST /enrollment/nonce`
 Mint a new enrollment nonce.
 
-**Auth:** none on either port — the nonce is the auth token, not
-the request.  The minted nonce binds `(domain, fingerprint)` and
-is useless without the matching private key during enrollment.
-Per-IP rate-limited via `RL_NONCE_LEAF` or `RL_NONCE_CA`; for
+**Auth (CA-type nonces):** none — auth happens at consume time
+via DNSSEC TXT validation on `_mqc-ca.<domain>`.
+
+**Auth (leaf-type nonces):** **MQC peer-cert required**, AND
+the peer's subject must be exactly `<domain>-ca` for the
+requested `domain`.  Plain HTTP gets `403 leaf nonce issuance
+requires MQC peer-cert auth`; an MQC peer whose subject is not
+`<domain>-ca` gets `403 only the CA for this domain may mint
+leaf nonces`.  Closes TODO #64 (cross-CA leaf hopping by
+already-in-log peers).
+
+Per-IP rate-limited via `RL_NONCE_LEAF` or `RL_NONCE_CA`.  For
 leaf nonces, the server additionally requires that a registered
 CA exists for the domain (else `403 no registered CA`).
 
@@ -597,19 +605,17 @@ shapes.  The MQC peer's `cert_index` is exposed to handlers via
 
 | Endpoint | 8444 (TLS HTTP) | 8446 (MQC) |
 |---|---|---|
-| `POST /enrollment/nonce` (any type) | works (rate-limited only) | works (same code path) |
+| `POST /enrollment/nonce` type=ca | works (rate-limited only) | works (same code path) |
+| `POST /enrollment/nonce` type=leaf | `403` requires MQC | works; MQC peer subject must be `<domain>-ca` for the requested domain |
 | `POST /cancel-nonce` | `403` requires MQC | works; MQC peer must be the CA that issued the reservation |
 | `POST /renew-cert` | `403` requires MQC | works; MQC peer cert is the cert being renewed |
 | `POST /revoke` | works (request body carries CA-key signature) | works (same) |
 
-`POST /enrollment/nonce` is intentionally not MQC-gated on
-either port — the nonce-itself is the auth token: it binds
-(domain, fingerprint) and is meaningless to anyone who can't
-present the matching private key during the subsequent
-DH-bootstrap enrollment.  An attacker who can hit the port can
-mint nonces but can't enroll under them (no key match).  The
-discovery / DoS surface is bounded by `RL_NONCE_LEAF` /
-`RL_NONCE_CA`.
+CA-type nonces (`type=ca` or absent) stay open on either port:
+the auth happens at consume time via DNSSEC TXT validation on
+`_mqc-ca.<domain>`.  Leaf-type nonces are MQC-gated by the
+domain's CA — closes TODO #64 (cross-CA leaf hopping by
+already-in-log peers).
 
 Tools that always speak MQC (port 8446):
 
