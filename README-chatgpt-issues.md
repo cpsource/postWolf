@@ -75,10 +75,14 @@ I reviewed the uploaded `s2.tar.gz`. Priority fixes:
      calls it before `mtc_db_create_nonce`.
    * See appendix item 9 below for the verification trace.
 
-10. **Persistence failures after in-memory success are not fatal everywhere**
+10. **Persistence failures after in-memory success are not fatal everywhere** — **DONE 2026-05-06** (TODO #69)
 
-* I saw warnings after `save_certificate` / `save_public_key`. These should fail closed or queue retry before returning success.
-* File: `mtc_bootstrap.c:1560-1584`.
+* `mtc_db_save_certificate` / `mtc_db_save_public_key`
+  failures now LOG_ERROR + drop the in-memory cert at
+  `store->certificates[index]` + free local state +
+  `goto cleanup` (connection drop).  Client retry hits the
+  TODO #57 idempotency path.
+* See appendix item 10 below for the full trace.
 
 11. **Custom canonical JSON signing is fragile**
 
@@ -341,20 +345,26 @@ a diagnostic.  19/19 unit tests pass on the helper; live MQC
 smoke (`issue_leaf_nonce` / `cancel-nonce` with
 `valid.label_9-mix`) still succeeds end-to-end.
 
-### 10. Persistence-fail-after-success warnings — **PARTIAL**
+### 10. Persistence-fail-after-success warnings — **DONE 2026-05-06** (TODO #69)
 
-`mtc_bootstrap.c:1564` and `:1580` log warnings on
-`mtc_db_save_certificate` / `mtc_db_save_public_key` failures
-but proceed to send the (already-mutated-in-memory) successful
-response to the client.  TODO #57 item 4 already converted the
-mtc_log_entries write path to fail-closed (DB-first persistence;
-see commit `0c4a8a7e1`).  The cert + pubkey writes weren't
-covered.
+The post-enrollment persistence block in `mtc_bootstrap.c` now
+fails closed.  On `mtc_db_save_certificate` or
+`mtc_db_save_public_key` non-zero return:
 
-**Recommendation:** open as TODO #69, MEDIUM.  Same fail-closed
-pattern: if either save returns non-zero, roll back the
-in-memory append (or refuse to send the response) and log
-LOG_ERROR rather than LOG_WARN.
+- `LOG_ERROR` with full context.
+- `json_object_put(store->certificates[index])` + NULL out the
+  slot.
+- Free local enrollment state (`result`, `tbs`, `checkpoint`,
+  `proof`, `entry_buf`) and `goto cleanup` — the connection
+  drops, client sees EOF, retry hits the TODO #57 idempotency
+  path.
+
+The committed Merkle log entry is left in place — un-appending
+cross-fork isn't possible — so a save_certificate failure
+costs one wasted log slot.  Same trade-off TODO #57 item 4
+made for log-entry-write failures.  Operator can run
+`backfill-pubkey` if `save_public_key` repeatedly fails after
+`save_certificate` succeeded.
 
 ### 11. Custom canonical JSON signing fragile — **DOC / LOW**
 

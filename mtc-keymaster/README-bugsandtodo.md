@@ -3640,33 +3640,45 @@ classes).  End-to-end MQC smoke (`issue_leaf_nonce` /
 
 ---
 
-### 69. Cert/pubkey persistence failures should fail closed
+### 69. Cert/pubkey persistence failures should fail closed — DONE 2026-05-06
 
-**Severity:** Medium — TODO #57 follow-on.  Filed 2026-05-06.
+**Severity:** Medium — TODO #57 follow-on.  Filed 2026-05-06,
+closed same day.
 
-**Current state:** `mtc_bootstrap.c:1564` and `:1580` log
-warnings on `mtc_db_save_certificate` /
-`mtc_db_save_public_key` failures, but proceed to send the
-(already-mutated-in-memory) successful response to the client.
-TODO #57 item 4 already converted the `mtc_log_entries` write
-path to fail-closed (DB-first persistence).  The cert + pubkey
-writes weren't covered by that pass.
+**What landed:** `mtc_bootstrap.c` post-enrollment persistence
+block now fails closed.  On `mtc_db_save_certificate` or
+`mtc_db_save_public_key` non-zero return:
 
-**Fix:** same fail-closed pattern.  If either save returns
-non-zero:
+- `LOG_ERROR` (not `LOG_WARN`) with full context.
+- Drop `store->certificates[index]` (`json_object_put` + NULL).
+- Free local enrollment state (`result`, `tbs`, `checkpoint`,
+  `proof`, `entry_buf`) and `goto cleanup`.
+- Connection drops; client sees EOF and retries.  On retry the
+  TODO #57 idempotency path (lookup-by-spk_hash) serves the
+  existing cert if save_certificate had succeeded but
+  save_public_key didn't.
 
-1. Roll back the in-memory append (drop the cert from
-   `store->certificates[index]`, decrement tree size).
-2. Log `LOG_ERROR` rather than `LOG_WARN`.
-3. Return an error response to the client instead of the
-   issued cert — they'll retry, server will pick a fresh slot,
-   and the DB will eventually catch up.
+The committed Merkle log entry is left in place — un-appending
+it cross-fork isn't possible — so a save_certificate failure
+costs one wasted log slot (the next retry picks a fresh
+index).  This matches the trade-off TODO #57 item 4 already
+made for log-entry-write failures.
+
+If `save_public_key` repeatedly fails after `save_certificate`
+succeeded, the operator backfills with `backfill-pubkey`.
+
+Verified live: happy-path MQC enrollment
+(`issue_leaf_nonce` / `cancel-nonce`) still succeeds
+end-to-end.  No live DB-failure injection, but the error
+handler mirrors the existing encryption-failure path at
+mtc_bootstrap.c:1820 (same free pattern, same `goto cleanup`).
 
 **Files:**
 
-- `mtc-keymaster/server2/c/mtc_bootstrap.c` (around 1560–1590).
+- `mtc-keymaster/server2/c/mtc_bootstrap.c` (post-enrollment
+  persistence block).
 
-**Status:** OPEN.
+**Status:** DONE.
 
 ---
 

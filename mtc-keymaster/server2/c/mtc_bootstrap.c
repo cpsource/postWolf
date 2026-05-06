@@ -1746,12 +1746,32 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
             store->certificates[store->cert_count++] = NULL;
         store->certificates[index] = json_object_get(result);
 
-        /* Persist */
+        /* Persist.  Both DB writes are fail-closed (TODO #69): on
+         * any persistence error we drop the in-memory cert, log an
+         * ERROR, and bail to cleanup so the client sees a transport
+         * drop and retries.  The Merkle log entry is already
+         * committed in the DB at this point — un-appending it isn't
+         * possible cross-fork — so the trade-off is a wasted log
+         * slot in exchange for fail-closed cert/pubkey persistence.
+         * Operator can backfill via backfill-pubkey if save_pubkey
+         * fails after save_certificate succeeded. */
         mtc_store_save(store);
         if (store->use_db && store->db) {
             const char *cert_str = json_object_to_json_string(result);
-            if (mtc_db_save_certificate(store->db, index, cert_str) != 0)
-                fprintf(stderr, "[bootstrap] WARNING: DB save_certificate failed for index %d\n", index);
+            if (mtc_db_save_certificate(store->db, index, cert_str) != 0) {
+                LOG_ERROR("bootstrap: DB save_certificate failed for "
+                          "index %d ('%s') — failing closed (TODO #69); "
+                          "wasted log slot, client will retry into a "
+                          "fresh slot", index, subject);
+                json_object_put(store->certificates[index]);
+                store->certificates[index] = NULL;
+                json_object_put(result);
+                json_object_put(tbs);
+                json_object_put(checkpoint);
+                free(proof);
+                free(entry_buf);
+                goto cleanup;
+            }
             /* Record the pubkey under the same directory-naming
              * convention the client uses under ~/.TPM/:
              *     subject                for an unlabelled leaf/CA
@@ -1768,9 +1788,22 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                     snprintf(key_name, sizeof(key_name), "%s", subject);
                 if (mtc_db_save_public_key(store->db, key_name,
                                            pub_key_pem) != 0) {
-                    fprintf(stderr,
-                        "[bootstrap] WARNING: DB save_public_key failed "
-                        "for %s\n", key_name);
+                    LOG_ERROR("bootstrap: DB save_public_key failed "
+                              "for '%s' — failing closed (TODO #69); "
+                              "cert at index %d is persisted, but "
+                              "pubkey is not.  Client will retry into "
+                              "the idempotency path which serves the "
+                              "existing cert; operator may need to "
+                              "run backfill-pubkey if retries also "
+                              "fail.", key_name, index);
+                    json_object_put(store->certificates[index]);
+                    store->certificates[index] = NULL;
+                    json_object_put(result);
+                    json_object_put(tbs);
+                    json_object_put(checkpoint);
+                    free(proof);
+                    free(entry_buf);
+                    goto cleanup;
                 }
             }
         }
