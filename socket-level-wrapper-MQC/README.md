@@ -47,7 +47,7 @@ as an opaque AEAD failure deep into application traffic.
 | [`draft-page-mqc-protocol-00.md`](./draft-page-mqc-protocol-00.md) | **The spec** — normative wire format, key schedule, peer-verification chain, security considerations.  Renderable to plain text via `python3 render-draft.py draft-page-mqc-protocol-00.md > draft-page-mqc-protocol-00.txt`. |
 | [`mqc-master.plan`](./mqc-master.plan) | **What changed and when** — the master plan for the Phase 0–7 hardening pass, including the dependency graph between issues and the cumulative spec deltas. |
 | [`mqc-issue-{1,2,3,4,5,6,6a,7,8,9,11,12}.plan`](./) | **Why each design decision was made** — per-issue plans that document the threat the change addresses, the alternative designs considered, and the migration runbook. |
-| [`README-mqc-issues.md`](./README-mqc-issues.md) | The original external security-review issue list (12 items) that drove the Phase 1–3 hardening. |
+| [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) | The original external security-review issue list (12 items) that drove the Phase 1–3 hardening. |
 | [`README-plans.md`](./README-plans.md) | Per-issue analyses: deployment model, wire-format-break categorization, the "this is a single-deployment protocol so flag days are fine" rule. |
 | [`mqc.h`](./mqc.h) | Public API.  Opaque handles, `mqc_connect`, `mqc_accept`, `mqc_ctx_set_expected_name`, `cfg.encrypt_identity` for mode selection. |
 | [`mqc.c`](./mqc.c) | Dispatcher (~70 lines).  Routes `mqc_connect` / `mqc_accept` to the clear or encrypted bodies based on `cfg.encrypt_identity`; `mqc_accept_auto` peeks the wire to choose mode per connection. |

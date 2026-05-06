@@ -10,7 +10,7 @@ deferred during the main pass and have no current owner.
 For what shipped — commits, per-issue mapping, design rationale,
 spec deltas — see:
 
-- [`README-mqc-issues.md`](./README-mqc-issues.md) — status
+- [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) — status
   table mapping each reviewer issue to its closing commit.
 - [`README-plans.md`](./README-plans.md) — per-issue analyses
   (the "why" behind each design decision).

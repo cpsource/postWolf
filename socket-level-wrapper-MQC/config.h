@@ -83,7 +83,7 @@
 /* Default policy if /etc/postWolf/config has no mqc-revocation-policy
  * key.  Values: "mandatory", "cache-only", "disabled".  See spec
  * Section 10.5; status table in
- * socket-level-wrapper-MQC/README-mqc-issues.md row #7. */
+ * socket-level-wrapper-MQC/README-mqc-1-issues.md row #7. */
 #ifndef MQC_REVOCATION_POLICY_DEFAULT
 #define MQC_REVOCATION_POLICY_DEFAULT "mandatory"
 #endif

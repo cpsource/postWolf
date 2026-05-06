@@ -30,8 +30,8 @@ already accepted.
 
 ## Issue #1 — Sign the full transcript
 
-Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #1.
-Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 1.
+Status: see [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) row #1.
+Source review: [`README-mqc-1-issues.md`](./README-mqc-1-issues.md), item 1.
 
 ### Verdict
 
@@ -156,8 +156,8 @@ in the wild.  The plan's runbook is a single-host flag-day cutover.
 
 ## Issue #2 — Add a real protocol version and suite ID
 
-Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #2.
-Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 2.
+Status: see [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) row #2.
+Source review: [`README-mqc-1-issues.md`](./README-mqc-1-issues.md), item 2.
 
 ### Verdict
 
@@ -238,8 +238,8 @@ clarity, but the implementation is one commit.
 
 ## Issue #3 — Use transcript-bound HKDF
 
-Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #3.
-Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 3.
+Status: see [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) row #3.
+Source review: [`README-mqc-1-issues.md`](./README-mqc-1-issues.md), item 3.
 
 ### Verdict
 
@@ -344,8 +344,8 @@ any post-cutover bug), land #1+#2 first and #3 second.
 
 ## Issue #4 — Add Finished messages
 
-Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #4.
-Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 4.
+Status: see [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) row #4.
+Source review: [`README-mqc-1-issues.md`](./README-mqc-1-issues.md), item 4.
 
 ### Verdict
 
@@ -468,8 +468,8 @@ smallest of the four and a fine "second cutover" after #1+#2+#3.
 
 ## Issue #5 — AEAD must authenticate frame headers
 
-Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #5.
-Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 5.
+Status: see [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) row #5.
+Source review: [`README-mqc-1-issues.md`](./README-mqc-1-issues.md), item 5.
 
 ### Verdict
 
@@ -558,9 +558,9 @@ after #1–#4 land.
 
 ## Issue #6 — Encrypted-identity authentication gaps
 
-Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #6.
+Status: see [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) row #6.
 subsumed by issue #1).
-Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 6.
+Source review: [`README-mqc-1-issues.md`](./README-mqc-1-issues.md), item 6.
 
 ### Verdict
 
@@ -603,9 +603,9 @@ ambiguity of a missing file.
 
 ## Issue #6a — Expose operational tunables in /etc/postWolf/config
 
-Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #6a.
+Status: see [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) row #6a.
 Source: side-track raised during issue #6 review (not in
-[`README-mqc-issues.md`](./README-mqc-issues.md)).
+[`README-mqc-1-issues.md`](./README-mqc-1-issues.md)).
 
 ### Verdict
 
@@ -696,8 +696,8 @@ ten operational knobs and the read-config accessor.
 
 ## Issue #7 — Revocation should be mandatory
 
-Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #7.
-Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 7.
+Status: see [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) row #7.
+Source review: [`README-mqc-1-issues.md`](./README-mqc-1-issues.md), item 7.
 
 ### Verdict
 
@@ -751,8 +751,8 @@ policy = lower-load mode for stable steady state.
 
 ## Issue #8 — Cert retrieval is self-verifying, not transport-trusted
 
-Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #8.
-Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 8.
+Status: see [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) row #8.
+Source review: [`README-mqc-1-issues.md`](./README-mqc-1-issues.md), item 8.
 
 ### Verdict
 
@@ -812,8 +812,8 @@ demonstrated; with them, every check becomes regression-tested.
 
 ## Issue #9 — Server-name / expected-identity check
 
-Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #9.
-Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 9.
+Status: see [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) row #9.
+Source review: [`README-mqc-1-issues.md`](./README-mqc-1-issues.md), item 9.
 
 ### Verdict
 
@@ -875,9 +875,9 @@ cutover is part of the runbook.
 
 ## Issue #10 — Downgrade protection on identity-mode selection
 
-Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #10.
+Status: see [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) row #10.
 subsumed by issue #1).
-Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 10.
+Source review: [`README-mqc-1-issues.md`](./README-mqc-1-issues.md), item 10.
 
 ### Verdict
 
@@ -902,8 +902,8 @@ issue-6 stub.
 
 ## Issue #11 — Strict JSON parsing on the handshake
 
-Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #11.
-Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 11.
+Status: see [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) row #11.
+Source review: [`README-mqc-1-issues.md`](./README-mqc-1-issues.md), item 11.
 
 ### Verdict
 
@@ -970,8 +970,8 @@ equivalent.
 
 ## Issue #12 — Cheap pre-crypto filters and tighter DoS budgets
 
-Status: see [`README-mqc-issues.md`](./README-mqc-issues.md) row #12.
-Source review: [`README-mqc-issues.md`](./README-mqc-issues.md), item 12.
+Status: see [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) row #12.
+Source review: [`README-mqc-1-issues.md`](./README-mqc-1-issues.md), item 12.
 
 ### Verdict
 
