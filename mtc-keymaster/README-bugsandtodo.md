@@ -3779,6 +3779,100 @@ ON for new deployments that want a tighter perimeter.
 
 ---
 
+### 73. Late-bind reservation nonces are bearer tokens
+
+**Severity:** Low — by-design feature with documented threat
+model.  Filed 2026-05-06 from ChatGPT review item #4
+(`README-chatgpt-issues.md`).  The earlier triage classified
+this as "PARTIAL / BY DESIGN" without filing a numbered TODO;
+this entry captures the issue concretely so future readers
+don't have to reconstruct the rationale from the chatgpt-
+issues appendix.
+
+**Current behavior.**  `issue_leaf_nonce --domain D --label L
+--ttl-days N` (with no `--key-file` / `--fingerprint`) creates
+an `mtc_enrollment_nonces` row with `fp=NULL` bound to
+`(domain, label)` only.  Whoever later runs `bootstrap_leaf
+--nonce <hex>` with their own ML-DSA pubkey gets a valid
+cert under that subject + label combination — the server
+binds their fingerprint to the slot at consume time.
+
+**The intended workflow.**  CA operator pre-mints "Alice's
+slot" before Alice has even generated her keys; sends the
+nonce to Alice over a secure OOB channel (Signal, 1Password,
+operator-to-operator email, etc.); Alice generates her keys
+locally on her own box and runs `bootstrap_leaf` to claim
+the slot.  No private-key exchange, no archive transport,
+just a 64-hex secret.
+
+**ChatGPT's concern.**  The nonce is a bearer token.  Whoever
+holds it can bind their own fingerprint to the slot.  If the
+nonce leaks before Alice consumes it (compromised channel,
+misdirected message, screenshot in a chat), the leaker
+enrolls under their own key under "Alice's" label and Alice
+arrives to a `409 Conflict`.
+
+**Mitigations in place today:**
+
+- Operator-tunable TTL clamped at `MTC_NONCE_MAX_TTL_DAYS`
+  (= 30 days).  Operator can set 1 day for short-lived
+  reservations.
+- Partial unique index on `(domain, label)` where status =
+  pending — only one outstanding reservation per slot at a
+  time.
+- `cancel-nonce` (MQC-authenticated, only the issuing CA
+  can run it) lets the operator retract a suspected-leaked
+  reservation early.
+- TODO #64 closed the cross-CA hopping vector — only the
+  CA for `<domain>` can mint `<domain>` reservations now,
+  so the threat model is "Alice's CA leaked Alice's nonce",
+  not "any CA can leak nonces for any domain".
+
+**What ChatGPT recommended:**
+
+1. Require fingerprint at nonce creation time — kills the
+   workflow (CA operator would need Alice's pubkey before
+   issuing, defeating the point).
+2. Require CA-signed authorization at consume time — server,
+   on seeing a `fp=NULL` consume, sends an MQC notification
+   to the issuing CA's `cert_index` and waits for a sign /
+   refuse decision before minting the cert.  Closes the leak
+   window but adds latency, requires the CA to be reachable
+   at consume time, and breaks the "send a nonce, recipient
+   enrolls offline" property.
+
+**Why marked BY DESIGN.**  Both fixes break the team-
+onboarding workflow that the late-bind feature exists to
+support.  The threat model is acknowledged and documented:
+the operator who needs the workflow accepts the leak risk;
+the operator who doesn't can simply not use late-bind mode
+(require `--fingerprint` or `--key-file` on every
+`issue_leaf_nonce`, which is the default).
+
+**Possible future fix (option 2 above).**  If a deployment
+ever wants to harden this: a "consume-time CA approval"
+mode where the server pings the issuing CA via MQC before
+issuing the cert.  Wire-format change (new opcode), CA-
+liveness assumption.  Filed here as a future option, not
+recommended for current factsorlie deployment.
+
+**Files (if implemented):**
+
+- `mtc-keymaster/server2/c/mtc_bootstrap.c` — consume-side
+  approval path.
+- `mtc-keymaster/tools/c/issue_leaf_nonce.c` and the CA
+  operator's mtc_server background process — receive
+  approval pings.
+- New `--require-consume-approval` knob on
+  `issue_leaf_nonce` (per-nonce) or in `/etc/postWolf/config`
+  (deployment-wide default).
+
+**Status:** OPEN as documented BY-DESIGN gap.  Re-open with a
+`HARDENING` tag if a deployment needs the consume-time
+approval flow.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the

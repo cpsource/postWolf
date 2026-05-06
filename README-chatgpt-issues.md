@@ -24,12 +24,11 @@ I reviewed the uploaded `s2.tar.gz`. Priority fixes:
    * See appendix below + TODO #64 in `mtc-keymaster/README-bugsandtodo.md`.
    * Original "any internet client" framing was wrong on this deployment (8444 is localhost-only, 8446 needs MQC handshake); the real exploitable path was cross-CA leaf hopping by in-log peers — also blocked.
 
-4. **Remove late-bind reservation nonces or strongly constrain them**
+4. **Remove late-bind reservation nonces or strongly constrain them** — **BY DESIGN, filed as TODO #73**
 
-   * If `fp` is NULL, consume accepts any key and binds it at first use.
-   * A stolen/leaked reservation nonce becomes a bearer token for arbitrary key enrollment.
-   * Fix: require fingerprint at nonce creation, or require CA-signed authorization at consumption.
-   * File: `mtc_db.c:1350-1361`.
+   * Real concern: a leaked reservation nonce is a bearer token (any holder can bind their own fp to the slot at consume time).
+   * Both proposed fixes (require fp at issue / require CA-signed consume approval) break the team-onboarding workflow the feature exists to support.
+   * Documented as BY-DESIGN with mitigations in place: TTL ≤ 30 days, unique `(domain, label)` slot, MQC-authenticated cancel-nonce, post-#64 cross-CA hopping blocked.  See TODO #73 in `mtc-keymaster/README-bugsandtodo.md` for full rationale + future-fix sketch.
 
 ## P1 — high priority
 
