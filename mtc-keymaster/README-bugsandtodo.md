@@ -3182,6 +3182,411 @@ propagates).
 
 ---
 
+### 62. Replace `mtc_crypt.c` with AEAD (AES-256-GCM)
+
+**Severity:** P0 — bootstrap-port confidentiality.  Filed
+2026-05-06 from ChatGPT review (see
+`README-chatgpt-issues.md`).
+
+**Current state:** `mtc_crypt.c` (~480 lines) implements AES-CBC
+with **zero IV**, **no MAC/AEAD**, a custom byte-rotation layer,
+and a "find last `}`" padding-strip heuristic.  Used only by the
+DH-bootstrap port (8445) for the leaf/CA enrollment exchange.
+
+**Why this is partially defended today.**  The bootstrap response
+is signed under the cosigner ML-DSA-87 key (P0 / TODO #9b leaf
+branch — `add_cosigner_sig_to_response`), so a MitM cannot forge
+a successful enrollment.  But:
+
+- The encrypted **request** (client → server) is not signed.
+  A MitM with the AES-CBC key (or who can solve the malleability
+  / padding-oracle classes) sees + can mutate the leaf's
+  `public_key_pem` + nonce.
+- AES-CBC zero-IV is a known confidentiality failure pattern
+  (identical plaintext blocks produce identical ciphertext
+  blocks).
+- Padding-strip-by-finding-`}` could class as a parser-confusion
+  surface against unusual JSON shapes.
+
+**Fix:**
+
+1. Rewrite `mtc_crypt_encode` / `mtc_crypt_decode` using
+   `wc_AesGcmEncrypt` / `wc_AesGcmDecrypt`.
+2. Use a fresh 96-bit nonce per message.  Counter-derived
+   (incremented on each encode call) is fine since the AES key
+   is per-session — see TLS 1.3's `nonce = iv XOR counter`
+   construction for inspiration.
+3. Bump key size to 256 bits while we're at it.  Adjust
+   `BOOTSTRAP_AES_KEY_SZ` in `mtc_bootstrap.c`.
+4. AAD covers protocol version + frame counter + plaintext
+   length so a MitM can't reorder or truncate frames.
+5. Drop the byte-rotation layer entirely — pure obfuscation
+   that adds no security and complicates audit.
+
+**Wire-format change → flag-day cutover** per CLAUDE.md.
+Single-deployment so flag-day is fine.
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_crypt.{c,h}` — full rewrite.
+- `mtc-keymaster/server2/c/mtc_bootstrap.c` — AES key size +
+  the AAD construction.
+- `mtc-keymaster/tools/c/bootstrap_leaf.c`,
+  `mtc-keymaster/tools/c/bootstrap_ca.c` — same client-side
+  changes.
+- `mtc-keymaster/server2/README-detail-design-spec.md` §4 —
+  document the new wire format.
+
+---
+
+### 63. Sign the DH bootstrap transcript
+
+**Severity:** P1 — defense-in-depth on top of #62 + the
+existing P0 #9b cosigner response signing.  Filed 2026-05-06
+from ChatGPT review.
+
+**Current state:** message 2 of the bootstrap flow
+(`mtc_bootstrap.c:705-723`) sends `{dh_public_key, salt,
+pop_nonce}` in plaintext.  No signature on those bytes; a MitM
+can substitute `dh_public_key` and run two parallel DH exchanges
+(one with the legitimate client, one with the legitimate
+server).
+
+**Why this is partly defended today.**  With #9b's response
+signature, the MitM cannot forge a successful enrollment — the
+cert content + cosigner PEM are signed under the cosigner key
+and the client verifies via the DNSSEC-pinned fingerprint.  But:
+
+- The MitM CAN see the leaf's enrollment-request bytes
+  (public_key_pem + nonce + key_algorithm + validity_days +
+  optional label).  Leakage is what a MitM gets without solving
+  any crypto problem.
+- Combined with #62 (AEAD), substituting DH defeats
+  confidentiality but not authenticity (response sig still
+  catches forgery attempts).
+
+**Fix:** sign `H(server_dh_pub || salt || pop_nonce ||
+protocol_version)` under the cosigner key in message 2:
+
+```
+{
+  "dh_public_key":   "<hex>",
+  "salt":            "<hex>",
+  "pop_nonce":       "<hex>",
+  "protocol_version": 1,
+  "transcript_sig":  "<9254-hex ML-DSA-87 sig>"
+}
+```
+
+Client verifies `transcript_sig` against the locally-pinned
+cosigner PEM (same DNSSEC pin used elsewhere) before deriving
+shared secrets.  ctx label = `"mtc-bootstrap-dh/v1\n\x00"`.
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_bootstrap.c` — message-2 build,
+  add transcript_sig field.
+- `mtc-keymaster/tools/c/bootstrap_{leaf,ca}.c` — message-2
+  parse + verify.
+- `mtc-keymaster/server2/README-detail-design-spec.md` §4.3 —
+  document new field.
+
+**Status:** OPEN.  Ship after #62 (the AEAD migration) — the
+two together form a coherent flag-day cutover.
+
+---
+
+### 64. MQC-gate `POST /enrollment/nonce` for leaf-type nonces
+
+**Severity:** **HIGH / P0** — the most serious finding from the
+ChatGPT review.  Filed 2026-05-06.
+
+**The actual attack.**  `mtc_http.c:660-674` checks only that a
+registered CA exists for the requested domain, then issues a
+nonce bound to (domain, attacker_fingerprint).  No
+authentication of the caller.
+
+Concretely: anyone on the internet can run
+```
+curl -X POST https://factsorlie.com:8444/enrollment/nonce \
+     -d '{"domain":"frflashy.com", "type":"leaf",
+          "public_key_fingerprint":"sha256:<their_key_fp>"}'
+```
+get back a nonce, then run `bootstrap_leaf` with their key + the
+nonce, and end up with a valid MTC cert at the next log index,
+subject="frflashy.com".  They can now MQC-handshake to anyone
+who trusts the log and impersonate frflashy.com.
+
+The spec
+(`mtc-keymaster/server2/README-detail-design-spec.md` §3.2)
+currently claims "the nonce IS the auth token" — this rationale
+is **wrong**: the nonce binds the requester's chosen
+fingerprint, so issuance equals authorization.
+
+**Why we didn't catch this earlier.**  Through phase-23/24
+testing the only callers of `/enrollment/nonce` were
+`issue_leaf_nonce`, run by the actual CA operator from a
+trusted host.  We never modeled the threat where a third party
+hits the endpoint directly.
+
+**Fix:** require MQC peer-cert auth on leaf-type nonce
+issuance.  Same gate `/cancel-nonce` (`mtc_http.c:814`) and
+`/renew-cert` (`mtc_http.c:969`) already use:
+
+```c
+if (is_leaf) {
+    if (!io->mqc) {
+        http_send_error(io, 403,
+            "leaf nonce issuance requires MQC peer-cert auth");
+        ...
+    }
+    int peer_idx = mqc_get_peer_index(io->mqc);
+    /* peer's subject must match `<domain>-ca` */
+    ...
+}
+```
+
+CA-type nonces stay open (the DNS TXT validation already gates
+those — caller can't enroll without controlling the domain's
+DNSSEC zone).
+
+After the fix, `issue_leaf_nonce` (which already speaks MQC)
+keeps working unchanged.  Direct curl from an unauthenticated
+client gets `403`.
+
+**Spec update** to follow: §3.2 + §5.1 of the design spec —
+remove the "nonce IS the auth" language, document the MQC gate.
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_http.c::handle_enrollment_nonce`.
+- `mtc-keymaster/server2/README-detail-design-spec.md` §§3.2,
+  5.1 — accuracy fix to match.
+
+**Status:** OPEN.  This is the next thing to ship.
+
+---
+
+### 65. Bootstrap fork lacks `mtc_wait_for_child_slot` backpressure
+
+**Severity:** Medium — fork-storm DoS.  Filed 2026-05-06.
+
+**Current state:** `mtc_bootstrap.c:1726` calls `fork()` directly
+on every accepted connection.  The HTTP/MQC paths use
+`mtc_wait_for_child_slot` (gated by `mqc-max-children`, default
+20) to cap concurrent forked workers.  The bootstrap path
+doesn't.
+
+`RL_BOOTSTRAP` (3/min, 30/hr per IP) provides a per-IP floor,
+but a distributed flooder isn't bounded — N attacker IPs can
+each open one bootstrap connection and tie up N forked workers.
+
+**Fix:** insert one line before `fork()`:
+```c
+mtc_wait_for_child_slot("bootstrap");
+```
+
+No protocol impact, no wire-format change.  Trivial.
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_bootstrap.c::bootstrap_thread`
+  around line 1720.
+
+**Status:** OPEN.
+
+---
+
+### 66. HTTP request read loop has no socket timeout
+
+**Severity:** Low — slow-loris.  Filed 2026-05-06.
+
+**Current state:** `mtc_http.c::handle_request` (lines 2070–2143)
+loops `cio_read` until headers complete.  No
+`setsockopt(SO_RCVTIMEO)` is set on the socket; a slow attacker
+can dribble bytes to keep one forked worker tied up for a long
+time.
+
+Mitigation today: per-connection forked children, so a
+slow-loris bursts up against `mqc-max-children` instead of
+escalating without bound.  But each tied-up worker is still a
+live process consuming a slot.
+
+**Fix:** set `SO_RCVTIMEO` to 10s on the accepted socket
+BEFORE entering the read loop.  After 10s of no data the read
+fails and the worker exits.
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_http.c::handle_request`.
+
+**Status:** OPEN.  Local-only change, no protocol impact.
+
+---
+
+### 67. `http_get` bootstrap proxy lacks endpoint allowlist
+
+**Severity:** Low — defense-in-depth.  Filed 2026-05-06.
+
+**Current state:** `mtc_bootstrap.c::send_http_get_proxy` runs
+any `{"op":"http_get","path":...}` request through
+`dispatch_get`.  Today every `dispatch_get` endpoint is
+read-only and intended for public consumption, so the proxy
+exposes no privilege.  But there's no guard against a
+hypothetical future POST endpoint being accidentally added to
+`dispatch_get`.
+
+**Fix:** explicit allowlist in the proxy:
+
+```
+/log/checkpoint        /log/consistency
+/log/entry/<n>         /log/proof/<n>
+/log
+/certificate/<n>       /certificate/search
+/public-key/<name>     /ca/public-key
+/revoked               /revoked/<n>
+/trust-anchors
+/ech/configs
+```
+
+Anything else → 404.
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_bootstrap.c::send_http_get_proxy`.
+
+**Status:** OPEN.
+
+---
+
+### 68. Server-side label canonicalization
+
+**Severity:** Medium — input validation.  Filed 2026-05-06.
+
+**Current state:** `mtc_db_create_nonce` (`mtc_db.c:1088`) accepts
+the operator-supplied `label` parameter verbatim and inserts it
+into `mtc_enrollment_nonces.label`.  No charset / length /
+path-traversal validation.  The client-side `sanitize_label` in
+`bootstrap_leaf` rejects `/`, `..`, etc. — but a malicious
+`/enrollment/nonce` caller can plant a label that downstream
+tooling (or a future bug) might turn into a directory name.
+
+**Fix:** add `mtc_canonicalize_label(in, out, outsz)` next to
+the existing `mtc_canonicalize_domain` in `mtc_domain.c`:
+
+- enforce `[A-Za-z0-9._-]` charset
+- length 1..`MTC_LABEL_MAX` (=64)
+- reject `..`, `.`, leading `-`, leading `.`, trailing whitespace
+
+Apply at the top of `handle_enrollment_nonce` BEFORE passing to
+`mtc_db_create_nonce`.
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_domain.{c,h}` — new helper.
+- `mtc-keymaster/server2/c/mtc_http.c::handle_enrollment_nonce`
+  — call it.
+
+**Status:** OPEN.
+
+---
+
+### 69. Cert/pubkey persistence failures should fail closed
+
+**Severity:** Medium — TODO #57 follow-on.  Filed 2026-05-06.
+
+**Current state:** `mtc_bootstrap.c:1564` and `:1580` log
+warnings on `mtc_db_save_certificate` /
+`mtc_db_save_public_key` failures, but proceed to send the
+(already-mutated-in-memory) successful response to the client.
+TODO #57 item 4 already converted the `mtc_log_entries` write
+path to fail-closed (DB-first persistence).  The cert + pubkey
+writes weren't covered by that pass.
+
+**Fix:** same fail-closed pattern.  If either save returns
+non-zero:
+
+1. Roll back the in-memory append (drop the cert from
+   `store->certificates[index]`, decrement tree size).
+2. Log `LOG_ERROR` rather than `LOG_WARN`.
+3. Return an error response to the client instead of the
+   issued cert — they'll retry, server will pick a fresh slot,
+   and the DB will eventually catch up.
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_bootstrap.c` (around 1560–1590).
+
+**Status:** OPEN.
+
+---
+
+### 70. Pin the json-c version (or migrate to RFC 8785 JCS)
+
+**Severity:** Low — deployment-fragility hygiene.  Filed
+2026-05-06.
+
+**Current state:** `add_cosigner_sig_to_response` (P0 #9b)
+relies on `JSON_C_TO_STRING_PLAIN` producing identical bytes
+across the sender's serialize → wire-encode → decode → mutate
+(strip sig field) → re-serialize cycle.  Currently true for
+json-c 0.16+ but a future version upgrade could subtly change
+ordering or whitespace and break verification deployment-wide
+on the next rebuild.
+
+Documented in
+`mtc-keymaster/server2/README-detail-design-spec.md` §8.4 with
+a matching note in
+`mtc_bootstrap.c::add_cosigner_sig_to_response`.
+
+**Fix candidates:**
+
+1. **Pin json-c version** in `postWolf.pc` requires.  CI-friendly,
+   minimal effort.  Doesn't decouple from json-c long-term.
+2. **Migrate to RFC 8785 JCS canonicalization** on both sides.
+   Removes the json-c version coupling entirely; introduces a
+   small new dependency or in-tree implementation.
+
+Recommendation: ship (1) now, file (2) as a separate larger
+follow-up if json-c stops being suitable.
+
+**Files:**
+
+- `support/postWolf.pc.in` — version pin.
+- (Future) per-tree JCS canonicalizer or vendored library.
+
+**Status:** OPEN.  No live exploit; hygiene item.
+
+---
+
+### 71. CA X.509 NO_VERIFY needs louder doc warning
+
+**Severity:** Low — documentation only.  Filed 2026-05-06.
+
+**Current state:** `mtc_ca_validate.c:37-75` has a comment
+explaining that the X.509 wrapper around the CA's ML-DSA-87
+public key is parser-bait, NOT a real trust object — postWolf
+trusts the DNSSEC-pinned SPKI fingerprint + PoP signature, and
+deliberately skips X.509 chain validation.  ChatGPT's review
+called this out as deliberate but warned that future
+maintainers might mis-use the cert as a real X.509 trust
+object.
+
+**Fix:** three-line "DO NOT TRUST THIS CERT AS X.509" banner at
+the top of `mtc_ca_validate.c` plus a paragraph in the design
+spec § "CA X.509 wrapper" (new subsection of §4.3).
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_ca_validate.c` — file-header
+  banner.
+- `mtc-keymaster/server2/README-detail-design-spec.md` — new
+  subsection.
+
+**Status:** OPEN.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
