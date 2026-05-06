@@ -40,11 +40,14 @@ I reviewed the uploaded `s2.tar.gz`. Priority fixes:
    * Verified live with 25 parallel real bootstraps hitting
      the 20-child cap.
 
-6. **HTTP parser can slow-loris**
+6. **HTTP parser can slow-loris** — **DONE 2026-05-06 (TODO #66)**
 
-   * Main HTTP read loop has no socket read timeout before parsing headers.
-   * Bootstrap has timeouts; HTTP/MQC path should too.
-   * File: `mtc_http.c:2078-2140`.
+   * `handle_request` now sets `SO_RCVTIMEO =
+     MTC_HTTP_READ_STALL_SEC` (default 10 s) on the accepted
+     socket BEFORE entering the read loop, gated to non-MQC
+     transports.  Idle connections drop at t≈10 s; healthy
+     requests are unchanged.
+   * Knob: `mtc-keymaster/server2/c/config.h`.
 
 7. **Plain HTTP mode can expose write endpoints**
 
@@ -253,23 +256,22 @@ Verified: 25 parallel `bootstrap_ca --no-pin` calls hit the
 20/20 active children, sleeping before accept` repeatedly
 until earlier children drained.
 
-### 6. HTTP slow-loris — **PARTIAL**
+### 6. HTTP slow-loris — **DONE 2026-05-06** (TODO #66)
 
-`mtc_http.c::handle_request` at lines 2070-2143 reads headers
-via `cio_read` in a loop.  No `setsockopt(SO_RCVTIMEO)` is set
-on the socket beforehand.  `cio_read` itself doesn't time out
-(blocking read).  An attacker can dribble bytes to keep one
-worker tied up.
+`handle_request` now sets `SO_RCVTIMEO =
+MTC_HTTP_READ_STALL_SEC` (default 10 s) on `io->fd` before
+entering the read loop, gated to `!io->mqc` so MQC's own
+handshake-deadline machinery isn't clobbered.  The knob lives
+next to `MTC_BOOTSTRAP_READ_STALL_SEC` in
+`mtc-keymaster/server2/c/config.h`.
 
-Mitigation: each connection runs in a forked child, so a
-single slow-loris attacker tying up workers eventually hits the
-fork-rate-limit / max-children cap and stops escalating.  But
-the worker is still a live process consuming a slot.
+After 10 s of silence `recv` returns `-1/EAGAIN`, the read
+loop exits, and the forked worker terminates — freeing the
+active-child slot that `mqc-max-children` accounts.
 
-**Recommendation:** open as TODO #66, LOW.  Set
-`SO_RCVTIMEO` on the accepted socket BEFORE entering the read
-loop in handle_request.  10s is plenty for a healthy peer; a
-slow-loris drops at 10s.  One block of code, no protocol impact.
+Verified live on factsorlie: idle TLS connect dies at t≈10.6 s;
+partial headers cause a clean dispatch at t≈10.7 s; healthy
+sub-second requests are unchanged.
 
 ### 7. Plain HTTP exposes write endpoints — **PARTIAL**
 

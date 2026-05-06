@@ -2140,6 +2140,19 @@ static void handle_request(client_io *io, MtcStore *store)
     char *body = NULL;
     int body_len = 0;
 
+    /* TODO #66: bound the per-read wall-clock so a slow-loris client
+     * cannot tie up this forked worker indefinitely.  Applies to TLS
+     * and plain transports only — MQC has its own handshake-deadline
+     * machinery and post-handshake framing that a kernel-level
+     * SO_RCVTIMEO would clobber. */
+    if (io->fd >= 0 && !io->mqc) {
+        struct timeval tv;
+        tv.tv_sec  = MTC_HTTP_READ_STALL_SEC;
+        tv.tv_usec = 0;
+        (void)setsockopt(io->fd, SOL_SOCKET, SO_RCVTIMEO,
+                         &tv, sizeof(tv));
+    }
+
     /* Read until we have the full headers (\r\n\r\n).
      * TLS may fragment the request across multiple reads. */
     n = 0;

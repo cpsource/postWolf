@@ -114,4 +114,15 @@
 #define MTC_BOOTSTRAP_READ_TOTAL_SEC    3
 #endif
 
+/* -- HTTP-port slow-client budget (TODO #66) ------------------------- */
+/* Per-read SO_RCVTIMEO on the TLS HTTP path (port 8444).  A forked
+ * worker that has accepted a connection but never sees a full
+ * request line drops after this many seconds, freeing the active-
+ * child slot.  Generous compared to the bootstrap port because TLS
+ * handshakes and slow networks legitimately stretch past a couple
+ * of seconds. */
+#ifndef MTC_HTTP_READ_STALL_SEC
+#define MTC_HTTP_READ_STALL_SEC         10
+#endif
+
 #endif /* MTC_SERVER_CONFIG_H */

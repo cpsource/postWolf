@@ -3527,30 +3527,39 @@ No protocol impact, no wire-format change.  Trivial.
 
 ---
 
-### 66. HTTP request read loop has no socket timeout
+### 66. HTTP request read loop has no socket timeout — DONE 2026-05-06
 
-**Severity:** Low — slow-loris.  Filed 2026-05-06.
+**Severity:** Low — slow-loris.  Filed 2026-05-06, closed
+same day.
 
-**Current state:** `mtc_http.c::handle_request` (lines 2070–2143)
-loops `cio_read` until headers complete.  No
-`setsockopt(SO_RCVTIMEO)` is set on the socket; a slow attacker
-can dribble bytes to keep one forked worker tied up for a long
-time.
+**What landed:** `handle_request` now sets `SO_RCVTIMEO =
+MTC_HTTP_READ_STALL_SEC` (default 10 s) on `io->fd` before
+entering the read loop, gated to `!io->mqc` so MQC's own
+handshake-deadline machinery isn't clobbered.  Knob lives in
+`mtc-keymaster/server2/c/config.h` next to the existing
+`MTC_BOOTSTRAP_READ_STALL_SEC`.
 
-Mitigation today: per-connection forked children, so a
-slow-loris bursts up against `mqc-max-children` instead of
-escalating without bound.  But each tied-up worker is still a
-live process consuming a slot.
+After 10 s of silence the kernel returns `-1/EAGAIN` from
+`recv`, `cio_read` returns ≤0, the read loop breaks (or
+returns immediately when no bytes have arrived), and the
+forked worker exits cleanly — freeing the active-child slot
+that `mqc-max-children` accounts.
 
-**Fix:** set `SO_RCVTIMEO` to 10s on the accepted socket
-BEFORE entering the read loop.  After 10s of no data the read
-fails and the worker exits.
+Verified on factsorlie:
+- Idle TLS connect → server closes at t≈10.6 s (the 0.6 s is
+  the TLS handshake before the read clock starts).
+- Partial headers (`GET /tree HTTP/1.1\r\n` then idle) →
+  server breaks the loop at t≈10.7 s and dispatches what it
+  parsed, returning a normal 404.
+- Full request → unchanged, sub-second response.
 
 **Files:**
 
 - `mtc-keymaster/server2/c/mtc_http.c::handle_request`.
+- `mtc-keymaster/server2/c/config.h` (new
+  `MTC_HTTP_READ_STALL_SEC` knob).
 
-**Status:** OPEN.  Local-only change, no protocol impact.
+**Status:** DONE.  Local-only change, no protocol impact.
 
 ---
 
