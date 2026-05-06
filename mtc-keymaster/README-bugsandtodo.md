@@ -528,8 +528,10 @@ working since they only look for `-----END`.
 **9b. Eliminate TOFU on first `/ca/public-key` fetch**
 
 **LEAF BRANCH DONE 2026-05-06** (operator-paste cosigner-fp on
-`bootstrap_leaf`; signed bootstrap response).  CA-bootstrap branch
-and the `show-tpm` first-contact surface remain open.
+`bootstrap_leaf`; signed bootstrap response).  **CA BRANCH DONE
+2026-05-06** (DNSSEC-fetched cosigner-fp on `bootstrap_ca`).
+The `show-tpm` first-contact surface remains open — see "9b
+remaining surface" at the end of this entry.
 
 Status detail:
 
@@ -550,13 +552,46 @@ Status detail:
 - Verified end-to-end on factsorlie.com: happy path enrolls + pins;
   wrong fingerprint exits non-zero with no state writes.
 
-Currently `show-tpm --mqc` performs a trust-on-first-use fetch of the
-CA cosigner pubkey from the MTC HTTP server and caches it at
-`~/.TPM/ca-cosigner.pem`.  That first fetch is over TLS to the same
-server whose signatures we're about to verify — not ideal.
-Distribute the CA cosigner pubkey out-of-band (bundled with clients,
-via signed DNS TXT, or similar) so no client ever trusts the MTC
-server for initial bootstrap.
+CA branch status detail (2026-05-06):
+
+- The parent CA's `mtc_server` now prints the recommended DNSSEC
+  TXT record at startup (next to "Log size" / "Data dir") —
+  `"v=MQC1; role=cosigner; alg=ML-DSA-87; kh=sha3-256:<HEX>"`.
+  Operator publishes once at `_mqc-cosigner.<their-domain>` in
+  Route 53.  Re-emitted on every restart so it survives any
+  log rotation; only changes if the cosigner key rotates.
+- `mqc_dnssec_fetch_cosigner_kh()` (in `mtc_dnssec_pin.c`) does a
+  DNSSEC-validated lookup of `_mqc-cosigner.<parent>` and returns
+  the 64-char SHA3-256 hex.  Per-RR matching, fail-closed on
+  bogus / insecure / no-data — same load-bearing rule as
+  `mqc_dnssec_validate_ca_kh`.
+- `bootstrap_ca` resolves the expected fp BEFORE opening TCP:
+  `--cosigner-fp <hex>` overrides; else DNSSEC; else `--no-pin`
+  if `--server` is `localhost` / `127.0.0.1` / `::1`.  Cross-host
+  enrollment without DNSSEC and without `--cosigner-fp` is
+  rejected fail-closed.
+- After AES-decrypt of the bootstrap response, `bootstrap_ca`
+  computes `SHA3-256(DER(SPKI(ca_cosigner_pem)))`, constant-time-
+  compares to the expected fp, and ML-DSA-87 verifies the
+  `ca_response_sig` (same `MTC_BOOTSTRAP_LABEL` ctx the leaf
+  branch uses).  On success the PEM is pinned to
+  `~/.TPM/<subject>-ca/ca-cosigner.pem`.
+- Verified live: DNSSEC fetch of `_mqc-cosigner.factsorlie.com`
+  succeeds, matches the live cosigner SPKI; missing record on a
+  cross-host call rejects with a clear "publish a TXT" error;
+  zero-warning C build at `make -f Makefile.tools clean &&
+  make -f Makefile.tools`.
+
+**9b remaining surface — `show-tpm` first-contact TOFU.**
+`show-tpm --mqc` performs a trust-on-first-use fetch of the CA
+cosigner pubkey from the MTC HTTP server and caches it at
+`~/.TPM/ca-cosigner.pem`.  That first fetch is over TLS to the
+same server whose signatures we're about to verify — not ideal.
+Closure: extend `mqc_load_ca_pubkey` to fall back from the
+per-leaf `~/.TPM/<subject>/ca-cosigner.pem` to a DNSSEC fetch of
+`_mqc-cosigner.<parent>` BEFORE the TOFU path.  Same helper the
+CA branch uses; just wired into the library.  Roughly half a
+day of work; opens as the third / final cutover under #9b.
 
 The same vulnerability also exists on port 8445 (DH bootstrap), in
 two forms:

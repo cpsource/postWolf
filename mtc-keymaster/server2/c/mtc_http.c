@@ -78,6 +78,7 @@
 #include <wolfssl/wolfcrypt/asn.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
 #include <wolfssl/wolfcrypt/dilithium.h>
+#include <wolfssl/wolfcrypt/sha3.h>           /* P0 #9b CA branch */
 #include <wolfssl/wolfcrypt/coding.h>
 
 #define HTTP_BUF_SZ  65536   /**< Maximum HTTP request size (headers + body) */
@@ -2341,7 +2342,50 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
     printf("  CA Name:  %s\n", store->ca_name);
     printf("  Log ID:   %s\n", store->log_id);
     printf("  Log size: %d entries\n", store->tree.size);
-    printf("  Data dir: %s\n\n", store->data_dir);
+    printf("  Data dir: %s\n", store->data_dir);
+
+    /* P0 / TODO #9b CA branch — print the cosigner-key DNS pin
+     * the operator MUST publish at _mqc-cosigner.<their-domain>
+     * for cross-host bootstrap_ca to verify the cosigner PEM via
+     * DNSSEC.  Computed from the cosigner SPKI DER + SHA3-256 +
+     * lowercase hex.  Pasted once into Route 53 / equivalent;
+     * never changes unless the cosigner key is rotated.  Logged
+     * on every startup so the operator can pull it from the
+     * journal at any time. */
+    {
+        char pem[8192];
+        int  pem_sz = mtc_store_get_public_key_pem(store, pem,
+                                                   (int)sizeof(pem));
+        unsigned char der[4096];
+        int  der_sz = (pem_sz > 0)
+            ? wc_PubKeyPemToDer((const unsigned char *)pem, pem_sz,
+                                der, (int)sizeof(der))
+            : -1;
+        if (der_sz > 0) {
+            unsigned char digest[32];
+            wc_Sha3 sha;
+            wc_InitSha3_256(&sha, NULL, INVALID_DEVID);
+            wc_Sha3_256_Update(&sha, der, (word32)der_sz);
+            wc_Sha3_256_Final(&sha, digest);
+            wc_Sha3_256_Free(&sha);
+            char hex[65];
+            int  hi;
+            static const char hexdigits[] = "0123456789abcdef";
+            for (hi = 0; hi < 32; hi++) {
+                hex[hi * 2]     = hexdigits[(digest[hi] >> 4) & 0xf];
+                hex[hi * 2 + 1] = hexdigits[digest[hi] & 0xf];
+            }
+            hex[64] = '\0';
+            printf("  Cosigner DNS pin (publish at _mqc-cosigner.<your-domain>):\n");
+            printf("    \"v=MQC1; role=cosigner; alg=ML-DSA-87; "
+                   "kh=sha3-256:%s\"\n", hex);
+        } else {
+            printf("  Cosigner DNS pin: <unavailable; "
+                   "wc_PubKeyPemToDer rc=%d>\n", der_sz);
+        }
+    }
+
+    printf("\n");
     fflush(stdout);
 
     for (;;) {

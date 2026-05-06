@@ -538,6 +538,130 @@ done:
     return out_st;
 }
 
+/*
+ * P0 / TODO #9b CA branch — fetch the cosigner-key fingerprint
+ * from a DNSSEC-validated TXT record at
+ * `_mqc-cosigner.<parent_domain>`.  Per-RR matching: a single
+ * RR must carry v=MQC1; role=cosigner; alg=ML-DSA-87; kh=sha3-
+ * 256:<hex>.  Same load-bearing reasoning as
+ * mqc_dnssec_validate_ca_kh: an unrelated TXT carrying just one
+ * of those tokens at the same name would otherwise spoof
+ * authorisation across RRs.
+ */
+mqc_dnssec_status_t mqc_dnssec_fetch_cosigner_kh(const char *parent_domain,
+                                                 char *out_hex)
+{
+    struct ub_ctx *ctx = NULL;
+    struct ub_result *result = NULL;
+    char qname[512];
+    int rc, i;
+    mqc_dnssec_status_t out_st = MQC_DNSSEC_NO_DATA;
+
+    if (!parent_domain || !out_hex)
+        return MQC_DNSSEC_PARSE_ERROR;
+    if (snprintf(qname, sizeof(qname), "_mqc-cosigner.%s",
+                 parent_domain) >= (int)sizeof(qname))
+        return MQC_DNSSEC_PARSE_ERROR;
+
+    ctx = ub_ctx_create();
+    if (!ctx) return MQC_DNSSEC_RESOLVE_ERROR;
+
+    /* Same trust-anchor probe as the other dnssec helpers — see
+     * mqc_dnssec_fetch_ca_txt for why we stat() each candidate
+     * before calling ub_ctx_add_ta_file. */
+    {
+        static const char *const ta_paths[] = {
+            "/var/lib/unbound/root.key",
+            "/usr/share/dns/root.key",
+            "/etc/unbound/root.key",
+            NULL
+        };
+        const char *anchor = NULL;
+        const char *const *p;
+        for (p = ta_paths; *p; p++) {
+            if (access(*p, R_OK) == 0) { anchor = *p; break; }
+        }
+        if (!anchor || ub_ctx_add_ta_file(ctx, anchor) != 0) {
+            ub_ctx_delete(ctx);
+            return MQC_DNSSEC_RESOLVE_ERROR;
+        }
+    }
+
+    rc = ub_resolve(ctx, qname, 16 /* TXT */, 1 /* IN */, &result);
+    if (rc != 0 || !result) {
+        if (result) ub_resolve_free(result);
+        ub_ctx_delete(ctx);
+        return MQC_DNSSEC_RESOLVE_ERROR;
+    }
+    if (result->bogus)   { out_st = MQC_DNSSEC_BOGUS;    goto done; }
+    if (!result->secure) { out_st = MQC_DNSSEC_INSECURE; goto done; }
+    if (!result->havedata || !result->data || !result->data[0]) {
+        out_st = MQC_DNSSEC_NO_DATA;
+        goto done;
+    }
+
+    /* Per-RR validation.  Each RR must satisfy ALL FOUR required
+     * tokens (v=MQC1, role=cosigner, alg=ML-DSA-87, kh=sha3-256:<hex>).
+     * On the first RR that does, copy the hash to out_hex and return. */
+    for (i = 0; result->data[i]; i++) {
+        char rr_text[MQC_MAX_TXT_LEN];
+        char tmp[MQC_MAX_TXT_LEN];
+        char *saveptr = NULL, *tok;
+        int got_v = 0, got_role = 0, got_alg = 0;
+        const char *kh_hex = NULL;
+        size_t cl;
+
+        if (join_txt_rdata((const unsigned char *)result->data[i],
+                           result->len[i], rr_text, sizeof(rr_text)) != 0)
+            continue;
+        cl = strlen(rr_text);
+        if (cl == 0 || cl >= sizeof(tmp)) continue;
+        memcpy(tmp, rr_text, cl + 1);
+
+        for (tok = strtok_r(tmp, ";", &saveptr); tok;
+             tok = strtok_r(NULL, ";", &saveptr)) {
+            tok = trim_left(tok);
+            trim_right(tok);
+            if (strcmp(tok, "v=MQC1") == 0) {
+                got_v = 1;
+            } else if (strcmp(tok, "role=cosigner") == 0) {
+                got_role = 1;
+            } else if (strcmp(tok, "alg=ML-DSA-87") == 0) {
+                got_alg = 1;
+            } else if (strncmp(tok, "kh=sha3-256:", 12) == 0 &&
+                       strlen(tok + 12) == MQC_HASH_HEX_LEN) {
+                /* Lowercase-hex check */
+                int j, ok = 1;
+                for (j = 0; j < MQC_HASH_HEX_LEN; j++) {
+                    char c = tok[12 + j];
+                    if (!((c >= '0' && c <= '9') ||
+                          (c >= 'a' && c <= 'f'))) {
+                        ok = 0;
+                        break;
+                    }
+                }
+                if (ok)
+                    kh_hex = tok + 12;
+            }
+        }
+
+        if (got_v && got_role && got_alg && kh_hex) {
+            memcpy(out_hex, kh_hex, MQC_HASH_HEX_LEN);
+            out_hex[MQC_HASH_HEX_LEN] = '\0';
+            out_st = MQC_DNSSEC_OK;
+            goto done;
+        }
+    }
+    /* No RR satisfied all four tokens — treat as parse error so the
+     * caller can give the operator a clear diagnostic. */
+    out_st = MQC_DNSSEC_PARSE_ERROR;
+
+done:
+    if (result) ub_resolve_free(result);
+    if (ctx) ub_ctx_delete(ctx);
+    return out_st;
+}
+
 #ifdef MQC_DNSSEC_PIN_TEST
 int main(int argc, char **argv)
 {

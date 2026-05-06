@@ -42,7 +42,7 @@ without re-reading 1,170 lines of review traffic.
 | mqc-1 | #12 | DoS pre-crypto filters + per-(IP,cert) RL | **DONE** (`615d0e9ba`) |
 | mqc-2 | #1 | Length-prefixed handshake frames | **DONE** (P1, `45e8390d4`) |
 | mqc-2 | #2 | Brace-count JSON reader | **DONE** (P1, `45e8390d4`) |
-| mqc-2 | #3 | Cosigner TOFU on first contact | **LEAF BRANCH DONE** 2026-05-06; CA branch + show-tpm surface still TODO #9b |
+| mqc-2 | #3 | Cosigner TOFU on first contact | **LEAF + CA BRANCHES DONE** 2026-05-06; show-tpm surface still TODO #9b |
 | mqc-2 | #4 | Pubkey-hash binding to cert | **DONE** (P2, `dfd06d187`) |
 | mqc-2 | #5 | Revocation drop-and-retry first-contact | **DONE** (TODO #58 fix, `0c573bffb`, 2026-05-06) |
 | mqc-2 | #6 | Field-based vs raw-frame transcript | **DEFERRED** — TODO #54 (LOW) |

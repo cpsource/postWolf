@@ -56,6 +56,14 @@
 #include <wolfssl/wolfcrypt/dilithium.h>
 #include <wolfssl/wolfcrypt/types.h>
 
+#include "../../server2/c/mtc_dnssec_pin.h"   /* P0 #9b CA branch */
+
+/* P0 / TODO #9b CA branch — must match the server-side label
+ * in mtc_bootstrap.c::add_cosigner_sig_to_response.  See the
+ * leaf-branch counterpart in bootstrap_leaf.c. */
+#define MTC_BOOTSTRAP_LABEL      "mtc-bootstrap/v1\n\x00"
+#define MTC_BOOTSTRAP_LABEL_LEN  16
+
 /* Proof-of-possession constants — MUST match the server's
  * mtc-keymaster/server2/c/mtc_bootstrap.c.  See
  * mtc-keymaster/server2/c/README-issues.md issue #5 for the
@@ -278,7 +286,8 @@ static int save_to_tpm(const char *tpm_dir, const char *subject,
                        const char *label, int make_default,
                        const char *cert_json, int cert_index,
                        const char *pub_key_path, const char *priv_key_path,
-                       const char *ca_cert_path_arg)
+                       const char *ca_cert_path_arg,
+                       const char *ca_cosigner_pem)
 {
     char dir_path[256];
     char file_path[256 + 32];  /* dir_path + longest filename */
@@ -395,6 +404,29 @@ static int save_to_tpm(const char *tpm_dir, const char *subject,
         }
     }
 
+    /* P0 / TODO #9b CA branch — pin the now-authenticated parent
+     * cosigner PEM into this CA's TPM dir.  Verification of
+     * fingerprint (DNSSEC-fetched) + signature happens before
+     * save_to_tpm is called; by the time the PEM lands here we've
+     * already proven it was signed under the cosigner private key
+     * whose SHA3-256(SPKI DER) matches the parent's DNSSEC pin. */
+    if (ca_cosigner_pem && ca_cosigner_pem[0]) {
+        snprintf(file_path, sizeof(file_path),
+                 "%s/ca-cosigner.pem", dir_path);
+        fp = fopen(file_path, "w");
+        if (fp) {
+            fputs(ca_cosigner_pem, fp);
+            size_t pem_len = strlen(ca_cosigner_pem);
+            if (pem_len == 0 || ca_cosigner_pem[pem_len - 1] != '\n')
+                fputc('\n', fp);
+            fclose(fp);
+            LOG("  wrote %s", file_path);
+        } else {
+            LOG("WARN: could not write %s: %s", file_path,
+                strerror(errno));
+        }
+    }
+
     /* ~/.TPM/default symlink policy (plan TODO #26 Phases D + G):
      * mirrors the bootstrap_leaf logic exactly.  See comments there. */
     {
@@ -448,6 +480,15 @@ static void usage(const char *prog)
     printf("  --public-key FILE    Path to CA public key PEM\n");
     printf("  --private-key FILE   Path to CA private key PEM\n");
     printf("  --ca-cert FILE       Path to X.509 CA certificate PEM\n");
+    printf("  --cosigner-fp FP     SHA3-256 of DER(SPKI) of the parent log's\n");
+    printf("                       cosigner pubkey (sha3-256:<hex> or 64-char\n");
+    printf("                       hex).  Skip to fetch automatically via\n");
+    printf("                       DNSSEC at _mqc-cosigner.<server-host>.\n");
+    printf("                       Refuses to enroll on fp-mismatch.\n");
+    printf("  --no-pin             Skip cosigner-fp verification entirely.\n");
+    printf("                       ONLY for self-bootstrap on the same box\n");
+    printf("                       as mtc_server (--server localhost:...);\n");
+    printf("                       cross-host enrollment must verify.\n");
     printf("  --key-algorithm ALG  Key algorithm (default: ML-DSA-87)\n");
     printf("  --validity-days N    Certificate validity (default: 365)\n");
     printf("  --tpm-dir DIR        TPM storage directory (default: ~/.TPM)\n");
@@ -480,6 +521,8 @@ int main(int argc, char *argv[])
     const char *pub_key_path = NULL;
     const char *priv_key_path = NULL;
     const char *ca_cert_path = NULL;
+    const char *cosigner_fp_arg = NULL;   /* P0 #9b CA branch */
+    int  no_pin = 0;                      /* self-bootstrap escape */
     const char *key_algo = "ML-DSA-87";
     int validity_days = 365;
     const char *tpm_dir_arg = NULL;
@@ -533,6 +576,10 @@ int main(int argc, char *argv[])
             priv_key_path = argv[++i];
         else if (strcmp(argv[i], "--ca-cert") == 0 && i + 1 < argc)
             ca_cert_path = argv[++i];
+        else if (strcmp(argv[i], "--cosigner-fp") == 0 && i + 1 < argc)
+            cosigner_fp_arg = argv[++i];
+        else if (strcmp(argv[i], "--no-pin") == 0)
+            no_pin = 1;
         else if (strcmp(argv[i], "--key-algorithm") == 0 && i + 1 < argc)
             key_algo = argv[++i];
         else if (strcmp(argv[i], "--validity-days") == 0 && i + 1 < argc)
@@ -643,6 +690,88 @@ int main(int argc, char *argv[])
         const char *home = getenv("HOME");
         if (!home) home = ".";
         snprintf(tpm_dir, sizeof(tpm_dir), "%s/%s", home, DEFAULT_TPM_DIR);
+    }
+
+    /* P0 / TODO #9b CA branch — resolve the expected cosigner
+     * fingerprint BEFORE opening the TCP connection.  Order of
+     * precedence:
+     *   1. --cosigner-fp <hex>   (operator-pasted, like the leaf
+     *                              branch)
+     *   2. DNSSEC TXT at _mqc-cosigner.<server-host>
+     *   3. --no-pin              (allowed only for localhost /
+     *                              127.0.0.1 self-bootstrap)
+     *
+     * The cosigner_fp_canon buffer below holds the canonical
+     * 64-char lowercase hex; it stays empty if --no-pin (in which
+     * case the verify block at the bottom skips the comparison
+     * but still verifies the response signature against the
+     * embedded PEM — i.e., the response is still tamper-evident,
+     * just not key-authenticated).  The "embedded PEM" in
+     * --no-pin mode is tautologically the one signing itself, so
+     * --no-pin is genuinely no-trust; restricted to local. */
+    char cosigner_fp_canon[65];
+    cosigner_fp_canon[0] = '\0';
+
+    if (cosigner_fp_arg) {
+        const char *p = cosigner_fp_arg;
+        if (strncmp(p, "sha3-256:", 9) == 0)      p += 9;
+        else if (strncmp(p, "sha256:", 7) == 0)   p += 7;
+        if (strlen(p) != 64) {
+            fprintf(stderr,
+                    "Error: --cosigner-fp must be 64 hex chars "
+                    "(optionally prefixed sha3-256:).  Got %zu chars.\n",
+                    strlen(p));
+            free(pub_key_pem); free(ca_cert_pem);
+            return 1;
+        }
+        for (int hi = 0; hi < 64; hi++) {
+            char c = p[hi];
+            char lc = (c >= 'A' && c <= 'F') ? (char)(c - 'A' + 'a') : c;
+            if (!((lc >= '0' && lc <= '9') || (lc >= 'a' && lc <= 'f'))) {
+                fprintf(stderr, "Error: --cosigner-fp contains non-hex "
+                                "char at position %d ('%c')\n", hi, c);
+                free(pub_key_pem); free(ca_cert_pem);
+                return 1;
+            }
+            cosigner_fp_canon[hi] = lc;
+        }
+        cosigner_fp_canon[64] = '\0';
+        LOG("cosigner-fp source: --cosigner-fp (operator-pasted)");
+    } else if (no_pin) {
+        int is_local =
+            (strcmp(server_host, "localhost") == 0) ||
+            (strcmp(server_host, "127.0.0.1") == 0) ||
+            (strcmp(server_host, "::1") == 0);
+        if (!is_local) {
+            fprintf(stderr,
+                    "Error: --no-pin is only allowed when --server is\n"
+                    "       localhost / 127.0.0.1 / ::1.  Cross-host\n"
+                    "       enrollment must verify the parent cosigner\n"
+                    "       (use --cosigner-fp <hex> or publish a\n"
+                    "       DNSSEC TXT at _mqc-cosigner.<host>).\n");
+            free(pub_key_pem); free(ca_cert_pem);
+            return 1;
+        }
+        LOG("cosigner-fp source: --no-pin (self-bootstrap on %s)",
+            server_host);
+    } else {
+        /* DNSSEC fetch.  Fail closed on any non-OK status. */
+        mqc_dnssec_status_t st =
+            mqc_dnssec_fetch_cosigner_kh(server_host, cosigner_fp_canon);
+        if (st != MQC_DNSSEC_OK) {
+            fprintf(stderr,
+                "Error: DNSSEC lookup of _mqc-cosigner.%s failed: %s\n"
+                "       Operator must publish a DNSSEC-signed TXT record\n"
+                "       (mtc_server prints the value to publish in its\n"
+                "       startup banner — pull it from journalctl on the\n"
+                "       parent CA).  Or pass --cosigner-fp <hex> to skip\n"
+                "       DNSSEC; or --no-pin for localhost self-bootstrap.\n",
+                server_host, mqc_dnssec_status_string(st));
+            free(pub_key_pem); free(ca_cert_pem);
+            return 1;
+        }
+        LOG("cosigner-fp source: DNSSEC _mqc-cosigner.%s -> sha3-256:%s",
+            server_host, cosigner_fp_canon);
     }
 
     /* Read public key PEM */
@@ -1042,6 +1171,7 @@ int main(int argc, char *argv[])
     {
         struct json_object *resp, *val;
         const char *status;
+        const char *ca_cosigner_pem = NULL;
 
         resp = json_tokener_parse((const char *)dec_buf);
         if (!resp) {
@@ -1059,6 +1189,182 @@ int main(int argc, char *argv[])
                 json_object_put(resp);
                 goto done;
             }
+        }
+
+        /* P0 / TODO #9b CA branch — verify the bootstrap response
+         * before trusting any of its other fields.  Same shape as
+         * bootstrap_leaf's verify, but the operator-pasted
+         * fingerprint is replaced by a DNSSEC-fetched one (or
+         * skipped under --no-pin for localhost self-bootstrap).
+         * Algo difference vs leaf: leaf compares SHA-256 against
+         * an operator paste; CA compares SHA3-256 against the
+         * DNS TXT (matching the existing _mqc-ca. convention).
+         * Signature verification is identical — same ML-DSA-87
+         * verify under MTC_BOOTSTRAP_LABEL ctx. */
+        {
+            struct json_object *pem_val, *sig_val;
+            const char *response_sig_hex = NULL;
+            int  have_pem = json_object_object_get_ex(
+                                resp, "ca_cosigner_pem", &pem_val);
+            int  have_sig = json_object_object_get_ex(
+                                resp, "ca_response_sig", &sig_val);
+
+            if (!have_pem || !have_sig) {
+                LOG("ERROR: bootstrap response is missing P0 #9b "
+                    "fields (ca_cosigner_pem / ca_response_sig).  "
+                    "The CA server hasn't been upgraded to the "
+                    "post-#9b protocol; refusing to enroll.");
+                json_object_put(resp);
+                goto done;
+            }
+            ca_cosigner_pem    = json_object_get_string(pem_val);
+            response_sig_hex   = json_object_get_string(sig_val);
+            if (!ca_cosigner_pem || !response_sig_hex) {
+                LOG("ERROR: ca_cosigner_pem or ca_response_sig is "
+                    "not a string in the bootstrap response.");
+                json_object_put(resp);
+                goto done;
+            }
+            /* Stack copy of sig hex (json_object_object_del below
+             * frees the original).  ML-DSA-87 hex sig is 9254
+             * chars + NUL; 16 KB is comfortable. */
+            char  response_sig_hex_buf[16384];
+            int   response_sig_hex_len = (int)strlen(response_sig_hex);
+            if (response_sig_hex_len <= 0 ||
+                response_sig_hex_len >= (int)sizeof(response_sig_hex_buf)) {
+                LOG("ERROR: ca_response_sig length %d out of range",
+                    response_sig_hex_len);
+                json_object_put(resp);
+                goto done;
+            }
+            memcpy(response_sig_hex_buf, response_sig_hex,
+                   (size_t)response_sig_hex_len + 1);
+            response_sig_hex = response_sig_hex_buf;
+
+            /* Convert PEM → SPKI DER once; reuse for both the
+             * fingerprint check and the signature verify. */
+            unsigned char spki_der[4096];
+            int spki_der_sz = wc_PubKeyPemToDer(
+                (const unsigned char *)ca_cosigner_pem,
+                (int)strlen(ca_cosigner_pem),
+                spki_der, (int)sizeof(spki_der));
+            if (spki_der_sz <= 0) {
+                LOG("ERROR: ca_cosigner_pem is not a valid PEM-encoded "
+                    "public key (wc_PubKeyPemToDer rc=%d)", spki_der_sz);
+                json_object_put(resp);
+                goto done;
+            }
+
+            /* Fingerprint check (skipped under --no-pin). */
+            if (cosigner_fp_canon[0]) {
+                unsigned char digest[32];
+                wc_Sha3 sha;
+                wc_InitSha3_256(&sha, NULL, INVALID_DEVID);
+                wc_Sha3_256_Update(&sha, spki_der, (word32)spki_der_sz);
+                wc_Sha3_256_Final(&sha, digest);
+                wc_Sha3_256_Free(&sha);
+                char got_fp[65];
+                {
+                    static const char hexdigits[] = "0123456789abcdef";
+                    int hi;
+                    for (hi = 0; hi < 32; hi++) {
+                        got_fp[hi * 2]     = hexdigits[(digest[hi] >> 4) & 0xf];
+                        got_fp[hi * 2 + 1] = hexdigits[digest[hi] & 0xf];
+                    }
+                    got_fp[64] = '\0';
+                }
+                int diff = 0, hi;
+                for (hi = 0; hi < 64; hi++)
+                    diff |= got_fp[hi] ^ cosigner_fp_canon[hi];
+                if (diff != 0) {
+                    LOG("ERROR: COSIGNER_FP_MISMATCH — possible MitM "
+                        "on port 8445.\n"
+                        "       expected: sha3-256:%s\n"
+                        "       got:      sha3-256:%s\n"
+                        "       (the DNSSEC-pinned _mqc-cosigner.%s pin "
+                        "does NOT match the response's ca_cosigner_pem)",
+                        cosigner_fp_canon, got_fp, server_host);
+                    json_object_put(resp);
+                    goto done;
+                }
+                LOG("  cosigner fingerprint matches (sha3-256:%s)", got_fp);
+            } else {
+                LOG("  cosigner fingerprint check SKIPPED (--no-pin)");
+            }
+
+            /* Signature verify.  Sender signed the canonical JSON
+             * with ca_response_sig REMOVED; we strip it, re-
+             * serialize PLAIN, and verify. */
+            json_object_object_del(resp, "ca_response_sig");
+            const char *to_verify = json_object_to_json_string_ext(
+                resp, JSON_C_TO_STRING_PLAIN);
+            int  to_verify_len = (int)strlen(to_verify);
+
+            if ((response_sig_hex_len & 1) != 0) {
+                LOG("ERROR: ca_response_sig is not even-length hex "
+                    "(len=%d)", response_sig_hex_len);
+                json_object_put(resp);
+                goto done;
+            }
+            int sig_bin_len = response_sig_hex_len / 2;
+            unsigned char *sig_bin =
+                (unsigned char *)malloc((size_t)sig_bin_len);
+            if (!sig_bin) {
+                LOG("ERROR: out of memory for response signature");
+                json_object_put(resp);
+                goto done;
+            }
+            {
+                int hi;
+                for (hi = 0; hi < sig_bin_len; hi++) {
+                    int hv, lv;
+                    char hc = response_sig_hex[hi * 2];
+                    char lc = response_sig_hex[hi * 2 + 1];
+                    if      (hc >= '0' && hc <= '9') hv = hc - '0';
+                    else if (hc >= 'a' && hc <= 'f') hv = 10 + hc - 'a';
+                    else if (hc >= 'A' && hc <= 'F') hv = 10 + hc - 'A';
+                    else { free(sig_bin); LOG("ERROR: ca_response_sig "
+                        "contains non-hex char"); json_object_put(resp);
+                        goto done; }
+                    if      (lc >= '0' && lc <= '9') lv = lc - '0';
+                    else if (lc >= 'a' && lc <= 'f') lv = 10 + lc - 'a';
+                    else if (lc >= 'A' && lc <= 'F') lv = 10 + lc - 'A';
+                    else { free(sig_bin); LOG("ERROR: ca_response_sig "
+                        "contains non-hex char"); json_object_put(resp);
+                        goto done; }
+                    sig_bin[hi] = (unsigned char)((hv << 4) | lv);
+                }
+            }
+
+            dilithium_key dil;
+            int verify_rc = -1, verified = 0;
+            if (wc_dilithium_init(&dil) == 0) {
+                if (wc_dilithium_set_level(&dil, WC_ML_DSA_87) == 0) {
+                    word32 idx = 0;
+                    if (wc_Dilithium_PublicKeyDecode(spki_der, &idx,
+                            &dil, (word32)spki_der_sz) == 0) {
+                        verify_rc = wc_dilithium_verify_ctx_msg(
+                            sig_bin, (word32)sig_bin_len,
+                            (const byte *)MTC_BOOTSTRAP_LABEL,
+                            MTC_BOOTSTRAP_LABEL_LEN,
+                            (const byte *)to_verify,
+                            (word32)to_verify_len,
+                            &verified, &dil);
+                    }
+                }
+                wc_dilithium_free(&dil);
+            }
+            free(sig_bin);
+            if (verify_rc != 0 || !verified) {
+                LOG("ERROR: BOOTSTRAP_RESPONSE_SIG_INVALID — "
+                    "signature does not verify under the cosigner "
+                    "PEM whose fingerprint matched the parent's "
+                    "DNSSEC pin (rc=%d, verified=%d).  Refusing "
+                    "to enroll.", verify_rc, verified);
+                json_object_put(resp);
+                goto done;
+            }
+            LOG("  bootstrap response signature verified under cosigner PEM");
         }
 
         if (json_object_object_get_ex(resp, "index", &val)) {
@@ -1079,7 +1385,7 @@ int main(int argc, char *argv[])
                         json_object_to_json_string_ext(resp,
                             JSON_C_TO_STRING_PRETTY),
                         cert_index, pub_key_path, priv_key_path,
-                        ca_cert_path) == 0) {
+                        ca_cert_path, ca_cosigner_pem) == 0) {
                     LOG("certificate saved to %s/", tpm_dir);
                 } else {
                     LOG("ERROR: failed to save to TPM");
