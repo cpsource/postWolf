@@ -2835,7 +2835,19 @@ when registering frflashy.com-ca on 2026-05-05.
   spk_hash) accessor)
 - `mtc-keymaster/tools/c/admin_recosign.c` (`--repair-tbs`)
 
-### 58. First-contact MQC handshake fails on revocation cache miss
+### 58. First-contact MQC handshake fails on revocation cache miss — FIXED 2026-05-06
+
+**Status:** CLOSED via fix-candidate (1) — auto-retry inside
+`mqc_peer_verify`.  When `check_revoked` returns -1 under
+MANDATORY policy (its first-call "fetch + drop" path), the
+verifier now consults the now-warm cache once with
+`allow_fetch=0`; if the fetch populated the cache the retry
+returns the real status (0 / 1) and the handshake proceeds, if
+not it stays -1 and the verifier fails closed exactly as
+before.  Rate-limit footprint is unchanged (still ≤ 1
+`/revoked/<n>` GET per cache miss).  Verified by deleting
+`~/.TPM/peers/73/revoked.json` and watching `issue_leaf_nonce`
+complete its handshake on the first attempt.
 
 **Severity:** Medium — user-facing UX, not a security bug.  Every
 fresh peer-to-peer MQC connection from a client that has never
@@ -2897,11 +2909,19 @@ localized) and consider (2) as the durable design — fewer
 network round trips on warm peers and zero "first contact
 fails" calls.
 
+**Resolution:** (1) shipped 2026-05-06 — the verifier retries
+`check_revoked` once with `allow_fetch=0` after the first
+call's fetch+cache step.  (2) is still on the table as a
+durable design improvement (eager cache prime alongside the
+cert fetch, eliminating the single extra round trip on
+first-contact peers).  No follow-up TODO opened; the user can
+file one if they want (2) later.
+
 **Files:**
 
 - `socket-level-wrapper-MQC/mqc_peer.c` (the `mqc_peer_verify`
-  call site at line 1608, plus the surrounding
-  `check_revoked` / fetch flow).
+  call site, plus the surrounding `check_revoked` / fetch
+  flow).
 
 ---
 

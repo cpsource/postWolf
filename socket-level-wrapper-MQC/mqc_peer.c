@@ -1620,6 +1620,18 @@ int mqc_peer_verify(const char *mtc_server,
         int allow_fetch =
             (revocation_policy == MQC_REVOCATION_POLICY_MANDATORY);
         int rev = check_revoked(mtc_server, cert_index, allow_fetch);
+        /* TODO #58: under MANDATORY, check_revoked's fetch+cache
+         * path historically returned -1 even on a successful fetch
+         * ("drop; peer retries and finds fresh cache").  That made
+         * every first-contact handshake fail.  Consult the
+         * now-warm cache once with allow_fetch=0: if the fetch
+         * actually populated the cache we get the real status; if
+         * not, this still returns -1 and we fail closed exactly as
+         * before.  Rate-limit footprint is unchanged — at most one
+         * /revoked/<n> GET per cache miss, same as before. */
+        if (rev == -1 && allow_fetch) {
+            rev = check_revoked(mtc_server, cert_index, 0);
+        }
         if (rev == 1) {
             MQC_SECURITY("CERT_REVOKED: cert %d is revoked", cert_index);
             json_object_put(cert_json);
