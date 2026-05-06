@@ -28,7 +28,7 @@ decrypts Gmail messages.
 | **wolfSSL core** | `wolfssl/`, `wolfcrypt/`, `src/` | Upstream TLS 1.3, ECH, ML-KEM, ML-DSA. Unmodified by postWolf beyond packaging. |
 | **SLC** | `socket-level-wrapper/` | Thin wrapper over TLS 1.3 + ECH. `slc_connect` / `slc_accept` return a fully authenticated connection or `NULL` — no "authenticate later" surface. |
 | **MQC** | `socket-level-wrapper-MQC/` | **Merkle Quantum Connect.** A post-quantum authenticated channel with no X.509. ML-KEM-768 for key exchange, ML-DSA-87 for peer identity, AES-256-GCM for bulk traffic, Merkle-transparency-log proofs for peer verification. |
-| **MQCP** | `socket-level-wrapper-QUIC/` | QUIC-inspired reliable UDP transport reusing the MQC crypto. Experimental; see `mtc-keymaster/README-bugsandtodo.md §10` for current status. |
+| **MQCP** | `socket-level-wrapper-QUIC/` | DEPRECATED 2026-05-06. QUIC-inspired UDP transport, never finished. Source kept for history; not built or installed. See `socket-level-wrapper-QUIC/README.md`. |
 | **MTC keymaster** | `mtc-keymaster/` | The CA that issues certificates, the transparency log that holds them, the client tools that enroll against both. |
 
 ## How a connection actually works
@@ -53,8 +53,7 @@ enrolled leaf identity and the MTC server acting as a peer — runs like this:
    AES-256-GCM and every subsequent frame is authenticated encryption.
 
 The SLC wrapper does the same motions via classical TLS 1.3 + ECH for apps
-that still need that compatibility. MQCP wraps MQC's frame format into a
-reliable-UDP transport.
+that still need that compatibility.
 
 ## Cryptography at a glance
 
@@ -227,7 +226,7 @@ cd ~/postWolf
 
 `make-all.sh` runs configure + the autotools library build + install (so
 `pkg-config --libs postWolf` resolves), then `make -f Makefile.tools` for
-the SLC/MQC/MQCP wrappers and MTC tools, and installs them to
+the SLC/MQC wrappers and MTC tools, and installs them to
 `/usr/local/bin`. Manual equivalent:
 
 ```bash
@@ -235,7 +234,7 @@ the SLC/MQC/MQCP wrappers and MTC tools, and installs them to
 make -f Makefile
 sudo make -f Makefile install        # /usr/local/{lib,include}/postWolf + pkg-config
 sudo ldconfig
-make -f Makefile.tools               # SLC, MQC, MQCP, mtc_server, client tools
+make -f Makefile.tools               # SLC, MQC, mtc_server, client tools
 sudo make -f Makefile.tools install  # /usr/local/bin
 ```
 
@@ -406,7 +405,7 @@ postWolf/
   wolfssl/, wolfcrypt/, src/      upstream wolfSSL — unmodified identifiers
   socket-level-wrapper/           SLC (TLS 1.3 + ECH wrapper)
   socket-level-wrapper-MQC/       MQC (post-quantum TCP)
-  socket-level-wrapper-QUIC/      MQCP (post-quantum UDP)
+  socket-level-wrapper-QUIC/      MQCP (DEPRECATED — see its README.md)
   mtc-keymaster/
     server2/c/                    mtc_server (fork-after-accept)
     tools/c/                      client tools (installed to /usr/local/bin)
@@ -415,7 +414,7 @@ postWolf/
     tools/mtc-server.sh           systemctl wrapper (start/stop/rebuild)
     tools/mtc-renew.sh            renewal timer wrapper
   Makefile                        autotools library build (generated)
-  Makefile.tools                  orchestrator for SLC/MQC/MQCP/MTC
+  Makefile.tools                  orchestrator for SLC/MQC/MTC
   make-all.sh                     end-to-end bootstrap
 ```
 

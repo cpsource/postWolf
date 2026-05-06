@@ -668,11 +668,22 @@ API directly.  Requires editing `mtc_store_cosign` in
 
 ---
 
-### 10. MQCP echo handshake never completes
+### 10. MQCP echo handshake never completes — **DEPRECATED 2026-05-06**
 
-**Priority:** Medium — MQCP is the QUIC-inspired transport under
-`socket-level-wrapper-QUIC/`.  The MQC (TCP) and SLC (TLS 1.3 + MTC)
-transports round-trip cleanly; MQCP does not.
+`socket-level-wrapper-QUIC/` is no longer built or maintained;
+`make -f Makefile.tools` skips it.  The handshake bug below is
+no longer worth fixing because the work would not be deployed
+anywhere.  See the new banner in
+`socket-level-wrapper-QUIC/README.md`.  Source kept in tree for
+history; revive with `git checkout` if a future post-quantum UDP
+transport effort wants the starting point.
+
+Original entry preserved below for reference.
+
+**Priority (historical):** Medium — MQCP is the QUIC-inspired
+transport under `socket-level-wrapper-QUIC/`.  The MQC (TCP) and
+SLC (TLS 1.3 + MTC) transports round-trip cleanly; MQCP does
+not.
 
 **Symptoms** (observed during phase-5 end-to-end testing):
 

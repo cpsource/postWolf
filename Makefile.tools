@@ -1,25 +1,29 @@
 # Makefile.tools — top-level build for postWolf tools
 #
-# Builds the socket-level wrappers (SLC, MQC, QUIC) and MTC keymaster
-# tools (server, show-tpm, bootstrap_ca, bootstrap_leaf).
+# Builds the socket-level wrappers (SLC, MQC) and MTC keymaster tools
+# (server, show-tpm, bootstrap_ca, bootstrap_leaf).
 #
 # The postWolf library itself is built separately via autotools:
 #   ./configure.sh && make -f Makefile && sudo make -f Makefile install && sudo ldconfig
 #
 # Usage:
-#   make -f Makefile.tools               Build SLC, MQC, QUIC, and all MTC tools
+#   make -f Makefile.tools               Build SLC, MQC, and all MTC tools
 #   sudo make -f Makefile.tools install  Install tools to /usr/local/bin and run ldconfig
 #   make -f Makefile.tools clean         Clean all build artifacts
+#
+# DEPRECATED 2026-05-06: socket-level-wrapper-QUIC (MQCP) is no longer
+# built or maintained.  See socket-level-wrapper-QUIC/README.md.  The
+# `quic` target stays as a no-op so any external scripts that ran
+# `make -f Makefile.tools quic` don't break.
 
 SLC_DIR = socket-level-wrapper
 MQC_DIR = socket-level-wrapper-MQC
-QUIC_DIR = socket-level-wrapper-QUIC
 MTC_DIR   = mtc-keymaster/server2/c
 TOOLS_DIR = mtc-keymaster/tools/c
 
 .PHONY: all install clean slc mqc quic mtc tools install-lib
 
-all: slc mqc quic mtc tools
+all: slc mqc mtc tools
 
 # Socket-level wrapper (TLS)
 slc:
@@ -29,9 +33,10 @@ slc:
 mqc:
 	$(MAKE) -C $(MQC_DIR)
 
-# Socket-level wrapper (QUIC-inspired / MQCP)
+# DEPRECATED — no-op kept for backwards compatibility with external
+# scripts.  See socket-level-wrapper-QUIC/README.md.
 quic:
-	$(MAKE) -C $(QUIC_DIR)
+	@echo "socket-level-wrapper-QUIC is deprecated (2026-05-06); skipping."
 
 # MTC keymaster server (mtc_server) — depends on slc + mqc libraries
 mtc: slc mqc
@@ -125,7 +130,6 @@ install: all
 
 clean:
 	$(MAKE) -C $(SLC_DIR) clean
-	$(MAKE) -C $(QUIC_DIR) clean
 	$(MAKE) -C $(MQC_DIR) clean
 	$(MAKE) -C $(MTC_DIR) clean
 	$(MAKE) -C $(TOOLS_DIR) clean

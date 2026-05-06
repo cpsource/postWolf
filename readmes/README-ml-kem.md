@@ -95,7 +95,7 @@ the Fujisaki-Okamoto transform.
 | Public header | `wolfssl/wolfcrypt/mlkem.h`, `wc_mlkem.h`, `ext_mlkem.h` |
 | Already-built object files | `wolfcrypt/src/.libs/src_libpostWolf_la-wc_mlkem.o`, `wc_mlkem_poly.o`, `wc_mlkem_asm.o` |
 | Protocol consumer (MQC handshake) | `socket-level-wrapper-MQC/mqc.c` — `wc_MlKemKey_Init(..., WC_ML_KEM_768, ...)` at L701, `MakeKey` L705, `EncodePublicKey` L713, `Encapsulate` L1005, `Decapsulate` L829 |
-| Protocol consumer (MQCP / QUIC) | `socket-level-wrapper-QUIC/mqcp_handshake.c` uses the same API |
+| Protocol consumer (MQCP / QUIC, DEPRECATED 2026-05-06) | `socket-level-wrapper-QUIC/mqcp_handshake.c` (no longer built) |
 
 ## The handshake in MQC, condensed
 
@@ -173,7 +173,7 @@ wolfCrypt (RFC 5869, Extract + Expand in one call).
 | `mtc-keymaster/server2/c/mtc_bootstrap.c:538` | AES-128 key for DH bootstrap port (8445) | Info string: `"mtc-dh-bootstrap"`; IKM: X25519 shared secret; salt: random 16 bytes |
 | `socket-level-wrapper-MQC/mqc.c:837, 1047, 1250, 1465, 1735, 1817` | AES-256-GCM key for MQC port (8446) | IKM: ML-KEM-768 shared secret (32 bytes); hashed with SHA-256 |
 | `mtc-keymaster/tools/c/bootstrap_ca.c`, `bootstrap_leaf.c` | client-side mirror of the bootstrap port's AES-128 | Client runs the same HKDF so both sides derive the identical key |
-| `socket-level-wrapper-QUIC/mqcp_crypto.c` | MQCP (QUIC-inspired) session keys | Same shape, different transport |
+| `socket-level-wrapper-QUIC/mqcp_crypto.c` (DEPRECATED 2026-05-06) | MQCP (QUIC-inspired) session keys — not built | Source kept for history |
 
 ### What `wc_HKDF` looks like on the wire (example: MQC)
 
