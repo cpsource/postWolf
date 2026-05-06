@@ -3744,31 +3744,35 @@ serialization stability.
 
 ---
 
-### 71. CA X.509 NO_VERIFY needs louder doc warning
+### 71. CA X.509 NO_VERIFY needs louder doc warning — DONE 2026-05-06
 
-**Severity:** Low — documentation only.  Filed 2026-05-06.
+**Severity:** Low — documentation only.  Filed 2026-05-06,
+closed same day.
 
-**Current state:** `mtc_ca_validate.c:37-75` has a comment
-explaining that the X.509 wrapper around the CA's ML-DSA-87
-public key is parser-bait, NOT a real trust object — postWolf
-trusts the DNSSEC-pinned SPKI fingerprint + PoP signature, and
-deliberately skips X.509 chain validation.  ChatGPT's review
-called this out as deliberate but warned that future
-maintainers might mis-use the cert as a real X.509 trust
-object.
+**What landed:**
 
-**Fix:** three-line "DO NOT TRUST THIS CERT AS X.509" banner at
-the top of `mtc_ca_validate.c` plus a paragraph in the design
-spec § "CA X.509 wrapper" (new subsection of §4.3).
+- Box-drawing WARNING banner at the very top of
+  `mtc-keymaster/server2/c/mtc_ca_validate.c`.  Calls out
+  `NO_VERIFY` explicitly, lists the DOs and DON'Ts for any
+  future code path that reuses the parsed `DecodedCert`,
+  and points to the trust-model paragraph + spec section.
+- New §4.4 in
+  `mtc-keymaster/server2/README-detail-design-spec.md`
+  ("CA `ca_certificate_pem` is NOT a trust object") — the
+  same DOs/DON'Ts in spec form, plus the rationale for why
+  importing an external trust root into this path would
+  invert the threat model.
+
+Closes ChatGPT review item #12.
 
 **Files:**
 
 - `mtc-keymaster/server2/c/mtc_ca_validate.c` — file-header
   banner.
 - `mtc-keymaster/server2/README-detail-design-spec.md` — new
-  subsection.
+  §4.4.
 
-**Status:** OPEN.
+**Status:** DONE.
 
 ---
 

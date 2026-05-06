@@ -611,6 +611,49 @@ error` reply, but cannot inject a successful enrollment.  This is
 an availability-only attack surface, equivalent to dropping the
 TCP connection.)
 
+### 4.4 CA `ca_certificate_pem` is NOT a trust object
+
+The `ca_certificate_pem` field in CA-enrollment requests is
+parsed with `NO_VERIFY` in `mtc_ca_validate.c`.  The X.509
+wrapper exists as a STRUCTURED CONTAINER for two pieces of
+data only:
+
+1. The Subject Alternative Name (SAN) DNS name — used to look
+   up `_mqc-ca.<SAN>` in DNSSEC.
+2. The `SubjectPublicKeyInfo` DER — its SHA3-256 must match
+   the `kh=sha3-256:<HEX>` field in the DNSSEC TXT record.
+
+The cert's signature chain, issuer, validity dates, Basic
+Constraints, KeyUsage, and any embedded extensions are
+**explicitly not trusted**.  A self-signed cert, a cert
+chained to a real WebPKI CA, and a cert with a
+syntactically-valid but cryptographically-invalid signature
+are treated identically — the only thing that matters is
+whether `(SAN, SHA3-256(SPKI DER))` lines up with the
+DNSSEC pin.
+
+This is deliberate:
+
+- Adding `wolfSSL_CertManagerVerifyBuffer` here would not
+  improve the trust story (DNSSEC pinning already
+  authenticates the SPKI).
+- It would not prove control of the private key (a
+  self-signed cert can be re-submitted by any attacker).
+  Real proof-of-possession is the separate `pop_signature`
+  field.
+- Importing an external trust root (Let's Encrypt, system
+  CA bundle) into this code path would invert the threat
+  model — the operator's DNSSEC zone would no longer be the
+  single source of truth.
+
+**Implication for future maintainers.**  Any code path that
+reuses the `DecodedCert` parsed in `mtc_validate_ca_cert`
+must NOT assume the cert is signed by a trusted issuer or
+treat its `notBefore` / `notAfter` / `keyUsage` /
+`basicConstraints` as authority claims.  A loud banner at
+the top of `mtc_ca_validate.c` calls this out (TODO #71 /
+ChatGPT review item #12, closed 2026-05-06).
+
 ---
 
 ## 5. Port 8446 — MQC API

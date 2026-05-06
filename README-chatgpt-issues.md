@@ -93,10 +93,12 @@ I reviewed the uploaded `s2.tar.gz`. Priority fixes:
 * See appendix item 11 below for the wire format + live
   bootstrap_leaf round-trip trace.
 
-12. **CA X.509 `NO_VERIFY` is deliberate, but document it loudly**
+12. **CA X.509 `NO_VERIFY` is deliberate, but document it loudly** — **DONE 2026-05-06** (TODO #71)
 
-* Your DNSSEC SPKI pin + PoP signature mostly compensates. Still, this is nonstandard and future maintainers may misuse the cert as a real X.509 trust object.
-* File: `mtc_ca_validate.c:37-75`.
+* Box-drawing WARNING banner at top of `mtc_ca_validate.c`
+  + new §4.4 "CA `ca_certificate_pem` is NOT a trust
+  object" in `README-detail-design-spec.md`.
+* See appendix item 12 below for the trace.
 
 ## Best first patch sequence
 
@@ -410,14 +412,16 @@ Verified live on factsorlie: real `bootstrap_leaf` round-trip
 index 80) — DH transcript signature verified, response
 signature verified under cosigner PEM.
 
-### 12. CA X.509 NO_VERIFY — **DOC**
+### 12. CA X.509 NO_VERIFY — **DONE 2026-05-06** (TODO #71)
 
-ChatGPT acknowledges this is deliberate (the X.509 wrapper is
-parser-bait, not a real trust object — postWolf trusts the
-DNSSEC-pinned SPKI fingerprint + PoP signature).  Comment in
-`mtc_ca_validate.c:37-75` already documents it; a clearer
-warning header would help future readers avoid mis-using the
-cert.
+Box-drawing WARNING banner at the top of `mtc_ca_validate.c`
+explicitly calls out `NO_VERIFY` and lists DOs/DON'Ts for any
+future code path that reuses the parsed `DecodedCert`.  New
+§4.4 in `README-detail-design-spec.md` ("CA
+`ca_certificate_pem` is NOT a trust object") covers the same
+ground in spec form, including the rationale for why
+importing an external trust root would invert the threat
+model.
 
 **Recommendation:** open as TODO #71, LOW.  Three-line
 "DO NOT TRUST THIS CERT AS X.509" banner at the top of

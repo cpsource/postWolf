@@ -1,4 +1,40 @@
 /******************************************************************************
+ *
+ *   ╔══════════════════════════════════════════════════════════════════╗
+ *   ║                                                                  ║
+ *   ║   WARNING — DO NOT TREAT THE PARSED X.509 AS A TRUST OBJECT      ║
+ *   ║                                                                  ║
+ *   ║   This file parses ca_certificate_pem with `NO_VERIFY`.  The     ║
+ *   ║   X.509 wrapper is used as a STRUCTURED CONTAINER for the SAN    ║
+ *   ║   DNS name and the SPKI bytes — nothing else.  Its signature    ║
+ *   ║   chain, issuer, validity dates, and any embedded extensions    ║
+ *   ║   are NOT trusted by this code.  The actual trust anchor is     ║
+ *   ║   the DNSSEC-pinned SPKI hash at _mqc-ca.<domain>                ║
+ *   ║   (sha3-256:<HEX> kh= field).                                    ║
+ *   ║                                                                  ║
+ *   ║   If you are adding a new code path that reuses the parsed       ║
+ *   ║   `DecodedCert` from this file:                                  ║
+ *   ║                                                                  ║
+ *   ║     - DO NOT assume the cert is signed by a trusted issuer.      ║
+ *   ║     - DO NOT use NotBefore/NotAfter as a freshness check         ║
+ *   ║       (the cert is operator-supplied, not minted by us).         ║
+ *   ║     - DO NOT extract Basic Constraints / KeyUsage and treat      ║
+ *   ║       them as authority claims.                                  ║
+ *   ║     - DO use the SAN DNS name to look up the DNSSEC TXT.         ║
+ *   ║     - DO use the SubjectPublicKeyInfo DER as input to the        ║
+ *   ║       SHA3-256 fingerprint check against the TXT pin.            ║
+ *   ║                                                                  ║
+ *   ║   Adding a `wolfSSL_CertManagerVerifyBuffer` here would be       ║
+ *   ║   theatre, not security: the threat model already assumes the    ║
+ *   ║   submitter could be anyone, and the DNSSEC pin is the           ║
+ *   ║   authoritative gate.  See "Trust model" below for the full      ║
+ *   ║   rationale and the spec § "CA X.509 wrapper" for the public     ║
+ *   ║   description.                                                   ║
+ *   ║                                                                  ║
+ *   ║   TODO #71 (ChatGPT review item #12, closed 2026-05-06).         ║
+ *   ║                                                                  ║
+ *   ╚══════════════════════════════════════════════════════════════════╝
+ *
  * File:        mtc_ca_validate.c
  * Purpose:     Shared CA certificate validation (DNSSEC TXT + X.509 parsing).
  *
