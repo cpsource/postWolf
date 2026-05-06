@@ -79,7 +79,8 @@
 
 #define HKDF_INFO        "mtc-dh-bootstrap"
 #define SALT_SZ          16
-#define AES_KEY_SZ       16
+#define AES_KEY_SZ       32                  /* AES-256 — TODO #62 */
+#define AES_KEYS_TOTAL   (AES_KEY_SZ * 2)    /* c2s||s2c           */
 #define MAX_MSG          65536
 #define DEFAULT_TPM_DIR  ".TPM"
 
@@ -545,7 +546,7 @@ int main(int argc, char *argv[])
     word32 my_pub_sz = CURVE25519_KEYSIZE;
     uint8_t server_pub[CURVE25519_KEYSIZE];
     uint8_t salt[SALT_SZ];
-    uint8_t aes_key[AES_KEY_SZ];
+    uint8_t aes_keys[AES_KEYS_TOTAL];   /* c2s||s2c — TODO #62 */
     char    pop_nonce_hex[BOOTSTRAP_POP_NONCE_SZ * 2 + 1] = {0};
 
     /* I/O */
@@ -965,18 +966,20 @@ int main(int argc, char *argv[])
     }
     LOG("shared secret computed (%u bytes)", shared_sz);
 
-    /* --- Derive AES key via HKDF --- */
+    /* --- Derive AES-256-GCM keys (TODO #62 AEAD): 64 bytes total,
+     *     first 32 = c2s_key, last 32 = s2c_key. --- */
     if (wc_HKDF(WC_SHA256, shared_secret, shared_sz,
                  salt, SALT_SZ,
                  (const byte *)HKDF_INFO, (word32)strlen(HKDF_INFO),
-                 aes_key, AES_KEY_SZ) != 0) {
+                 aes_keys, AES_KEYS_TOTAL) != 0) {
         LOG("ERROR: HKDF key derivation failed");
         goto done;
     }
-    LOG("AES key derived via HKDF");
+    LOG("AES-256-GCM keys derived via HKDF");
 
-    /* --- Init encryption --- */
-    crypt_ctx = mtc_crypt_init(aes_key, AES_KEY_SZ);
+    /* --- Init AEAD encryption --- */
+    crypt_ctx = mtc_crypt_init(aes_keys,                   /* c2s */
+                               aes_keys + AES_KEY_SZ);     /* s2c */
     if (!crypt_ctx) {
         LOG("ERROR: mtc_crypt_init failed");
         goto done;
@@ -1132,7 +1135,7 @@ int main(int argc, char *argv[])
         LOG_V("enrollment JSON: %s", enroll_str);
 
         enc_len = sizeof(enc_buf);
-        if (mtc_crypt_encode(crypt_ctx, (unsigned char *)enroll_str,
+        if (mtc_crypt_encode(crypt_ctx, MTC_DIR_C2S, (unsigned char *)enroll_str,
                 (unsigned int)strlen(enroll_str), enc_buf, &enc_len) != 0) {
             LOG("ERROR: failed to encrypt enrollment request");
             json_object_put(enroll);
@@ -1157,7 +1160,7 @@ int main(int argc, char *argv[])
     LOG("received encrypted response (%d bytes)", ret);
 
     dec_len = sizeof(dec_buf);
-    if (mtc_crypt_decode(crypt_ctx, enc_buf, (unsigned int)ret,
+    if (mtc_crypt_decode(crypt_ctx, MTC_DIR_S2C, enc_buf, (unsigned int)ret,
                          dec_buf, &dec_len) != 0) {
         LOG("ERROR: failed to decrypt certificate response");
         goto done;
@@ -1417,7 +1420,7 @@ done:
     if (my_key_ok) wc_curve25519_free(&my_key);
     if (rng_ok) wc_FreeRng(&rng);
     secure_zero(shared_secret, sizeof(shared_secret));
-    secure_zero(aes_key, sizeof(aes_key));
+    secure_zero(aes_keys, sizeof(aes_keys));
     secure_zero(salt, sizeof(salt));
     wolfSSL_Cleanup();
     return exit_code;

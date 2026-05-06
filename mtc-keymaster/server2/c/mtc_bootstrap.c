@@ -73,7 +73,10 @@
 #define BOOTSTRAP_MAX_MSG    65536
 #define BOOTSTRAP_HKDF_INFO  "mtc-dh-bootstrap"
 #define BOOTSTRAP_SALT_SZ    16
-#define BOOTSTRAP_AES_KEY_SZ 16
+/* TODO #62: AES-256-GCM AEAD requires 32-byte keys, one per
+ * direction.  HKDF below produces 64 bytes total (c2s||s2c). */
+#define BOOTSTRAP_AES_KEY_SZ      32   /* AES-256 */
+#define BOOTSTRAP_AES_KEYS_TOTAL  (BOOTSTRAP_AES_KEY_SZ * 2)
 
 /* Proof-of-possession (README-issues.md issue #5).
  *
@@ -536,7 +539,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
     word32 server_pub_sz = CURVE25519_KEYSIZE;
     uint8_t client_pub[CURVE25519_KEYSIZE];
     uint8_t salt[BOOTSTRAP_SALT_SZ];
-    uint8_t aes_key[BOOTSTRAP_AES_KEY_SZ];
+    uint8_t aes_keys[BOOTSTRAP_AES_KEYS_TOTAL];   /* c2s||s2c */
     uint8_t pop_nonce[BOOTSTRAP_POP_NONCE_SZ];
     char    pop_nonce_hex[BOOTSTRAP_POP_NONCE_SZ * 2 + 1];
 
@@ -690,17 +693,19 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
     }
     to_hex(pop_nonce, BOOTSTRAP_POP_NONCE_SZ, pop_nonce_hex);
 
-    /* Derive AES key via HKDF */
+    /* TODO #62: derive 64 bytes via HKDF — first 32 = c2s_key,
+     * last 32 = s2c_key.  Per-direction keys eliminate any
+     * GCM-nonce-reuse risk across directions. */
     if (wc_HKDF(WC_SHA256, shared_secret, shared_sz,
                  salt, BOOTSTRAP_SALT_SZ,
                  (const byte *)BOOTSTRAP_HKDF_INFO,
                  (word32)strlen(BOOTSTRAP_HKDF_INFO),
-                 aes_key, BOOTSTRAP_AES_KEY_SZ) != 0) {
+                 aes_keys, BOOTSTRAP_AES_KEYS_TOTAL) != 0) {
         LOG_ERROR("bootstrap: HKDF key derivation failed");
         goto cleanup;
     }
 
-    LOG_DEBUG("bootstrap: DH exchange complete, AES key derived");
+    LOG_DEBUG("bootstrap: DH exchange complete, AES-256-GCM keys derived");
 
     /* --- Send server DH response (plaintext JSON) --- */
     {
@@ -722,8 +727,9 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
         }
     }
 
-    /* --- Init mtc_crypt with derived key --- */
-    crypt_ctx = mtc_crypt_init(aes_key, BOOTSTRAP_AES_KEY_SZ);
+    /* --- Init mtc_crypt with derived keys (TODO #62 AEAD) --- */
+    crypt_ctx = mtc_crypt_init(aes_keys,                          /* c2s */
+                               aes_keys + BOOTSTRAP_AES_KEY_SZ);  /* s2c */
     if (!crypt_ctx) {
         LOG_ERROR("bootstrap: mtc_crypt_init failed");
         goto cleanup;
@@ -738,7 +744,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
     LOG_DEBUG("bootstrap: received encrypted enrollment (%d bytes)", ret);
 
     dec_len = sizeof(dec_buf);
-    if (mtc_crypt_decode(crypt_ctx, enc_buf, (unsigned int)ret,
+    if (mtc_crypt_decode(crypt_ctx, MTC_DIR_C2S, enc_buf, (unsigned int)ret,
                          dec_buf, &dec_len) != 0) {
         LOG_WARN("bootstrap: failed to decrypt enrollment request");
         goto cleanup;
@@ -826,7 +832,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                         "\"message\":\"CA certificate rejected: "
                         "DNS validation failed\"}";
                     unsigned int err_enc_len = sizeof(enc_buf);
-                    if (mtc_crypt_encode(crypt_ctx, (unsigned char *)err_json,
+                    if (mtc_crypt_encode(crypt_ctx, MTC_DIR_S2C, (unsigned char *)err_json,
                             (unsigned int)strlen(err_json),
                             enc_buf, &err_enc_len) == 0) {
                         send_length_prefixed(fd, enc_buf, err_enc_len);
@@ -855,7 +861,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                             "subject and the CA cert's SAN must "
                             "describe the same domain.\"}";
                         unsigned int err_enc_len = sizeof(enc_buf);
-                        if (mtc_crypt_encode(crypt_ctx,
+                        if (mtc_crypt_encode(crypt_ctx, MTC_DIR_S2C,
                                 (unsigned char *)err_json,
                                 (unsigned int)strlen(err_json),
                                 enc_buf, &err_enc_len) == 0) {
@@ -905,7 +911,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                             "\"message\":\"public_key_pem is not a "
                             "valid PEM-encoded public key.\"}";
                         unsigned int err_enc_len = sizeof(enc_buf);
-                        if (mtc_crypt_encode(crypt_ctx,
+                        if (mtc_crypt_encode(crypt_ctx, MTC_DIR_S2C,
                                 (unsigned char *)err_json,
                                 (unsigned int)strlen(err_json),
                                 enc_buf, &err_enc_len) == 0) {
@@ -934,7 +940,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                             "ca_certificate_pem SPKI — both fields must "
                             "carry the same public key.\"}";
                         unsigned int err_enc_len = sizeof(enc_buf);
-                        if (mtc_crypt_encode(crypt_ctx,
+                        if (mtc_crypt_encode(crypt_ctx, MTC_DIR_S2C,
                                 (unsigned char *)err_json,
                                 (unsigned int)strlen(err_json),
                                 enc_buf, &err_enc_len) == 0) {
@@ -992,7 +998,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                             "to request the revocation be lifted before "
                             "re-enrolling.\"}";
                         unsigned int err_enc_len = sizeof(enc_buf);
-                        if (mtc_crypt_encode(crypt_ctx,
+                        if (mtc_crypt_encode(crypt_ctx, MTC_DIR_S2C,
                                 (unsigned char *)err_json,
                                 (unsigned int)strlen(err_json),
                                 enc_buf, &err_enc_len) == 0) {
@@ -1115,7 +1121,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                         "that includes the README-issues.md issue #5 "
                         "fix.\"}";
                     unsigned int err_enc_len = sizeof(enc_buf);
-                    if (mtc_crypt_encode(crypt_ctx,
+                    if (mtc_crypt_encode(crypt_ctx, MTC_DIR_S2C,
                             (unsigned char *)err_json,
                             (unsigned int)strlen(err_json),
                             enc_buf, &err_enc_len) == 0) {
@@ -1152,7 +1158,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                             "'-ca' — use CA bootstrap (ca_certificate_pem "
                             "in extensions) for CA enrollments.\"}";
                         unsigned int err_enc_len = sizeof(enc_buf);
-                        if (mtc_crypt_encode(crypt_ctx,
+                        if (mtc_crypt_encode(crypt_ctx, MTC_DIR_S2C,
                                 (unsigned char *)err_json,
                                 (unsigned int)strlen(err_json),
                                 enc_buf, &err_enc_len) == 0) {
@@ -1170,7 +1176,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                     const char *err_json = "{\"status\":\"error\","
                         "\"message\":\"enrollment_nonce required for leaf\"}";
                     unsigned int err_enc_len = sizeof(enc_buf);
-                    if (mtc_crypt_encode(crypt_ctx, (unsigned char *)err_json,
+                    if (mtc_crypt_encode(crypt_ctx, MTC_DIR_S2C, (unsigned char *)err_json,
                             (unsigned int)strlen(err_json),
                             enc_buf, &err_enc_len) == 0) {
                         send_length_prefixed(fd, enc_buf, err_enc_len);
@@ -1200,7 +1206,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                     const char *err_json = "{\"status\":\"error\","
                         "\"message\":\"invalid, expired, or already-used nonce\"}";
                     unsigned int err_enc_len = sizeof(enc_buf);
-                    if (mtc_crypt_encode(crypt_ctx, (unsigned char *)err_json,
+                    if (mtc_crypt_encode(crypt_ctx, MTC_DIR_S2C, (unsigned char *)err_json,
                             (unsigned int)strlen(err_json),
                             enc_buf, &err_enc_len) == 0) {
                         send_length_prefixed(fd, enc_buf, err_enc_len);
@@ -1269,7 +1275,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                             "--force-keygen) and have your CA issue a "
                             "new nonce.\"}";
                         unsigned int err_enc_len = sizeof(enc_buf);
-                        if (mtc_crypt_encode(crypt_ctx,
+                        if (mtc_crypt_encode(crypt_ctx, MTC_DIR_S2C,
                                 (unsigned char *)err_json,
                                 (unsigned int)strlen(err_json),
                                 enc_buf, &err_enc_len) == 0) {
@@ -1383,7 +1389,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                         const char *resp_str =
                             json_object_to_json_string(existing);
                         enc_len = sizeof(enc_buf);
-                        if (mtc_crypt_encode(crypt_ctx,
+                        if (mtc_crypt_encode(crypt_ctx, MTC_DIR_S2C,
                                 (unsigned char *)resp_str,
                                 (unsigned int)strlen(resp_str),
                                 enc_buf, &enc_len) == 0 &&
@@ -1624,7 +1630,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
         {
             const char *result_str = json_object_to_json_string(wire_resp);
             enc_len = sizeof(enc_buf);
-            if (mtc_crypt_encode(crypt_ctx, (unsigned char *)result_str,
+            if (mtc_crypt_encode(crypt_ctx, MTC_DIR_S2C, (unsigned char *)result_str,
                     (unsigned int)strlen(result_str),
                     enc_buf, &enc_len) != 0) {
                 LOG_ERROR("bootstrap: failed to encrypt certificate response");
@@ -1673,7 +1679,7 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
     if (server_key_ok) wc_curve25519_free(&server_key);
     if (rng_ok) wc_FreeRng(&rng);
     secure_zero(shared_secret, sizeof(shared_secret));
-    secure_zero(aes_key, sizeof(aes_key));
+    secure_zero(aes_keys, sizeof(aes_keys));
     secure_zero(salt, sizeof(salt));
     return 0;
 
@@ -1684,7 +1690,7 @@ cleanup:
     if (server_key_ok) wc_curve25519_free(&server_key);
     if (rng_ok) wc_FreeRng(&rng);
     secure_zero(shared_secret, sizeof(shared_secret));
-    secure_zero(aes_key, sizeof(aes_key));
+    secure_zero(aes_keys, sizeof(aes_keys));
     secure_zero(salt, sizeof(salt));
     return -1;
 }

@@ -1,119 +1,150 @@
 /******************************************************************************
  * File:        mtc_crypt.c
- * Purpose:     AES-CBC encryption with byte-rotation layer.
+ * Purpose:     AES-256-GCM AEAD for the DH-bootstrap channel (port 8445).
  *
  * Description:
- *   Provides symmetric encrypt/decrypt using wolfSSL AES-CBC with an
- *   additional byte-rotation obfuscation step.  Intended for the DH
- *   bootstrap channel where the shared secret is used as the AES key.
+ *   Per-direction AES-256-GCM with random 96-bit nonces and a fixed 29-byte
+ *   AAD that binds the protocol label, direction byte, and plaintext length.
  *
- *   Encode order:  pad (random bit-7 noise + tail padding) → AES-CBC encrypt → rotate
- *   Decode order:  unrotate → AES-CBC decrypt → strip bit 7 + remove pad
+ *   Wire format per AEAD frame:
  *
- *   The rotation step shifts ciphertext bytes by a key-derived offset,
- *   preventing block-aligned pattern analysis.  The offset is deterministic
- *   (derived from the key) so both sides compute the same value.
+ *       [12-byte nonce][N-byte ciphertext][16-byte tag]
+ *
+ *   AAD bound into every tag:
+ *
+ *       "mtc-bootstrap-aead/v1\n\x00"   (24 bytes incl. NUL)
+ *       || direction_byte                (1 byte: 0x01 c2s, 0x02 s2c)
+ *       || plaintext_length              (4 bytes BE)
+ *
+ *   Two 256-bit keys are required at init — one per direction.  Caller
+ *   derives them from the X25519 shared secret + bootstrap salt via
+ *   HKDF-SHA256.  Encode/decode select the key by direction parameter.
+ *
+ *   Replaces the historical AES-CBC + zero-IV + byte-rotation design.
+ *   See README-bugsandtodo.md TODO #62 for the rationale.
  *
  * Dependencies:
- *   mtc_crypt.h               (public API)
- *   stdlib.h                  (malloc, free)
- *   string.h                  (memcpy, memset, memcmp)
- *   alloca.h                  (stack allocation for in-place ops)
- *   wolfssl/options.h         (feature macros)
- *   wolfssl/wolfcrypt/aes.h   (Aes, wc_AesCbcEncrypt/Decrypt)
- *   wolfssl/wolfcrypt/types.h (byte, word32, INVALID_DEVID)
+ *   wolfssl/wolfcrypt/aes.h     (AES-GCM)
+ *   wolfssl/wolfcrypt/random.h  (RNG for nonces)
  *
- * Notes:
- *   - NOT thread-safe.  Each MtcCryptCtx must be used by one thread at
- *     a time (the embedded Aes object is stateful).
- *   - buflen must be a multiple of WC_AES_BLOCK_SIZE (16) and >= 32.
- *   - alloca() is used for temporary buffers; callers must ensure buflen
- *     is reasonable for stack allocation (< ~64 KB recommended).
- *
- * Created:     2026-04-14
+ * Created:     2026-04-14 (original AES-CBC version)
+ * Rewritten:   2026-05-06 (AES-256-GCM; flag-day cutover for TODO #62)
  ******************************************************************************/
 
 #include "mtc_crypt.h"
 
 #include <stdlib.h>
 #include <string.h>
-#include <alloca.h>
+#include <stdint.h>
 
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/aes.h>
 #include <wolfssl/wolfcrypt/random.h>
-#include <wolfssl/wolfcrypt/types.h>
+
+/* AAD label.  23 bytes incl. trailing NUL (22 visible chars + the
+ * compiler-added NUL terminator).  Must NEVER change without a
+ * coordinated wire-format bump (CLAUDE.md guardrail). */
+static const unsigned char MTC_BOOTSTRAP_AAD_LABEL[] =
+    "mtc-bootstrap-aead/v1\n";
+#define MTC_AAD_LABEL_LEN sizeof(MTC_BOOTSTRAP_AAD_LABEL)   /* 23 */
+
+/* Total AAD length: label + dir byte + 4-byte plaintext_len BE. */
+#define MTC_AAD_TOTAL_LEN (MTC_AAD_LABEL_LEN + 1 + 4)
 
 /******************************************************************************
- * Function:    mtc_secure_zero  (static)
+ * Function:    secure_zero  (static)
  *
  * Description:
- *   Zero a buffer in a way that the compiler cannot optimise away.
- *   Uses a volatile pointer so every byte write is treated as an
- *   observable side effect.
+ *   Zero a buffer using a volatile pointer so the compiler cannot
+ *   optimise the write away.
  ******************************************************************************/
-static void mtc_secure_zero(void *buf, unsigned int len)
+static void secure_zero(void *buf, size_t len)
 {
     volatile unsigned char *p = (volatile unsigned char *)buf;
-    unsigned int i;
-    for (i = 0; i < len; i++)
-        p[i] = 0;
+    while (len--) *p++ = 0;
 }
 
 /******************************************************************************
  * Context structure (opaque outside this file).
- *
- * Allocated by mtc_crypt_init(), freed by mtc_crypt_fin().
- * The key is stored so that (a) wc_AesSetKey can re-initialise the IV
- * before each operation, and (b) the rotation amount can be derived.
  ******************************************************************************/
 struct MtcCryptCtx {
-    Aes            aes;                     /**< wolfSSL AES object (stateful) */
-    unsigned char  key[AES_256_KEY_SIZE];   /**< key copy, up to 32 bytes     */
-    unsigned int   keylen;                  /**< actual key length: 16/24/32   */
+    Aes           aes_c2s;
+    Aes           aes_s2c;
+    int           c2s_inited;
+    int           s2c_inited;
+    unsigned char c2s_key[MTC_CRYPT_KEY_SIZE];
+    unsigned char s2c_key[MTC_CRYPT_KEY_SIZE];
 };
+
+/******************************************************************************
+ * Function:    build_aad  (static)
+ *
+ * Description:
+ *   Construct the per-frame AAD: fixed label || direction || plaintext_len_be.
+ *   Output is exactly MTC_AAD_TOTAL_LEN bytes; caller-provided buffer must
+ *   be at least that size.
+ ******************************************************************************/
+static void build_aad(unsigned char *aad, unsigned char dir,
+                      unsigned int plaintext_len)
+{
+    memcpy(aad, MTC_BOOTSTRAP_AAD_LABEL, MTC_AAD_LABEL_LEN);
+    aad[MTC_AAD_LABEL_LEN] = dir;
+    aad[MTC_AAD_LABEL_LEN + 1] = (unsigned char)((plaintext_len >> 24) & 0xff);
+    aad[MTC_AAD_LABEL_LEN + 2] = (unsigned char)((plaintext_len >> 16) & 0xff);
+    aad[MTC_AAD_LABEL_LEN + 3] = (unsigned char)((plaintext_len >>  8) & 0xff);
+    aad[MTC_AAD_LABEL_LEN + 4] = (unsigned char)( plaintext_len        & 0xff);
+}
 
 /******************************************************************************
  * Function:    mtc_crypt_init
  *
  * Description:
- *   Allocate and initialise an encryption context.  Validates key length,
- *   copies the key, and initialises the wolfSSL Aes object.  The returned
- *   context is caller-owned and must be freed with mtc_crypt_fin().
- *
- * Input Arguments:
- *   key     - AES key bytes.  Must not be NULL.
- *   keylen  - Key length in bytes: 16 (AES-128), 24 (AES-192), or
- *             32 (AES-256).  Any other value is rejected.
+ *   Allocate and initialise an AEAD context.  Stores the per-direction
+ *   keys and runs wc_AesInit / wc_AesGcmSetKey on each.
  *
  * Returns:
- *   Non-NULL  pointer to a new MtcCryptCtx on success.
- *   NULL      if key is NULL, keylen is invalid, malloc fails, or
- *             wc_AesInit fails.
- *
- * Side Effects:
- *   - Heap allocation (sizeof(MtcCryptCtx)).
- *   - Calls wc_AesInit() which may allocate internal wolfSSL state.
+ *   Non-NULL pointer to a new MtcCryptCtx on success.
+ *   NULL     if either key is NULL, malloc fails, or wolfSSL returns
+ *            an error.
  ******************************************************************************/
-MtcCryptCtx *mtc_crypt_init(unsigned char *key, unsigned int keylen)
+MtcCryptCtx *mtc_crypt_init(const unsigned char *c2s_key,
+                            const unsigned char *s2c_key)
 {
     MtcCryptCtx *ctx;
 
-    if (key == NULL)
-        return NULL;
-    if (keylen != AES_128_KEY_SIZE && keylen != AES_192_KEY_SIZE &&
-        keylen != AES_256_KEY_SIZE)
+    if (!c2s_key || !s2c_key)
         return NULL;
 
-    ctx = malloc(sizeof(*ctx));
-    if (ctx == NULL)
+    ctx = (MtcCryptCtx *)malloc(sizeof(*ctx));
+    if (!ctx)
         return NULL;
-
     memset(ctx, 0, sizeof(*ctx));
-    memcpy(ctx->key, key, keylen);
-    ctx->keylen = keylen;
 
-    if (wc_AesInit(&ctx->aes, NULL, INVALID_DEVID) != 0) {
+    memcpy(ctx->c2s_key, c2s_key, MTC_CRYPT_KEY_SIZE);
+    memcpy(ctx->s2c_key, s2c_key, MTC_CRYPT_KEY_SIZE);
+
+    if (wc_AesInit(&ctx->aes_c2s, NULL, INVALID_DEVID) != 0) {
+        secure_zero(ctx, sizeof(*ctx));
+        free(ctx);
+        return NULL;
+    }
+    ctx->c2s_inited = 1;
+
+    if (wc_AesInit(&ctx->aes_s2c, NULL, INVALID_DEVID) != 0) {
+        wc_AesFree(&ctx->aes_c2s);
+        secure_zero(ctx, sizeof(*ctx));
+        free(ctx);
+        return NULL;
+    }
+    ctx->s2c_inited = 1;
+
+    if (wc_AesGcmSetKey(&ctx->aes_c2s, ctx->c2s_key,
+                        MTC_CRYPT_KEY_SIZE) != 0 ||
+        wc_AesGcmSetKey(&ctx->aes_s2c, ctx->s2c_key,
+                        MTC_CRYPT_KEY_SIZE) != 0) {
+        wc_AesFree(&ctx->aes_c2s);
+        wc_AesFree(&ctx->aes_s2c);
+        secure_zero(ctx, sizeof(*ctx));
         free(ctx);
         return NULL;
     }
@@ -122,487 +153,161 @@ MtcCryptCtx *mtc_crypt_init(unsigned char *key, unsigned int keylen)
 }
 
 /******************************************************************************
- * Function:    mtc_crypt_rotate  (static)
+ * Function:    pick_aes  (static)
  *
  * Description:
- *   Left-rotate buf by a key-derived number of bytes.  The rotation
- *   amount is derived from the sum of all key bytes, mapped into the
- *   range [11, buflen - 11].  This ensures a minimum displacement of
- *   11 bytes in either direction, preventing trivial alignment with
- *   AES block boundaries (16 bytes).
- *
- * Input Arguments:
- *   ctx     - Encryption context (key used for rotation derivation).
- *   buf     - Buffer to rotate in place.
- *   buflen  - Buffer length (must be >= 32).
- *
- * Returns:
- *    0  always (rotation cannot fail given valid inputs).
- *
- * Side Effects:
- *   - Uses alloca(buflen) for a temporary stack buffer.
+ *   Return the per-direction AES context for the given direction byte.
+ *   Returns NULL if dir is invalid.
  ******************************************************************************/
-static int mtc_crypt_rotate(MtcCryptCtx *ctx, unsigned char *buf,
-                            unsigned int buflen)
+static Aes *pick_aes(MtcCryptCtx *ctx, unsigned char dir)
 {
-    unsigned int rot = 0;
-    unsigned int i;
-    unsigned char *tmp;
-
-    /* Derive rotation from key: deterministic, both sides compute same value */
-    for (i = 0; i < ctx->keylen; i++)
-        rot += ctx->key[i];
-
-    /* Map into [11, buflen-11]: range size is (buflen - 21) */
-    rot = 11 + (rot % (buflen - 21));
-
-    /* Left-rotate: [A|B] → [B|A] where A is first `rot` bytes */
-    tmp = alloca(buflen);
-    memcpy(tmp, buf + rot, buflen - rot);
-    memcpy(tmp + (buflen - rot), buf, rot);
-    memcpy(buf, tmp, buflen);
-    mtc_secure_zero(tmp, buflen);
-
-    return 0;
-}
-
-/******************************************************************************
- * Function:    mtc_crypt_unrotate  (static)
- *
- * Description:
- *   Undo a left-rotation (i.e., right-rotate by the same amount).
- *   Uses the identical derivation as mtc_crypt_rotate so both sides
- *   agree on the rotation offset.
- *
- * Input Arguments:
- *   ctx     - Encryption context (key used for rotation derivation).
- *   buf     - Buffer to unrotate in place.
- *   buflen  - Buffer length (must be >= 32).
- *
- * Returns:
- *    0  always.
- *
- * Side Effects:
- *   - Uses alloca(buflen) for a temporary stack buffer.
- ******************************************************************************/
-static int mtc_crypt_unrotate(MtcCryptCtx *ctx, unsigned char *buf,
-                              unsigned int buflen)
-{
-    unsigned int rot = 0;
-    unsigned int i;
-    unsigned char *tmp;
-
-    for (i = 0; i < ctx->keylen; i++)
-        rot += ctx->key[i];
-
-    rot = 11 + (rot % (buflen - 21));
-
-    /* Right-rotate: [B|A] → [A|B] — inverse of left-rotate */
-    tmp = alloca(buflen);
-    memcpy(tmp, buf + (buflen - rot), rot);
-    memcpy(tmp + rot, buf, buflen - rot);
-    memcpy(buf, tmp, buflen);
-    mtc_secure_zero(tmp, buflen);
-
-    return 0;
-}
-
-/******************************************************************************
- * Function:    mtc_crypt_add_pad  (static)
- *
- * Description:
- *   Pad a JSON buffer (ending with '}') to a multiple of WC_AES_BLOCK_SIZE
- *   (16) and at least 32 bytes.  Random bytes are appended after the
- *   closing '}' to fill the padded length.  The caller provides the
- *   output buffer and its size.
- *
- * Input Arguments:
- *   ctx        - Encryption context (unused currently, reserved).
- *   inbuf      - Input JSON buffer.  Must end with '}'.
- *   inbuflen   - Length of inbuf in bytes (not including any NUL).
- *   outbuf     - Output buffer.  Must be large enough for the padded result.
- *   outbuflen  - On entry: capacity of outbuf.
- *                On exit:  actual padded length written.
- *
- * Returns:
- *    0  on success.
- *   -1  if arguments are invalid, outbuf is too small, or RNG fails.
- ******************************************************************************/
-static int mtc_crypt_add_pad(MtcCryptCtx *ctx, unsigned char *inbuf,
-                             unsigned int inbuflen, unsigned char *outbuf,
-                             unsigned int *outbuflen)
-{
-    unsigned int padded;
-    unsigned int pad_bytes;
-    unsigned char *mask;
-    unsigned int i;
-    WC_RNG rng;
-
-    (void)ctx;
-
-    if (inbuf == NULL || outbuf == NULL || outbuflen == NULL || inbuflen == 0)
-        return -1;
-
-    /* Round up to multiple of 16, minimum 32 */
-    padded = (inbuflen + (WC_AES_BLOCK_SIZE - 1)) & ~(WC_AES_BLOCK_SIZE - 1);
-    if (padded < 32)
-        padded = 32;
-
-    if (*outbuflen < padded)
-        return -1;
-
-    if (wc_InitRng(&rng) != 0)
-        return -1;
-
-    /* Copy original data */
-    memcpy(outbuf, inbuf, inbuflen);
-
-    /* Randomly set bit 7 on ASCII bytes to add noise.
-     * JSON is pure ASCII (bits 0-6), so bit 7 is always spare.
-     * Generate a random mask byte per character; if its low bit is set,
-     * flip bit 7 on that output byte. */
-    mask = alloca(inbuflen);
-    if (wc_RNG_GenerateBlock(&rng, mask, inbuflen) != 0) {
-        mtc_secure_zero(mask, inbuflen);
-        wc_FreeRng(&rng);
-        return -1;
-    }
-    for (i = 0; i < inbuflen; i++) {
-        if (mask[i] & 0x01)
-            outbuf[i] |= 0x80;
-    }
-    mtc_secure_zero(mask, inbuflen);
-
-    /* Fill tail padding with random bytes.
-     * Ensure no pad byte looks like '}' (0x7D) after bit-7 stripping,
-     * otherwise remove_pad would find a false end-of-JSON marker. */
-    pad_bytes = padded - inbuflen;
-    if (pad_bytes > 0) {
-        if (wc_RNG_GenerateBlock(&rng, outbuf + inbuflen, pad_bytes) != 0) {
-            wc_FreeRng(&rng);
-            return -1;
-        }
-        for (i = inbuflen; i < padded; i++) {
-            while ((outbuf[i] & 0x7F) == '}') {
-                if (wc_RNG_GenerateBlock(&rng, &outbuf[i], 1) != 0) {
-                    wc_FreeRng(&rng);
-                    return -1;
-                }
-            }
-        }
-    }
-
-    wc_FreeRng(&rng);
-    *outbuflen = padded;
-    return 0;
-}
-
-/******************************************************************************
- * Function:    mtc_crypt_remove_pad  (static)
- *
- * Description:
- *   Strip bit 7 from all bytes (reverting the noise added by add_pad),
- *   then locate the last '}' to find the end of the JSON content.
- *   Truncates everything after it and returns the original JSON length.
- *
- * Input Arguments:
- *   ctx     - Encryption context (unused currently, reserved).
- *   buf     - Decrypted buffer containing JSON (with bit-7 noise) followed
- *             by random pad bytes.  Modified in place (bit 7 cleared).
- *   buflen  - Total buffer length (padded).
- *   outlen  - On exit: length of the actual JSON content (up to and
- *             including the last '}').
- *
- * Returns:
- *    0  on success.
- *   -1  if no '}' is found in buf.
- ******************************************************************************/
-static int mtc_crypt_remove_pad(MtcCryptCtx *ctx, unsigned char *buf,
-                                unsigned int buflen, unsigned int *outlen)
-{
-    unsigned int i;
-
-    (void)ctx;
-
-    if (buf == NULL || outlen == NULL || buflen == 0)
-        return -1;
-
-    /* Strip bit 7 from every byte — restores original ASCII */
-    for (i = 0; i < buflen; i++)
-        buf[i] &= 0x7F;
-
-    /* Scan backwards for the last '}' */
-    for (i = buflen; i > 0; i--) {
-        if (buf[i - 1] == '}') {
-            *outlen = i;
-            return 0;
-        }
-    }
-
-    return -1;
+    if (!ctx) return NULL;
+    if (dir == MTC_DIR_C2S) return &ctx->aes_c2s;
+    if (dir == MTC_DIR_S2C) return &ctx->aes_s2c;
+    return NULL;
 }
 
 /******************************************************************************
  * Function:    mtc_crypt_encode
  *
  * Description:
- *   Pad a JSON buffer to AES block alignment, encrypt using AES-CBC,
- *   then apply byte rotation.  The padded/encrypted result is written
- *   to outbuf and its length to *outbuflen.
+ *   AES-256-GCM seal `inbuf` into `outbuf`.  Generates a fresh 96-bit
+ *   nonce per call from wolfCrypt's RNG.
  *
- * Input Arguments:
- *   ctx        - Initialised encryption context.  Must not be NULL.
- *   inbuf      - JSON input buffer (must end with '}').  Must not be NULL.
- *   inbuflen   - Length of inbuf in bytes.
- *   outbuf     - Output buffer for the encrypted result.  Must not be NULL.
- *   outbuflen  - On entry: capacity of outbuf.
- *                On exit: actual encrypted length (padded to block size).
+ *   Output layout:
+ *       [12-byte nonce][inbuflen-byte ciphertext][16-byte tag]
+ *   Total output size = inbuflen + 28.
  *
  * Returns:
- *    0  on success.
- *   -1  if any argument is invalid, outbuf is too small, or AES fails.
- *
- * Side Effects:
- *   - Mutates the internal Aes state (IV consumed by CBC mode).
- *   - Uses alloca for a temporary stack buffer.
- *   - Initialises/frees a WC_RNG for random pad bytes.
+ *   0 on success.
+ *  -1 on any error (NULL pointer, invalid dir, outbuf too small,
+ *     RNG failure, GCM encrypt failure).
  ******************************************************************************/
-int mtc_crypt_encode(MtcCryptCtx *ctx, unsigned char *inbuf,
-                     unsigned int inbuflen, unsigned char *outbuf,
-                     unsigned int *outbuflen)
+int mtc_crypt_encode(MtcCryptCtx *ctx, unsigned char dir,
+                     const unsigned char *inbuf, unsigned int inbuflen,
+                     unsigned char *outbuf, unsigned int *outbuflen)
 {
-    unsigned char iv[AES_IV_SIZE];
-    unsigned char *tmp;
-    unsigned int padded_len;
-    int ret;
+    Aes *aes;
+    WC_RNG rng;
+    unsigned char aad[MTC_AAD_TOTAL_LEN];
+    unsigned char *nonce;
+    unsigned char *ct;
+    unsigned char *tag;
+    int rc, ret = -1;
+    unsigned int needed;
 
-    if (ctx == NULL || inbuf == NULL || outbuf == NULL || outbuflen == NULL)
+    if (!ctx || !inbuf || !outbuf || !outbuflen)
         return -1;
-    if (inbuflen == 0)
-        return -1;
+    aes = pick_aes(ctx, dir);
+    if (!aes) return -1;
 
-    /* Pad JSON to block-aligned length */
-    padded_len = *outbuflen;
-    ret = mtc_crypt_add_pad(ctx, inbuf, inbuflen, outbuf, &padded_len);
-    if (ret != 0)
-        return -1;
-
-    /* Zero IV — rotation adds per-message variation */
-    memset(iv, 0, AES_IV_SIZE);
-
-    ret = wc_AesSetKey(&ctx->aes, ctx->key, ctx->keylen, iv, AES_ENCRYPTION);
-    if (ret != 0)
+    needed = inbuflen + MTC_CRYPT_OVERHEAD;
+    if (*outbuflen < needed)
         return -1;
 
-    tmp = alloca(padded_len);
-    ret = wc_AesCbcEncrypt(&ctx->aes, tmp, outbuf, padded_len);
-    if (ret != 0) {
-        mtc_secure_zero(tmp, padded_len);
+    nonce = outbuf;
+    ct    = outbuf + MTC_CRYPT_NONCE_SIZE;
+    tag   = ct + inbuflen;
+
+    if (wc_InitRng(&rng) != 0)
         return -1;
+    rc = wc_RNG_GenerateBlock(&rng, nonce, MTC_CRYPT_NONCE_SIZE);
+    wc_FreeRng(&rng);
+    if (rc != 0)
+        return -1;
+
+    build_aad(aad, dir, inbuflen);
+
+    rc = wc_AesGcmEncrypt(aes,
+                          ct, inbuf, inbuflen,
+                          nonce, MTC_CRYPT_NONCE_SIZE,
+                          tag, MTC_CRYPT_TAG_SIZE,
+                          aad, sizeof(aad));
+    if (rc == 0) {
+        *outbuflen = needed;
+        ret = 0;
+    } else {
+        secure_zero(outbuf, needed);
     }
-
-    memcpy(outbuf, tmp, padded_len);
-    mtc_secure_zero(tmp, padded_len);
-    *outbuflen = padded_len;
-
-    /* Rotate as last step */
-    return mtc_crypt_rotate(ctx, outbuf, padded_len);
+    secure_zero(aad, sizeof(aad));
+    return ret;
 }
 
 /******************************************************************************
  * Function:    mtc_crypt_decode
  *
  * Description:
- *   Unrotate, decrypt using AES-CBC, then remove padding by locating
- *   the last '}' in the decrypted buffer.  The original JSON is written
- *   to outbuf and its length to *outbuflen.
+ *   AES-256-GCM open + authenticate.  Verifies the tag against the
+ *   reconstructed AAD (label + dir + plaintext_len BE).  Mismatch on
+ *   ANY field — including the implicit plaintext-length binding —
+ *   fails decryption.
  *
- * Input Arguments:
- *   ctx        - Initialised encryption context.  Must not be NULL.
- *   inbuf      - Encrypted input buffer.  Must not be NULL.
- *   inbuflen   - Length of inbuf (must be multiple of 16, >= 32).
- *   outbuf     - Output buffer for decrypted JSON.  Must not be NULL.
- *   outbuflen  - On entry: capacity of outbuf.
- *                On exit: actual JSON length (up to last '}').
+ *   Input layout:
+ *       [12-byte nonce][N-byte ciphertext][16-byte tag]
+ *   Plaintext length = inbuflen - 28.
  *
  * Returns:
- *    0  on success.
- *   -1  if arguments are invalid, AES fails, or no '}' found.
- *
- * Side Effects:
- *   - Mutates the internal Aes state (IV consumed by CBC mode).
- *   - Uses alloca for a temporary stack buffer.
+ *   0 on success; outbuflen is set to the plaintext length.
+ *  -1 on any failure: too-small input, NULL pointer, invalid dir,
+ *     output buffer too small, GCM tag mismatch, plaintext-length
+ *     overflow.  On failure outbuf is zeroed where wolfSSL touched it.
  ******************************************************************************/
-int mtc_crypt_decode(MtcCryptCtx *ctx, unsigned char *inbuf,
-                     unsigned int inbuflen, unsigned char *outbuf,
-                     unsigned int *outbuflen)
+int mtc_crypt_decode(MtcCryptCtx *ctx, unsigned char dir,
+                     const unsigned char *inbuf, unsigned int inbuflen,
+                     unsigned char *outbuf, unsigned int *outbuflen)
 {
-    unsigned char iv[AES_IV_SIZE];
-    unsigned char *tmp;
-    unsigned int json_len;
-    int ret;
+    Aes *aes;
+    unsigned char aad[MTC_AAD_TOTAL_LEN];
+    const unsigned char *nonce;
+    const unsigned char *ct;
+    const unsigned char *tag;
+    unsigned int ct_len;
+    int rc, ret = -1;
 
-    if (ctx == NULL || inbuf == NULL || outbuf == NULL || outbuflen == NULL)
+    if (!ctx || !inbuf || !outbuf || !outbuflen)
         return -1;
-    if (inbuflen % WC_AES_BLOCK_SIZE != 0 || inbuflen < 32)
+    aes = pick_aes(ctx, dir);
+    if (!aes) return -1;
+
+    if (inbuflen < MTC_CRYPT_OVERHEAD)
         return -1;
-    if (*outbuflen < inbuflen)
-        return -1;
-
-    /* Copy to outbuf for in-place operations */
-    memcpy(outbuf, inbuf, inbuflen);
-
-    /* Unrotate as first step */
-    ret = mtc_crypt_unrotate(ctx, outbuf, inbuflen);
-    if (ret != 0)
-        return -1;
-
-    /* Zero IV — must match encode */
-    memset(iv, 0, AES_IV_SIZE);
-
-    ret = wc_AesSetKey(&ctx->aes, ctx->key, ctx->keylen, iv, AES_DECRYPTION);
-    if (ret != 0)
+    ct_len = inbuflen - MTC_CRYPT_OVERHEAD;
+    if (*outbuflen < ct_len)
         return -1;
 
-    tmp = alloca(inbuflen);
-    ret = wc_AesCbcDecrypt(&ctx->aes, tmp, outbuf, inbuflen);
-    if (ret != 0) {
-        mtc_secure_zero(tmp, inbuflen);
-        return -1;
+    nonce = inbuf;
+    ct    = inbuf + MTC_CRYPT_NONCE_SIZE;
+    tag   = ct + ct_len;
+
+    build_aad(aad, dir, ct_len);
+
+    rc = wc_AesGcmDecrypt(aes,
+                          outbuf, ct, ct_len,
+                          nonce, MTC_CRYPT_NONCE_SIZE,
+                          tag, MTC_CRYPT_TAG_SIZE,
+                          aad, sizeof(aad));
+    if (rc == 0) {
+        *outbuflen = ct_len;
+        ret = 0;
+    } else {
+        secure_zero(outbuf, ct_len);
     }
-
-    memcpy(outbuf, tmp, inbuflen);
-    mtc_secure_zero(tmp, inbuflen);
-
-    /* Remove padding by finding last '}' */
-    ret = mtc_crypt_remove_pad(ctx, outbuf, inbuflen, &json_len);
-    if (ret != 0)
-        return -1;
-
-    *outbuflen = json_len;
-    return 0;
+    secure_zero(aad, sizeof(aad));
+    return ret;
 }
 
 /******************************************************************************
  * Function:    mtc_crypt_fin
  *
  * Description:
- *   Release all resources held by the context.  Zeros the key material
- *   before freeing to prevent key remnants in freed heap memory.
- *
- * Input Arguments:
- *   ctx  - Context to free.  NULL is safe (no-op).
- *
- * Returns:
- *    0  always.
- *
- * Side Effects:
- *   - Calls wc_AesFree() to release wolfSSL internal state.
- *   - Zeros sizeof(MtcCryptCtx) bytes of heap memory.
- *   - Frees the ctx pointer.  Caller must not use ctx after this call.
+ *   Free the AEAD context and securely zero key material.
  ******************************************************************************/
 int mtc_crypt_fin(MtcCryptCtx *ctx)
 {
-    if (ctx == NULL)
-        return 0;
-
-    wc_AesFree(&ctx->aes);
-    mtc_secure_zero(ctx, sizeof(*ctx));
+    if (!ctx) return 0;
+    if (ctx->c2s_inited) wc_AesFree(&ctx->aes_c2s);
+    if (ctx->s2c_inited) wc_AesFree(&ctx->aes_s2c);
+    secure_zero(ctx, sizeof(*ctx));
     free(ctx);
-
     return 0;
 }
-
-/******************************************************************************
- * TEST_MAIN — standalone round-trip tests
- ******************************************************************************/
-#if defined(TEST_MAIN)
-
-#include <stdio.h>
-
-static int test_json(MtcCryptCtx *ctx, const char *json, const char *label)
-{
-    unsigned int inlen = (unsigned int)strlen(json);
-    unsigned char enc[512];
-    unsigned int  enc_len = sizeof(enc);
-    unsigned char dec[512];
-    unsigned int  dec_len = sizeof(dec);
-    int sts;
-
-    /* Encode */
-    sts = mtc_crypt_encode(ctx, (unsigned char *)json, inlen, enc, &enc_len);
-    if (sts != 0) {
-        fprintf(stderr, "FAIL [%s]: mtc_crypt_encode returned %d\n", label, sts);
-        return 1;
-    }
-
-    /* Verify ciphertext differs from plaintext */
-    if (enc_len == inlen && memcmp(enc, json, inlen) == 0) {
-        fprintf(stderr, "FAIL [%s]: encode did not change buffer\n", label);
-        return 1;
-    }
-
-    /* Decode */
-    sts = mtc_crypt_decode(ctx, enc, enc_len, dec, &dec_len);
-    if (sts != 0) {
-        fprintf(stderr, "FAIL [%s]: mtc_crypt_decode returned %d\n", label, sts);
-        return 1;
-    }
-
-    /* Verify round-trip: length and content must match original */
-    if (dec_len != inlen) {
-        fprintf(stderr, "FAIL [%s]: length mismatch: got %u, expected %u\n",
-                label, dec_len, inlen);
-        return 1;
-    }
-    if (memcmp(dec, json, inlen) != 0) {
-        fprintf(stderr, "FAIL [%s]: content mismatch\n", label);
-        return 1;
-    }
-
-    printf("PASS [%s]: %u bytes JSON → %u bytes encrypted → %u bytes recovered\n",
-           label, inlen, enc_len, dec_len);
-    return 0;
-}
-
-int main(void)
-{
-    unsigned char key[AES_128_KEY_SIZE] = {
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10
-    };
-    MtcCryptCtx *ctx;
-    int fail = 0;
-
-    ctx = mtc_crypt_init(key, AES_128_KEY_SIZE);
-    if (!ctx) {
-        fprintf(stderr, "FAIL: mtc_crypt_init returned NULL\n");
-        return 1;
-    }
-
-    /* Test various irregular JSON lengths */
-    fail |= test_json(ctx, "{\"key\":\"v\"}", "11 bytes");
-    fail |= test_json(ctx, "{\"a\":1}", "7 bytes");
-    fail |= test_json(ctx, "{\"name\":\"alice\",\"age\":30}", "24 bytes");
-    fail |= test_json(ctx, "{\"x\":\"abcdefghijklmnop\"}", "22 bytes");
-    fail |= test_json(ctx,
-        "{\"public_key\":\"04b7a2...\",\"nonce\":\"f8c3d1e9\"}",
-        "49 bytes");
-    fail |= test_json(ctx,
-        "{\"subject\":\"urn:ajax-inc:employee:joe.bosfitch\","
-        "\"public_key_pem\":\"-----BEGIN PUBLIC KEY-----\\n"
-        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...\","
-        "\"nonce\":\"a1b2c3d4e5f6\"}",
-        "193 bytes");
-
-    mtc_crypt_fin(ctx);
-
-    if (fail) {
-        fprintf(stderr, "\nSome tests FAILED\n");
-        return 1;
-    }
-    printf("\nAll tests PASSED\n");
-    return 0;
-}
-
-#endif /* TEST_MAIN */
