@@ -32,12 +32,13 @@ I reviewed the uploaded `s2.tar.gz`. Priority fixes:
 
 ## P1 — high priority
 
-5. **Bootstrap fork loop lacks child backpressure/reaping**
+5. **Bootstrap fork loop lacks child backpressure/reaping** — **DONE 2026-05-06 (TODO #65)**
 
-   * HTTP/MQC have active-child backpressure; bootstrap forks without the same guard.
-   * A connection flood can fork-storm the host.
-   * Fix: reuse `mtc_wait_for_child_slot()` / SIGCHLD accounting for bootstrap.
-   * File: `mtc_bootstrap.c:1716-1736`.
+   * `mtc_bootstrap.c::bootstrap_thread` now calls
+     `mtc_wait_for_child_slot("bootstrap")` before `accept()`
+     and `mtc_register_active_child()` after `fork()`.
+   * Verified live with 25 parallel real bootstraps hitting
+     the 20-child cap.
 
 6. **HTTP parser can slow-loris**
 
@@ -238,21 +239,22 @@ itself; reservation mode is a real feature, not a bug.
 
 ## P1
 
-### 5. Bootstrap fork lacks backpressure — **OPEN**
+### 5. Bootstrap fork lacks backpressure — **DONE 2026-05-06** (TODO #65)
 
-Confirmed at `mtc_bootstrap.c:1726`.  The bootstrap thread does
-`pid = fork()` directly without consulting
-`mtc_wait_for_child_slot()` (which the HTTP/MQC paths call to
-gate at `mqc-max-children`).  An attacker who can hit port 8445
-can fork-storm the host without crossing the 20-child cap.
+`mtc_bootstrap.c::bootstrap_thread` now calls
+`mtc_wait_for_child_slot("bootstrap")` before `accept()` and
+`mtc_register_active_child()` in the parent after `fork()`.
+The same global `g_active_children` counter the HTTP/MQC
+listeners share now covers the bootstrap path too.
 
-Per-IP rate-limit `RL_BOOTSTRAP` (3/min, 30/hr) does provide a
-floor — a single attacker IP can fork at most 30 children per
-hour.  Distributed flooders aren't bounded.
+Helpers exposed in `mtc_http.h` (previously file-static).  The
+SIGCHLD reaper was already decrementing on exit; the missing
+piece was the matching increment for the bootstrap path.
 
-**Recommendation:** open as TODO #65, MEDIUM.  Insert a call to
-`mtc_wait_for_child_slot("bootstrap")` immediately before
-`fork()`.  One-line change; no protocol impact.
+Verified: 25 parallel `bootstrap_ca --no-pin` calls hit the
+20-child cap and the listener logged `bootstrap backpressure:
+20/20 active children, sleeping before accept` repeatedly
+until earlier children drained.
 
 ### 6. HTTP slow-loris — **PARTIAL**
 
@@ -380,21 +382,17 @@ cert.
 ## Recommended attack queue
 
 Prioritized by impact-per-effort against the current code.
-TODOs closed 2026-05-06: #64 (commit `6ec344bf1`),
-#62 (commit `265178701`).  Remaining:
+TODOs closed 2026-05-06: #64, #62, #65.  Remaining:
 
-1. **TODO #65** — bootstrap fork backpressure.  One-line fix
-   to call `mtc_wait_for_child_slot()` before the bootstrap
-   thread's `fork()`.  Contains the fork-storm DoS surface.
-2. **TODO #69** — fail-closed on persistence errors during
+1. **TODO #69** — fail-closed on persistence errors during
    enrollment.  Local-only change in `mtc_bootstrap.c`.
-3. **TODO #68** — server-side label canonicalization.
+2. **TODO #68** — server-side label canonicalization.
    Local-only.
-4. **TODO #66** — HTTP read timeout (`SO_RCVTIMEO`).
+3. **TODO #66** — HTTP read timeout (`SO_RCVTIMEO`).
    Local-only.
-5. **TODO #63** — DH-transcript signature.  Defense-in-depth
+4. **TODO #63** — DH-transcript signature.  Defense-in-depth
    on top of the now-shipped AEAD.
-6. **TODO #67, #70, #71** — defense-in-depth / hygiene.
+5. **TODO #67, #70, #71** — defense-in-depth / hygiene.
 3. **TODO #65** — bootstrap fork backpressure.  One-line fix,
    contains the fork-storm DoS vector.
 4. **TODO #69** — fail-closed on persistence errors during

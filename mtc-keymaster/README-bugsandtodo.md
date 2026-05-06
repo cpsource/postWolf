@@ -3432,9 +3432,32 @@ remove the "nonce IS the auth" language, document the MQC gate.
 
 ---
 
-### 65. Bootstrap fork lacks `mtc_wait_for_child_slot` backpressure
+### 65. Bootstrap fork lacks `mtc_wait_for_child_slot` backpressure — **DONE 2026-05-06**
 
 **Severity:** Medium — fork-storm DoS.  Filed 2026-05-06.
+
+**Resolution:** Two additions in `mtc_bootstrap.c::bootstrap_thread`:
+
+1. `mtc_wait_for_child_slot("bootstrap")` immediately before
+   `accept()` — blocks the listener until the active-child
+   counter drops below `mqc-max-children`.
+2. `mtc_register_active_child()` in the parent branch after a
+   successful `fork()` — counts this child against the global
+   cap (the SIGCHLD reaper in mtc_http.c was already
+   decrementing on exit, but nothing was incrementing for the
+   bootstrap path).
+
+`mtc_wait_for_child_slot` and `mtc_register_active_child` were
+exposed in `mtc_http.h` (previously file-static in mtc_http.c).
+The atomic counter `g_active_children` stays static; helpers
+encapsulate access.
+
+Verified live: 25 parallel `bootstrap_ca --no-pin` against
+localhost:8445 hit the 20-child cap and the listener logged
+`bootstrap backpressure: 20/20 active children, sleeping
+before accept` until earlier children drained.  Cap is now
+respected by every listener (TLS, plain, MQC, bootstrap)
+sharing the same global counter.
 
 **Current state:** `mtc_bootstrap.c:1726` calls `fork()` directly
 on every accepted connection.  The HTTP/MQC paths use

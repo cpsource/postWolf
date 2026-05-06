@@ -83,6 +83,34 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
 void mtc_install_child_reaper(void);
 
 /**
+ * @brief  Block until the active-child count drops below
+ *         `mqc-max-children`.  Polls in 1-second increments;
+ *         logs the backpressure event once per wait.
+ *
+ * @param[in] which  Short tag for the log message — typically the
+ *                   listener name ("TLS" / "plain" / "MQC" /
+ *                   "bootstrap").
+ *
+ * Used by every listener loop BEFORE `accept()` so a connection
+ * burst stretches over time instead of fanning into N concurrent
+ * forks.  TODO #65 wired this into the bootstrap path; see
+ * mtc_bootstrap.c.
+ */
+void mtc_wait_for_child_slot(const char *which);
+
+/**
+ * @brief  Increment the global active-child counter after a
+ *         successful `fork()`.  The SIGCHLD reaper decrements
+ *         on child exit.  Pair with `mtc_wait_for_child_slot`
+ *         BEFORE the corresponding `accept()`.
+ *
+ * The counter is shared across all listener threads (TLS,
+ * plain, MQC, bootstrap), so the `mqc-max-children` cap covers
+ * the whole process.
+ */
+void mtc_register_active_child(void);
+
+/**
  * @brief  Start MQC listener on a background thread.
  *
  * @param[in] host      Bind address (NULL = "0.0.0.0").

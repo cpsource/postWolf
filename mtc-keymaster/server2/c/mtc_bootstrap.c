@@ -1719,6 +1719,12 @@ static void *bootstrap_thread(void *arg)
         char ip_str[64];
         int client_fd;
 
+        /* TODO #65: gate accept() on the active-child counter so a
+         * connection flood can't fork-storm the host.  Same global
+         * mqc-max-children cap the TLS/plain/MQC listeners use; see
+         * mtc_http.c::mtc_wait_for_child_slot. */
+        mtc_wait_for_child_slot("bootstrap");
+
         client_fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &cli_len);
         if (client_fd < 0) {
             if (errno == EINTR)
@@ -1736,7 +1742,11 @@ static void *bootstrap_thread(void *arg)
                 continue;
             }
             if (pid > 0) {
-                /* Parent: drop socket fd — child holds its own ref. */
+                /* Parent: drop socket fd — child holds its own ref.
+                 * TODO #65: count this child against the global
+                 * mqc-max-children cap.  SIGCHLD reaper (in
+                 * mtc_http.c) decrements on exit. */
+                mtc_register_active_child();
                 LOG_DEBUG("bootstrap: forked child pid=%d", (int)pid);
                 close(client_fd);
                 continue;

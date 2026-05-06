@@ -2352,7 +2352,7 @@ static long mtc_max_children(void)
     return cached;
 }
 
-static void mtc_wait_for_child_slot(const char *which)
+void mtc_wait_for_child_slot(const char *which)
 {
     int active;
     int logged = 0;
@@ -2365,6 +2365,11 @@ static void mtc_wait_for_child_slot(const char *which)
         }
         sleep(1);
     }
+}
+
+void mtc_register_active_child(void)
+{
+    atomic_fetch_add(&g_active_children, 1);
 }
 
 int mtc_http_serve(const char *host, int port, MtcStore *store,
