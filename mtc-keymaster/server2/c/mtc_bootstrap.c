@@ -45,6 +45,7 @@
 #include "mtc_checkendpoint.h"
 #include "mtc_ratelimit.h"
 #include "mtc_ca_validate.h"
+#include "mtc_bootstrap_transcript.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -99,19 +100,21 @@
 
 /* P0 / TODO #9b leaf branch — bootstrap-response signing.
  *
- * The leaf-enroll response is now signed under the cosigner's
- * ML-DSA-87 private key.  The signature covers the CANONICAL
- * JSON of the response with `ca_cosigner_pem` set and
- * `ca_response_sig` set to the empty string.  The leaf operator
- * pastes the cosigner SHA-256 fingerprint alongside the
- * enrollment nonce; bootstrap_leaf verifies the fingerprint
- * matches `ca_cosigner_pem`, then verifies this signature, then
- * pins the now-authenticated PEM at
- * ~/.TPM/<subject>[-<label>]/ca-cosigner.pem.  An on-path
- * attacker on port 8445 cannot forge this signature without the
- * cosigner private key. */
-#define MTC_BOOTSTRAP_LABEL      "mtc-bootstrap/v1\n\x00"
-#define MTC_BOOTSTRAP_LABEL_LEN  16
+ * The leaf-enroll response is signed under the cosigner's ML-DSA-87
+ * private key.  The leaf operator pastes the cosigner SHA-256
+ * fingerprint alongside the enrollment nonce; bootstrap_leaf
+ * verifies the fingerprint matches `ca_cosigner_pem`, then verifies
+ * this signature, then pins the now-authenticated PEM at
+ * ~/.TPM/<subject>[-<label>]/ca-cosigner.pem.  An on-path attacker
+ * on port 8445 cannot forge this signature without the cosigner
+ * private key.
+ *
+ * TODO #11: as of 2026-05-06 the signature covers a fixed binary
+ * transcript built by mtc_bootstrap_response_transcript (see
+ * mtc_bootstrap_transcript.h) instead of a json-c canonical
+ * serialization.  ctx label bumped from v1 → v2 to domain-separate
+ * the two formats.  MTC_BOOTSTRAP_LABEL / _LEN come from the shared
+ * header. */
 
 /* P0 / TODO #63 — DH-transcript signature label.  Distinct from the
  * response-signing label above so the same cosigner key signing the
@@ -133,11 +136,9 @@
  *   response object so the leaf can verify the response was actually
  *   produced by the cosigner-key holder (P0 / TODO #9b leaf branch).
  *
- *   `ca_response_sig` covers the canonical JSON of the response
- *   WITHOUT the signature field — verifier strips it, re-serializes
- *   with JSON_C_TO_STRING_PLAIN, and verifies.  Both sides use
- *   json-c's PLAIN flag, which preserves insertion order across
- *   the parse → mutate → serialize cycle.
+ *   TODO #11: signature covers a fixed binary transcript built by
+ *   mtc_bootstrap_response_transcript (see mtc_bootstrap_transcript.h)
+ *   — no canonical-JSON contract between signer and verifier.
  *
  * Returns:
  *   0   on success (resp is mutated in place).
@@ -158,13 +159,16 @@ static int add_cosigner_sig_to_response(MtcStore *store,
     json_object_object_add(resp, "ca_cosigner_pem",
         json_object_new_string_len(cosigner_pem, cosigner_pem_sz));
 
-    /* Sign the canonical JSON of the response WITHOUT the signature
-     * field.  Verifier rebuilds the same bytes by deleting
-     * ca_response_sig from the parsed object and re-serializing
-     * with the same PLAIN flag. */
-    const char *to_sign = json_object_to_json_string_ext(
-        resp, JSON_C_TO_STRING_PLAIN);
-    int to_sign_len = (int)strlen(to_sign);
+    /* Build the binary transcript from the response's structured
+     * fields.  Verifier rebuilds the exact same bytes from its parsed
+     * JSON via the same helper. */
+    unsigned char transcript[MTC_BOOTSTRAP_TRANSCRIPT_MAX];
+    size_t        transcript_len = 0;
+    if (mtc_bootstrap_response_transcript(resp,
+            transcript, sizeof(transcript), &transcript_len) != 0) {
+        LOG_ERROR("bootstrap: failed to build response transcript");
+        return -1;
+    }
 
     uint8_t  sig[DILITHIUM_LEVEL5_SIG_SIZE];
     word32   sig_sz = (word32)sizeof(sig);
@@ -201,7 +205,7 @@ static int add_cosigner_sig_to_response(MtcStore *store,
         ret = wc_dilithium_sign_ctx_msg(
             (const byte *)MTC_BOOTSTRAP_LABEL,
             MTC_BOOTSTRAP_LABEL_LEN,
-            (const byte *)to_sign, (word32)to_sign_len,
+            (const byte *)transcript, (word32)transcript_len,
             sig, &sig_sz, &dil, &rng);
         wc_dilithium_free(&dil);
         wc_FreeRng(&rng);

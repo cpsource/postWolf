@@ -70,11 +70,14 @@ bootstrap_ca: bootstrap_ca.c \
               $(SERVER_DIR)/mtc_crypt.c $(SERVER_DIR)/mtc_crypt.h \
               $(SERVER_DIR)/mtc_domain.c $(SERVER_DIR)/mtc_domain.h \
               $(SERVER_DIR)/mtc_dnssec_pin.c $(SERVER_DIR)/mtc_dnssec_pin.h \
+              $(SERVER_DIR)/mtc_bootstrap_transcript.c \
+              $(SERVER_DIR)/mtc_bootstrap_transcript.h \
               $(READ_CONFIG_SRC)
 	$(CC) $(CFLAGS) -o $@ \
 		bootstrap_ca.c $(SERVER_DIR)/mtc_crypt.c \
 		$(SERVER_DIR)/mtc_domain.c \
 		$(SERVER_DIR)/mtc_dnssec_pin.c \
+		$(SERVER_DIR)/mtc_bootstrap_transcript.c \
 		$(READ_CONFIG_SRC) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
 		-lunbound -lcrypto
@@ -82,10 +85,13 @@ bootstrap_ca: bootstrap_ca.c \
 bootstrap_leaf: bootstrap_leaf.c \
                 $(SERVER_DIR)/mtc_crypt.c $(SERVER_DIR)/mtc_crypt.h \
                 $(SERVER_DIR)/mtc_domain.c $(SERVER_DIR)/mtc_domain.h \
+                $(SERVER_DIR)/mtc_bootstrap_transcript.c \
+                $(SERVER_DIR)/mtc_bootstrap_transcript.h \
                 $(READ_CONFIG_SRC)
 	$(CC) $(CFLAGS) -o $@ \
 		bootstrap_leaf.c $(SERVER_DIR)/mtc_crypt.c \
 		$(SERVER_DIR)/mtc_domain.c \
+		$(SERVER_DIR)/mtc_bootstrap_transcript.c \
 		$(READ_CONFIG_SRC) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS)
 

@@ -3682,41 +3682,65 @@ mtc_bootstrap.c:1820 (same free pattern, same `goto cleanup`).
 
 ---
 
-### 70. Pin the json-c version (or migrate to RFC 8785 JCS)
+### 70. Custom canonical JSON signing — DONE 2026-05-06 (option B)
 
 **Severity:** Low — deployment-fragility hygiene.  Filed
-2026-05-06.
+2026-05-06, closed same day.
 
-**Current state:** `add_cosigner_sig_to_response` (P0 #9b)
-relies on `JSON_C_TO_STRING_PLAIN` producing identical bytes
-across the sender's serialize → wire-encode → decode → mutate
-(strip sig field) → re-serialize cycle.  Currently true for
-json-c 0.16+ but a future version upgrade could subtly change
-ordering or whitespace and break verification deployment-wide
-on the next rebuild.
+**What landed:** new shared module
+`mtc-keymaster/server2/c/mtc_bootstrap_transcript.{c,h}`
+linked into `mtc_server`, `bootstrap_ca`, `bootstrap_leaf`.
+`add_cosigner_sig_to_response` and both verifiers now sign /
+verify a fixed binary transcript built by
+`mtc_bootstrap_response_transcript`, not a json-c canonical
+serialization.  No JCS / library-version coupling; same
+idiom as the MQC handshake transcript and the DH bootstrap
+transcript (TODO #63).
 
-Documented in
-`mtc-keymaster/server2/README-detail-design-spec.md` §8.4 with
-a matching note in
-`mtc_bootstrap.c::add_cosigner_sig_to_response`.
+Wire format (all multi-byte ints big-endian):
 
-**Fix candidates:**
+```
+[u8:  version = 0x02]
+[u32: cosigner_pem_len][cosigner_pem_bytes]
+[u32: index]
+[u32: subject_len][subject_bytes]
+[u32: spk_hash_len][spk_hash_bytes]
+[u32: spk_algo_len][spk_algo_bytes]
+[u64: not_before_unix]
+[u64: not_after_unix]
+[u32: label_len][label_bytes]
+```
 
-1. **Pin json-c version** in `postWolf.pc` requires.  CI-friendly,
-   minimal effort.  Doesn't decouple from json-c long-term.
-2. **Migrate to RFC 8785 JCS canonicalization** on both sides.
-   Removes the json-c version coupling entirely; introduces a
-   small new dependency or in-tree implementation.
+ctx label bumped from `mtc-bootstrap/v1\n\x00` to
+`mtc-bootstrap/v2\n\x00` for domain separation between the
+two formats.  Wire-format flag-day; per CLAUDE.md + project
+memory `project_mqc_no_backwards_compat`, server + clients
+rebuilt and redeployed together.  Empty `label` is encoded
+as length 0.
 
-Recommendation: ship (1) now, file (2) as a separate larger
-follow-up if json-c stops being suitable.
+Verified live: real `bootstrap_leaf` round-trip with a fresh
+ML-DSA-87 keypair against a reservation nonce — server
+transcript-signed, leaf rebuilt the same binary transcript,
+ML-DSA-87 verified successfully, cert issued at index 80.
+
+Closes ChatGPT review item #11.  No json-c version pin
+needed; the protocol no longer depends on json-c
+serialization stability.
 
 **Files:**
 
-- `support/postWolf.pc.in` — version pin.
-- (Future) per-tree JCS canonicalizer or vendored library.
+- `mtc-keymaster/server2/c/mtc_bootstrap_transcript.{c,h}` — new.
+- `mtc-keymaster/server2/c/mtc_bootstrap.c::add_cosigner_sig_to_response`
+  — switched to binary transcript.
+- `mtc-keymaster/tools/c/bootstrap_leaf.c`,
+  `mtc-keymaster/tools/c/bootstrap_ca.c` — verifiers updated
+  to call the same helper, ctx-label include from shared
+  header.
+- `mtc-keymaster/server2/c/Makefile`,
+  `mtc-keymaster/tools/c/Makefile` — compile + link the new
+  module into all three binaries.
 
-**Status:** OPEN.  No live exploit; hygiene item.
+**Status:** DONE.
 
 ---
 

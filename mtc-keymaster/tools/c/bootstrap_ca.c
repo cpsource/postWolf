@@ -57,12 +57,7 @@
 #include <wolfssl/wolfcrypt/types.h>
 
 #include "../../server2/c/mtc_dnssec_pin.h"   /* P0 #9b CA branch */
-
-/* P0 / TODO #9b CA branch — must match the server-side label
- * in mtc_bootstrap.c::add_cosigner_sig_to_response.  See the
- * leaf-branch counterpart in bootstrap_leaf.c. */
-#define MTC_BOOTSTRAP_LABEL      "mtc-bootstrap/v1\n\x00"
-#define MTC_BOOTSTRAP_LABEL_LEN  16
+#include "../../server2/c/mtc_bootstrap_transcript.h"  /* TODO #11 */
 
 /* P0 / TODO #63 — DH-transcript signature label.  Must match
  * server-side MTC_BOOTSTRAP_DH_LABEL in mtc_bootstrap.c. */
@@ -1446,13 +1441,21 @@ int main(int argc, char *argv[])
                 LOG("  cosigner fingerprint check SKIPPED (--no-pin)");
             }
 
-            /* Signature verify.  Sender signed the canonical JSON
-             * with ca_response_sig REMOVED; we strip it, re-
-             * serialize PLAIN, and verify. */
-            json_object_object_del(resp, "ca_response_sig");
-            const char *to_verify = json_object_to_json_string_ext(
-                resp, JSON_C_TO_STRING_PLAIN);
-            int  to_verify_len = (int)strlen(to_verify);
+            /* Signature verify.  TODO #11 — the signed bytes are a
+             * fixed binary transcript built by
+             * mtc_bootstrap_response_transcript from the response's
+             * structured fields.  No canonical-JSON contract
+             * between signer and verifier. */
+            unsigned char to_verify[MTC_BOOTSTRAP_TRANSCRIPT_MAX];
+            size_t        to_verify_len = 0;
+            if (mtc_bootstrap_response_transcript(resp,
+                    to_verify, sizeof(to_verify),
+                    &to_verify_len) != 0) {
+                LOG("ERROR: failed to build response transcript "
+                    "for verification");
+                json_object_put(resp);
+                goto done;
+            }
 
             if ((response_sig_hex_len & 1) != 0) {
                 LOG("ERROR: ca_response_sig is not even-length hex "
@@ -1501,7 +1504,7 @@ int main(int argc, char *argv[])
                             sig_bin, (word32)sig_bin_len,
                             (const byte *)MTC_BOOTSTRAP_LABEL,
                             MTC_BOOTSTRAP_LABEL_LEN,
-                            (const byte *)to_verify,
+                            to_verify,
                             (word32)to_verify_len,
                             &verified, &dil);
                     }

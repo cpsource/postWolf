@@ -84,10 +84,14 @@ I reviewed the uploaded `s2.tar.gz`. Priority fixes:
   TODO #57 idempotency path.
 * See appendix item 10 below for the full trace.
 
-11. **Custom canonical JSON signing is fragile**
+11. **Custom canonical JSON signing is fragile** — **DONE 2026-05-06** (TODO #70)
 
-* Signing relies on json-c insertion order / serialization matching.
-* Fix: use a real canonicalization scheme: RFC 8785 JCS or sign fixed binary fields.
+* Replaced canonical-JSON signing with a fixed binary
+  transcript (option B from the design discussion: matches
+  the MQC handshake / DH bootstrap idiom).  ctx label bumped
+  v1 → v2 for domain separation.
+* See appendix item 11 below for the wire format + live
+  bootstrap_leaf round-trip trace.
 
 12. **CA X.509 `NO_VERIFY` is deliberate, but document it loudly**
 
@@ -366,27 +370,45 @@ made for log-entry-write failures.  Operator can run
 `backfill-pubkey` if `save_public_key` repeatedly fails after
 `save_certificate` succeeded.
 
-### 11. Custom canonical JSON signing fragile — **DOC / LOW**
+### 11. Custom canonical JSON signing fragile — **DONE 2026-05-06** (TODO #70)
 
-The P0 #9b `add_cosigner_sig_to_response` relies on json-c's
-`JSON_C_TO_STRING_PLAIN` producing identical bytes across the
-sender's serialize → wire-encode → decode → mutate (delete sig
-field) → re-serialize cycle.  Currently true for json-c 0.16+
-but a future version upgrade could subtly change ordering and
-break verification deployment-wide.
+`add_cosigner_sig_to_response` (and its leaf+CA verifiers) now
+sign a fixed binary transcript, not a json-c canonical
+serialization.  New module
+`mtc-keymaster/server2/c/mtc_bootstrap_transcript.{c,h}` is
+linked into both `mtc_server` and the operator tools
+(`bootstrap_ca`, `bootstrap_leaf`) so signer and verifier walk
+the parsed JSON identically.
 
-This is documented in `README-detail-design-spec.md` §8.4 with
-the matching note in `mtc_bootstrap.c::add_cosigner_sig_to_response`
-about "both sides use json-c's PLAIN flag".  Acceptable for a
-single-deployment protocol with flag-day cutovers, but worth a
-note in the spec about which json-c version is the verified
-floor.
+Wire format (all multi-byte ints big-endian):
+```
+[u8:  version = 0x02]
+[u32: cosigner_pem_len][cosigner_pem_bytes]
+[u32: index]
+[u32: subject_len][subject_bytes]
+[u32: spk_hash_len][spk_hash_bytes]
+[u32: spk_algo_len][spk_algo_bytes]
+[u64: not_before_unix]
+[u64: not_after_unix]
+[u32: label_len][label_bytes]
+```
 
-**Recommendation:** open as TODO #70, LOW.  Either pin a json-c
-version in postWolf.pc requires (CI-friendly), or migrate to
-RFC 8785 JCS canonicalization on both sides (more work, removes
-the json-c version coupling entirely).  No live exploit; a
-hygiene item.
+ctx label bumped from `mtc-bootstrap/v1\n\x00` to
+`mtc-bootstrap/v2\n\x00` so a v1 signature can never be
+confused with a v2 signature.  Per CLAUDE.md "MQC wire-format
+invariants are NOT operator-tunable" + project memory
+`project_mqc_no_backwards_compat`: server + clients rebuilt
+and redeployed together, no fallback path.
+
+Same idiom as the MQC handshake transcript and the DH
+bootstrap transcript (TODO #63): no canonical-JSON contract,
+no float-format dependency, no Unicode quirks, no library
+version coupling.
+
+Verified live on factsorlie: real `bootstrap_leaf` round-trip
+(fresh ML-DSA-87 keypair, reservation nonce, cert issued at
+index 80) — DH transcript signature verified, response
+signature verified under cosigner PEM.
 
 ### 12. CA X.509 NO_VERIFY — **DOC**
 

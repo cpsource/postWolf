@@ -50,14 +50,12 @@
 
 #include <json-c/json.h>
 
-/* P0 / TODO #9b leaf branch — must match the server-side label
- * in mtc_bootstrap.c.  The cosigner signs the canonical JSON of
- * the bootstrap response (with ca_cosigner_pem set, ca_response_sig
- * absent) under this ctx.  Any divergence between client and
- * server here breaks every fresh enrollment — handle as a
- * single-deployment flag-day per CLAUDE.md. */
-#define MTC_BOOTSTRAP_LABEL      "mtc-bootstrap/v1\n\x00"
-#define MTC_BOOTSTRAP_LABEL_LEN  16
+/* TODO #11 — bootstrap-response signing now binds a fixed binary
+ * transcript built by mtc_bootstrap_response_transcript.  Both
+ * MTC_BOOTSTRAP_LABEL and the helper come from the shared header
+ * so signer (server) and verifier (this file) walk the parsed
+ * JSON identically. */
+#include "mtc_bootstrap_transcript.h"
 
 /* P0 / TODO #63 — DH-transcript signature label.  Must match
  * server-side MTC_BOOTSTRAP_DH_LABEL in mtc_bootstrap.c. */
@@ -1224,13 +1222,20 @@ int main(int argc, char *argv[])
             LOG("  cosigner fingerprint matches (sha256:%s)", got_fp);
 
             /* Step 3: signature verify.
-             * The signed bytes are the canonical JSON of the response
-             * with ca_response_sig REMOVED.  Strip the field, re-
-             * serialize with JSON_C_TO_STRING_PLAIN, and verify. */
-            json_object_object_del(resp, "ca_response_sig");
-            const char *to_verify = json_object_to_json_string_ext(
-                resp, JSON_C_TO_STRING_PLAIN);
-            int  to_verify_len = (int)strlen(to_verify);
+             * TODO #11 — the signed bytes are now a fixed binary
+             * transcript built by mtc_bootstrap_response_transcript
+             * from the response's structured fields.  No
+             * canonical-JSON contract between signer and verifier. */
+            unsigned char to_verify[MTC_BOOTSTRAP_TRANSCRIPT_MAX];
+            size_t        to_verify_len = 0;
+            if (mtc_bootstrap_response_transcript(resp,
+                    to_verify, sizeof(to_verify),
+                    &to_verify_len) != 0) {
+                LOG("ERROR: failed to build response transcript "
+                    "for verification");
+                json_object_put(resp);
+                goto done;
+            }
 
             int sig_hex_len = (int)strlen(response_sig_hex);
             if (sig_hex_len <= 0 || (sig_hex_len & 1) != 0) {
@@ -1280,7 +1285,7 @@ int main(int argc, char *argv[])
                             sig_bin, (word32)sig_bin_len,
                             (const byte *)MTC_BOOTSTRAP_LABEL,
                             MTC_BOOTSTRAP_LABEL_LEN,
-                            (const byte *)to_verify,
+                            to_verify,
                             (word32)to_verify_len,
                             &verified, &dil);
                     }
