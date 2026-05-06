@@ -13,12 +13,11 @@ I reviewed the uploaded `s2.tar.gz`. Priority fixes:
    * Server DH public key is plaintext and unsigned. A MITM can substitute DH keys, even if later response signing limits some damage.
    * Fix: sign the server’s ephemeral DH public key, salt, nonce, protocol version, and transcript with the cosigner key, or run bootstrap over MQC/TLS.
 
-3. **Stop issuing leaf nonces to anyone who merely names an existing CA domain**
+3. **Stop issuing leaf nonces to anyone who merely names an existing CA domain** — **DONE 2026-05-06 (commit `6ec344bf1`)**
 
-   * `POST /enrollment/nonce` for leaf checks only that a CA exists for the domain, then issues a nonce.
-   * That means any internet client can request a leaf nonce for `factsorlie.com` if the CA exists.
-   * Fix: make leaf nonce issuance MQC-authenticated by the CA, or require a CA signature over `(domain, label, fp, ttl)`.
-   * File: `mtc_http.c:661-680`.
+   * `POST /enrollment/nonce` for leaf now requires MQC peer-cert auth AND the peer's subject == `<domain>-ca` for the requested domain.
+   * See appendix below + TODO #64 in `mtc-keymaster/README-bugsandtodo.md`.
+   * Original "any internet client" framing was wrong on this deployment (8444 is localhost-only, 8446 needs MQC handshake); the real exploitable path was cross-CA leaf hopping by in-log peers — also blocked.
 
 4. **Remove late-bind reservation nonces or strongly constrain them**
 
@@ -161,49 +160,47 @@ constant-time-verify the DH transcript before deriving any
 secrets.  Lower priority than #62; the layered defenses contain
 the actual exploitable paths.
 
-### 3. Stop issuing leaf nonces to anyone — **OPEN, MEDIUM** (re-scoped)
+### 3. Stop issuing leaf nonces to anyone — **DONE 2026-05-06** (TODO #64)
 
-Confirmed real but smaller scope than ChatGPT framed it (and
-than my first triage pass said).  `mtc_http.c:660-674` checks
-only that a CA exists for the domain, then mints a nonce bound
-to (domain, attacker_fp).
+Originally filed as HIGH, re-scoped to Medium after operator
+clarified that port 8444 is localhost-only and port 8446
+requires an MQC peer-cert handshake — the attacker had to
+already be in the log as some leaf or CA, exploitable path was
+**cross-CA leaf hopping** (a legitimate leaf of `domain-A.com`
+MQC-connects, requests a leaf nonce for `domain-B.com`, gets
+one because the server checked only "does a CA exist for B?",
+ends up holding a valid leaf cert for B in addition to A).
 
-Reachability gate: port 8444 is localhost-only in this
-deployment, port 8445 doesn't expose this endpoint, port 8446
-requires an MQC peer-cert handshake.  So the attacker must
-**already be in the log** as some leaf or CA — not "any
-internet client".  The exploitable path is **cross-CA leaf
-hopping**: a legitimate leaf of `domain-A.com` MQC-connects,
-asks for a leaf nonce for `domain-B.com`, and gets one because
-the server checks only "does a CA exist for B?" not "is the
-caller authorized for B?".  After consume the attacker holds a
-valid leaf cert for B in addition to its A cert.
+**Resolution:** `mtc_http.c::handle_enrollment_nonce` now
+requires for any `type=leaf` request: (a) MQC transport AND
+(b) the peer's subject == `<domain>-ca` exactly.  CA-type
+nonces stay open (auth at consume time via DNSSEC TXT).
+Plain HTTP returns `403 leaf nonce issuance requires MQC
+peer-cert auth`; an MQC peer that's not the CA for the
+requested domain returns `403 only the CA for this domain
+may mint leaf nonces`.
 
-That's still a real privilege escalation across CAs, just
-gated behind already being in the log.  Severity Medium, not
-HIGH.
+Spec (§§3.2 + 5.1 of
+`mtc-keymaster/server2/README-detail-design-spec.md`) updated
+— the previous "the nonce IS the auth token" rationale is
+gone.
 
-The current spec (§5.1 of `mtc-keymaster/server2/README-detail-design-spec.md`)
-already documents that `/enrollment/nonce` is intentionally not
-MQC-gated under the rationale "the nonce IS the auth token".
-That rationale is **wrong**: the nonce binds (domain,
-attacker_fp), so the attacker IS authorized once it's issued.
+Verified live with six tests on factsorlie + frflashy:
 
-**Recommendation:** open as TODO #64, **HIGH severity**.  Two
-fixes ChatGPT outlines:
+  T1: HTTP curl from localhost (no MQC) → 403 ✓
+  T2: factsorlie-ca → factsorlie leaf → OK ✓
+  T3: factsorlie LEAF → factsorlie leaf → 403 ✓
+  T4: factsorlie-ca → frflashy leaf → 403 ✓
+  T5: frflashy-ca → frflashy leaf → OK ✓
+  T6: frflashy-ca → factsorlie leaf → 403 ✓
 
-(a) Require the caller to be a CA via MQC peer-cert: caller's
-    cert subject must be `<domain>-ca` (or some explicit allowed
-    delegation).  Implementation: same `io->mqc` /
-    `mqc_get_peer_index` gate that `/cancel-nonce` already uses.
+Cross-CA hopping is blocked from both directions; the
+legitimate `issue_leaf_nonce` workflow on each box is
+unchanged.
 
-(b) Require a CA signature in the request body covering
-    (domain, label, fp, ttl).  Server verifies against the CA's
-    in-log pubkey before minting.
-
-(a) is simpler and matches the existing pattern.  Combined with
-the existing rate-limit cap, it makes leaf-nonce issuance a CA
-operator-only function on this deployment.
+Implementation: commit `6ec344bf1`, mirror of the same
+`io->mqc` + `mqc_get_peer_index` gate `/cancel-nonce` already
+uses.  ~30 lines added to handle_enrollment_nonce.
 
 ### 4. Late-bind reservation nonces — **PARTIAL / BY DESIGN**
 
@@ -380,17 +377,14 @@ cert.
 
 ## Recommended attack queue
 
-Prioritized by impact-per-effort against the current code:
+Prioritized by impact-per-effort against the current code.
+TODO #64 closed 2026-05-06 (commit `6ec344bf1`).  Remaining:
 
 1. **TODO #62** — replace `mtc_crypt` with AES-256-GCM.  Closes
    the worst remaining cryptographic primitive in the stack.
    ~1 day + flag-day cutover.  Only DH-bootstrap-port traffic
    is affected; an in-log peer is not required to reach this
    surface.
-2. **TODO #64** — MQC-gate `/enrollment/nonce` for leaf type.
-   Closes cross-CA leaf hopping by already-in-log peers.
-   ~half a day.  Re-scoped Medium after the operator
-   clarified port 8444 is localhost-only.
 3. **TODO #65** — bootstrap fork backpressure.  One-line fix,
    contains the fork-storm DoS vector.
 4. **TODO #69** — fail-closed on persistence errors during
