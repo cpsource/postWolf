@@ -161,14 +161,27 @@ constant-time-verify the DH transcript before deriving any
 secrets.  Lower priority than #62; the layered defenses contain
 the actual exploitable paths.
 
-### 3. Stop issuing leaf nonces to anyone — **OPEN, P0**
+### 3. Stop issuing leaf nonces to anyone — **OPEN, MEDIUM** (re-scoped)
 
-Confirmed real and serious.  `mtc_http.c:660-674` checks only
-that a CA exists for the domain, then mints a nonce bound to
-(domain, attacker_fp).  The attacker then runs `bootstrap_leaf`
-with their key and the nonce, gets a cert at the next index,
-subject="example.com", fully trusted.  An external party can
-impersonate any CA-registered domain by becoming a "leaf" of it.
+Confirmed real but smaller scope than ChatGPT framed it (and
+than my first triage pass said).  `mtc_http.c:660-674` checks
+only that a CA exists for the domain, then mints a nonce bound
+to (domain, attacker_fp).
+
+Reachability gate: port 8444 is localhost-only in this
+deployment, port 8445 doesn't expose this endpoint, port 8446
+requires an MQC peer-cert handshake.  So the attacker must
+**already be in the log** as some leaf or CA — not "any
+internet client".  The exploitable path is **cross-CA leaf
+hopping**: a legitimate leaf of `domain-A.com` MQC-connects,
+asks for a leaf nonce for `domain-B.com`, and gets one because
+the server checks only "does a CA exist for B?" not "is the
+caller authorized for B?".  After consume the attacker holds a
+valid leaf cert for B in addition to its A cert.
+
+That's still a real privilege escalation across CAs, just
+gated behind already being in the log.  Severity Medium, not
+HIGH.
 
 The current spec (§5.1 of `mtc-keymaster/server2/README-detail-design-spec.md`)
 already documents that `/enrollment/nonce` is intentionally not
@@ -369,12 +382,15 @@ cert.
 
 Prioritized by impact-per-effort against the current code:
 
-1. **TODO #64** — MQC-gate `/enrollment/nonce` for leaf type.
-   Closes the most serious privilege-escalation path
-   ChatGPT identified.  ~half a day.
-2. **TODO #62** — replace `mtc_crypt` with AES-256-GCM.  Closes
+1. **TODO #62** — replace `mtc_crypt` with AES-256-GCM.  Closes
    the worst remaining cryptographic primitive in the stack.
-   ~1 day + flag-day cutover.
+   ~1 day + flag-day cutover.  Only DH-bootstrap-port traffic
+   is affected; an in-log peer is not required to reach this
+   surface.
+2. **TODO #64** — MQC-gate `/enrollment/nonce` for leaf type.
+   Closes cross-CA leaf hopping by already-in-log peers.
+   ~half a day.  Re-scoped Medium after the operator
+   clarified port 8444 is localhost-only.
 3. **TODO #65** — bootstrap fork backpressure.  One-line fix,
    contains the fork-storm DoS vector.
 4. **TODO #69** — fail-closed on persistence errors during

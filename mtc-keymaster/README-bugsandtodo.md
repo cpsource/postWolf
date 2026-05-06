@@ -3298,36 +3298,62 @@ two together form a coherent flag-day cutover.
 
 ### 64. MQC-gate `POST /enrollment/nonce` for leaf-type nonces
 
-**Severity:** **HIGH / P0** — the most serious finding from the
-ChatGPT review.  Filed 2026-05-06.
+**Severity:** **Medium** — cross-CA leaf hopping by existing
+in-log peers.  (Originally filed 2026-05-06 as HIGH on the
+"any internet client can mint a nonce" threat model;
+re-scoped 2026-05-06 after the operator clarified that port
+8444 is localhost-only and port 8446 requires an MQC peer
+cert to handshake.)
 
 **The actual attack.**  `mtc_http.c:660-674` checks only that a
 registered CA exists for the requested domain, then issues a
 nonce bound to (domain, attacker_fingerprint).  No
-authentication of the caller.
+authentication of *which CA* the caller belongs to.
 
-Concretely: anyone on the internet can run
-```
-curl -X POST https://factsorlie.com:8444/enrollment/nonce \
-     -d '{"domain":"frflashy.com", "type":"leaf",
-          "public_key_fingerprint":"sha256:<their_key_fp>"}'
-```
-get back a nonce, then run `bootstrap_leaf` with their key + the
-nonce, and end up with a valid MTC cert at the next log index,
-subject="frflashy.com".  They can now MQC-handshake to anyone
-who trusts the log and impersonate frflashy.com.
+Reachability of the endpoint:
+
+- **Port 8444 (TLS HTTP)** — localhost-only in this deployment;
+  not an internet vector.
+- **Port 8445 (DH bootstrap)** — doesn't expose
+  `/enrollment/nonce`.
+- **Port 8446 (MQC)** — public, but requires an in-log MQC
+  identity to handshake.  Bootstrap chicken-and-egg means a
+  fresh internet attacker with no prior cert can't reach the
+  endpoint.
+
+So the attacker has to **already be in the log** as some leaf
+or CA to exploit this.
+
+**Concrete exploitation path (cross-CA hopping):**
+
+1. I'm a legitimate leaf of `factsorlie.com` (cert at index
+   N).  I have a working MQC identity.
+2. I MQC-connect to `factsorlie.com:8446` using my cert.
+3. I send `POST /enrollment/nonce` with `domain="frflashy.com"`,
+   `type="leaf"`, my own pubkey fingerprint.
+4. Server checks "does a CA exist for `frflashy.com`?" → yes
+   (frflashy is registered, index 78).
+5. Server mints a nonce bound to `(frflashy.com, my_fp)`.
+6. I run `bootstrap_leaf --domain frflashy.com --nonce <hex>
+   --cosigner-fp <hex>` from my own machine.
+7. Server validates the nonce + my key match → mints a cert at
+   the next log index, subject = `frflashy.com`.
+8. I now hold a valid leaf cert for `frflashy.com` *and*
+   `factsorlie.com` simultaneously.  I can MQC-handshake as
+   either to anyone trusting the log.
 
 The spec
 (`mtc-keymaster/server2/README-detail-design-spec.md` §3.2)
 currently claims "the nonce IS the auth token" — this rationale
 is **wrong**: the nonce binds the requester's chosen
-fingerprint, so issuance equals authorization.
+fingerprint, so issuance equals authorization, and any in-log
+peer can request issuance for any other CA's domain.
 
 **Why we didn't catch this earlier.**  Through phase-23/24
 testing the only callers of `/enrollment/nonce` were
 `issue_leaf_nonce`, run by the actual CA operator from a
-trusted host.  We never modeled the threat where a third party
-hits the endpoint directly.
+trusted host.  We never modeled the threat where one CA's
+leaves request nonces for another CA's domain.
 
 **Fix:** require MQC peer-cert auth on leaf-type nonce
 issuance.  Same gate `/cancel-nonce` (`mtc_http.c:814`) and
