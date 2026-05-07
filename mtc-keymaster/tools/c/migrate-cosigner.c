@@ -200,12 +200,40 @@ int main(int argc, char *argv[])
     { char h[33]; to_hex(store.ca_pub_key, 16, h); printf("%s… %dB ML-DSA-87)\n",
                                                           h, store.ca_pub_key_sz); }
     printf("Tree size:   %d\n", store.tree.size);
-    printf("Cert count:  %d\n", store.cert_count);
+    /* Phase 3: cert count comes from the DB. */
+    {
+        int n = -1;
+        PGresult *r = PQexec(store.db,
+            "SELECT COUNT(*) FROM mtc_certificates");
+        if (PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) > 0)
+            n = atoi(PQgetvalue(r, 0, 0));
+        PQclear(r);
+        printf("Cert count:  %d\n", n);
+    }
     printf("Neon:        %s\n\n", store.use_db ? "connected" : "file-only");
 
-    /* --- Phase 3: re-cosign every stored entry under the new key --- */
-    for (i = 0; i < store.cert_count; i++) {
-        struct json_object *cert = store.certificates[i];
+    /* --- Phase 3: re-cosign every stored entry under the new key.
+     * Walk the cert indices via DB instead of an in-memory array. */
+    int *indices = NULL;
+    int n_indices = 0;
+    {
+        PGresult *r = PQexec(store.db,
+            "SELECT index FROM mtc_certificates ORDER BY index");
+        if (PQresultStatus(r) != PGRES_TUPLES_OK) {
+            fprintf(stderr, "fatal: SELECT mtc_certificates failed\n");
+            PQclear(r);
+            mtc_store_free(&store);
+            return 1;
+        }
+        n_indices = PQntuples(r);
+        indices = (int *)malloc((size_t)n_indices * sizeof(int));
+        for (int k = 0; k < n_indices; k++)
+            indices[k] = atoi(PQgetvalue(r, k, 0));
+        PQclear(r);
+    }
+    for (int row = 0; row < n_indices; row++) {
+        i = indices[row];
+        struct json_object *cert = mtc_store_get_cert(&store, i);
         struct json_object *sc;
 
         int start = 0;
@@ -223,18 +251,20 @@ int main(int argc, char *argv[])
 
         if (!json_object_object_get_ex(cert, "standalone_certificate", &sc)) {
             printf("cert %d: SKIP (no standalone_certificate)\n", i);
+            json_object_put(cert);
             continue;
         }
 
         /* Recompute tree-state fields for the current tree size. */
-        mtc_tree_inclusion_proof(&store.tree, i, start, end,
+        mtc_tiled_tree_inclusion_proof(&store.tree, i, start, end,
                                  &proof_new, &proof_count_new);
-        mtc_tree_subtree_hash(&store.tree, start, end, subtree_hash_new);
+        mtc_tiled_tree_subtree_hash(&store.tree, start, end, subtree_hash_new);
         to_hex(subtree_hash_new, MTC_HASH_SIZE, subtree_hash_hex);
 
         if (mtc_store_cosign(&store, start, end, sig_new, &sig_sz_new) != 0) {
             fprintf(stderr, "cert %d: cosign failed\n", i);
             if (proof_new) free(proof_new);
+            json_object_put(cert);
             continue;
         }
         to_hex(sig_new, sig_sz_new, sig_hex_new);
@@ -285,16 +315,12 @@ int main(int argc, char *argv[])
         }
 
         if (proof_new) free(proof_new);
+        json_object_put(cert);
     }
+    free(indices);
 
-    if (write_mode) {
-        if (mtc_store_save(&store) != 0) {
-            fprintf(stderr, "warn: mtc_store_save returned non-zero — disk "
-                    "state may be stale\n");
-        } else {
-            printf("\nPersisted certificates.json (+ Neon if connected).\n");
-        }
-    }
+    /* Phase 3: file persistence retired; per-cert DB writes happened
+     * inline above. */
 
     printf("\n%d scanned, %d rewritten (%s).\n",
            scanned, rewritten, write_mode ? "WRITE" : "DRY-RUN");

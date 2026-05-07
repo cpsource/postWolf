@@ -107,31 +107,31 @@ static int derive_key_name_from_index(MtcStore *store, int idx,
 {
     struct json_object *cert, *sc, *tbs, *val;
     const char *subject = NULL;
+    int rc = -1;
 
-    if (idx < 0 || idx >= store->cert_count) {
-        fprintf(stderr, "error: index %d outside log range [0, %d)\n",
-                idx, store->cert_count);
-        return -1;
-    }
-    cert = store->certificates[idx];
+    /* Phase 3: fetch the cert blob from cert_cache + Neon. */
+    cert = mtc_store_get_cert(store, idx);
     if (!cert) {
-        fprintf(stderr, "error: cert at index %d is NULL\n", idx);
+        fprintf(stderr, "error: cert at index %d not found in DB\n", idx);
         return -1;
     }
     if (!json_object_object_get_ex(cert, "standalone_certificate", &sc) ||
         !json_object_object_get_ex(sc,   "tbs_entry",               &tbs) ||
         !json_object_object_get_ex(tbs,  "subject",                 &val)) {
         fprintf(stderr, "error: cert %d missing subject in tbs_entry\n", idx);
-        return -1;
+        goto out;
     }
     subject = json_object_get_string(val);
-    if (!subject) return -1;
+    if (!subject) goto out;
 
     if (label && label[0])
         snprintf(out, sz, "%s-%s", subject, label);
     else
         snprintf(out, sz, "%s", subject);
-    return 0;
+    rc = 0;
+out:
+    json_object_put(cert);
+    return rc;
 }
 
 int main(int argc, char *argv[])

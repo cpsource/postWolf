@@ -126,6 +126,25 @@ int  mtc_db_save_entry(PGconn *conn, int index, int entry_type,
  */
 int  mtc_db_load_entries(PGconn *conn, struct json_object **out_arr);
 
+/**
+ * @brief    Load a single log entry's `serialized` blob by index.
+ *
+ * @details
+ * Replaces the legacy in-memory `tree->entries[idx]` / `tree->entry_sizes[idx]`
+ * read pattern under TODO #74 phase 3 (server holds no in-memory entry
+ * state — every read goes through this on-demand fetch).
+ *
+ * @param[in]  conn    Active connection.
+ * @param[in]  index   Log index.
+ * @param[out] out     Receives a malloc'd buffer; caller must free.
+ * @param[out] out_sz  Receives the size in bytes.
+ *
+ * @return  0 on success; -1 if the index doesn't exist or on query
+ *          error.
+ */
+int  mtc_db_load_entry_serialized(PGconn *conn, int index,
+                                   uint8_t **out, int *out_sz);
+
 /* ------------------------------------------------------------------ */
 /* Checkpoints                                                         */
 /* ------------------------------------------------------------------ */

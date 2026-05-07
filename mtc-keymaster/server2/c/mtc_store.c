@@ -255,38 +255,27 @@ int mtc_store_init(MtcStore *store, const char *data_dir,
 
     mkdirp(data_dir);
 
-    /* Try to connect to PostgreSQL (Neon) */
-    if (mtc_db_get_connstr() != NULL) {
-        store->db = mtc_db_connect();
-        if (store->db) {
-            store->use_db = 1;
-            if (mtc_db_init_schema(store->db) != 0) {
-                fprintf(stderr, "[store] WARNING: DB schema init failed, "
-                        "continuing with potentially incomplete tables\n");
-            }
-            printf("[store] using PostgreSQL (Neon) for persistence\n");
-            fflush(stdout);
-        }
-        else {
-            printf("[store] PostgreSQL unavailable, falling back to files\n");
-            fflush(stdout);
-        }
+    /* Postgres is required (TODO #74 phase 3 retired file mode). */
+    if (mtc_db_get_connstr() == NULL) {
+        fprintf(stderr,
+            "[store] MERKLE_NEON not set — refusing to start.  Phase 3\n"
+            "        requires a Neon connection; set MERKLE_NEON in the\n"
+            "        operator's .env file (see --tokenpath).\n");
+        return -1;
     }
-    else {
-        printf("[store] MERKLE_NEON not set, using file-based storage\n");
-        fflush(stdout);
+    store->db = mtc_db_connect();
+    if (!store->db) {
+        fprintf(stderr,
+            "[store] cannot connect to Neon — refusing to start.\n");
+        return -1;
     }
-
-    mtc_tree_init(&store->tree);
-
-    /* Cert array is file-mode-only (TODO #74 phase 2); in DB mode
-     * the array stays empty and reads route through cert_cache +
-     * mtc_db_load_certificate.  We allocate it either way to keep
-     * the file-mode dev path working without conditional NULL
-     * checks on every legacy access site. */
-    store->cert_capacity = 256;
-    store->certificates = (struct json_object**)calloc(
-        (size_t)store->cert_capacity, sizeof(struct json_object*));
+    store->use_db = 1;
+    if (mtc_db_init_schema(store->db) != 0) {
+        fprintf(stderr, "[store] WARNING: DB schema init failed, "
+                "continuing with potentially incomplete tables\n");
+    }
+    printf("[store] using PostgreSQL (Neon) for persistence\n");
+    fflush(stdout);
 
     /* Read-path LRU.  Sized at MTC_CERT_CACHE_DEFAULT_CAP entries
      * (~750 KB at ML-DSA-87 cert size); operator knob can grow this
@@ -296,37 +285,36 @@ int mtc_store_init(MtcStore *store, const char *data_dir,
         return -1;
     }
 
-    /* Reload/fork coordination rwlock.  Default attrs (process-
-     * private) are correct here — reload thread + listener threads
-     * all live in the parent, and forked children never touch the
-     * lock again. */
-    if (pthread_rwlock_init(&store->reload_lock, NULL) != 0) {
-        fprintf(stderr, "[store] pthread_rwlock_init failed\n");
-        return -1;
-    }
-
     store->checkpoints = (struct json_object**)calloc(256,
         sizeof(struct json_object*));
 
-    /* Load or generate CA key */
+    /* Load or generate CA key (still file-backed in data_dir). */
     if (init_ca_key(store) != 0) {
         fprintf(stderr, "failed to initialize CA key\n");
         return -1;
     }
 
-    /* Try to load existing state */
-    mtc_store_load(store);
-
-    /* If empty, add null entry (index 0) */
-    if (store->tree.size == 0) {
-        uint8_t null_entry = 0x00;
-        mtc_tree_append(&store->tree, &null_entry, 1);
+    /* Open the tiled Merkle tree.  Reads tree.size from
+     * mtc_log_entries and the top-K snapshot from mtc_merkle_top_nodes. */
+    if (mtc_tiled_tree_open(&store->tree, store->db, store->log_id) != 0) {
+        fprintf(stderr,
+            "[store] mtc_tiled_tree_open failed — has mtc_rebuild_tiles\n"
+            "        been run since deploying phase 3?\n");
+        return -1;
     }
 
-    /* Sanity-check cert/leaf consistency (TODO #57 item 3).  Does not
-     * fail the init — operator may want to run admin_recosign first
-     * and then restart — but ensures any silent corruption is visible
-     * in the journal at startup time. */
+    /* Cold-start: empty log → append a null genesis entry to keep
+     * tree.size > 0 (matches legacy semantics). */
+    if (store->tree.size == 0) {
+        uint8_t null_entry = 0x00;
+        if (mtc_store_add_entry(store, &null_entry, 1) < 0) {
+            fprintf(stderr, "[store] genesis null-entry append failed\n");
+            return -1;
+        }
+    }
+
+    /* Sanity-check cert/leaf consistency (TODO #57 item 3).
+     * No-op in DB mode (post-phase-2). */
     mtc_store_check_invariants(store);
 
     return 0;
@@ -346,14 +334,8 @@ int mtc_store_init(MtcStore *store, const char *data_dir,
 void mtc_store_free(MtcStore *store)
 {
     int i;
-    mtc_tree_free(&store->tree);
-    for (i = 0; i < store->cert_count; i++) {
-        if (store->certificates[i])
-            json_object_put(store->certificates[i]);
-    }
-    free(store->certificates);
+    mtc_tiled_tree_close(&store->tree);
     mtc_cert_cache_free(&store->cert_cache);
-    pthread_rwlock_destroy(&store->reload_lock);
     for (i = 0; i < store->checkpoint_count; i++) {
         if (store->checkpoints[i])
             json_object_put(store->checkpoints[i]);
@@ -401,87 +383,18 @@ struct json_object *mtc_store_get_cert(MtcStore *store, int index)
         return cert;
     }
 
-    /* File mode — degenerate dev path.  Return a fresh ref into the
-     * in-memory array.  cert_count is the high-water mark of slots
-     * ever written, so any index beyond that is unmapped. */
-    if (index >= store->cert_count || !store->certificates[index])
-        return NULL;
-    return json_object_get(store->certificates[index]);
+    /* Phase 3 retired file mode; if use_db is somehow 0 we shouldn't
+     * be running, but be defensive. */
+    return NULL;
 }
 
 /* ------------------------------------------------------------------ */
 /* Persistence (JSON files)                                            */
 /* ------------------------------------------------------------------ */
 
-/******************************************************************************
- * Function:    tbs_matches_leaf_scalar
- *
- * Description:
- *   Helper for mtc_store_check_invariants.  Returns 1 if the cert's
- *   tbs_entry scalar fields (subject, spk_algorithm, spk_hash,
- *   not_before, not_after) match the equivalent fields in the
- *   canonical leaf payload at the same tree index.  Returns 0 on
- *   mismatch or any parse failure.
- *
- *   Deliberately scalar-only: the `extensions` sub-object can have
- *   keys in different orders between certificates.json and
- *   entries.json (json-c preserves insertion order, and round-trips
- *   through different code paths can re-order), but those reorders
- *   don't represent a corruption — only scalar-field divergence
- *   indicates the fork-after-accept duplicate-enrollment bug we
- *   actually want to flag.
- ******************************************************************************/
-static int tbs_matches_leaf_scalar(struct json_object *tbs,
-                                    const uint8_t *entry, int entry_sz)
-{
-    static const struct {
-        const char *tbs_key;
-        const char *src_key;
-    } keys[] = {
-        { "subject",                      "subject"       },
-        { "subject_public_key_algorithm", "spk_algorithm" },
-        { "subject_public_key_hash",      "spk_hash"      },
-        { "not_before",                   "not_before"    },
-        { "not_after",                    "not_after"     },
-        { NULL, NULL }
-    };
-
-    char *buf;
-    struct json_object *src;
-    int match = 1;
-    int k;
-
-    if (!tbs || !entry || entry_sz < 2 || entry[0] != 0x01) return 0;
-
-    buf = (char *)malloc((size_t)entry_sz);
-    if (!buf) return 0;
-    memcpy(buf, entry + 1, (size_t)(entry_sz - 1));
-    buf[entry_sz - 1] = '\0';
-
-    src = json_tokener_parse(buf);
-    free(buf);
-    if (!src) return 0;
-
-    for (k = 0; keys[k].tbs_key; k++) {
-        struct json_object *a = NULL, *b = NULL;
-        const char *as, *bs;
-        json_object_object_get_ex(tbs, keys[k].tbs_key, &a);
-        json_object_object_get_ex(src, keys[k].src_key, &b);
-        as = a
-            ? json_object_to_json_string_ext(a, JSON_C_TO_STRING_PLAIN)
-            : "";
-        bs = b
-            ? json_object_to_json_string_ext(b, JSON_C_TO_STRING_PLAIN)
-            : "";
-        if (strcmp(as, bs) != 0) {
-            match = 0;
-            break;
-        }
-    }
-
-    json_object_put(src);
-    return match;
-}
+/* tbs_matches_leaf_scalar (helper for the legacy in-memory cert/leaf
+ * invariant check) was retired with file-mode in TODO #74 phase 3.
+ * The DB-backed equivalent lives in admin_recosign. */
 
 /******************************************************************************
  * Function:    mtc_store_check_invariants
@@ -498,403 +411,15 @@ static int tbs_matches_leaf_scalar(struct json_object *tbs,
  ******************************************************************************/
 int mtc_store_check_invariants(MtcStore *store)
 {
-    int i, mismatches = 0;
-
     if (!store) return 0;
-
-    /* TODO #74 phase 2: in DB mode the cert array is empty by design,
-     * so this in-memory walk is a no-op.  An online sample-based
-     * cert/leaf check (SELECT a bounded slice from mtc_certificates
-     * and compare each to its leaf) is a reasonable follow-up if the
-     * #57 invariant ever needs runtime monitoring at scale; today the
-     * admin-side `admin_recosign --check-invariants --tokenpath` tool
-     * does the equivalent walk against the DB, so live monitoring
-     * isn't load-bearing. */
-    if (store->use_db) {
-        LOG_INFO("[store] cert/leaf invariant check skipped in DB mode "
-                 "(TODO #74 phase 2; use admin_recosign for offline check)");
-        return 0;
-    }
-
-    for (i = 0; i < store->cert_count; i++) {
-        struct json_object *cert = store->certificates[i];
-        struct json_object *sc = NULL, *tbs = NULL, *idx_val = NULL;
-        int log_idx;
-
-        if (!cert) continue;
-        if (!json_object_object_get_ex(cert, "standalone_certificate", &sc))
-            continue;
-        if (!json_object_object_get_ex(sc, "tbs_entry", &tbs))
-            continue;
-
-        /* Use the cert's stated log index (not the loop counter):
-         * the cert array can be sparse (DB load — NULLs in gaps) or
-         * compact (file load — packed), so the loop variable doesn't
-         * always equal the log index.  store->tree.entries[] is
-         * always indexed by log index, so once we have it the leaf
-         * lookup is straightforward. */
-        if (!json_object_object_get_ex(sc, "index", &idx_val))
-            continue;
-        log_idx = json_object_get_int(idx_val);
-        if (log_idx < 0 || log_idx >= store->tree.size) continue;
-        if (!store->tree.entries || !store->tree.entries[log_idx]) continue;
-
-        if (!tbs_matches_leaf_scalar(tbs, store->tree.entries[log_idx],
-                                      store->tree.entry_sizes[log_idx])) {
-            LOG_WARN("[store] INVARIANT: cert %d tbs_entry diverges from "
-                     "canonical leaf bytes (run "
-                     "`admin_recosign --tokenpath <env> --repair-tbs "
-                     "--write` to repair)", log_idx);
-            mismatches++;
-        }
-    }
-
-    if (mismatches > 0) {
-        LOG_WARN("[store] %d cert/leaf invariant violation(s) detected; "
-                 "MQC peer-verify will fail PROOF_INVALID for these "
-                 "indices until repaired (see TODO #57)", mismatches);
-    }
-
-    return mismatches;
-}
-
-/******************************************************************************
- * Function:    mtc_store_reload
- *
- * Description:
- *   Resync the in-memory tree/cert/revocation state from the DB
- *   (or files when DB is unavailable).  Used by the SIGHUP-driven
- *   reload thread to close TODO #56 (fork-after-accept parent
- *   staleness): after a forked bootstrap child commits a new entry,
- *   the parent's in-memory store is stale until the next restart
- *   without this hook.
- *
- *   Frees the dynamic state (tree contents, certs, revocations)
- *   but preserves the CA key, cosigner key, DB connection, and
- *   configuration fields — those don't change at runtime.
- *
- * Returns:
- *    0  on success.
- *   -1  on NULL @p store or load failure.
- ******************************************************************************/
-int mtc_store_reload(MtcStore *store)
-{
-    int i;
-    int pre_size, pre_cert_count;
-
-    if (!store) return -1;
-
-    /* TODO #60 (HIGH): refresh the DB connection BEFORE clearing the
-     * in-memory state.  Neon idle-closes connections after a few
-     * minutes; if SIGHUP fires on a stale connection,
-     * mtc_db_load_entries returns -1, mtc_store_load silently treats
-     * that as 0 rows, and we'd commit an empty (size=1) store on top
-     * of a healthy (size=N) one.  mtc_db_ensure_connected pings with
-     * SELECT 1 and reconnects on failure; if THAT fails too, we
-     * refuse to touch the in-memory state and let the caller (reload
-     * thread) retry on the next signal. */
-    if (store->use_db) {
-        if (mtc_db_ensure_connected(&store->db) != 0) {
-            fprintf(stderr,
-                    "[store] reload aborted: cannot reach DB; "
-                    "in-memory state preserved\n");
-            return -1;
-        }
-    }
-
-    /* TODO #60: snapshot pre-reload sizes for the regression guard
-     * below.  If the load comes back near-empty when we just had a
-     * populated tree, refuse to commit the new state. */
-    pre_size       = store->tree.size;
-    pre_cert_count = store->cert_count;
-    (void)pre_cert_count;  /* DB mode: no in-memory cert array */
-
-    /* Drop tree contents and re-init.  mtc_tree_free zeroes the
-     * struct, so the subsequent re-init / load can repopulate from
-     * scratch. */
-    mtc_tree_free(&store->tree);
-    mtc_tree_init(&store->tree);
-
-    /* In DB mode the cert array stays empty (TODO #74 phase 2) — the
-     * read path goes via cert_cache + Neon.  We do invalidate the
-     * cache so a SIGHUP-driven reload picks up any cert that might
-     * have been overwritten by a sibling fork's write.  In file mode
-     * we still clear the legacy array so the file load below
-     * repopulates it cleanly. */
-    if (store->use_db) {
-        mtc_cert_cache_free(&store->cert_cache);
-        if (mtc_cert_cache_init(&store->cert_cache, 0) != 0) {
-            fprintf(stderr,
-                    "[store] reload aborted: cert_cache_init failed\n");
-            return -1;
-        }
-    } else {
-        for (i = 0; i < store->cert_count; i++) {
-            if (store->certificates[i])
-                json_object_put(store->certificates[i]);
-        }
-        if (store->cert_capacity > 0 && store->certificates) {
-            memset(store->certificates, 0,
-                   (size_t)store->cert_capacity *
-                       sizeof(struct json_object *));
-        }
-        store->cert_count = 0;
-    }
-
-    /* Revocations no longer cached in memory (TODO #74 phase 2);
-     * mtc_store_is_revoked queries Neon directly.  Clear in file
-     * mode for the legacy in-memory binsearch path. */
-    if (store->revoked_indices) {
-        free(store->revoked_indices);
-        store->revoked_indices = NULL;
-    }
-    store->revocation_count = 0;
-    store->revocation_capacity = 0;
-
-    /* Re-run the standard load path. */
-    if (mtc_store_load(store) != 0)
-        return -1;
-
-    /* If the load path produced an empty tree (cold-start case from
-     * mtc_store_init's perspective), re-add the genesis null entry so
-     * indexing stays consistent. */
-    if (store->tree.size == 0) {
-        uint8_t null_entry = 0x00;
-        mtc_tree_append(&store->tree, &null_entry, 1);
-    }
-
-    /* TODO #60 regression guard: a healthy pre-reload state must
-     * not collapse to genesis-only post-reload.  If it does, the DB
-     * load almost certainly returned 0 rows due to a transient
-     * failure that mtc_db_ensure_connected did not catch.  Log
-     * loud and return -1 so the failure is at least visible —
-     * recovery is `systemctl restart mtc-ca` (the in-memory state
-     * is now broken until then; a future fix could snapshot/swap
-     * to roll back automatically). */
-    if (pre_size > 1 && store->tree.size <= 1) {
-        fprintf(stderr,
-                "[store] RELOAD REGRESSION: tree.size %d -> %d, "
-                "cert_count %d -> %d.  In-memory state is corrupt; "
-                "restart mtc-ca.service to recover (TODO #60).\n",
-                pre_size, store->tree.size,
-                pre_cert_count, store->cert_count);
-        return -1;
-    }
-
-    /* Re-check the cert/leaf invariant after reload — silent
-     * corruption could have appeared since the last load. */
-    mtc_store_check_invariants(store);
-
+    /* Phase 3: no in-memory cert/entry state to walk.  The offline
+     * `admin_recosign --tokenpath <env>` tool does the equivalent
+     * cert/leaf cross-check against the DB when needed. */
+    LOG_INFO("[store] cert/leaf invariant check skipped (TODO #74 "
+             "phase 3 — use admin_recosign for offline check)");
     return 0;
 }
 
-/******************************************************************************
- * Function:    mtc_store_save
- *
- * Description:
- *   Persists the current store state to JSON files in data_dir:
- *     entries.json      — hex-encoded tree entries
- *     certificates.json — issued certificate objects
- *
- * Input Arguments:
- *   store  - Store to save.
- *
- * Returns:
- *   0 always.
- ******************************************************************************/
-int mtc_store_save(MtcStore *store)
-{
-    char path[1024];
-    int i;
-
-    /* Save entries as a JSON array */
-    {
-        struct json_object *arr = json_object_new_array();
-        for (i = 0; i < store->tree.size; i++) {
-            struct json_object *entry = json_object_new_object();
-            int esz = store->tree.entry_sizes[i];
-            int hexsz = esz * 2 + 1;
-            char *hex = (char*)malloc(hexsz);
-            int j;
-            for (j = 0; j < esz; j++)
-                snprintf(hex + j * 2, 3, "%02x", store->tree.entries[i][j]);
-            json_object_object_add(entry, "hex", json_object_new_string(hex));
-            json_object_object_add(entry, "size",
-                json_object_new_int(esz));
-            json_object_array_add(arr, entry);
-            free(hex);
-        }
-        snprintf(path, sizeof(path), "%s/entries.json", store->data_dir);
-        {
-            const char *s = json_object_to_json_string_ext(arr,
-                JSON_C_TO_STRING_PRETTY);
-            write_file(path, s, (int)strlen(s));
-        }
-        json_object_put(arr);
-    }
-
-    /* Save certificates */
-    {
-        struct json_object *arr = json_object_new_array();
-        for (i = 0; i < store->cert_count; i++) {
-            if (store->certificates[i])
-                json_object_array_add(arr, json_object_get(store->certificates[i]));
-        }
-        snprintf(path, sizeof(path), "%s/certificates.json", store->data_dir);
-        {
-            const char *s = json_object_to_json_string_ext(arr,
-                JSON_C_TO_STRING_PRETTY);
-            write_file(path, s, (int)strlen(s));
-        }
-        json_object_put(arr);
-    }
-
-    /* mtc_landmarks retired 2026-05-07 (TODO #76); the persisted
-     * file representation is gone too. */
-
-    return 0;
-}
-
-/******************************************************************************
- * Function:    mtc_store_load
- *
- * Description:
- *   Loads persisted state into the store.  If use_db is set, loads
- *   from PostgreSQL (entries; certs/revocations are lazy under
- *   TODO #74 phase 2).  Otherwise loads from JSON files in data_dir
- *   (entries.json, certificates.json).
- *
- * Input Arguments:
- *   store  - Store to populate (tree and arrays are appended to).
- *
- * Returns:
- *   0 always (an empty result is not an error).
- *
- * Side Effects:
- *   Appends entries to store->tree, populates certificates,
- *   and revocations arrays.
- ******************************************************************************/
-int mtc_store_load(MtcStore *store)
-{
-    char path[1024], buf[1024 * 1024];
-    int sz;
-    struct json_object *arr, *entry;
-    int i, count;
-
-    /* Load from PostgreSQL if available */
-    if (store->use_db && store->db) {
-        struct json_object *db_entries = NULL;
-        int n;
-
-        /* Entries */
-        n = mtc_db_load_entries(store->db, &db_entries);
-        if (n > 0 && db_entries) {
-            count = (int)json_object_array_length(db_entries);
-            for (i = 0; i < count; i++) {
-                struct json_object *e = json_object_array_get_idx(db_entries, (size_t)i);
-                struct json_object *val;
-                if (json_object_object_get_ex(e, "serialized_hex", &val)) {
-                    const char *hex = json_object_get_string(val);
-                    int entry_sz = 0;
-                    int j;
-
-                    if (json_object_object_get_ex(e, "serialized_len", &val))
-                        entry_sz = json_object_get_int(val);
-
-                    if (entry_sz > 0) {
-                        uint8_t *entry_bytes = (uint8_t*)malloc(entry_sz);
-                        for (j = 0; j < entry_sz && hex[j*2] && hex[j*2+1]; j++) {
-                            unsigned int bv;
-                            sscanf(hex + j * 2, "%02x", &bv);
-                            entry_bytes[j] = (uint8_t)bv;
-                        }
-                        mtc_tree_append(&store->tree, entry_bytes, entry_sz);
-                        free(entry_bytes);
-                    }
-                }
-            }
-            json_object_put(db_entries);
-        }
-
-        /* Certificates and revocations are NOT pre-loaded in DB mode
-         * (TODO #74 phase 2).  Reads route through mtc_store_get_cert
-         * (cert_cache + mtc_db_load_certificate) and
-         * mtc_store_is_revoked (mtc_db_is_revoked) on demand, so the
-         * server's RAM footprint is bounded by the tree + cache, not
-         * by the total cert population.  Landmarks were retired in
-         * TODO #76 (2026-05-07). */
-
-        printf("[store] loaded %d entries from DB\n", store->tree.size);
-        fflush(stdout);
-        return 0;
-    }
-
-    /* Load entries */
-    snprintf(path, sizeof(path), "%s/entries.json", store->data_dir);
-    sz = read_file(path, buf, (int)sizeof(buf) - 1);
-    if (sz > 0) {
-        buf[sz] = 0;
-        arr = json_tokener_parse(buf);
-        if (arr) {
-            count = (int)json_object_array_length(arr);
-            for (i = 0; i < count; i++) {
-                struct json_object *val;
-                entry = json_object_array_get_idx(arr, (size_t)i);
-                if (json_object_object_get_ex(entry, "hex", &val)) {
-                    const char *hex = json_object_get_string(val);
-                    int entry_sz = 0;
-                    int j;
-
-                    if (json_object_object_get_ex(entry, "size", &val))
-                        entry_sz = json_object_get_int(val);
-
-                    if (entry_sz > 0) {
-                        uint8_t *entry_bytes = (uint8_t*)malloc(entry_sz);
-                        for (j = 0; j < entry_sz && hex[j*2] && hex[j*2+1]; j++) {
-                            unsigned int bv;
-                            sscanf(hex + j * 2, "%02x", &bv);
-                            entry_bytes[j] = (uint8_t)bv;
-                        }
-                        mtc_tree_append(&store->tree, entry_bytes, entry_sz);
-                        free(entry_bytes);
-                    }
-                }
-            }
-            json_object_put(arr);
-        }
-    }
-
-    /* Load certificates */
-    snprintf(path, sizeof(path), "%s/certificates.json", store->data_dir);
-    sz = read_file(path, buf, (int)sizeof(buf) - 1);
-    if (sz > 0) {
-        buf[sz] = 0;
-        arr = json_tokener_parse(buf);
-        if (arr) {
-            count = (int)json_object_array_length(arr);
-            for (i = 0; i < count; i++) {
-                struct json_object *cert = json_object_array_get_idx(arr, (size_t)i);
-                if (store->cert_count >= store->cert_capacity) {
-                    store->cert_capacity *= 2;
-                    store->certificates = (struct json_object**)realloc(
-                        store->certificates,
-                        (size_t)store->cert_capacity * sizeof(struct json_object*));
-                }
-                store->certificates[store->cert_count++] = json_object_get(cert);
-            }
-            json_object_put(arr);
-        }
-    }
-
-    /* Landmarks retired 2026-05-07 (TODO #76); landmarks.json
-     * stays on disk in legacy file-mode deployments but is no
-     * longer read. */
-
-    printf("[store] loaded %d entries, %d certs\n",
-           store->tree.size, store->cert_count);
-    fflush(stdout);
-    return 0;
-}
 
 /* ------------------------------------------------------------------ */
 /* Operations                                                          */
@@ -904,86 +429,113 @@ int mtc_store_load(MtcStore *store)
  * Function:    mtc_store_add_entry
  *
  * Description:
- *   Appends a serialised entry to the Merkle tree and persists it to DB
- *   (if connected).
+ *   Phase-3 append path.  Wraps the full operation in a Postgres
+ *   transaction guarded by mtc_tile_store_lock_for_append:
+ *     1. BEGIN
+ *     2. SELECT pg_advisory_xact_lock(<log_id-key>)
+ *     3. mtc_db_save_entry  (writes leaf row + computed leaf hash)
+ *     4. mtc_tiled_tree_append_leaf  (walks levels, writes tiles +
+ *        top_nodes for each affected complete subtree)
+ *     5. COMMIT
  *
- *   Persistence happens BEFORE the in-memory tree append (TODO #57
- *   item 4): DB write failures abort the operation without leaving
- *   the in-memory tree ahead of the DB.  Without this ordering, a
- *   silent DB failure would persist into a divergent state where
- *   in-memory tree size > DB row count, with the next service
- *   restart silently rolling back the apparently-issued entry.
- *
- * Input Arguments:
- *   store    - Target store.
- *   entry    - Serialised entry bytes (0x01 prefix = TBS, 0x00 = null).
- *   entrySz  - Size in bytes.
+ *   Concurrent appends from sibling forked children serialise on the
+ *   advisory lock; failure at any step rolls back the whole transaction.
  *
  * Returns:
  *    0-based log index of the new entry on success.
- *   -1 if the DB persist failed (caller MUST treat as fatal — the
- *      in-memory tree is unchanged and the caller should abort the
- *      enrollment / log-append it was performing).
- *
- * Side Effects:
- *   On success: appends to tree, writes DB row.
- *   On failure: no state change.
+ *   -1 if anything failed (transaction rolled back).
  ******************************************************************************/
 int mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz)
 {
-    int idx_target = store->tree.size;  /* slot mtc_tree_append will use */
-    int idx_actual;
+    PGresult *res;
+    uint8_t lh[MTC_HASH_SIZE];
+    int entry_type;
+    char *tbs_str = NULL;
+    const char *tbs_json = NULL;
+    int idx_target;
+    int new_idx;
+    int rc;
 
-    /* Persist to DB FIRST.  If it fails we return -1 without mutating
-     * the in-memory tree; the caller aborts and there's nothing to
-     * roll back. */
-    if (store->use_db && store->db) {
-        uint8_t lh[MTC_HASH_SIZE];
-        int entry_type = (entrySz > 0 && entry[0] == 0x01) ? 1 : 0;
-        const char *tbs_json = NULL;
-        char *tbs_str = NULL;
-        int rc;
+    if (!store || !store->db || !entry || entrySz < 1) return -1;
 
-        mtc_hash_leaf(entry, entrySz, lh);
-
-        if (entry_type == 1 && entrySz > 1) {
-            tbs_str = (char *)malloc((size_t)entrySz);
-            if (!tbs_str) return -1;
-            memcpy(tbs_str, entry + 1, (size_t)(entrySz - 1));
-            tbs_str[entrySz - 1] = 0;
-            tbs_json = tbs_str;
-        }
-
-        rc = mtc_db_save_entry(store->db, idx_target, entry_type,
-                               tbs_json, entry, entrySz, lh);
-        free(tbs_str);
-        if (rc != 0) {
-            fprintf(stderr,
-                "[store] DB save_entry failed for index %d — aborting "
-                "the append (in-memory tree unchanged)\n", idx_target);
-            return -1;
-        }
+    /* Ensure connection is alive (Neon idle-closes after a few minutes). */
+    if (mtc_db_ensure_connected(&store->db) != 0) {
+        fprintf(stderr, "[store] add_entry: DB connection lost\n");
+        return -1;
     }
 
-    /* DB write succeeded (or DB is disabled); now mutate the tree. */
-    idx_actual = mtc_tree_append(&store->tree, entry, entrySz);
+    /* BEGIN. */
+    res = PQexec(store->db, "BEGIN");
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "[store] add_entry: BEGIN failed: %s",
+                PQerrorMessage(store->db));
+        PQclear(res);
+        return -1;
+    }
+    PQclear(res);
 
-    /* Sanity: idx_actual must match what we told the DB.  An
-     * mtc_tree_append return that disagrees with idx_target indicates
-     * a concurrent mutation we didn't expect; log loudly. */
-    if (store->use_db && store->db && idx_actual != idx_target) {
+    /* Take per-log advisory lock.  Released on COMMIT/ROLLBACK. */
+    if (mtc_tile_store_lock_for_append(store->db, store->log_id) != 0) {
+        fprintf(stderr, "[store] add_entry: advisory lock failed\n");
+        goto rollback;
+    }
+
+    /* Compute leaf hash + extract TBS JSON for the indexed JSONB column. */
+    entry_type = (entrySz > 0 && entry[0] == 0x01) ? 1 : 0;
+    mtc_hash_leaf(entry, entrySz, lh);
+    if (entry_type == 1 && entrySz > 1) {
+        tbs_str = (char *)malloc((size_t)entrySz);
+        if (!tbs_str) goto rollback;
+        memcpy(tbs_str, entry + 1, (size_t)(entrySz - 1));
+        tbs_str[entrySz - 1] = 0;
+        tbs_json = tbs_str;
+    }
+
+    idx_target = store->tree.size;
+
+    rc = mtc_db_save_entry(store->db, idx_target, entry_type,
+                           tbs_json, entry, entrySz, lh);
+    free(tbs_str);
+    tbs_str = NULL;
+    if (rc != 0) {
         fprintf(stderr,
-            "[store] CRITICAL: mtc_tree_append returned %d but DB row "
-            "is at %d — concurrent mutation detected, in-memory and DB "
-            "are now divergent\n", idx_actual, idx_target);
+            "[store] add_entry: mtc_db_save_entry failed at index %d\n",
+            idx_target);
+        goto rollback;
     }
 
-    /* Landmarks retired 2026-05-07 (TODO #76).  No live consumer
-     * reached the trust-anchor list; the Python client's verify_-
-     * landmark_certificate path was wired to a cert format the
-     * server never issued. */
+    /* Update inner-node tiles + top-K nodes. */
+    new_idx = mtc_tiled_tree_append_leaf(&store->tree, lh);
+    if (new_idx != idx_target) {
+        fprintf(stderr,
+            "[store] add_entry: mtc_tiled_tree_append_leaf returned %d, "
+            "expected %d\n", new_idx, idx_target);
+        goto rollback;
+    }
 
-    return idx_actual;
+    /* COMMIT. */
+    res = PQexec(store->db, "COMMIT");
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "[store] add_entry: COMMIT failed: %s",
+                PQerrorMessage(store->db));
+        PQclear(res);
+        /* Roll back the in-memory tree.size since the DB tx didn't
+         * actually commit.  The advisory lock was released by the
+         * COMMIT-failure path. */
+        store->tree.size--;
+        return -1;
+    }
+    PQclear(res);
+
+    return idx_target;
+
+rollback:
+    {
+        PGresult *r = PQexec(store->db, "ROLLBACK");
+        PQclear(r);
+    }
+    free(tbs_str);
+    return -1;
 }
 
 /******************************************************************************
@@ -1012,7 +564,7 @@ struct json_object *mtc_store_checkpoint(MtcStore *store)
     struct json_object *cp;
     int i;
 
-    mtc_tree_root_hash(&store->tree, store->tree.size, root);
+    mtc_tiled_tree_root_hash(&store->tree, store->tree.size, root);
     for (i = 0; i < MTC_HASH_SIZE; i++)
         snprintf(root_hex + i * 2, 3, "%02x", root[i]);
 
@@ -1071,7 +623,7 @@ int mtc_store_cosign(MtcStore *store, int start, int end,
     WC_RNG rng;
     int ret, i;
 
-    mtc_tree_subtree_hash(&store->tree, start, end, subtree_hash);
+    mtc_tiled_tree_subtree_hash(&store->tree, start, end, subtree_hash);
 
     /* Build signature input per MTC draft specification:
      * 16-byte context prefix (includes NUL) + cosigner_id + log_id +
@@ -1207,77 +759,21 @@ int mtc_store_get_public_key_pem(MtcStore *store, char *out, int maxSz)
  ******************************************************************************/
 int mtc_store_revoke(MtcStore *store, int cert_index, const char *reason)
 {
-    /* Check not already revoked.  In DB mode this is a SELECT against
-     * mtc_revocations; in file mode it's the legacy in-memory
-     * binsearch. */
+    if (!store || !store->db) return -1;
+
     if (mtc_store_is_revoked(store, cert_index))
-        return 0; /* Already revoked */
+        return 0; /* Already revoked — idempotent. */
 
-    if (store->use_db && store->db) {
-        /* DB mode (TODO #74 phase 2): no in-memory revoked-indices
-         * array to maintain.  The DB row is the source of truth;
-         * mtc_store_is_revoked queries it on every check.  The
-         * caller (handle_revoke in mtc_http.c) raises SIGHUP to
-         * the parent so the parent's tree-tail reload picks up any
-         * cert appends; revocation reads always go to Neon so no
-         * cache to invalidate beyond the parent-side cert blob (which
-         * we evict here for consistency, in case the cert payload
-         * cached pre-revocation needs to be re-fetched). */
-        if (mtc_db_save_revocation(store->db, cert_index, reason) != 0) {
-            fprintf(stderr,
-                "[store] DB save_revocation failed for index %d\n",
-                cert_index);
-            return -1;
-        }
-        mtc_cert_cache_invalidate(&store->cert_cache, cert_index);
-        printf("[store] revoked cert index %d (reason: %s)\n",
-               cert_index, reason ? reason : "unspecified");
-        return 0;
+    /* DB row is the source of truth; mtc_store_is_revoked queries it
+     * on every check.  Evict any cached cert blob for this index so
+     * subsequent reads pick up the fresh revoked-state. */
+    if (mtc_db_save_revocation(store->db, cert_index, reason) != 0) {
+        fprintf(stderr,
+            "[store] DB save_revocation failed for index %d\n",
+            cert_index);
+        return -1;
     }
-
-    /* File-mode fallback: maintain the legacy in-memory sorted array
-     * + revocations.json for dev workflows. */
-    if (store->revocation_count >= store->revocation_capacity) {
-        int newcap = store->revocation_capacity == 0 ? 64
-                     : store->revocation_capacity * 2;
-        int *tmp = (int*)realloc(store->revoked_indices,
-            (size_t)newcap * sizeof(int));
-        if (!tmp) return -1;
-        store->revoked_indices = tmp;
-        store->revocation_capacity = newcap;
-    }
-
-    /* Insert into sorted position via insertion sort — maintains the
-     * invariant that revoked_indices is always sorted ascending for
-     * binary search in mtc_store_is_revoked() (file mode). */
-    {
-        int i = store->revocation_count;
-        while (i > 0 && store->revoked_indices[i - 1] > cert_index) {
-            store->revoked_indices[i] = store->revoked_indices[i - 1];
-            i--;
-        }
-        store->revoked_indices[i] = cert_index;
-        store->revocation_count++;
-    }
-
-    /* Persist to file */
-    {
-        char path[1024];
-        struct json_object *arr = json_object_new_array();
-        int i;
-        const char *s;
-        for (i = 0; i < store->revocation_count; i++)
-            json_object_array_add(arr,
-                json_object_new_int(store->revoked_indices[i]));
-        snprintf(path, sizeof(path), "%s/revocations.json", store->data_dir);
-        s = json_object_to_json_string(arr);
-        {
-            FILE *f = fopen(path, "w");
-            if (f) { fputs(s, f); fclose(f); }
-        }
-        json_object_put(arr);
-    }
-
+    mtc_cert_cache_invalidate(&store->cert_cache, cert_index);
     printf("[store] revoked cert index %d (reason: %s)\n",
            cert_index, reason ? reason : "unspecified");
     return 0;
@@ -1300,29 +796,9 @@ int mtc_store_revoke(MtcStore *store, int cert_index, const char *reason)
  ******************************************************************************/
 int mtc_store_is_revoked(MtcStore *store, int cert_index)
 {
-    if (!store) return 0;
-
-    if (store->use_db && store->db) {
-        /* DB-backed check (TODO #74 phase 2).  No in-memory mirror. */
-        if (mtc_db_ensure_connected(&store->db) != 0)
-            return 0;
-        return mtc_db_is_revoked(store->db, cert_index);
-    }
-
-    /* File-mode fallback: binsearch the legacy sorted array. */
-    {
-        int lo = 0, hi = store->revocation_count - 1;
-        while (lo <= hi) {
-            int mid = (lo + hi) / 2;
-            if (store->revoked_indices[mid] == cert_index)
-                return 1;
-            else if (store->revoked_indices[mid] < cert_index)
-                lo = mid + 1;
-            else
-                hi = mid - 1;
-        }
-    }
-    return 0;
+    if (!store || !store->db) return 0;
+    if (mtc_db_ensure_connected(&store->db) != 0) return 0;
+    return mtc_db_is_revoked(store->db, cert_index);
 }
 
 /******************************************************************************
@@ -1350,11 +826,8 @@ struct json_object *mtc_store_get_revocation_list(MtcStore *store)
     json_object_object_add(obj, "log_id",
         json_object_new_string(store->log_id));
 
-    if (store->use_db && store->db) {
-        /* DB-backed enumeration (TODO #74 phase 2).  Bounded by
-         * MTC_MAX_CERTS for safety; revocation lists beyond that need
-         * paging, which is a separate API decision (the existing
-         * /revoked endpoint returns a single JSON blob anyway). */
+    /* DB-backed enumeration; bounded by MTC_MAX_CERTS for safety. */
+    if (store->db) {
         int *buf = (int *)malloc(sizeof(int) * MTC_MAX_CERTS);
         if (buf) {
             if (mtc_db_ensure_connected(&store->db) == 0) {
@@ -1366,11 +839,6 @@ struct json_object *mtc_store_get_revocation_list(MtcStore *store)
                     json_object_new_int(buf[i]));
             free(buf);
         }
-    } else {
-        for (i = 0; i < store->revocation_count; i++)
-            json_object_array_add(arr,
-                json_object_new_int(store->revoked_indices[i]));
-        count = store->revocation_count;
     }
     json_object_object_add(obj, "revoked", arr);
 

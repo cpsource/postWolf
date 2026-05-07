@@ -194,16 +194,49 @@ int main(int argc, char *argv[])
     printf("Mode:       %s\n", write_mode ? "WRITE (applying)" : "DRY-RUN");
     printf("Data dir:   %s\n", data_dir);
     printf("Tree size:  %d\n", store.tree.size);
-    printf("Cert count: %d\n", store.cert_count);
+    /* Phase 3: certs are no longer mirrored in RAM; the count comes
+     * from the DB.  Use a single COUNT(*) for the header line. */
+    {
+        int n = -1;
+        PGresult *r = PQexec(store.db,
+            "SELECT COUNT(*) FROM mtc_certificates");
+        if (PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) > 0)
+            n = atoi(PQgetvalue(r, 0, 0));
+        PQclear(r);
+        printf("Cert count: %d\n", n);
+    }
     /* Public key is ML-DSA-87 raw (2592 B); show a 16-byte prefix so
      * the line stays readable.  Full pubkey is available over /ca/public-key. */
     printf("CA key:     loaded (pub=");
     { char h[33]; to_hex(store.ca_pub_key, 16, h); printf("%s…  %dB raw)\n", h, store.ca_pub_key_sz); }
     printf("Neon:       %s\n\n", store.use_db ? "connected" : "file-only");
 
-    /* Iterate every stored cert; recompute tree-state fields + cosig. */
-    for (i = 0; i < store.cert_count; i++) {
-        struct json_object *cert = store.certificates[i];
+    /* Iterate every stored cert; recompute tree-state fields + cosig.
+     * Phase 3: walk the DB instead of an in-memory cert array.  The
+     * helper indices[] holds every (sorted) cert index from
+     * mtc_certificates, and mtc_store_get_cert pages each through
+     * cert_cache + Neon. */
+    int *indices = NULL;
+    int n_indices = 0;
+    {
+        PGresult *r = PQexec(store.db,
+            "SELECT index FROM mtc_certificates ORDER BY index");
+        if (PQresultStatus(r) != PGRES_TUPLES_OK) {
+            fprintf(stderr, "fatal: SELECT mtc_certificates failed: %s\n",
+                    PQerrorMessage(store.db));
+            PQclear(r);
+            mtc_store_free(&store);
+            return 1;
+        }
+        n_indices = PQntuples(r);
+        indices = (int *)malloc((size_t)n_indices * sizeof(int));
+        for (int k = 0; k < n_indices; k++)
+            indices[k] = atoi(PQgetvalue(r, k, 0));
+        PQclear(r);
+    }
+    for (int row = 0; row < n_indices; row++) {
+        i = indices[row];           /* log index */
+        struct json_object *cert = mtc_store_get_cert(&store, i);
         struct json_object *sc;
         struct json_object *old_proof_arr, *old_cosig_arr, *val;
         const char *old_cosig_sig = NULL;
@@ -227,6 +260,7 @@ int main(int argc, char *argv[])
 
         if (!json_object_object_get_ex(cert, "standalone_certificate", &sc)) {
             printf("cert %d: SKIP (no standalone_certificate)\n", i);
+            json_object_put(cert);
             continue;
         }
 
@@ -257,15 +291,19 @@ int main(int argc, char *argv[])
             if (json_object_object_get_ex(sc, "index", &idx_val))
                 cert_log_idx = json_object_get_int(idx_val);
         }
-        if (cert_log_idx >= 0 && cert_log_idx < store.tree.size &&
-            store.tree.entries && store.tree.entries[cert_log_idx]) {
+        if (cert_log_idx >= 0 && cert_log_idx < store.tree.size) {
             struct json_object *cur_tbs = NULL;
             int tbs_divergent = 0;
+            uint8_t *ser = NULL;
+            int ser_sz = 0;
 
-            if (json_object_object_get_ex(sc, "tbs_entry", &cur_tbs)) {
+            if (json_object_object_get_ex(sc, "tbs_entry", &cur_tbs) &&
+                mtc_db_load_entry_serialized(store.db, cert_log_idx,
+                                              &ser, &ser_sz) == 0) {
                 struct json_object *canonical =
-                    tbs_from_entry_bytes(store.tree.entries[cert_log_idx],
-                                         store.tree.entry_sizes[cert_log_idx]);
+                    tbs_from_entry_bytes(ser, ser_sz);
+                free(ser);
+                ser = NULL;
                 if (canonical) {
                     /* Compare scalar fields by their JSON string form. */
                     static const char *scalar_keys[] = {
@@ -340,21 +378,24 @@ int main(int argc, char *argv[])
         }
 
         /* Compute current tree-state values. */
-        if (mtc_tree_subtree_hash(&store.tree, start, end, subtree_hash_new) != 0) {
+        if (mtc_tiled_tree_subtree_hash(&store.tree, start, end, subtree_hash_new) != 0) {
             printf("cert %d: SKIP (subtree_hash failed)\n", i);
+            json_object_put(cert);
             continue;
         }
         to_hex(subtree_hash_new, MTC_HASH_SIZE, subtree_hash_hex);
 
-        if (mtc_tree_inclusion_proof(&store.tree, i, start, end,
+        if (mtc_tiled_tree_inclusion_proof(&store.tree, i, start, end,
                                      &proof_new, &proof_count_new) != 0) {
             printf("cert %d: SKIP (inclusion_proof failed)\n", i);
+            json_object_put(cert);
             continue;
         }
 
         if (mtc_store_cosign(&store, start, end, sig_new, &sig_sz_new) != 0) {
             printf("cert %d: SKIP (cosign failed)\n", i);
             free(proof_new);
+            json_object_put(cert);
             continue;
         }
         to_hex(sig_new, sig_sz_new, sig_hex_new);
@@ -374,6 +415,7 @@ int main(int argc, char *argv[])
         if (!changed) {
             printf("cert %d: up-to-date\n", i);
             free(proof_new);
+            json_object_put(cert);
             continue;
         }
 
@@ -441,16 +483,12 @@ int main(int argc, char *argv[])
         }
 
         free(proof_new);
+        json_object_put(cert);
     }
+    free(indices);
 
-    /* File persistence: one write for the whole updated certificates.json. */
-    if (write_mode && applied > 0) {
-        if (mtc_store_save(&store) != 0) {
-            fprintf(stderr, "WARN: mtc_store_save failed\n");
-        } else {
-            printf("\ncertificates.json rewritten.\n");
-        }
-    }
+    /* Phase 3: file persistence retired.  Per-cert DB writes happened
+     * inline above; nothing else to flush. */
 
     printf("\nSummary: scanned=%d  stale=%d  applied=%d  (%s)\n",
            scanned, stale, applied,

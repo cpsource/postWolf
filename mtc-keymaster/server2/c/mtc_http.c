@@ -376,7 +376,7 @@ static void handle_log_state(client_io *io, MtcStore *store)
     uint8_t root[MTC_HASH_SIZE];
     char root_hex[MTC_HASH_SIZE * 2 + 1];
 
-    mtc_tree_root_hash(&store->tree, store->tree.size, root);
+    mtc_tiled_tree_root_hash(&store->tree, store->tree.size, root);
     to_hex(root, MTC_HASH_SIZE, root_hex);
 
     json_object_object_add(obj, "log_id",
@@ -413,19 +413,29 @@ static void handle_log_proof(client_io *io, MtcStore *store, int index)
         return;
     }
 
-    /* Compute entry hash */
-    mtc_hash_leaf(store->tree.entries[index], store->tree.entry_sizes[index],
-        entry_hash);
+    /* Compute entry hash by fetching the serialized blob from
+     * mtc_log_entries and hashing it (entry hash is leaf-domain
+     * SHA-256 with the 0x00 prefix, per RFC 9162). */
+    {
+        uint8_t *ser = NULL;
+        int ser_sz = 0;
+        if (mtc_db_load_entry_serialized(store->db, index, &ser, &ser_sz) != 0) {
+            http_send_error(io, 500, "entry blob fetch failed");
+            return;
+        }
+        mtc_hash_leaf(ser, ser_sz, entry_hash);
+        free(ser);
+    }
 
     /* Get inclusion proof */
-    if (mtc_tree_inclusion_proof(&store->tree, index, start, end,
+    if (mtc_tiled_tree_inclusion_proof(&store->tree, index, start, end,
                                   &proof, &proof_count) != 0) {
         http_send_error(io, 500, "proof generation failed");
         return;
     }
 
     /* Get root hash */
-    mtc_tree_subtree_hash(&store->tree, start, end, root);
+    mtc_tiled_tree_subtree_hash(&store->tree, start, end, root);
 
     obj = json_object_new_object();
     json_object_object_add(obj, "index", json_object_new_int(index));
@@ -1226,9 +1236,9 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
         /* Proof */
         start = 0;
         end = store->tree.size;
-        mtc_tree_inclusion_proof(&store->tree, new_index, start, end,
+        mtc_tiled_tree_inclusion_proof(&store->tree, new_index, start, end,
             &proof, &proof_count);
-        mtc_tree_subtree_hash(&store->tree, start, end, subtree_hash);
+        mtc_tiled_tree_subtree_hash(&store->tree, start, end, subtree_hash);
 
         /* Cosign */
         mtc_store_cosign(store, start, end, sig, &sig_sz);
@@ -1295,13 +1305,9 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
         json_object_object_add(result, "checkpoint",
             json_object_get(checkpoint));
 
-        /* Persist.  In DB mode (TODO #74 phase 2) the cert array is
-         * not maintained — the row in mtc_certificates is the source
-         * of truth and reads fault through cert_cache on demand.
-         * In file mode the in-memory array still acts as the read
-         * source so we update it. */
-        mtc_store_save(store);
-        if (store->use_db && store->db) {
+        /* Persist.  Phase 3: the row in mtc_certificates is the source
+         * of truth and reads fault through cert_cache on demand. */
+        {
             const char *cert_str = json_object_to_json_string(result);
             if (mtc_db_save_certificate(store->db, new_index, cert_str) != 0) {
                 LOG_ERROR("renew-cert: DB save_certificate failed for index %d", new_index);
@@ -1315,16 +1321,6 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
                 json_object_put(req);
                 return;
             }
-        } else {
-            if (new_index >= store->cert_capacity) {
-                store->cert_capacity *= 2;
-                store->certificates = (struct json_object **)realloc(
-                    store->certificates,
-                    (size_t)store->cert_capacity * sizeof(struct json_object *));
-            }
-            while (store->cert_count <= new_index)
-                store->certificates[store->cert_count++] = NULL;
-            store->certificates[new_index] = json_object_get(result);
         }
 
         LOG_INFO("renew-cert: issued new cert for '%s' at index %d (was %d)",
@@ -1355,31 +1351,40 @@ static void handle_log_entry(client_io *io, MtcStore *store, int index)
         return;
     }
 
-    mtc_hash_leaf(store->tree.entries[index], store->tree.entry_sizes[index], lh);
-    to_hex(lh, MTC_HASH_SIZE, hash_hex);
-
-    obj = json_object_new_object();
-    json_object_object_add(obj, "index", json_object_new_int(index));
-
-    /* Entry type: first byte is 0x00 (null) or 0x01 (tbs) */
-    if (store->tree.entry_sizes[index] > 0 &&
-        store->tree.entries[index][0] == 0x01) {
-        /* TBS entry — the JSON is after the 0x01 prefix */
-        char *json_str = (char*)malloc((size_t)store->tree.entry_sizes[index]);
-        memcpy(json_str, store->tree.entries[index] + 1,
-            (size_t)(store->tree.entry_sizes[index] - 1));
-        json_str[store->tree.entry_sizes[index] - 1] = 0;
-        {
-            struct json_object *data = json_tokener_parse(json_str);
-            json_object_object_add(obj, "type", json_object_new_int(1));
-            json_object_object_add(obj, "data",
-                data ? data : json_object_new_null());
+    /* Phase 3: fetch the serialized entry from mtc_log_entries on
+     * demand instead of an in-memory tree.entries[] read. */
+    {
+        uint8_t *ser = NULL;
+        int ser_sz = 0;
+        if (mtc_db_load_entry_serialized(store->db, index, &ser, &ser_sz) != 0) {
+            http_send_error(io, 500, "entry blob fetch failed");
+            return;
         }
-        free(json_str);
-    }
-    else {
-        json_object_object_add(obj, "type", json_object_new_int(0));
-        json_object_object_add(obj, "data", json_object_new_null());
+        mtc_hash_leaf(ser, ser_sz, lh);
+        to_hex(lh, MTC_HASH_SIZE, hash_hex);
+
+        obj = json_object_new_object();
+        json_object_object_add(obj, "index", json_object_new_int(index));
+
+        if (ser_sz > 0 && ser[0] == 0x01) {
+            /* TBS entry — JSON after the 0x01 prefix */
+            char *json_str = (char *)malloc((size_t)ser_sz);
+            if (json_str) {
+                memcpy(json_str, ser + 1, (size_t)(ser_sz - 1));
+                json_str[ser_sz - 1] = 0;
+                {
+                    struct json_object *data = json_tokener_parse(json_str);
+                    json_object_object_add(obj, "type", json_object_new_int(1));
+                    json_object_object_add(obj, "data",
+                        data ? data : json_object_new_null());
+                }
+                free(json_str);
+            }
+        } else {
+            json_object_object_add(obj, "type", json_object_new_int(0));
+            json_object_object_add(obj, "data", json_object_new_null());
+        }
+        free(ser);
     }
 
     json_object_object_add(obj, "leaf_hash",
@@ -1454,14 +1459,14 @@ static void handle_consistency(client_io *io, MtcStore *store, const char *path)
         return;
     }
 
-    if (mtc_tree_consistency_proof(&store->tree, old_size, new_size,
+    if (mtc_tiled_tree_consistency_proof(&store->tree, old_size, new_size,
                                     &proof, &proof_count) != 0) {
         http_send_error(io, 500, "consistency proof failed");
         return;
     }
 
-    mtc_tree_root_hash(&store->tree, old_size, old_root);
-    mtc_tree_root_hash(&store->tree, new_size, new_root);
+    mtc_tiled_tree_root_hash(&store->tree, old_size, old_root);
+    mtc_tiled_tree_root_hash(&store->tree, new_size, new_root);
 
     obj = json_object_new_object();
     json_object_object_add(obj, "old_size", json_object_new_int(old_size));
@@ -1507,36 +1512,10 @@ static void handle_search_certificates(client_io *io, MtcStore *store, const cha
     obj = json_object_new_object();
     json_object_object_add(obj, "query", json_object_new_string(qval));
 
-    if (store->use_db && store->db) {
-        /* DB-backed search (TODO #74 phase 2): a single ILIKE-on-JSONB
-         * query returns the entire result set, no in-memory walk
-         * needed. */
-        arr = mtc_db_search_certs_by_subject(store->db, qval);
-        if (!arr) arr = json_object_new_array();
-    } else {
-        int i;
-        arr = json_object_new_array();
-        for (i = 0; i < store->cert_count; i++) {
-            struct json_object *cert, *sc, *tbs, *val;
-            if (!store->certificates[i]) continue;
-
-            cert = store->certificates[i];
-            if (json_object_object_get_ex(cert, "standalone_certificate", &sc) &&
-                json_object_object_get_ex(sc, "tbs_entry", &tbs) &&
-                json_object_object_get_ex(tbs, "subject", &val)) {
-                const char *subj = json_object_get_string(val);
-                /* Case-insensitive substring match */
-                if (strcasestr(subj, qval)) {
-                    struct json_object *result = json_object_new_object();
-                    json_object_object_add(result, "index",
-                        json_object_new_int(i));
-                    json_object_object_add(result, "subject",
-                        json_object_new_string(subj));
-                    json_object_array_add(arr, result);
-                }
-            }
-        }
-    }
+    /* DB-backed search (TODO #74): a single ILIKE-on-JSONB query
+     * returns the entire result set, no in-memory walk needed. */
+    arr = mtc_db_search_certs_by_subject(store->db, qval);
+    if (!arr) arr = json_object_new_array();
 
     json_object_object_add(obj, "results", arr);
     http_send_json_obj(io, 200, obj);
@@ -2004,17 +1983,10 @@ static void handle_revoke(client_io *io, MtcStore *store,
     LOG_INFO("revoke: cert %d ('%s') revoked by CA %d ('%s') reason='%s'",
              cert_index, tgt_subject, ca_cert_index, ca_subject, reason);
 
-    /* Tell the parent its in-memory MtcStore is now stale (same
-     * fork-after-accept pattern as TODO #56 enrollment).  Even after
-     * TODO #74 phase 2 dropped the in-memory revoked_indices array
-     * the parent still owns the Merkle tree state, and a SIGHUP-
-     * driven reload also flushes the cert_cache so the next request
-     * routed to a fresh fork doesn't serve a pre-revocation cached
-     * cert blob. */
-    if (kill(getppid(), SIGHUP) != 0) {
-        LOG_WARN("revoke: kill(getppid, SIGHUP) failed: %s",
-                 strerror(errno));
-    }
+    /* Phase 3 retired the SIGHUP-reload pipeline.  Tile state is
+     * authoritative in Neon; subsequent forks fault tiles + cert
+     * blobs through the LRU on miss, picking up the just-committed
+     * revocation row automatically. */
 
     {
         struct json_object *resp = json_object_new_object();
@@ -2572,23 +2544,16 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
         }
 
         /* Fork per-connection: parent resumes accept loop, child serves.
-         *
-         * Hold the reload-lock as a reader across the fork itself so
-         * a SIGHUP-driven mtc_store_reload (writer) cannot run during
-         * the COW snapshot.  Parent unlocks immediately after fork;
-         * child inherits the held-lock memory but never touches the
-         * lock object again (POSIX-safe pattern). */
-        pthread_rwlock_rdlock(&store->reload_lock);
+         * Phase 3 retired the reload-lock — tile state is authoritative
+         * in Neon, no SIGHUP-driven mutation of in-memory store. */
         {
             pid_t pid = fork();
             if (pid < 0) {
-                pthread_rwlock_unlock(&store->reload_lock);
                 LOG_ERROR("fork failed: %s", strerror(errno));
                 cio_close(&cio);
                 continue;
             }
             if (pid > 0) {
-                pthread_rwlock_unlock(&store->reload_lock);
                 /* Parent: drop socket fd — child holds its own ref.
                  * Bump child counter; SIGCHLD reaper decrements on exit. */
                 atomic_fetch_add(&g_active_children, 1);
@@ -2598,10 +2563,7 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
                 close(cio.fd);
                 continue;
             }
-            /* Child: no longer needs the listen socket.  Do NOT
-             * touch reload_lock — the COW copy is meaningless and
-             * any pthread_rwlock_unlock here would race with the
-             * parent's. */
+            /* Child: no longer needs the listen socket. */
             LOG_DEBUG("child pid=%d handling %s conn",
                       (int)getpid(), use_tls ? "TLS" : "plain");
             close(listen_fd);
@@ -2691,27 +2653,23 @@ static void *mqc_listener_thread(void *arg)
         cio.fd = mqc_get_fd(cio.mqc);
 
         /* Fork per-connection: parent resumes accept loop, child serves.
-         * Reload-lock gating mirrors the TLS/plain fork site above. */
-        pthread_rwlock_rdlock(&store->reload_lock);
+         * Phase 3 retired the reload-lock. */
         {
             pid_t pid = fork();
             if (pid < 0) {
-                pthread_rwlock_unlock(&store->reload_lock);
                 LOG_ERROR("MQC fork failed: %s", strerror(errno));
                 cio_close(&cio);
                 continue;
             }
             if (pid > 0) {
-                pthread_rwlock_unlock(&store->reload_lock);
-                /* Parent: drop socket fd — child holds its own ref.
-                 * Bump child counter; SIGCHLD reaper decrements on exit. */
+                /* Parent: drop socket fd — child holds its own ref. */
                 atomic_fetch_add(&g_active_children, 1);
                 LOG_DEBUG("forked child pid=%d for MQC conn (active=%d)",
                           (int)pid, atomic_load(&g_active_children));
                 close(cio.fd);
                 continue;
             }
-            /* Child: do NOT touch reload_lock — see TLS/plain site. */
+            /* Child: no longer needs the listen socket. */
             LOG_DEBUG("child pid=%d handling MQC conn", (int)getpid());
             close(listen_fd);
             /* Detach from the parent's PGconn — see TLS/plain fork

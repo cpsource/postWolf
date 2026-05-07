@@ -25,51 +25,40 @@ all: admin_recosign migrate-cosigner backfill-pubkey bootstrap_ca bootstrap_leaf
 $(MQC_LIB):
 	$(MAKE) -C $(MQC_DIR)
 
-admin_recosign: admin_recosign.c \
-                $(SERVER_DIR)/mtc_store.c $(SERVER_DIR)/mtc_store.h \
-                $(SERVER_DIR)/mtc_cert_cache.c $(SERVER_DIR)/mtc_cert_cache.h \
-                $(SERVER_DIR)/mtc_merkle.c $(SERVER_DIR)/mtc_merkle.h \
-                $(SERVER_DIR)/mtc_db.c $(SERVER_DIR)/mtc_db.h \
-                $(SERVER_DIR)/mtc_log.c $(SERVER_DIR)/mtc_log.h
-	$(CC) $(CFLAGS) -o $@ \
-		admin_recosign.c \
-		$(SERVER_DIR)/mtc_store.c \
-		$(SERVER_DIR)/mtc_cert_cache.c \
-		$(SERVER_DIR)/mtc_merkle.c \
-		$(SERVER_DIR)/mtc_db.c \
-		$(SERVER_DIR)/mtc_log.c \
+# Server-side store dependencies post-TODO #74 phase 3 (admin_recosign,
+# migrate-cosigner, backfill-pubkey all link the full store + tile
+# implementation).
+STORE_SRCS = $(SERVER_DIR)/mtc_store.c \
+             $(SERVER_DIR)/mtc_cert_cache.c \
+             $(SERVER_DIR)/mtc_merkle.c \
+             $(SERVER_DIR)/mtc_merkle_tiled.c \
+             $(SERVER_DIR)/mtc_tile_cache.c \
+             $(SERVER_DIR)/mtc_tile_store_pg.c \
+             $(SERVER_DIR)/mtc_db.c \
+             $(SERVER_DIR)/mtc_log.c
+
+STORE_HDRS = $(SERVER_DIR)/mtc_store.h \
+             $(SERVER_DIR)/mtc_cert_cache.h \
+             $(SERVER_DIR)/mtc_merkle.h \
+             $(SERVER_DIR)/mtc_merkle_tiled.h \
+             $(SERVER_DIR)/mtc_tile.h \
+             $(SERVER_DIR)/mtc_tile_cache.h \
+             $(SERVER_DIR)/mtc_tile_store.h \
+             $(SERVER_DIR)/mtc_db.h \
+             $(SERVER_DIR)/mtc_log.h
+
+admin_recosign: admin_recosign.c $(STORE_SRCS) $(STORE_HDRS)
+	$(CC) $(CFLAGS) -o $@ admin_recosign.c $(STORE_SRCS) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) -lcurl
 
 # One-shot Ed25519 → ML-DSA-87 cosigner rotation; see TODO #47.
-migrate-cosigner: migrate-cosigner.c \
-                  $(SERVER_DIR)/mtc_store.c $(SERVER_DIR)/mtc_store.h \
-                  $(SERVER_DIR)/mtc_cert_cache.c $(SERVER_DIR)/mtc_cert_cache.h \
-                  $(SERVER_DIR)/mtc_merkle.c $(SERVER_DIR)/mtc_merkle.h \
-                  $(SERVER_DIR)/mtc_db.c $(SERVER_DIR)/mtc_db.h \
-                  $(SERVER_DIR)/mtc_log.c $(SERVER_DIR)/mtc_log.h
-	$(CC) $(CFLAGS) -o $@ \
-		migrate-cosigner.c \
-		$(SERVER_DIR)/mtc_store.c \
-		$(SERVER_DIR)/mtc_cert_cache.c \
-		$(SERVER_DIR)/mtc_merkle.c \
-		$(SERVER_DIR)/mtc_db.c \
-		$(SERVER_DIR)/mtc_log.c \
+migrate-cosigner: migrate-cosigner.c $(STORE_SRCS) $(STORE_HDRS)
+	$(CC) $(CFLAGS) -o $@ migrate-cosigner.c $(STORE_SRCS) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) -lcurl
 
 # Upsert a leaf/CA pubkey into Neon's mtc_public_keys.
-backfill-pubkey: backfill-pubkey.c \
-                 $(SERVER_DIR)/mtc_store.c $(SERVER_DIR)/mtc_store.h \
-                 $(SERVER_DIR)/mtc_cert_cache.c $(SERVER_DIR)/mtc_cert_cache.h \
-                 $(SERVER_DIR)/mtc_merkle.c $(SERVER_DIR)/mtc_merkle.h \
-                 $(SERVER_DIR)/mtc_db.c $(SERVER_DIR)/mtc_db.h \
-                 $(SERVER_DIR)/mtc_log.c $(SERVER_DIR)/mtc_log.h
-	$(CC) $(CFLAGS) -o $@ \
-		backfill-pubkey.c \
-		$(SERVER_DIR)/mtc_store.c \
-		$(SERVER_DIR)/mtc_cert_cache.c \
-		$(SERVER_DIR)/mtc_merkle.c \
-		$(SERVER_DIR)/mtc_db.c \
-		$(SERVER_DIR)/mtc_log.c \
+backfill-pubkey: backfill-pubkey.c $(STORE_SRCS) $(STORE_HDRS)
+	$(CC) $(CFLAGS) -o $@ backfill-pubkey.c $(STORE_SRCS) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) -lcurl
 
 bootstrap_ca: bootstrap_ca.c \

@@ -524,6 +524,57 @@ int mtc_db_load_entries(PGconn *conn, struct json_object **out_arr)
     return rows;
 }
 
+/******************************************************************************
+ * Function:    mtc_db_load_entry_serialized
+ *
+ * Description:
+ *   On-demand fetch of mtc_log_entries.serialized for a single index.
+ *   Replaces the legacy in-memory tree->entries[idx] read under TODO
+ *   #74 phase 3 (server holds no entry array — every reader goes
+ *   through this path).
+ *
+ * Returns:
+ *    0  on success.
+ *   -1  if the index doesn't exist or on query error.
+ ******************************************************************************/
+int mtc_db_load_entry_serialized(PGconn *conn, int index,
+                                  uint8_t **out, int *out_sz)
+{
+    PGresult *res;
+    char idx_str[16];
+    const char *params[1];
+    int rc = -1;
+
+    if (!conn || !out || !out_sz) return -1;
+    *out = NULL;
+    *out_sz = 0;
+
+    snprintf(idx_str, sizeof(idx_str), "%d", index);
+    params[0] = idx_str;
+
+    res = PQexecParams(conn,
+        "SELECT serialized FROM mtc_log_entries WHERE index = $1",
+        1, NULL, params, NULL, NULL, 1 /* binary result */);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0)
+        goto done;
+
+    {
+        const char *bytes = PQgetvalue(res, 0, 0);
+        int len = PQgetlength(res, 0, 0);
+        if (len <= 0) goto done;
+        *out = (uint8_t *)malloc((size_t)len);
+        if (!*out) goto done;
+        memcpy(*out, bytes, (size_t)len);
+        *out_sz = len;
+        rc = 0;
+    }
+
+done:
+    PQclear(res);
+    return rc;
+}
+
 /* ------------------------------------------------------------------ */
 /* Checkpoints                                                         */
 /* ------------------------------------------------------------------ */

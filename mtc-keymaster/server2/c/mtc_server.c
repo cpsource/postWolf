@@ -55,62 +55,11 @@
 #include "mtc_ratelimit.h"
 #include "../../read-config/read-config.h"
 
-/******************************************************************************
- * Function:    reload_thread
- *
- * Description:
- *   sigwait()-based reload worker (TODO #56 fix).  Runs as a dedicated
- *   pthread inside the parent process; sigwait blocks until SIGHUP is
- *   delivered, then calls mtc_store_reload(store) to refresh the
- *   parent's in-memory tree/cert state from the DB.
- *
- *   The motivating bug: bootstrap children fork off the parent, mutate
- *   the DB on enrollment commit, and exit; the parent's in-memory
- *   MtcStore never sees those mutations until the next service
- *   restart.  Subsequent /certificate/N lookups handled by NEW forked
- *   children inherit the parent's stale state and serve 404 for an
- *   index that's already in the DB.
- *
- *   Bootstrap children raise SIGHUP to getppid() right after a
- *   successful commit; this thread picks it up and resyncs.
- *
- *   Blocks SIGHUP must be set up in the main thread BEFORE listener
- *   threads are created so listeners inherit the block and SIGHUP is
- *   only ever delivered to this thread (via sigwait).
- ******************************************************************************/
-static void *reload_thread(void *arg)
-{
-    MtcStore *store = (MtcStore *)arg;
-    sigset_t set;
-    int sig;
-
-    sigemptyset(&set);
-    sigaddset(&set, SIGHUP);
-
-    while (1) {
-        if (sigwait(&set, &sig) != 0)
-            continue;
-        if (sig != SIGHUP) continue;
-
-        LOG_INFO("reload: SIGHUP received, refreshing store from DB");
-        /* Exclusive lock excludes every listener fork until reload
-         * completes.  No timeout — reload is tree-only post-phase-2,
-         * sub-second at current scale; listeners briefly stall their
-         * accept loops, which is exactly the desired behavior (no
-         * fork inherits a transiently-empty store). */
-        pthread_rwlock_wrlock(&store->reload_lock);
-        if (mtc_store_reload(store) != 0) {
-            LOG_WARN("reload: mtc_store_reload failed");
-        } else {
-            /* In DB mode (TODO #74 phase 2) cert_count is always 0 —
-             * certs are no longer mirrored in RAM.  Tree size is the
-             * meaningful "size of the log" indicator post-reload. */
-            LOG_INFO("reload: store now at %d entries", store->tree.size);
-        }
-        pthread_rwlock_unlock(&store->reload_lock);
-    }
-    return NULL;
-}
+/* reload_thread retired in TODO #74 phase 3 — the tiled Merkle tree
+ * is authoritative in Neon, so mutating children write tile rows
+ * directly under pg_advisory_xact_lock.  Parents pick up the new
+ * state on demand via the cert_cache + tile_cache LRUs (cache miss
+ * → DB).  No SIGHUP-driven reload, no rwlock around fork sites. */
 
 /* Pull port number out of [global] <key> in /etc/postWolf/config.
  * The value is a URL like https://host:8446 — split on the last ':'
@@ -350,33 +299,10 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* 7a. SIGHUP-driven store reload (TODO #56 fix).
-     *
-     * Block SIGHUP in the main thread BEFORE creating any listener
-     * threads.  pthread_sigmask is per-thread, but child threads
-     * inherit the parent's mask at creation, so blocking SIGHUP here
-     * propagates to mtc_bootstrap_start's bootstrap_thread, MQC's
-     * listener thread, and HTTP serve in the main thread.
-     *
-     * Then spawn a dedicated reload thread that sigwait()s on SIGHUP
-     * and calls mtc_store_reload to refresh the in-memory store.
-     * Bootstrap children raise SIGHUP to getppid() after a successful
-     * enrollment commit, which gets delivered to this thread (the
-     * only one with SIGHUP unblocked, by virtue of sigwait pulling it
-     * off the queue).                                                  */
-    {
-        sigset_t set;
-        pthread_t reload_tid;
-        sigemptyset(&set);
-        sigaddset(&set, SIGHUP);
-        pthread_sigmask(SIG_BLOCK, &set, NULL);
-        if (pthread_create(&reload_tid, NULL, reload_thread, &store) != 0) {
-            LOG_WARN("reload thread failed to start (errno=%d), "
-                     "store will go stale after enrollments", errno);
-        } else {
-            pthread_detach(reload_tid);
-        }
-    }
+    /* 7a. SIGHUP-driven reload retired in TODO #74 phase 3 — the
+     * tiled Merkle tree state is authoritative in Neon and mutating
+     * children write tile rows directly.  No reload thread, no
+     * advisory rwlock around fork sites. */
 
     /* 8. Set up TLS config (NULL if no --tls-cert → plain HTTP mode) */
     memset(&tls_cfg, 0, sizeof(tls_cfg));

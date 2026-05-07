@@ -3984,7 +3984,28 @@ approval flow.
 
 ---
 
-### 74. In-memory `MtcStore` is RAM-bounded — won't scale past ~1M certs
+### 74. In-memory `MtcStore` is RAM-bounded — won't scale past ~1M certs — **DONE 2026-05-07**
+
+**Resolution.**  Phase 2 (commit `6ffb3c31d`) dropped the in-memory
+cert + revocation arrays.  Phase 3 (commits `7a5ccacc5` schema +
+tile store + tile cache; `193a2f59a` tiled tree + equivalence tests
++ migration tool; commit-C in this session) retired the legacy
+in-memory Merkle tree, the SIGHUP-driven `reload_thread`, the
+`pthread_rwlock_t reload_lock`, and file-mode entirely.
+
+Server now holds only:
+- top-K inner-node hashes (~4 KB at any tree size up to ~10 M),
+- a bounded LRU on the cert-lookup hot path (~750 KB),
+- a bounded LRU on the tile-fetch path (~8 MB),
+- the CA + cosigner private keys.
+
+Live verification on factsorlie (87-leaf log): RSS ~23 MB
+post-restart, no reload events in journalctl, show-tpm `proof=OK`,
+revoke matrix 10/10 PASS without rwlock involvement.
+
+Original entry preserved below for context.
+
+
 
 **Severity:** High — postWolf is designed for scale, and the
 current architecture has a hard ceiling at ~1M certs (see math
