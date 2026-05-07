@@ -1,3 +1,10 @@
+> **Reading order.** This file is the original 12-finding
+> external review.  For the current "what is still open?"
+> scoreboard, see
+> [`../README-mqc-issues-summary.md`](../README-mqc-issues-summary.md);
+> the per-issue commit map at the bottom of this file is the
+> closure record.
+
 It is a solid experimental start, but I would **not yet trust this as TLS replacement strength**. The biggest problem is that the handshake signatures do **not bind the full transcript**; they only sign the sender’s `kem_pub` / ciphertext. That leaves room for identity substitution, mode confusion, cross-protocol, replay, and unknown-key-share style attacks. 
 
 Top fixes:

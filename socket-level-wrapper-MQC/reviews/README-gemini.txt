@@ -2,6 +2,11 @@
 TRIAGE 2026-05-06 (phase-23, HEAD post-TODO-#58 fix)
 ================================================================
 
+Reading order: this file is the per-finding Gemini triage.  For
+the current "what is still open?" scoreboard, see
+../README-mqc-issues-summary.md (its Gemini scorecard rows are
+the live status; this triage is the source it cites).
+
 Each Gemini finding triaged against the current MQC implementation
 in socket-level-wrapper-MQC/.  Verdicts use this scale:
 

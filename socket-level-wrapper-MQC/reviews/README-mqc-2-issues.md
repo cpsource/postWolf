@@ -1,3 +1,9 @@
+> **Reading order.** This file is the second external review
+> (10 findings) plus the triage / phase-status appendices
+> (Claude Code, May 2026).  For the current "what is still
+> open?" scoreboard, see
+> [`../README-mqc-issues-summary.md`](../README-mqc-issues-summary.md).
+
 I reviewed the tarball.
 
 **Bottom line:** the implementation addresses many earlier design issues, but it **does not fully meet `draft-page-mqc-protocol-00.md` yet**, and I would **not treat it as TLS-replacement safe**.

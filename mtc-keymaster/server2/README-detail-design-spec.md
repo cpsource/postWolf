@@ -758,7 +758,7 @@ its `mode` field, and dispatches:
 
 The dispatcher refuses clear-mode handshakes when the listener's
 `ctx->encrypt_identity == 1` (MQC-01 guard, see Gemini triage in
-`socket-level-wrapper-MQC/README-gemini.txt`).
+`socket-level-wrapper-MQC/reviews/README-gemini.txt`).
 
 Full wire format: `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md`.
 

@@ -1892,7 +1892,7 @@ Phase 1 (commits TBD on the postWolf tree) closes the gap:
 
 This change closes reviewer findings #1 (wire-format mismatch),
 #2 (brace-counting fragility), and #9 (MSG_PEEK + strstr mode
-detection) from `README-mqc-2-issues.md`.  No spec text needed
+detection) from `reviews/README-mqc-2-issues.md`.  No spec text needed
 to change — §5.1 was already correct — but the §7 informative
 note was rewritten to describe the new dispatch path, and this
 appendix entry was added.
@@ -1924,7 +1924,7 @@ Spec changes:
   (`mqc_peer.c::verify_pubkey_pem_hash`).
 
 This change closes reviewer finding #4 from
-`README-mqc-2-issues.md`.  Wire-format unchanged
+`reviews/README-mqc-2-issues.md`.  Wire-format unchanged
 (`subject_public_key_hash` was already mandatory in §5.2's
 table of cert fields, just not enforced by verifiers).
 

@@ -6,7 +6,7 @@ Three real candidates left, in roughly impact-per-effort order:
   live _mqc-ca.factsorlie.com TXT (the new SPKI-DER hash differs from the current raw-PEM hash). No new spec section; just
    makes the pin encoding-stable so re-emitting the same key with different PEM wrap-width / line-endings doesn't
   invalidate it.
-  2. mqc-2 master plan Phase 5 — the cosigner-key TOFU hole on first contact (= README-mqc-2-issues.md issue #3 =
+  2. mqc-2 master plan Phase 5 — the cosigner-key TOFU hole on first contact (= socket-level-wrapper-MQC/reviews/README-mqc-2-issues.md issue #3 =
   mtc-keymaster/README-bugsandtodo.md TODO #9b). The most security-relevant remaining item but the biggest scope: I'd
   start by writing a per-branch plan from the existing ~/.claude/plans/lets-plan-to-implement-snoopy-rivest.md
   (leaf-bootstrap branch + CA-bootstrap branch), then implement one branch. Substantial — multi-commit.

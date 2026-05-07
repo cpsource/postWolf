@@ -2652,9 +2652,9 @@ re-pointed.
 
 **Severity:** Low — design-clarity / TLS-1.3 alignment, not an
 exploitable gap.  Same item the second-review pack raised as
-[`README-mqc-2-issues.md`](../socket-level-wrapper-MQC/README-mqc-2-issues.md)
+[`README-mqc-2-issues.md`](../socket-level-wrapper-MQC/reviews/README-mqc-2-issues.md)
 issue #6 and the third pack reiterates as
-[`README-mqc-4-issues.md`](../socket-level-wrapper-MQC/README-mqc-4-issues.md)
+[`README-mqc-4-issues.md`](../socket-level-wrapper-MQC/reviews/README-mqc-4-issues.md)
 "highest-priority MQC fix" #4.
 
 **What MQC does today** (spec §6.0,
@@ -3064,7 +3064,7 @@ one TCP connection per IP-bucket budget still buys exactly one
 ML-KEM decap + one ML-DSA verify, and a coordinated source can
 trade IPs for crypto cycles even with all rate limits intact.
 
-**Source:** `socket-level-wrapper-MQC/README-gemini.txt` MQC-02
+**Source:** `socket-level-wrapper-MQC/reviews/README-gemini.txt` MQC-02
 ("DoS via Asymmetric Work").
 
 **Why it matters.**  ML-KEM-768 decapsulation and ML-DSA-87

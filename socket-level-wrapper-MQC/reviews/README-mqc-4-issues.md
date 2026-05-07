@@ -1,3 +1,11 @@
+> **Reading order.** This file is the TLS-1.3 vs MQC
+> security-property map (six highest-priority fixes).  For the
+> current "what is still open?" scoreboard, see
+> [`../README-mqc-issues-summary.md`](../README-mqc-issues-summary.md);
+> the cross-check against this property map lives in that
+> file's "Cross-check against the TLS-1.3 property map"
+> section.
+
 Excellent. Item 3:
 
 ## MQC vs TLS 1.3 security-property map

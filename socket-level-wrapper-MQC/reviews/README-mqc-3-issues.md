@@ -1,3 +1,10 @@
+> **Reading order.** This file is the DNSSEC-bootstrap design
+> exchange (~900 lines, four trust-bootstrap options + a
+> drop-in `mqc_dnssec_pin.c`).  For the current "what is still
+> open?" scoreboard, see
+> [`../README-mqc-issues-summary.md`](../README-mqc-issues-summary.md);
+> the DNSSEC pin shipped via `bf21e4fc9` and `bdbf08309`.
+
 Good—this extra detail helps a lot. I’ll map everything explicitly to your ports and give concrete fixes you can actually implement without killing your “open developer CA” goal.
 
 ---

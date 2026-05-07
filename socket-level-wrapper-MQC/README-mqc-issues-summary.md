@@ -3,19 +3,22 @@
 **Branch:** `phase-23` &nbsp;·&nbsp; **HEAD:** `c22e045fe` &nbsp;·&nbsp;
 **Compiled:** 2026-05-06
 
-This file rolls up the open items across the four reviewer
-documents in this directory:
+This file rolls up the open items across the reviewer documents
+in [`reviews/`](./reviews/):
 
-- [`README-mqc-1-issues.md`](./README-mqc-1-issues.md) — the
+- [`README-mqc-1-issues.md`](./reviews/README-mqc-1-issues.md) — the
   earliest external review (12 items) that drove the Phase 1–3
   hardening pass.  All 12 closed; carried here for completeness
   and for the per-row commit map.
-- [`README-mqc-2-issues.md`](./README-mqc-2-issues.md) — second
+- [`README-mqc-2-issues.md`](./reviews/README-mqc-2-issues.md) — second
   10-finding review and the Phase 1/2/3/4/5/6 master plan
-- [`README-mqc-3-issues.md`](./README-mqc-3-issues.md) — DNSSEC
+- [`README-mqc-3-issues.md`](./reviews/README-mqc-3-issues.md) — DNSSEC
   bootstrap proposal + drop-in `mqc_dnssec_pin.c`
-- [`README-mqc-4-issues.md`](./README-mqc-4-issues.md) — TLS 1.3
+- [`README-mqc-4-issues.md`](./reviews/README-mqc-4-issues.md) — TLS 1.3
   security-property map and the six highest-priority fixes
+- [`README-gemini.txt`](./reviews/README-gemini.txt) — Gemini
+  triage (MQC-01 / MQC-02 / MQC-03), source for this file's
+  Gemini scorecard rows
 
 It does **not** re-derive the analysis — the source documents are
 canonical.  This file is a checkpoint that says *what is still open
@@ -69,7 +72,7 @@ Plus, from the Gemini security review (separate file, just triaged):
 
 **mqc-1 contributes nothing to the open list — every one of its
 12 reviewer items shipped during the Phase 1–3 hardening pass
-(per the status table at the bottom of `README-mqc-1-issues.md`).
+(per the status table at the bottom of `reviews/README-mqc-1-issues.md`).
 Its inclusion in this summary is a closure record, not a backlog.**
 
 ### P0 — load-bearing security gap
