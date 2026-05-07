@@ -1298,8 +1298,7 @@ positive + negative matrix.  Expected results:
 | Signature invalid for otherwise-valid payload | `403 "signature verification failed"` | NOT TESTED |
 | Timestamp > 5 min old | `400 "timestamp outside ±5 min freshness window"` | NOT TESTED |
 | Timestamp > 5 min in the future | `400` same message | NOT TESTED |
-| Every accepted key algorithm: ML-DSA-44, ML-DSA-65, ML-DSA-87 | `200` on the matching CA, `403` if algorithm mismatched against log | NOT TESTED |
-| Any pre-quantum `ca_algo` (e.g. EC-P256, EC-P384, Ed25519) | `400 "unsupported key algorithm for revocation"` (acceptance dropped 2026-04-26) | NOT TESTED |
+| Algorithm coverage | OUT OF SCOPE — bootstrap accept-list narrowed to ML-DSA-87 only on 2026-05-07.  Cannot construct a non-87 CA to drive the negative path; `wc_dilithium_verify_ctx_msg` at level 5 is the only verify path reachable. | N/A |
 
 **Cross-reference:** `tools/c/revoke-key.c` dry-run mode prints the
 exact body that would be POSTed, which is the easiest way to seed
@@ -3075,7 +3074,19 @@ is sufficient under real load.
 
 ---
 
-### 60. SIGHUP reload silently empties the in-memory store on a stale Neon connection
+### 60. SIGHUP reload silently empties the in-memory store on a stale Neon connection — **DONE 2026-05-06** (commit a0f24c49a)
+
+**What landed:** `mtc_store_reload` now calls
+`mtc_db_ensure_connected(&store->db)` BEFORE clearing any
+in-memory state — if the ping/reconnect fails, the reload
+aborts and the in-memory tree/certs/landmarks are preserved
+intact.  Plus a defensive regression guard: pre-reload
+`tree.size` and `cert_count` are snapshotted, and if pre>1
+collapses to post≤1 (genesis-only) the function logs a loud
+`RELOAD REGRESSION` and returns -1 instead of committing the
+empty state.  See `mtc-keymaster/server2/c/mtc_store.c::mtc_store_reload`
+(lines ~495-582).  Both fix candidates #1 and #2 from the
+original analysis shipped together as recommended.
 
 **Severity:** HIGH — observed in production during the P0 #9b
 CA-branch live-test on 2026-05-06.  After `bootstrap_ca` issued a

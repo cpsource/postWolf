@@ -331,7 +331,7 @@ static int load_identity(identity_t *e)
         snprintf(e->algorithm, sizeof(e->algorithm), "%s",
                  json_object_get_string(val));
     else
-        snprintf(e->algorithm, sizeof(e->algorithm), "EC-P256");
+        snprintf(e->algorithm, sizeof(e->algorithm), "ML-DSA-87");
     if (json_object_object_get_ex(tbs, "not_after", &val))
         e->not_after = json_object_get_double(val);
 

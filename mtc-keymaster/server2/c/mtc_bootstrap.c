@@ -960,16 +960,18 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
     }
     pub_key_pem = json_object_get_string(val);
 
-    key_algo = "EC-P256";
+    /* ML-DSA-87 is the only accepted enrollment algorithm.  Pre-PQ
+     * (EC-P256, EC-P384, Ed25519) and weaker ML-DSA variants (44, 65)
+     * were retired in the 2026-05-07 cleanup — every downstream verify
+     * path (revoke, MQC handshake, cosigner) is ML-DSA-87 only, so a
+     * non-87 enrollment would be a dead-end cert that can never be
+     * used.  Reject at the door. */
+    key_algo = "ML-DSA-87";
     if (json_object_object_get_ex(req, "key_algorithm", &val)) {
         const char *requested = json_object_get_string(val);
-        if (strcmp(requested, "EC-P256") != 0 &&
-            strcmp(requested, "EC-P384") != 0 &&
-            strcmp(requested, "Ed25519") != 0 &&
-            strcmp(requested, "ML-DSA-44") != 0 &&
-            strcmp(requested, "ML-DSA-65") != 0 &&
-            strcmp(requested, "ML-DSA-87") != 0) {
-            LOG_WARN("bootstrap: unsupported key_algorithm '%s'", requested);
+        if (strcmp(requested, "ML-DSA-87") != 0) {
+            LOG_WARN("bootstrap: unsupported key_algorithm '%s' "
+                     "(only ML-DSA-87 accepted)", requested);
             goto cleanup;
         }
         key_algo = requested;

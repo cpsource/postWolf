@@ -1080,7 +1080,7 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
         return;
     }
     old_subject = json_object_get_string(val);
-    old_algo = "EC-P256";
+    old_algo = "ML-DSA-87";
     if (json_object_object_get_ex(old_tbs, "subject_public_key_algorithm", &val))
         old_algo = json_object_get_string(val);
 
@@ -1793,7 +1793,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
     }
     ca_logged_hash = json_object_get_string(val);
 
-    ca_algo = "EC-P256";
+    ca_algo = "ML-DSA-87";
     if (json_object_object_get_ex(ca_tbs, "subject_public_key_algorithm",
                                   &val))
         ca_algo = json_object_get_string(val);

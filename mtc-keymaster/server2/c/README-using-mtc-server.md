@@ -327,7 +327,7 @@ The server validates all request parameters:
 | Parameter | Validation |
 |-----------|-----------|
 | `validity_days` | Must be 1–3650 (rejected otherwise) |
-| `key_algorithm` | Whitelist: EC-P256, EC-P384, Ed25519, ML-DSA-44/65/87 |
+| `key_algorithm` | ML-DSA-87 only (default if unspecified; pre-PQ + weaker ML-DSA variants retired 2026-05-07) |
 | `public_key_fingerprint` | Must be exactly 64 hex chars after `sha256:` prefix |
 | Path indices (`/log/entry/<N>`) | Parsed with bounds check (0–10M), rejects non-numeric |
 | `Content-Length` | Rejects bodies larger than buffer (413 Payload Too Large) |
@@ -427,7 +427,7 @@ ExecStart=/usr/local/bin/mtc_server \
 | `GET /trust-anchors` | List trust anchors |
 | `GET /revoked` | Revocation list |
 | `GET /revoked/<N>` | Check if certificate is revoked |
-| `GET /ca/public-key` | CA Ed25519 public key |
+| `GET /ca/public-key` | CA ML-DSA-87 cosigner public key |
 | `GET /ech/configs` | ECH configuration (base64) |
 
 ### Write (POST)
@@ -461,9 +461,8 @@ Request body (all fields required):
 
 `signature` covers the UTF-8 string
 `revoke:<ca_cert_index>:<cert_index>:<reason>:<timestamp>` using
-whatever algorithm the CA's log entry recorded
-(EC-P256/P-384, Ed25519, ML-DSA-44/65/87). `timestamp` must be within
-±5 minutes of the server's clock.
+ML-DSA-87 (the only enrolment algorithm accepted as of 2026-05-07).
+`timestamp` must be within ±5 minutes of the server's clock.
 
 Error responses: `400` malformed/stale, `403` for every authorization
 violation (not a CA, target not a leaf, outside domain, self-revoke,

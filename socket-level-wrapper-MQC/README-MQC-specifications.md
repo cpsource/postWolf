@@ -34,7 +34,7 @@ When you receive a `cert_index` you haven't seen before:
 1. Check local cache: `~/.TPM/peers/<index>/certificate.json`
 2. If cache miss: `GET /certificate/<index>` from the MTC server
 3. Verify Merkle inclusion proof against the log's root hash
-4. Verify Ed25519 cosignature from the CA
+4. Verify ML-DSA-87 cosignature from the CA
 5. Check revocation status
 6. Check validity period
 7. Cache the verified cert for next time
@@ -311,7 +311,7 @@ typedef struct {
 | `role` | Yes | `MQC_CLIENT` or `MQC_SERVER` |
 | `tpm_path` | Yes | Path to `~/.TPM/<domain>/` containing `certificate.json` + `private_key.pem` |
 | `mtc_server` | Yes | MTC CA server for peer key resolution (e.g., `"localhost:8444"`) |
-| `ca_pubkey` | Yes | CA's Ed25519 public key (32 bytes) for cosignature verification |
+| `ca_pubkey` | Yes | CA's ML-DSA-87 cosigner public key (2592 bytes) for cosignature verification |
 | `ca_pubkey_sz` | Yes | Size of ca_pubkey |
 | `encrypt_identity` | No | 1 = encrypted identity mode (default: 0). Also selectable by calling `mqc_connect_encrypted` directly. |
 
@@ -345,8 +345,8 @@ int main(void)
     cfg.role       = MQC_CLIENT;
     cfg.tpm_path   = "/home/user/.TPM/factsorlie.com";
     cfg.mtc_server = "localhost:8444";
-    cfg.ca_pubkey  = ca_ed25519_key;
-    cfg.ca_pubkey_sz = 32;
+    cfg.ca_pubkey  = ca_mldsa87_key;
+    cfg.ca_pubkey_sz = 2592;
 
     mqc_ctx_t *ctx = mqc_ctx_new(&cfg);
 
@@ -374,8 +374,8 @@ int main(void)
     cfg.role       = MQC_SERVER;
     cfg.tpm_path   = "/home/user/.TPM/factsorlie.com-ca";
     cfg.mtc_server = "localhost:8444";
-    cfg.ca_pubkey  = ca_ed25519_key;
-    cfg.ca_pubkey_sz = 32;
+    cfg.ca_pubkey  = ca_mldsa87_key;
+    cfg.ca_pubkey_sz = 2592;
 
     mqc_ctx_t *ctx = mqc_ctx_new(&cfg);
     int fd = mqc_listen(NULL, 4433);
@@ -462,4 +462,4 @@ All entries include function name + line number for tracing.
 | Session encryption | AES-256-GCM | FIPS 197 + SP 800-38D | 32B key / 12B nonce / 16B tag |
 | Key derivation | HKDF-SHA256 | RFC 5869 | Variable |
 | Merkle proofs | SHA-256 | FIPS 180-4 | 32B hash |
-| Cosignatures | Ed25519 | RFC 8032 | 32B pub / 64B sig |
+| Cosignatures | ML-DSA-87 | FIPS 204 | 2592B pub / 4627B sig |
