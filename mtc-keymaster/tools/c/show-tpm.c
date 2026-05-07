@@ -748,6 +748,12 @@ int main(int argc, char *argv[])
             usage(argv[0]);
             return 0;
         }
+        else {
+            fprintf(stderr,
+                    "show-tpm: unknown argument '%s'\n", argv[i]);
+            usage(argv[0]);
+            return 2;
+        }
     }
 
     /* Set TPM directory */
