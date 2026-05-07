@@ -20,7 +20,7 @@ SERVER_DIR = ../../server2/c
 MQC_DIR = ../../../socket-level-wrapper-MQC
 MQC_LIB = $(MQC_DIR)/libmqc.a
 
-all: admin_recosign migrate-cosigner backfill-pubkey bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert cancel-nonce mqc attack-port-8445 attack-port-8446
+all: admin_recosign migrate-cosigner backfill-pubkey bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert cancel-nonce mqc cleanup-tpm attack-port-8445 attack-port-8446
 
 $(MQC_LIB):
 	$(MAKE) -C $(MQC_DIR)
@@ -141,6 +141,17 @@ mqc: mqc.c
 	$(CC) $(CFLAGS) -o $@ mqc.c \
 		$(POSTWOLF_LIBS) $(JSON_LIBS)
 
+# Index-removal admin tool.  Stops mtc-ca.service, deletes the target
+# index from every Neon table that references it, removes matching
+# ~/.TPM dirs + the peer cache, restarts the service.  Test/junk
+# cleanup only — see WARNING in cleanup-tpm.c file header.
+cleanup-tpm: cleanup-tpm.c \
+             $(SERVER_DIR)/mtc_db.c $(SERVER_DIR)/mtc_db.h
+	$(CC) $(CFLAGS) -o $@ \
+		cleanup-tpm.c \
+		$(SERVER_DIR)/mtc_db.c \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) -lcurl
+
 # Adversarial probes — raw sockets only, no MQC/postWolf link dep.
 # read-config (Augeas) pulled in so they pick up [global] url-{server,bootstrap}.
 attack-port-8445: attack-port-8445.c $(READ_CONFIG_SRC)
@@ -169,10 +180,11 @@ install: all
 	install -m 755 check-renewal-cert $(DESTDIR)$(BINDIR)/check-renewal-cert
 	install -m 755 cancel-nonce      $(DESTDIR)$(BINDIR)/cancel-nonce
 	install -m 755 mqc               $(DESTDIR)$(BINDIR)/mqc
+	install -m 755 cleanup-tpm       $(DESTDIR)$(BINDIR)/cleanup-tpm
 	install -m 755 attack-port-8445  $(DESTDIR)$(BINDIR)/attack-port-8445
 	install -m 755 attack-port-8446  $(DESTDIR)$(BINDIR)/attack-port-8446
 
 clean:
-	rm -f admin_recosign migrate-cosigner backfill-pubkey bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert cancel-nonce mqc attack-port-8445 attack-port-8446
+	rm -f admin_recosign migrate-cosigner backfill-pubkey bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert cancel-nonce mqc cleanup-tpm attack-port-8445 attack-port-8446
 
 .PHONY: all install clean
