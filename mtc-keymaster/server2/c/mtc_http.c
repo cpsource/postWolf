@@ -1921,6 +1921,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
         if (strncmp(ca_algo, "ML-DSA-", 7) == 0) {
             dilithium_key dil;
             byte level;
+            word32 didx = 0;
             if (strcmp(ca_algo, "ML-DSA-44") == 0)       level = WC_ML_DSA_44;
             else if (strcmp(ca_algo, "ML-DSA-65") == 0)  level = WC_ML_DSA_65;
             else if (strcmp(ca_algo, "ML-DSA-87") == 0)  level = WC_ML_DSA_87;
@@ -1931,7 +1932,16 @@ static void handle_revoke(client_io *io, MtcStore *store,
             }
             wc_dilithium_init(&dil);
             wc_dilithium_set_level(&dil, level);
-            ret = wc_dilithium_import_public(der_buf, (word32)der_sz, &dil);
+            /* der_buf holds the SPKI-wrapped DER produced by
+             * wc_PubKeyPemToDer above (~2614 bytes for ML-DSA-87).
+             * wc_dilithium_import_public expects RAW key bytes
+             * (2592 for ML-DSA-87) and would silently fail with -173
+             * on the SPKI form, masking the real cause as
+             * "signature verification failed".  Use
+             * wc_Dilithium_PublicKeyDecode, which strips the SPKI
+             * wrapper.  Same pattern as mtc_bootstrap.c:1279. */
+            ret = wc_Dilithium_PublicKeyDecode(der_buf, &didx, &dil,
+                                               (word32)der_sz);
             if (ret == 0)
                 ret = wc_dilithium_verify_ctx_msg(sig_bytes,
                                                    (word32)sig_len,
@@ -1967,6 +1977,19 @@ static void handle_revoke(client_io *io, MtcStore *store,
 
     LOG_INFO("revoke: cert %d ('%s') revoked by CA %d ('%s') reason='%s'",
              cert_index, tgt_subject, ca_cert_index, ca_subject, reason);
+
+    /* Tell the parent its in-memory MtcStore is now stale (same
+     * fork-after-accept pattern as TODO #56 enrollment).  The child
+     * has updated its own copy-on-write revoked_indices array and
+     * persisted to DB; the parent's view still says revoked=false
+     * until reload.  The reload thread sigwait()s on SIGHUP and calls
+     * mtc_store_reload — without this, GET /revoked/<n> served from
+     * the parent returns the stale answer until the next service
+     * restart. */
+    if (kill(getppid(), SIGHUP) != 0) {
+        LOG_WARN("revoke: kill(getppid, SIGHUP) failed: %s",
+                 strerror(errno));
+    }
 
     {
         struct json_object *resp = json_object_new_object();

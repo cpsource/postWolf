@@ -1264,52 +1264,93 @@ The second invocation always works — that is, the retry isn't
 
 ---
 
-### 19. End-to-end test coverage for `/revoke` and `revoke-key`
+### 19. End-to-end test coverage for `/revoke` and `revoke-key` — **DONE 2026-05-07**
 
-**Priority:** High — authentication-gated revocation landed in phase-7
-but only the two read-only subcommands (`--list`, `--refresh`) have
-been exercised against the live server.  The signing path was built,
-compiled, and dry-run'd, but never actually POSTed to `/revoke`
-because every test would mutate the production Merkle log.
+**What landed:** new `mtc-keymaster/tests/c/test_revoke_matrix.c`
+driver and `mtc-keymaster/tests/run-revoke-matrix.sh` wrapper
+exercise the full positive + negative authorization matrix against
+the live MTC CA on factsorlie.com.  Sacrificial leaf
+`bob-revoke-test-<timestamp>` is enrolled per run, used to drive
+both the leaf-as-caller (#5) and the positive (#1) rows, then
+revoked at the end.  Append-only log cost: +1 leaf cert + 1
+revocation row per run; every other row reuses existing log
+entries (frflashy.com-ca + frflashy.com leaf, auto-discovered via
+`/certificate/search`) so they cause no state mutation.  Driver
+paces calls 13s apart to fit the `mtc_ratelimit.c` /revoke
+5/min budget; total runtime ~2 minutes.
 
-**What's verified today (2026-04-18):**
+**Results on 2026-05-07:** 10/10 (9 matrix rows + verify_persisted
+GET) passed against factsorlie's live CA.
 
-- `revoke-key --list factsorlie.com` round-trips via the bootstrap
-  port; filters `/revoked` by subject suffix correctly.
-- `revoke-key --refresh` re-pulls `/revoked` and rewrites every
-  `~/.TPM/peers/<n>/revoked.json` with fresh mtime + correct
-  `{"revoked": true|false}` state.
-- `handle_revoke` builds, links, and passes `-Wall -Wextra -Werror`.
-
-**What still needs a test rig:**
-
-Stand up a scratch log (`tools/clearout.sh` → restart `mtc-ca.service`),
-enrol a disposable CA + two disposable leaves, and run the full
-positive + negative matrix.  Expected results:
-
-| Scenario | Expect | Current verification |
+| Scenario | Server response | Test row |
 |---|---|---|
-| CA revokes a leaf in its own domain | `200 {revoked:true}`, `/revoked/<n>` returns `true` on next call | NOT TESTED |
-| CA revokes itself (`ca_cert_index == cert_index`) | `403 "CA may not revoke itself"` | NOT TESTED |
-| CA revokes a leaf **outside** its domain | `403 "target leaf is not within the CA's domain"` | NOT TESTED |
-| CA revokes another CA (`-ca` target) | `403 "target is not a leaf"` | NOT TESTED |
-| Caller is a leaf, not a CA | `403 "caller is not a CA"` | NOT TESTED |
-| Signature valid but `ca_public_key_pem` hash ≠ logged hash | `403 "ca_public_key_pem does not match logged CA certificate"` | NOT TESTED |
-| Signature invalid for otherwise-valid payload | `403 "signature verification failed"` | NOT TESTED |
-| Timestamp > 5 min old | `400 "timestamp outside ±5 min freshness window"` | NOT TESTED |
-| Timestamp > 5 min in the future | `400` same message | NOT TESTED |
-| Algorithm coverage | OUT OF SCOPE — bootstrap accept-list narrowed to ML-DSA-87 only on 2026-05-07.  Cannot construct a non-87 CA to drive the negative path; `wc_dilithium_verify_ctx_msg` at level 5 is the only verify path reachable. | N/A |
+| CA revokes a leaf in its own domain | `200 {revoked:true}`, `/revoked/<n>` returns true | `row1_positive_revoke` + `verify_persisted` |
+| CA revokes itself | `403 "may not revoke itself"` | `row2_self_revoke` |
+| CA revokes a leaf outside its domain | `403 "not within the CA's domain"` | `row3_outside_domain` |
+| CA revokes another CA (`-ca` target) | `403 "target is not a leaf"` | `row4_target_is_ca` |
+| Caller is a leaf, not a CA | `403 "caller is not a CA"` | `row5_caller_not_ca` |
+| `ca_public_key_pem` hash ≠ logged hash | `403 "does not match logged"` | `row6_pem_hash_mismatch` |
+| Signature byte-flipped on otherwise-valid payload | `403 "signature verification failed"` | `row7_sig_invalid` |
+| Timestamp 10 min stale | `400 "freshness"` | `row8_stale_timestamp` |
+| Timestamp 10 min future | `400 "freshness"` | `row9_future_timestamp` |
+| Algorithm coverage | OUT OF SCOPE — bootstrap accept-list narrowed to ML-DSA-87 only on 2026-05-07; cannot construct a non-87 CA to drive the negative path | N/A |
 
-**Cross-reference:** `tools/c/revoke-key.c` dry-run mode prints the
-exact body that would be POSTed, which is the easiest way to seed
-malformed inputs for the negative cases — e.g. hand-edit the
-dry-run output, `printf` it through `nc` or `curl -k
-https://localhost:8444/revoke` with `Content-Type: application/json`.
+**Bugs fixed by this test that had been latent:**
+
+1. `handle_revoke` was calling `wc_dilithium_import_public(der_buf,
+   der_sz, ...)` on the SPKI-DER produced by `wc_PubKeyPemToDer`
+   (~2614 bytes for ML-DSA-87).  But `wc_dilithium_import_public`
+   expects the RAW 2592-byte key — it returned -173, which `ret != 0`
+   funnelled into the "signature verification failed" response,
+   masking the real cause.  Fix: switch to
+   `wc_Dilithium_PublicKeyDecode` (handles the SPKI wrapper), same
+   pattern as `mtc_bootstrap.c:1279`.  *Until this fix `revoke-key`
+   was unusable; the production tool had never been live-tested,
+   only dry-run'd and unit-built.*
+2. After a successful revocation the MQC child committed to DB but
+   the parent's in-memory `revoked_indices` array stayed stale —
+   same fork-after-accept pattern as TODO #56 for enrollment.  Fix:
+   child raises `SIGHUP` to `getppid()` after `mtc_store_revoke`
+   succeeds; the parent's reload thread refreshes its store from
+   DB.
+3. `revoke-key` exited as soon as the server returned 200, but
+   bootstrap-proxy GETs (e.g. another tool checking `/revoked/<n>`)
+   could land in a fork-of-parent created during the reload window
+   and read stale `revoked=false`.  Fix: revoke-key now polls
+   `/revoked/<target>` over the bootstrap port until it observes
+   `revoked=true` (5 attempts × 2s) before exiting, so the tool's
+   exit means downstream readers will agree.
+
+**New tooling beyond the matrix:**
+
+- `revoke-key --is-revoked N` — read-only "Status: Revoked / Active"
+  query against `/revoked/<N>` over the bootstrap port.  No CA
+  identity needed.
+
+**Run it:**
+```
+make -C mtc-keymaster/tools/c
+make -C mtc-keymaster/tests/c
+./mtc-keymaster/tests/run-revoke-matrix.sh
+```
+
+Or with a pre-enrolled Bob:
+```
+./mtc-keymaster/tests/run-revoke-matrix.sh \
+    --skip-enrol ~/.TPM/factsorlie.com-bob-revoke-test-<timestamp>
+```
 
 **Files involved:**
-- `mtc-keymaster/server2/c/mtc_http.c` — `handle_revoke` (auth logic).
-- `mtc-keymaster/tools/c/revoke-key.c` — signing client.
-- `mtc-keymaster/tools/clearout.sh` — scratch-log reset.
+- `mtc-keymaster/tests/c/test_revoke_matrix.c` — C driver (~600 LOC).
+- `mtc-keymaster/tests/c/Makefile` — build rule.
+- `mtc-keymaster/tests/run-revoke-matrix.sh` — wrapper.
+- `mtc-keymaster/server2/c/mtc_http.c` — `handle_revoke` (verifier
+  under test, two fixes landed here).
+- `mtc-keymaster/server2/c/mtc_ratelimit.{c,h}` — `RL_REVOKE`
+  budget bumped 2/min → 5/min so the matrix paces at 13s/row
+  instead of 30s/row.
+- `mtc-keymaster/tools/c/revoke-key.c` — production signing client
+  (settle-poll added, plus new `--is-revoked` mode).
 
 ---
 

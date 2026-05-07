@@ -191,7 +191,7 @@ redis-cli ping   # should return PONG
 | Leaf nonce | `POST /enrollment/nonce` (type=leaf) | 10 | 100 |
 | CA nonce | `POST /enrollment/nonce` (type=ca) | 3 | 10 |
 | Enroll | `POST /certificate/request` | 3 | 10 |
-| Revoke | `POST /revoke` | 2 | 5 |
+| Revoke | `POST /revoke` | 5 | 100 |
 | **Global** | **Any endpoint (catch-all)** | **120** | **1200** |
 
 Both the category-specific limit and the global limit are checked for
@@ -470,12 +470,27 @@ PEM hash mismatch, signature mismatch), `404` if either index is not
 in the log.
 
 On success: `200 {revoked:true, cert_index:N, ca_cert_index:M,
-target_subject:"...", reason:"..."}` and the target is added to the
-server's signed revocation list immediately.
+target_subject:"...", reason:"..."}`.  The target is appended to
+`mtc_revocations` in the DB immediately.  The handler then raises
+`SIGHUP` to its parent so the parent's in-memory `revoked_indices`
+array is refreshed from the DB — without this the parent (which
+serves bootstrap-proxy GETs of `/revoked/<n>` from forks-of-itself)
+would keep reporting `revoked=false` until the next service restart.
 
 Use `/usr/local/bin/revoke-key --target-index N` to build and sign
-this request automatically from your CA's on-disk identity — see the
-tool's `--help` for `--list`, `--refresh`, and `--dry-run` modes.
+this request automatically from your CA's on-disk identity.  After a
+successful response the tool polls `/revoked/<target>` over the
+bootstrap port (5 attempts × 2s) until it sees `revoked=true`, so its
+exit means downstream readers will agree.  See `--help` for the
+`--is-revoked N`, `--list DOMAIN`, `--refresh`, and `--dry-run`
+modes.
+
+**Test rig:** `mtc-keymaster/tests/run-revoke-matrix.sh` exercises
+the full positive + negative authorization matrix (10 rows) against
+a live CA in ~2 minutes.  Each run enrolls a fresh sacrificial leaf
+`bob-revoke-test-<timestamp>` and revokes it at the end.  See
+`mtc-keymaster/README-bugsandtodo.md` TODO #19 for the matrix
+table and the bugs that test rig found.
 
 ## First Startup Behavior
 

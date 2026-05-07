@@ -322,15 +322,18 @@ static char *mqc_http_post(const char *path, const char *body, int body_len,
 static void usage(const char *prog)
 {
     fprintf(stderr,
-        "Revoke a leaf certificate, list revoked certs in a domain, or\n"
-        "refresh the local per-peer revocation cache.\n"
+        "Revoke a leaf certificate, query revocation status, list revoked\n"
+        "certs in a domain, or refresh the local per-peer revocation cache.\n"
         "\n"
         "Usage:\n"
         "  %s --target-index N [--reason \"text\"] [options]   Revoke one leaf\n"
+        "  %s --is-revoked N [options]                       Print revocation status\n"
         "  %s --list DOMAIN [options]                        List revoked leaves in DOMAIN\n"
         "  %s --refresh [options]                            Refresh ~/.TPM/peers/*/revoked.json\n"
         "\n"
         "  --target-index N      Log index of the leaf to revoke\n"
+        "  --is-revoked N        Query /revoked/<N>; print 'Status: Revoked' or\n"
+        "                         'Status: Active' (no CA identity needed)\n"
         "  --list DOMAIN         Enumerate revoked leaves whose subject is\n"
         "                         DOMAIN or *.DOMAIN\n"
         "  --refresh             Re-pull /revoked and update every cached peer's\n"
@@ -338,14 +341,15 @@ static void usage(const char *prog)
         "  --reason TEXT         Human-readable revocation reason (default: empty)\n"
         "  --ca-tpm-path PATH    Override CA identity dir for revoke mode\n"
         "                         (default: auto-detect *-ca under ~/.TPM/)\n"
-        "  -s, --server H:P      Server (default: factsorlie.com:8446).  --list and\n"
-        "                         --refresh use the bootstrap port (8445) on the\n"
-        "                         same host — no CA identity needed.\n"
+        "  -s, --server H:P      Server (default: factsorlie.com:8446).  All\n"
+        "                         read-only modes (--is-revoked/--list/--refresh)\n"
+        "                         use the bootstrap port (8445) on the same host —\n"
+        "                         no CA identity needed.\n"
         "  --dry-run             Print the revoke request without sending\n"
-        "                         (no effect with --list or --refresh)\n"
+        "                         (no effect with read-only modes)\n"
         "  --trace               Show MQC protocol-level trace\n"
         "  -h, --help            Show this help\n",
-        prog, prog, prog);
+        prog, prog, prog, prog);
 }
 
 /* ------------------------------------------------------------------ */
@@ -545,6 +549,54 @@ static int do_refresh_mode(const char *server_arg)
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* --is-revoked  handler                                              */
+/*                                                                    */
+/* GET /revoked/<index> over the bootstrap proxy and print            */
+/* "Status: Revoked" or "Status: Active".  No CA identity needed.     */
+/* ------------------------------------------------------------------ */
+static int do_is_revoked_mode(int index, const char *server_arg)
+{
+    char path[64];
+    long code = 0;
+    char *body;
+    struct json_object *root, *val;
+    int  revoked = 0;
+    int  have_field = 0;
+
+    snprintf(path, sizeof(path), "/revoked/%d", index);
+    body = mqc_bootstrap_http_get(server_arg, path, &code);
+    if (!body || code != 200) {
+        fprintf(stderr, "Error: GET %s failed (code=%ld)\n",
+                path, code);
+        free(body);
+        return 1;
+    }
+
+    root = json_tokener_parse(body);
+    free(body);
+    if (!root) {
+        fprintf(stderr, "Error: malformed /revoked/%d response\n", index);
+        return 1;
+    }
+    if (json_object_object_get_ex(root, "revoked", &val)) {
+        revoked = json_object_get_boolean(val);
+        have_field = 1;
+    }
+
+    if (!have_field) {
+        fprintf(stderr, "Error: response missing 'revoked' field\n");
+        json_object_put(root);
+        return 1;
+    }
+
+    printf("Status: %s\n", revoked ? "Revoked" : "Active");
+    printf("Index:  %d\n", index);
+
+    json_object_put(root);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *server       = DEFAULT_SERVER;
@@ -552,6 +604,7 @@ int main(int argc, char **argv)
     const char *reason       = "";
     const char *list_domain  = NULL;
     int target_index = -1;
+    int is_revoked_idx = -1;
     int dry_run = 0;
     int trace   = 0;
     int refresh_mode = 0;
@@ -563,6 +616,8 @@ int main(int argc, char **argv)
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--target-index") == 0 && i + 1 < argc)
             target_index = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--is-revoked") == 0 && i + 1 < argc)
+            is_revoked_idx = atoi(argv[++i]);
         else if (strcmp(argv[i], "--list") == 0 && i + 1 < argc)
             list_domain = argv[++i];
         else if (strcmp(argv[i], "--refresh") == 0)
@@ -594,11 +649,12 @@ int main(int argc, char **argv)
     /* Mutually-exclusive mode check */
     {
         int modes = (list_domain ? 1 : 0) + (refresh_mode ? 1 : 0)
-                  + (target_index >= 0 ? 1 : 0);
+                  + (target_index >= 0 ? 1 : 0)
+                  + (is_revoked_idx >= 0 ? 1 : 0);
         if (modes > 1) {
             fprintf(stderr,
-                "Error: --list, --refresh, and --target-index are "
-                "mutually exclusive\n");
+                "Error: --list, --refresh, --is-revoked, and "
+                "--target-index are mutually exclusive\n");
             return 1;
         }
     }
@@ -619,9 +675,15 @@ int main(int argc, char **argv)
         return do_refresh_mode(server);
     }
 
+    /* --is-revoked mode: no CA identity needed, pure public read */
+    if (is_revoked_idx >= 0) {
+        return do_is_revoked_mode(is_revoked_idx, server);
+    }
+
     if (target_index < 0) {
         fprintf(stderr,
-            "Error: one of --target-index, --list, or --refresh is required\n");
+            "Error: one of --target-index, --is-revoked, --list, "
+            "or --refresh is required\n");
         usage(argv[0]);
         return 1;
     }
@@ -853,6 +915,52 @@ int main(int argc, char **argv)
                          JSON_C_TO_STRING_PRETTY) : resp_body);
         if (resp) json_object_put(resp);
         free(resp_body);
+
+        /* Wait for the parent server's view to catch up before exiting.
+         *
+         * handle_revoke ran in a forked child of the MQC listener; the
+         * child SIGHUP'd the parent so its in-memory store gets a
+         * fresh load.  Bootstrap-proxy GETs (e.g. /revoked/<n>) are
+         * served from forks-of-the-parent, and a fork that lands
+         * during the parent's reload window inherits a transiently
+         * empty revoked_indices array — reporting revoked=false.
+         *
+         * Poll /revoked/<target> over the bootstrap port until we see
+         * revoked=true, so a "Revocation accepted" exit means
+         * downstream readers will agree.  Cap at ~10s; if we still
+         * see false past that, log a warning and exit non-zero. */
+        {
+            char poll_path[64];
+            int  attempt;
+            int  observed = 0;
+            snprintf(poll_path, sizeof(poll_path), "/revoked/%d",
+                     target_index);
+            for (attempt = 0; attempt < 5; attempt++) {
+                long pcode = 0;
+                char *pbody;
+                if (attempt > 0) sleep(2);
+                pbody = mqc_bootstrap_http_get(server, poll_path, &pcode);
+                if (pbody && pcode == 200 &&
+                    strstr(pbody, "\"revoked\":true")) {
+                    observed = 1;
+                    free(pbody);
+                    break;
+                }
+                free(pbody);
+            }
+            if (observed) {
+                printf("Server view consistent: GET %s -> revoked=true\n",
+                       poll_path);
+            } else {
+                fprintf(stderr,
+                    "Warning: server still reports revoked=false on %s "
+                    "after 10s.  DB row landed (200 response above), "
+                    "but the parent's in-memory store has not picked it "
+                    "up.  Try `systemctl restart mtc-ca.service` if the "
+                    "condition persists.\n", poll_path);
+                rc = 1;
+            }
+        }
 
     done:
         mqc_ctx_free(g_mqc_ctx);

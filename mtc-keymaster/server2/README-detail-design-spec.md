@@ -102,7 +102,7 @@ Rate-limit classes referenced below (defaults from
 | `RL_NONCE_LEAF` | 10 / min, 100 / hr per IP |
 | `RL_NONCE_CA` | 3 / min, 10 / hr per IP |
 | `RL_ENROLL` | 3 / min, 10 / hr per IP |
-| `RL_REVOKE` | 2 / min, 100 / hr per IP |
+| `RL_REVOKE` | 5 / min, 100 / hr per IP |
 | `RL_BOOTSTRAP` | 3 / min, 30 / hr per IP (port 8445 enrollment) |
 
 ### 3.1 GET endpoints (read-only, public)
@@ -428,7 +428,30 @@ checks `ca_cert_index` has authority over `cert_index` (target's
 subject is a child of the CA's subject), and appends a row to
 `mtc_revocations`.
 
+Public-key import uses `wc_Dilithium_PublicKeyDecode` on the SPKI
+DER produced by `wc_PubKeyPemToDer` — NOT `wc_dilithium_import_public`,
+which expects the raw 2592-byte ML-DSA-87 key and returns -173 on
+the SPKI form.  The latter would silently funnel into the
+"signature verification failed" 403 branch, masking the real
+cause; this was uncovered by the TODO #19 matrix on 2026-05-07.
+
+After `mtc_store_revoke` succeeds the handler raises `SIGHUP` to
+its parent (same fork-after-accept pattern as TODO #56 enrollment).
+Without this the parent's in-memory `revoked_indices` array stays
+stale and bootstrap-proxy GETs of `/revoked/<n>` served from
+forks-of-the-parent keep reporting `revoked=false`.
+
 Response (`200`): `{"revoked": true, "cert_index": N, "ca_cert_index": M, "target_subject": "...", "reason": "..."}`.
+
+The signed reference client `revoke-key` does not exit on the 200
+— it polls `/revoked/<target>` over the bootstrap port until the
+parent's view is consistent (5 × 2s).  This makes the tool's exit
+code a meaningful signal that downstream readers will agree.
+
+End-to-end coverage of the authorization matrix lives at
+`mtc-keymaster/tests/c/test_revoke_matrix.c` + the
+`mtc-keymaster/tests/run-revoke-matrix.sh` wrapper.  See TODO #19
+in `README-bugsandtodo.md`.
 
 ---
 
