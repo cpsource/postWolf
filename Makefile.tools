@@ -20,10 +20,11 @@ SLC_DIR = socket-level-wrapper
 MQC_DIR = socket-level-wrapper-MQC
 MTC_DIR   = mtc-keymaster/server2/c
 TOOLS_DIR = mtc-keymaster/tools/c
+TESTS_DIR = mtc-keymaster/tests/c
 
-.PHONY: all install clean slc mqc quic mtc tools install-lib
+.PHONY: all install clean slc mqc quic mtc tools tests install-lib
 
-all: slc mqc mtc tools
+all: slc mqc mtc tools tests
 
 # Socket-level wrapper (TLS)
 slc:
@@ -47,6 +48,13 @@ mtc: slc mqc
 # in $(MTC_DIR)
 tools: mqc mtc
 	$(MAKE) -C $(TOOLS_DIR)
+
+# End-to-end test drivers (test_revoke_matrix, etc.) — same deps as
+# tools.  Build-only target: binaries stay in-tree under $(TESTS_DIR)
+# and are invoked by the wrappers in mtc-keymaster/tests/ via relative
+# path, so there's no `install` step.
+tests: mqc mtc
+	$(MAKE) -C $(TESTS_DIR)
 
 # Install postWolf library (autotools) + ldconfig
 install-lib:
@@ -133,6 +141,7 @@ clean:
 	$(MAKE) -C $(MQC_DIR) clean
 	$(MAKE) -C $(MTC_DIR) clean
 	$(MAKE) -C $(TOOLS_DIR) clean
+	$(MAKE) -C $(TESTS_DIR) clean
 
 # -- Phase 4 system-level tests --------------------------------------
 # Aggregate regression suite (P4a).  Builds dependent test binaries
