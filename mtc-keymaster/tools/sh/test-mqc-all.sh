@@ -147,4 +147,28 @@ if [ "$FAIL" -gt 0 ]; then
     printf '%sfailed:%s%s\n' "$c_red" "$c_off" "$FAILED_NAMES"
     exit 1
 fi
+
+# ---------------------------------------------------------------------
+# Optional follow-up steps (NOT run automatically — they mutate the
+# production log).
+#
+#   1. End-to-end /revoke matrix:
+#          mtc-keymaster/tests/run-revoke-matrix.sh
+#      Enrols a sacrificial bob-revoke-test-<timestamp> leaf, walks
+#      the 9-row attack matrix + 1 positive revoke + a verify_persisted
+#      bootstrap GET.  Takes ~2 min and adds one permanent row to
+#      mtc_log_entries (a revoked leaf at the next index).
+#
+#   2. Garbage-collect the sacrificial leaf afterward:
+#          cleanup-tpm --index <NEW_INDEX> --full --yes
+#      Runs on factsorlie only.  Stops mtc-ca.service, removes the
+#      cert + log row + revocation row + matching ~/.TPM/ dir from
+#      Neon, TRUNCATEs the tile tables, runs mtc_rebuild_tiles, and
+#      restarts the service.  Leaves the log a row shorter than before
+#      the matrix run (so calling test-mqc-all.sh + run-revoke-matrix +
+#      cleanup-tpm in sequence is row-count-neutral).
+#
+#   Skip these if you don't want the production log mutated.
+# ---------------------------------------------------------------------
+
 exit 0
