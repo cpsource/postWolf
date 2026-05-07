@@ -20,7 +20,7 @@ SERVER_DIR = ../../server2/c
 MQC_DIR = ../../../socket-level-wrapper-MQC
 MQC_LIB = $(MQC_DIR)/libmqc.a
 
-all: admin_recosign migrate-cosigner backfill-pubkey bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert cancel-nonce mqc cleanup-tpm attack-port-8445 attack-port-8446
+all: admin_recosign migrate-cosigner backfill-pubkey bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert cancel-nonce mqc cleanup-tpm mtc_rebuild_tiles attack-port-8445 attack-port-8446
 
 $(MQC_LIB):
 	$(MAKE) -C $(MQC_DIR)
@@ -152,6 +152,23 @@ cleanup-tpm: cleanup-tpm.c \
 		$(SERVER_DIR)/mtc_db.c \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) -lcurl
 
+# TODO #74 phase 3 migration tool.  Rebuilds mtc_merkle_tiles +
+# mtc_merkle_top_nodes from mtc_log_entries; validates rebuilt root
+# against the latest checkpoint.  See file header for usage.
+mtc_rebuild_tiles: mtc_rebuild_tiles.c \
+                   $(SERVER_DIR)/mtc_db.c $(SERVER_DIR)/mtc_db.h \
+                   $(SERVER_DIR)/mtc_merkle.c $(SERVER_DIR)/mtc_merkle.h \
+                   $(SERVER_DIR)/mtc_merkle_tiled.h \
+                   $(SERVER_DIR)/mtc_tile.h \
+                   $(SERVER_DIR)/mtc_tile_store.h \
+                   $(SERVER_DIR)/mtc_tile_store_pg.c
+	$(CC) $(CFLAGS) -o $@ \
+		mtc_rebuild_tiles.c \
+		$(SERVER_DIR)/mtc_db.c \
+		$(SERVER_DIR)/mtc_merkle.c \
+		$(SERVER_DIR)/mtc_tile_store_pg.c \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(PQ_LIBS) -lcurl
+
 # Adversarial probes — raw sockets only, no MQC/postWolf link dep.
 # read-config (Augeas) pulled in so they pick up [global] url-{server,bootstrap}.
 attack-port-8445: attack-port-8445.c $(READ_CONFIG_SRC)
@@ -181,10 +198,11 @@ install: all
 	install -m 755 cancel-nonce      $(DESTDIR)$(BINDIR)/cancel-nonce
 	install -m 755 mqc               $(DESTDIR)$(BINDIR)/mqc
 	install -m 755 cleanup-tpm       $(DESTDIR)$(BINDIR)/cleanup-tpm
+	install -m 755 mtc_rebuild_tiles $(DESTDIR)$(BINDIR)/mtc_rebuild_tiles
 	install -m 755 attack-port-8445  $(DESTDIR)$(BINDIR)/attack-port-8445
 	install -m 755 attack-port-8446  $(DESTDIR)$(BINDIR)/attack-port-8446
 
 clean:
-	rm -f admin_recosign migrate-cosigner backfill-pubkey bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert cancel-nonce mqc cleanup-tpm attack-port-8445 attack-port-8446
+	rm -f admin_recosign migrate-cosigner backfill-pubkey bootstrap_ca bootstrap_leaf show-tpm issue_leaf_nonce revoke-key renew-cert check-renewal-cert cancel-nonce mqc cleanup-tpm mtc_rebuild_tiles attack-port-8445 attack-port-8446
 
 .PHONY: all install clean

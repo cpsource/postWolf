@@ -13,3 +13,5 @@ cancel-nonce
 mqc
 attack-port-8445
 attack-port-8446
+mtc_rebuild_tiles
+cleanup-tpm
