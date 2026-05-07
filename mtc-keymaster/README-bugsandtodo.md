@@ -4127,6 +4127,87 @@ doesn't require shm or tile-tree infrastructure.
 
 ---
 
+### 75. `mtc_checkpoints` is append-only with a single consumer reading only the latest row
+
+**Severity:** Low — operational hygiene, not correctness.
+Filed 2026-05-07 from a session audit of who reads the table.
+No security or availability impact at any plausible scale, but
+the table grows linearly with enrollments forever and 99 % of
+its rows are never read.
+
+**Current behavior.**  `mtc_store_checkpoint` (in `mtc_store.c`)
+INSERTs a `{log_id, tree_size, root_hash, ts}` row into
+`mtc_checkpoints` on every successful bootstrap commit
+(`mtc_bootstrap.c:1693`), every successful `/renew-cert`
+(`mtc_http.c:1227`), and on any cold-start `GET /log/checkpoint`
+(`mtc_http.c:1423`).  At factsorlie's current ~86-entry tree
+the table holds dozens of rows; at 1 M enrollments it'll hold
+1 M rows.
+
+**Who reads it.**  Exactly one query: `mtc_db_load_latest_checkpoint`
+(server `handle_checkpoint`, serving `GET /log/checkpoint`).
+Exactly one client consumer: `show-tpm.c:962` reads the
+endpoint to print the "Checkpoint: tree_size=N age=Xh Ym
+root=...." display line.  Nothing else — no Merkle proof
+verification, no cosignature flow, no audit tooling depends
+on the historical rows.
+
+The plural `mtc_db_load_checkpoints` API is declared in
+`mtc_db.h:158` and defined in `mtc_db.c:573` but has zero call
+sites — dead code.
+
+**Why the table exists at all.**  The persistence is load-
+bearing across forks: pre-DB, an in-memory ring would lose its
+newest entry whenever a fresh listener fork started, and each
+fork's child would synthesize `ts=now` from
+`mtc_store_checkpoint`, giving clients a perpetually-fresh-
+looking timestamp regardless of whether the log had actually
+been issuing.  The DB row pins the real event time so a quiet
+log shows its true age in `show-tpm`.  But only the LATEST
+row is consulted — every prior row is dead weight.
+
+**Suggested fixes (pick one):**
+
+1. **Cap retention.**  After the INSERT in
+   `mtc_db_save_checkpoint`, also run
+   `DELETE FROM mtc_checkpoints WHERE log_id = $1
+    AND id < (SELECT max(id) FROM mtc_checkpoints
+              WHERE log_id = $1) - 31`.
+   Keep the latest 32 rows per log_id.  Constant-bounded
+   table footprint; nothing changes on the read path.
+2. **Keep only the latest.**  `INSERT … ON CONFLICT (log_id)
+   DO UPDATE` with a unique constraint on log_id.  Single row
+   per log_id forever.  Smaller, but loses the "last 32
+   checkpoints" trail that might one day be useful.
+3. **Drop the table entirely.**  Replace with a small file
+   (`~/.mtc-ca-data/last_checkpoint.json`) that
+   `mtc_store_checkpoint` rewrites on each call and
+   `handle_checkpoint` reads.  Eliminates a round-trip.  But
+   loses fork-safety — the file write needs to be atomic
+   (write-tmp-and-rename) and the in-memory store would still
+   need to consult the disk on every cold-start fork.
+
+Recommendation: option 1.  Smallest change, no consumer
+impact, table stays bounded.  Option 2 if we ever want to
+treat "latest checkpoint" as a single-row resource.
+
+**Also:** drop `mtc_db_load_checkpoints` (plural) — it's
+dead code that pretends a multi-row reader exists.
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_db.c` — add `DELETE` after
+  the `INSERT` in `mtc_db_save_checkpoint` (~line 542); drop
+  the `mtc_db_load_checkpoints` body (~line 573).
+- `mtc-keymaster/server2/c/mtc_db.h` — drop the
+  `mtc_db_load_checkpoints` declaration (~line 158).
+
+**Status:** OPEN, Low.  Pick up alongside the next routine
+DB-schema touch (e.g. when implementing TODO #74 phase 3 or
+TODO #28's revocation GC).
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
