@@ -10,8 +10,8 @@
 #   - Redis on 127.0.0.1:6379 (matches mqc.c default)
 #   - ~/.TPM/<DOMAIN>/ identity present for the smoke roundtrip
 #     (defaults to factsorlie.com)
-#   - tests/test_name_check + attack-port-8446 built (handled by
-#     make dependency)
+#   - tests/test_name_check + attack-port-8446 + attack-port-8445
+#     built (handled by make dependency)
 #
 # Knobs (env):
 #   TARGET_HOST     default factsorlie.com
@@ -19,7 +19,7 @@
 #   TARGET_IP       default $(getent ahostsv4 TARGET_HOST | awk '/STREAM/{print $1; exit}')
 #                   — used to clear the right per-IP rate-limit keys
 #   DOMAIN          default factsorlie.com
-#   SKIP_ATTACK_PACK   set to 1 to skip attack-port-8446
+#   SKIP_ATTACK_PACK   set to 1 to skip attack-port-844[56]
 #   SKIP_NAME_CHECK    set to 1 to skip tests/test_name_check
 #   QUIET           set to 1 to suppress per-step chatter
 
@@ -101,7 +101,7 @@ fi
 
 # -- P1/P3a/P3b: attack-port-8446 fuzz pack ----------------------------
 if [ "${SKIP_ATTACK_PACK:-0}" != "1" ] && command -v attack-port-8446 >/dev/null 2>&1; then
-    step "P1+P3a+P3b: attack-port-8446 (~30 wire attacks)"
+    step "P1+P3a+P3b: attack-port-8446 (~80 wire attacks against MQC)"
     # Clear rate-limit state again — name-check just generated 3 fails,
     # which would skew the attack pack's per-IP fail bucket.
     if command -v redis-cli >/dev/null 2>&1; then
@@ -121,6 +121,23 @@ if [ "${SKIP_ATTACK_PACK:-0}" != "1" ] && command -v attack-port-8446 >/dev/null
     else
         ko "attack-port-8446 (exit $?)"
         tail -20 /tmp/attack-port-8446.out | sed 's/^/    | /'
+    fi
+fi
+
+# -- attack-port-8445 fuzz pack (DH bootstrap) -------------------------
+# The bootstrap port has its own strict-parse + endpoint-allowlist
+# surface (TODOs #66/#67/#69).  attack-port-8445 reads the bootstrap
+# URL from /etc/postWolf/config rather than taking -s/-p; uses
+# BOOTSTRAP_HOST/BOOTSTRAP_PORT env knobs to override (defaults
+# track url-bootstrap from the operator's config).
+if [ "${SKIP_ATTACK_PACK:-0}" != "1" ] && command -v attack-port-8445 >/dev/null 2>&1; then
+    step "attack-port-8445 (~22 wire attacks against DH bootstrap)"
+    if attack-port-8445 >/tmp/attack-port-8445.out 2>&1
+    then
+        ok "attack-port-8445 (no hangs, no connect failures)"
+    else
+        ko "attack-port-8445 (exit $?)"
+        tail -20 /tmp/attack-port-8445.out | sed 's/^/    | /'
     fi
 fi
 
