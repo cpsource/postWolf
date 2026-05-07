@@ -14,10 +14,18 @@
  *     - mtc_public_keys        rows whose name == any matching ~/.TPM/<dir>
  *     - any ~/.TPM/<dir>/      whose `index` file contains N
  *     - ~/.TPM/peers/<N>/      if present
+ *     - mtc_merkle_tiles       (full TRUNCATE — TODO #74 phase 3)
+ *     - mtc_merkle_top_nodes   (full TRUNCATE — TODO #74 phase 3)
  *
- *   The mtc-ca.service is stopped before mutation and restarted after,
- *   so the parent's in-memory tree gets rebuilt from the post-deletion
- *   DB state.
+ *   The mtc-ca.service is stopped before mutation.  The tile tables
+ *   are TRUNCATEd because removing a leaf invalidates every inner-node
+ *   hash that covers its position; the only correct response is a
+ *   rebuild.  The tool then EXITS without restarting the service —
+ *   the operator must run `mtc_rebuild_tiles --skip-checkpoint-compare
+ *   --yes` and then `sudo systemctl start mtc-ca.service` themselves.
+ *   This deliberate two-step workflow prevents a server start with
+ *   empty tile tables (which would silently serve wrong proofs from
+ *   on-the-fly leaf reads).
  *
  * WARNING — Merkle integrity:
  *   Removing a log entry invalidates every cosigned proof a verifier
@@ -358,11 +366,14 @@ int main(int argc, char *argv[])
     for (k = 0; k < n_matches; k++)
         printf("    - mtc_public_keys       WHERE key_name = '%s'\n",
                matches[k].name);
+    printf("    - mtc_merkle_tiles      (TRUNCATE — TODO #74 phase 3)\n");
+    printf("    - mtc_merkle_top_nodes  (TRUNCATE — TODO #74 phase 3)\n");
     if (g_no_restart)
-        printf("  Service: NOT touched (--no-restart)\n");
+        printf("  Service: NOT touched (--no-restart).\n");
     else
-        printf("  Service: stop mtc-ca.service, mutate, start "
-               "mtc-ca.service\n");
+        printf("  Service: stop mtc-ca.service; will NOT auto-start —\n"
+               "           operator must run mtc_rebuild_tiles + start\n"
+               "           manually (tile state is empty post-truncate).\n");
     printf("\n");
     printf("WARNING: removing a log entry invalidates cosigned "
            "proofs covering it.\n");
@@ -422,15 +433,42 @@ int main(int argc, char *argv[])
     if (has_peers)
         rc |= rm_rf(peers_path);
 
-    /* Restart service */
-    if (run_systemctl("start") != 0) {
-        fprintf(stderr,
-            "cleanup-tpm: WARNING — Neon and TPM mutated, but "
-            "service failed to restart.  Run 'sudo systemctl start "
-            "mtc-ca.service' manually.\n");
-        free(matches);
-        PQfinish(conn);
-        return 1;
+    /* TODO #74 phase 3: removing a leaf invalidates every tile and
+     * top-K node that covers its position.  We can't surgically patch
+     * just the affected rows without recomputing them anyway, so the
+     * cheapest correct response is to truncate both tile tables and
+     * leave a rebuild step for the operator. */
+    if (g_dry_run) {
+        printf("  [dry-run] [neon] TRUNCATE mtc_merkle_tiles, "
+               "mtc_merkle_top_nodes\n");
+    } else {
+        PGresult *r = PQexec(conn,
+            "TRUNCATE mtc_merkle_tiles, mtc_merkle_top_nodes");
+        if (PQresultStatus(r) != PGRES_COMMAND_OK) {
+            fprintf(stderr,
+                "cleanup-tpm: TRUNCATE tile tables failed: %s",
+                PQerrorMessage(conn));
+            rc |= -1;
+        } else {
+            printf("  [neon] TRUNCATE mtc_merkle_tiles, "
+                   "mtc_merkle_top_nodes\n");
+        }
+        PQclear(r);
+    }
+
+    /* Phase 3: do NOT auto-restart.  The tile tables are now empty;
+     * the operator must run mtc_rebuild_tiles before the service
+     * can serve correct proofs.  --no-restart is implied here. */
+    if (g_no_restart) {
+        printf("  [skip --no-restart] sudo systemctl start "
+               "mtc-ca.service\n");
+    } else {
+        printf("\n");
+        printf("Service is STOPPED.  Tile state has been cleared.\n");
+        printf("Next steps (run on this host):\n");
+        printf("    mtc_rebuild_tiles --skip-checkpoint-compare --yes\n");
+        printf("    sudo systemctl start mtc-ca.service\n");
+        printf("\n");
     }
 
     if (rc != 0) {
