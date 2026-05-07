@@ -49,7 +49,12 @@
  *   --dry-run            Print the plan; mutate nothing.
  *   --yes                Skip the interactive "type yes" confirmation.
  *   --no-restart         Skip systemctl stop/start (caller manages
- *                        service lifecycle separately).
+ *                        service lifecycle separately).  Mutually
+ *                        exclusive with --full.
+ *   --full               After deletions + TRUNCATE, also run
+ *                        `mtc_rebuild_tiles --skip-checkpoint-compare
+ *                        --yes` and `systemctl start mtc-ca.service`.
+ *                        End-to-end one-shot cleanup.
  *   -h, --help           Show this help.
  *
  * Exit codes:
@@ -77,6 +82,7 @@
 static int g_dry_run   = 0;
 static int g_yes       = 0;
 static int g_no_restart = 0;
+static int g_full       = 0;  /* shell out to mtc_rebuild_tiles + restart */
 
 typedef struct {
     char name[256];   /* basename of ~/.TPM/<X>/                       */
@@ -93,7 +99,12 @@ static void usage(const char *prog)
                                   "(default: $HOME/.env).\n");
     printf("  --dry-run            Print the plan; mutate nothing.\n");
     printf("  --yes                Skip the interactive confirmation.\n");
-    printf("  --no-restart         Skip systemctl stop/start.\n");
+    printf("  --no-restart         Skip systemctl stop/start (incompatible\n");
+    printf("                       with --full).\n");
+    printf("  --full               After the deletions + TRUNCATE, also run\n");
+    printf("                       `mtc_rebuild_tiles --skip-checkpoint-\n");
+    printf("                       compare --yes` and restart mtc-ca.service.\n");
+    printf("                       End-to-end one-shot cleanup.\n");
     printf("  -h, --help           Show this help.\n\n");
     printf("WARNING: removing a log entry invalidates every cosigned proof\n");
     printf("a verifier may have cached, and a non-tail removal leaves a\n");
@@ -255,6 +266,9 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "--no-restart") == 0) {
             g_no_restart = 1;
         }
+        else if (strcmp(argv[i], "--full") == 0) {
+            g_full = 1;
+        }
         else if (strcmp(argv[i], "-h") == 0 ||
                  strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
@@ -272,6 +286,14 @@ int main(int argc, char *argv[])
         fprintf(stderr,
             "cleanup-tpm: --index N is required and must be >= 1 "
             "(refusing to touch the genesis entry at index 0).\n");
+        return 2;
+    }
+
+    if (g_full && g_no_restart) {
+        fprintf(stderr,
+            "cleanup-tpm: --full and --no-restart are mutually "
+            "exclusive (--full needs to start the service to verify "
+            "the rebuilt tile state).\n");
         return 2;
     }
 
@@ -370,6 +392,9 @@ int main(int argc, char *argv[])
     printf("    - mtc_merkle_top_nodes  (TRUNCATE — TODO #74 phase 3)\n");
     if (g_no_restart)
         printf("  Service: NOT touched (--no-restart).\n");
+    else if (g_full)
+        printf("  Service: stop mtc-ca.service, mutate, run "
+               "mtc_rebuild_tiles, start service (--full).\n");
     else
         printf("  Service: stop mtc-ca.service; will NOT auto-start —\n"
                "           operator must run mtc_rebuild_tiles + start\n"
@@ -456,18 +481,47 @@ int main(int argc, char *argv[])
         PQclear(r);
     }
 
-    /* Phase 3: do NOT auto-restart.  The tile tables are now empty;
-     * the operator must run mtc_rebuild_tiles before the service
-     * can serve correct proofs.  --no-restart is implied here. */
+    /* Phase 3: tile tables are now empty.  Default behavior is to
+     * leave the service stopped and tell the operator what to do
+     * next; --full chains the rebuild + start so the whole thing is
+     * one command. */
     if (g_no_restart) {
-        printf("  [skip --no-restart] sudo systemctl start "
-               "mtc-ca.service\n");
+        printf("  [skip --no-restart] mtc_rebuild_tiles + "
+               "sudo systemctl start mtc-ca.service\n");
+    } else if (g_full) {
+        const char *rebuild_cmd =
+            "/usr/local/bin/mtc_rebuild_tiles "
+            "--skip-checkpoint-compare --yes";
+        printf("  exec: %s\n", rebuild_cmd);
+        if (system(rebuild_cmd) != 0) {
+            fprintf(stderr,
+                "cleanup-tpm: --full: mtc_rebuild_tiles failed; "
+                "service left stopped.  Investigate, then run\n"
+                "    mtc_rebuild_tiles --skip-checkpoint-compare --yes\n"
+                "    sudo systemctl start mtc-ca.service\n"
+                "manually.\n");
+            free(matches);
+            PQfinish(conn);
+            return 1;
+        }
+        if (run_systemctl("start") != 0) {
+            fprintf(stderr,
+                "cleanup-tpm: --full: tile rebuild succeeded but "
+                "systemctl start failed.  Run\n"
+                "    sudo systemctl start mtc-ca.service\n"
+                "manually.\n");
+            free(matches);
+            PQfinish(conn);
+            return 1;
+        }
     } else {
         printf("\n");
         printf("Service is STOPPED.  Tile state has been cleared.\n");
         printf("Next steps (run on this host):\n");
         printf("    mtc_rebuild_tiles --skip-checkpoint-compare --yes\n");
         printf("    sudo systemctl start mtc-ca.service\n");
+        printf("\n");
+        printf("Or re-run with --full to do all of the above in one shot.\n");
         printf("\n");
     }
 
