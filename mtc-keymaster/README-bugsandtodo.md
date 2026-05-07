@@ -4290,6 +4290,100 @@ downstream.
 
 ---
 
+### 77. CA key continuity — new key for an existing CA subject must be signed by the old key
+
+**Severity:** Medium — silent CA-key takeover under the
+existing dedup path.  Source: `socket-level-wrapper-MQC/reviews/README-mqc-3-issues.md`
+§ "5. Force key continuity"; also raised independently in
+`socket-level-wrapper-MQC/reviews/README-mqc-2-issues.md` triage
+appendix as the unfilled half of TODO #57.
+
+**Threat.**  TODO #57 item 1 made enrollment idempotent by
+`(subject, spk_hash)`: re-enrolling the *same* subject with the
+*same* public key returns the existing cert.  But re-enrolling
+the same subject with a *different* public key has no
+continuity check today — DNSSEC pin (`_mqc-ca.<domain>`) +
+proof-of-possession on the new key both pass, the server appends
+a new CA cert, and downstream peers that have cached the old
+cosigner-fp see it rotate and re-fetch.  Anyone who controls the
+domain (legitimately or via a hijacked DNSSEC zone) can silently
+replace the CA's identity key.
+
+**What the reviewer recommends.**  When a CA subject already
+exists in the log:
+
+```
+new_key must be signed by old_key
+```
+
+The new bootstrap payload carries an extra `prev_key_signature`
+field — an ML-DSA-87 signature under the *previous* CA private
+key over a canonical message that binds the new SPKI hash, the
+old SPKI hash, and the subject.  The server resolves the
+existing CA's pubkey and verifies the signature before accepting
+the rotation.  An operator-flagged `--emergency-recovery` knob
+bypasses the check (with a loud `[CA-KEY-ROTATION-EMERGENCY]`
+log line) for the case where the previous private key has been
+genuinely lost; that path SHOULD additionally require a manual
+operator-side confirmation outside the bootstrap flow.
+
+**Why it matters.**  Today the only thing standing between an
+attacker who phishes a DNSSEC update and full identity takeover
+is the operator noticing the cosigner-fp rotation in their
+peer-cache logs.  A continuity signature turns silent takeover
+into a fail-closed handshake at the bootstrap port.
+
+**Suggested implementation sketch:**
+
+- `mtc_bootstrap.c`'s CA enrollment branch: after
+  `mtc_validate_ca_cert` succeeds, look up the most recent live
+  cert for `subject` in `mtc_certificates` (the same query the
+  TODO #57 idempotency check already does).
+- If a previous CA cert exists AND `spk_hash` differs:
+  - Require `prev_key_signature` in the bootstrap request.
+  - Verify it under the old SPKI's pubkey using
+    `wc_dilithium_verify_ctx_msg` with ctx label
+    `"mtc-ca-rotate/v1\n\x00"` (16 bytes, distinct from the
+    handshake / cosignature / bootstrap-response labels) over a
+    canonical message
+    `subject || u32be(len(old_spk_hash)) || old_spk_hash ||
+    u32be(len(new_spk_hash)) || new_spk_hash`.
+  - On verification failure → fail-closed (`403 ca rotation
+    requires signature under previous CA key`).
+- Operator-bypass: a new `--emergency-recovery` flag on
+  `bootstrap_ca` plus a server-side allowlist file (e.g.,
+  `~/.mtc-ca-data/ca_rotation_emergency_allowlist`) listing
+  subjects for which the next rotation may proceed without the
+  prior-key signature; entries auto-expire after one successful
+  rotation.
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_bootstrap.c` (CA enrollment
+  branch).
+- `mtc-keymaster/tools/c/bootstrap_ca.c` (new
+  `prev_key_signature` field + `--emergency-recovery` flag).
+- Spec text in `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md`
+  is unchanged — this is a bootstrap-port (8445) detail, outside
+  the MQC protocol's normative surface.
+
+**Wire-format impact.**  Bootstrap-port (8445) message-3
+schema gains an optional `prev_key_signature` field.  The
+server treats absence as "first enrollment for this subject"
+and rejects a non-first enrollment that omits it.  No effect
+on the MQC port (8446) protocol.
+
+**Cross-refs:**
+
+- `socket-level-wrapper-MQC/reviews/README-mqc-3-issues.md` §5
+  "Force key continuity" — original recommendation.
+- `socket-level-wrapper-MQC/reviews/README-mqc-2-issues.md`
+  triage appendix — flagged the partial coverage in TODO #57.
+- `socket-level-wrapper-MQC/README-mqc-issues-summary.md`
+  "P1" section — recommended opening this TODO.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the

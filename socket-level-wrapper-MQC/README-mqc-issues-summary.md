@@ -54,7 +54,7 @@ without re-reading 1,170 lines of review traffic.
 | mqc-2 | #9 | Auto-detect MSG_PEEK + strstr | **DONE** (P1, `45e8390d4`) |
 | mqc-3 | DNSSEC TXT pinning for 8445 (server) | CA enrollment DNSSEC validation | **DONE** (`bf21e4fc9`, `bdbf08309`) |
 | mqc-3 | §1.4 | Pre-auth proof-of-work | **OPEN** — TODO #59 (defense-in-depth) |
-| mqc-3 | §1.5 | CA key continuity (new key signed by old) | **OPEN** — *not yet tracked*; recommend opening TODO |
+| mqc-3 | §1.5 | CA key continuity (new key signed by old) | **OPEN** — TODO #77 (Medium) |
 | mqc-4 | #1–#3, #5, #6 | (length-prefix / pubkey-hash / DNSSEC / inclusion-proof / AEAD seq) | **DONE** |
 | mqc-4 | #4 | Exact canonical handshake-frame bytes in transcript | **DEFERRED** — TODO #54 (LOW) |
 
@@ -132,11 +132,9 @@ used.
 re-enrolls.  But it does not handle a *different* key for the
 *same* subject — that path has no continuity check today.
 
-**Recommended next move:** open a new TODO entry capturing the
-threat model and the policy ("new spk_hash for an existing
-subject requires either a sig under the prior CA key or an
-operator-acked emergency-recovery flag") so future Claude
-sessions can pick it up.
+**Tracked as:** [TODO #77](../mtc-keymaster/README-bugsandtodo.md)
+(Medium) — full threat model + implementation sketch +
+emergency-recovery escape hatch.
 
 ### P2 — defense-in-depth, already filed
 
@@ -198,10 +196,9 @@ six numbered fixes.  Quick state check:
    `bootstrap_leaf`): biggest impact-per-effort.  Closes the
    leaf-side MitM completely; reuses the existing nonce delivery
    channel; about a day of work + a flag-day cutover.
-2. **CA key continuity** (open the TODO; small implementation
-   afterward): protects against silent CA-key takeover; tightly
-   scoped to the enrollment dedup path that already exists from
-   TODO #57.
+2. **CA key continuity** (TODO #77 — Medium): protects against
+   silent CA-key takeover; tightly scoped to the enrollment
+   dedup path that already exists from TODO #57.
 3. **TODO #9b CA branch** (X.509-chain authenticated bootstrap
    response): closes the CA-side MitM.  Larger scope (loads TLS
    cert + key into the bootstrap thread, adds chain validation in
