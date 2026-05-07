@@ -287,8 +287,8 @@ void mtc_db_after_fork(PGconn **conn_ptr)
  *
  * Side Effects:
  *   Creates/alters tables: mtc_log_entries, mtc_checkpoints,
- *   mtc_landmarks, mtc_certificates, mtc_revocations,
- *   mtc_enrollment_nonces.
+ *   mtc_certificates, mtc_revocations, mtc_enrollment_nonces.
+ *   (mtc_landmarks retired 2026-05-07; see TODO #76.)
  ******************************************************************************/
 int mtc_db_init_schema(PGconn *conn)
 {
@@ -308,11 +308,6 @@ int mtc_db_init_schema(PGconn *conn)
         "  tree_size INTEGER NOT NULL,"
         "  root_hash TEXT NOT NULL,"
         "  ts DOUBLE PRECISION NOT NULL,"
-        "  created_at TIMESTAMPTZ DEFAULT now()"
-        ");"
-        "CREATE TABLE IF NOT EXISTS mtc_landmarks ("
-        "  id SERIAL PRIMARY KEY,"
-        "  tree_size INTEGER NOT NULL UNIQUE,"
         "  created_at TIMESTAMPTZ DEFAULT now()"
         ");"
         "CREATE TABLE IF NOT EXISTS mtc_certificates ("
@@ -655,83 +650,6 @@ struct json_object *mtc_db_load_latest_checkpoint(PGconn *conn,
 
     PQclear(res);
     return cp;
-}
-
-/* ------------------------------------------------------------------ */
-/* Landmarks                                                           */
-/* ------------------------------------------------------------------ */
-
-/******************************************************************************
- * Function:    mtc_db_save_landmark
- *
- * Description:
- *   Records a landmark tree size.  Uses ON CONFLICT DO NOTHING so
- *   duplicate tree sizes are silently ignored.
- *
- * Input Arguments:
- *   conn       - Active PostgreSQL connection.
- *   tree_size  - Tree size to record.
- *
- * Returns:
- *    0  on success.
- *   -1  on query failure.
- ******************************************************************************/
-int mtc_db_save_landmark(PGconn *conn, int tree_size)
-{
-    PGresult *res;
-    char sz_str[16];
-    const char *params[1];
-
-    snprintf(sz_str, sizeof(sz_str), "%d", tree_size);
-    params[0] = sz_str;
-
-    res = PQexecParams(conn,
-        "INSERT INTO mtc_landmarks (tree_size) VALUES ($1) "
-        "ON CONFLICT (tree_size) DO NOTHING",
-        1, NULL, params, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        PQclear(res);
-        return -1;
-    }
-    PQclear(res);
-    return 0;
-}
-
-/******************************************************************************
- * Function:    mtc_db_load_landmarks
- *
- * Description:
- *   Loads landmark tree sizes into a caller-owned integer array, sorted
- *   in ascending order.
- *
- * Input Arguments:
- *   conn       - Active PostgreSQL connection.
- *   out        - Caller-owned array to fill with tree sizes.
- *   max_count  - Capacity of out.  Rows beyond this limit are dropped.
- *
- * Returns:
- *   Number of landmarks written to out.  0 on query failure.
- ******************************************************************************/
-int mtc_db_load_landmarks(PGconn *conn, int *out, int max_count)
-{
-    PGresult *res;
-    int i, rows;
-
-    res = PQexec(conn, "SELECT tree_size FROM mtc_landmarks ORDER BY tree_size");
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        PQclear(res);
-        return 0;
-    }
-
-    rows = PQntuples(res);
-    if (rows > max_count) rows = max_count;
-
-    for (i = 0; i < rows; i++)
-        out[i] = atoi(PQgetvalue(res, i, 0));
-
-    PQclear(res);
-    return rows;
 }
 
 /* ------------------------------------------------------------------ */

@@ -27,9 +27,6 @@
 #include <pthread.h>
 
 #define MTC_MAX_CERTS          10000  /**< Upper bound for revocation loading   */
-#define MTC_MAX_LANDMARKS      1000   /**< Maximum landmark entries             */
-#define MTC_LANDMARK_INTERVAL  16     /**< Tree sizes divisible by this become
-                                           landmarks automatically             */
 
 /**
  * @brief Central state container for the MTC CA server.
@@ -98,10 +95,6 @@ typedef struct {
     struct json_object **checkpoints;  /**< Array of checkpoint json_objects
                                             (store owns refs; max 256)         */
     int              checkpoint_count; /**< Number of checkpoints stored       */
-
-    /* Landmarks (tree sizes that are multiples of MTC_LANDMARK_INTERVAL) */
-    int              landmarks[MTC_MAX_LANDMARKS]; /**< Landmark tree sizes    */
-    int              landmark_count;   /**< Number of recorded landmarks       */
 
     /* Revocations (sorted array of revoked cert indices) */
     int             *revoked_indices;  /**< Sorted array of revoked cert indices
@@ -224,10 +217,9 @@ struct json_object *mtc_store_get_cert(MtcStore *store, int index);
  * @brief    Append a serialised entry to the Merkle tree and persist it.
  *
  * @details
- * Persists to DB FIRST (if connected), then appends to the tree, then
- * records a landmark if the new tree size is a multiple of
- * MTC_LANDMARK_INTERVAL.  This ordering means a DB write failure
- * leaves the in-memory tree untouched (TODO #57 item 4).
+ * Persists to DB FIRST (if connected), then appends to the tree.
+ * This ordering means a DB write failure leaves the in-memory tree
+ * untouched (TODO #57 item 4).
  *
  * Callers MUST check the return value: a -1 indicates the DB persist
  * failed and the operation has been aborted with no state change.

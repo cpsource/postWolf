@@ -73,9 +73,9 @@ PGconn *mtc_db_connect(void);
  *
  * @details
  * Executes CREATE TABLE IF NOT EXISTS for: mtc_log_entries, mtc_checkpoints,
- * mtc_landmarks, mtc_certificates, mtc_revocations, and
- * mtc_enrollment_nonces.  Also applies ALTER TABLE migrations for columns
- * added after initial deployment.
+ * mtc_certificates, mtc_revocations, and mtc_enrollment_nonces.  Also
+ * applies ALTER TABLE migrations for columns added after initial
+ * deployment.  (mtc_landmarks retired 2026-05-07; see TODO #76.)
  *
  * @param[in] conn  Active PostgreSQL connection.  Must not be NULL.
  *
@@ -180,30 +180,6 @@ struct json_object *mtc_db_load_latest_checkpoint(PGconn *conn,
 /* ------------------------------------------------------------------ */
 /* Landmarks                                                           */
 /* ------------------------------------------------------------------ */
-
-/**
- * @brief    Record a landmark tree size.
- *
- * @param[in] conn       Active PostgreSQL connection.
- * @param[in] tree_size  Tree size to record (unique constraint; duplicates
- *                        are silently ignored).
- *
- * @return   0 on success, -1 on failure.
- */
-int  mtc_db_save_landmark(PGconn *conn, int tree_size);
-
-/**
- * @brief    Load recorded landmark tree sizes.
- *
- * @param[in]  conn       Active PostgreSQL connection.
- * @param[out] out        Caller-owned array to fill with tree sizes,
- *                         sorted ascending.
- * @param[in]  max_count  Capacity of @p out.
- *
- * @return  Number of landmarks written to @p out (may be less than total
- *          if max_count is reached).  0 on query failure.
- */
-int  mtc_db_load_landmarks(PGconn *conn, int *out, int max_count);
 
 /* ------------------------------------------------------------------ */
 /* Certificates                                                        */

@@ -369,14 +369,12 @@ static void handle_index(client_io *io, MtcStore *store)
     json_object_put(obj);
 }
 
-/* GET /log — full tree state (log_id, size, root hash, landmarks). */
+/* GET /log — full tree state (log_id, size, root hash). */
 static void handle_log_state(client_io *io, MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();
-    struct json_object *lm_arr = json_object_new_array();
     uint8_t root[MTC_HASH_SIZE];
     char root_hex[MTC_HASH_SIZE * 2 + 1];
-    int i;
 
     mtc_tree_root_hash(&store->tree, store->tree.size, root);
     to_hex(root, MTC_HASH_SIZE, root_hex);
@@ -392,9 +390,8 @@ static void handle_log_state(client_io *io, MtcStore *store)
     json_object_object_add(obj, "root_hash",
         json_object_new_string(root_hex));
 
-    for (i = 0; i < store->landmark_count; i++)
-        json_object_array_add(lm_arr, json_object_new_int(store->landmarks[i]));
-    json_object_object_add(obj, "landmarks", lm_arr);
+    /* `landmarks` field retired 2026-05-07 (TODO #76).  The Python
+     * client tolerates its absence (defaults to []). */
 
     http_send_json_obj(io, 200, obj);
     json_object_put(obj);
@@ -1626,13 +1623,17 @@ static void handle_public_key_lookup(client_io *io, MtcStore *store,
     free(pem);
 }
 
-/* GET /trust-anchors — list of trust anchors (standalone + landmarks). */
+/* GET /trust-anchors — list of trust anchors.
+ *
+ * Pre-2026-05-07 this also enumerated landmark anchors backed by
+ * mtc_landmarks; that table was retired (TODO #76) since no live
+ * client used the landmark trust-anchor format.  The endpoint
+ * stays as the single-element standalone anchor for compat. */
 static void handle_trust_anchors(client_io *io, MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();
     struct json_object *arr = json_object_new_array();
     struct json_object *anchor;
-    int i;
 
     anchor = json_object_new_object();
     json_object_object_add(anchor, "id",
@@ -1640,19 +1641,6 @@ static void handle_trust_anchors(client_io *io, MtcStore *store)
     json_object_object_add(anchor, "type",
         json_object_new_string("standalone"));
     json_object_array_add(arr, anchor);
-
-    for (i = 0; i < store->landmark_count; i++) {
-        char id[128];
-        snprintf(id, sizeof(id), "%s.%d", store->log_id, i);
-        anchor = json_object_new_object();
-        json_object_object_add(anchor, "id",
-            json_object_new_string(id));
-        json_object_object_add(anchor, "type",
-            json_object_new_string("landmark"));
-        json_object_object_add(anchor, "tree_size",
-            json_object_new_int(store->landmarks[i]));
-        json_object_array_add(arr, anchor);
-    }
 
     json_object_object_add(obj, "trust_anchors", arr);
     http_send_json_obj(io, 200, obj);

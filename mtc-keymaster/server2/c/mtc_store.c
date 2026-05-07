@@ -4,10 +4,10 @@
  *
  * Description:
  *   Manages all server-side state: the Merkle tree, ML-DSA-87 CA key,
- *   certificates, checkpoints, landmarks, and revocations.  Supports two
+ *   certificates, checkpoints, and revocations.  Supports two
  *   storage backends:
  *     - PostgreSQL (Neon) when MERKLE_NEON is available
- *     - File-based JSON (entries.json, certificates.json, landmarks.json,
+ *     - File-based JSON (entries.json, certificates.json,
  *       revocations.json) in data_dir as fallback
  *
  *   The CA ML-DSA-87 key is loaded from file (ca_key_mldsa.der) or
@@ -562,17 +562,16 @@ int mtc_store_check_invariants(MtcStore *store)
  * Function:    mtc_store_reload
  *
  * Description:
- *   Resync the in-memory tree/cert/landmark/revocation state from the
- *   DB (or files when DB is unavailable).  Used by the SIGHUP-driven
+ *   Resync the in-memory tree/cert/revocation state from the DB
+ *   (or files when DB is unavailable).  Used by the SIGHUP-driven
  *   reload thread to close TODO #56 (fork-after-accept parent
  *   staleness): after a forked bootstrap child commits a new entry,
  *   the parent's in-memory store is stale until the next restart
  *   without this hook.
  *
- *   Frees the dynamic state (tree contents, certs, landmarks,
- *   revocations) but preserves the CA key, cosigner key, DB
- *   connection, and configuration fields — those don't change at
- *   runtime.
+ *   Frees the dynamic state (tree contents, certs, revocations)
+ *   but preserves the CA key, cosigner key, DB connection, and
+ *   configuration fields — those don't change at runtime.
  *
  * Returns:
  *    0  on success.
@@ -651,7 +650,6 @@ int mtc_store_reload(MtcStore *store)
     }
     store->revocation_count = 0;
     store->revocation_capacity = 0;
-    store->landmark_count = 0;
 
     /* Re-run the standard load path. */
     if (mtc_store_load(store) != 0)
@@ -697,7 +695,6 @@ int mtc_store_reload(MtcStore *store)
  *   Persists the current store state to JSON files in data_dir:
  *     entries.json      — hex-encoded tree entries
  *     certificates.json — issued certificate objects
- *     landmarks.json    — landmark tree sizes
  *
  * Input Arguments:
  *   store  - Store to save.
@@ -752,19 +749,8 @@ int mtc_store_save(MtcStore *store)
         json_object_put(arr);
     }
 
-    /* Save landmarks */
-    {
-        struct json_object *arr = json_object_new_array();
-        for (i = 0; i < store->landmark_count; i++)
-            json_object_array_add(arr,
-                json_object_new_int(store->landmarks[i]));
-        snprintf(path, sizeof(path), "%s/landmarks.json", store->data_dir);
-        {
-            const char *s = json_object_to_json_string(arr);
-            write_file(path, s, (int)strlen(s));
-        }
-        json_object_put(arr);
-    }
+    /* mtc_landmarks retired 2026-05-07 (TODO #76); the persisted
+     * file representation is gone too. */
 
     return 0;
 }
@@ -773,10 +759,10 @@ int mtc_store_save(MtcStore *store)
  * Function:    mtc_store_load
  *
  * Description:
- *   Loads persisted state into the store.  If use_db is set, loads from
- *   PostgreSQL (entries, landmarks, certificates, revocations).  Otherwise
- *   loads from JSON files in data_dir (entries.json, certificates.json,
- *   landmarks.json).
+ *   Loads persisted state into the store.  If use_db is set, loads
+ *   from PostgreSQL (entries; certs/revocations are lazy under
+ *   TODO #74 phase 2).  Otherwise loads from JSON files in data_dir
+ *   (entries.json, certificates.json).
  *
  * Input Arguments:
  *   store  - Store to populate (tree and arrays are appended to).
@@ -785,7 +771,7 @@ int mtc_store_save(MtcStore *store)
  *   0 always (an empty result is not an error).
  *
  * Side Effects:
- *   Appends entries to store->tree, populates certificates, landmarks,
+ *   Appends entries to store->tree, populates certificates,
  *   and revocations arrays.
  ******************************************************************************/
 int mtc_store_load(MtcStore *store)
@@ -830,19 +816,15 @@ int mtc_store_load(MtcStore *store)
             json_object_put(db_entries);
         }
 
-        /* Landmarks */
-        store->landmark_count = mtc_db_load_landmarks(store->db,
-            store->landmarks, MTC_MAX_LANDMARKS);
-
         /* Certificates and revocations are NOT pre-loaded in DB mode
          * (TODO #74 phase 2).  Reads route through mtc_store_get_cert
          * (cert_cache + mtc_db_load_certificate) and
          * mtc_store_is_revoked (mtc_db_is_revoked) on demand, so the
          * server's RAM footprint is bounded by the tree + cache, not
-         * by the total cert population. */
+         * by the total cert population.  Landmarks were retired in
+         * TODO #76 (2026-05-07). */
 
-        printf("[store] loaded %d entries, %d landmarks from DB\n",
-               store->tree.size, store->landmark_count);
+        printf("[store] loaded %d entries from DB\n", store->tree.size);
         fflush(stdout);
         return 0;
     }
@@ -904,23 +886,12 @@ int mtc_store_load(MtcStore *store)
         }
     }
 
-    /* Load landmarks */
-    snprintf(path, sizeof(path), "%s/landmarks.json", store->data_dir);
-    sz = read_file(path, buf, (int)sizeof(buf) - 1);
-    if (sz > 0) {
-        buf[sz] = 0;
-        arr = json_tokener_parse(buf);
-        if (arr) {
-            count = (int)json_object_array_length(arr);
-            for (i = 0; i < count && i < MTC_MAX_LANDMARKS; i++)
-                store->landmarks[store->landmark_count++] =
-                    json_object_get_int(json_object_array_get_idx(arr, (size_t)i));
-            json_object_put(arr);
-        }
-    }
+    /* Landmarks retired 2026-05-07 (TODO #76); landmarks.json
+     * stays on disk in legacy file-mode deployments but is no
+     * longer read. */
 
-    printf("[store] loaded %d entries, %d certs, %d landmarks\n",
-           store->tree.size, store->cert_count, store->landmark_count);
+    printf("[store] loaded %d entries, %d certs\n",
+           store->tree.size, store->cert_count);
     fflush(stdout);
     return 0;
 }
@@ -934,8 +905,7 @@ int mtc_store_load(MtcStore *store)
  *
  * Description:
  *   Appends a serialised entry to the Merkle tree and persists it to DB
- *   (if connected).  Automatically records a landmark if the new tree
- *   size is a multiple of MTC_LANDMARK_INTERVAL.
+ *   (if connected).
  *
  *   Persistence happens BEFORE the in-memory tree append (TODO #57
  *   item 4): DB write failures abort the operation without leaving
@@ -956,7 +926,7 @@ int mtc_store_load(MtcStore *store)
  *      enrollment / log-append it was performing).
  *
  * Side Effects:
- *   On success: appends to tree, writes DB row, may add a landmark.
+ *   On success: appends to tree, writes DB row.
  *   On failure: no state change.
  ******************************************************************************/
 int mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz)
@@ -1008,18 +978,10 @@ int mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz)
             "are now divergent\n", idx_actual, idx_target);
     }
 
-    /* Check for landmark */
-    if (store->tree.size % MTC_LANDMARK_INTERVAL == 0 &&
-        store->landmark_count < MTC_MAX_LANDMARKS) {
-        store->landmarks[store->landmark_count++] = store->tree.size;
-        if (store->use_db && store->db) {
-            if (mtc_db_save_landmark(store->db, store->tree.size) != 0)
-                fprintf(stderr,
-                    "[store] WARNING: DB save_landmark failed for size "
-                    "%d (non-fatal — landmark is a cache, can be "
-                    "re-derived)\n", store->tree.size);
-        }
-    }
+    /* Landmarks retired 2026-05-07 (TODO #76).  No live consumer
+     * reached the trust-anchor list; the Python client's verify_-
+     * landmark_certificate path was wired to a cert format the
+     * server never issued. */
 
     return idx_actual;
 }

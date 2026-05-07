@@ -4208,6 +4208,67 @@ TODO #28's revocation GC).
 
 ---
 
+### 76. `mtc_landmarks` table backs a feature no live client uses — **DONE 2026-05-07**
+
+**Severity:** Low — vestigial code; not load-bearing.  Filed
++ closed in the same patch.
+
+**Background.**  `mtc_landmarks` was populated by
+`mtc_store_add_entry` whenever the new tree size hit a
+multiple of `MTC_LANDMARK_INTERVAL` (= 16) — one INSERT every
+16 enrollments.  The rows were exposed via `GET /log`'s
+`landmarks: [16, 32, 48, …]` array and via `GET /trust-anchors`
+as entries with `type=landmark`.
+
+The only consumer of either endpoint that did anything with
+the landmark data was `mtc-keymaster/tools/python/mtc_client.py`'s
+`fetch_landmarks()` + `verify_landmark_certificate()` pair —
+designed to verify a class of cert that has fields
+`landmark_id`, `landmark_subtree_start`, `landmark_subtree_end`.
+**The server doesn't issue that cert format.**  `mtc_store_checkpoint`,
+the bootstrap commit cert builder in `mtc_bootstrap.c`, and
+`renew-cert` in `mtc_http.c` all produce certs with
+`subtree_start` / `subtree_end` (the inclusion-proof window),
+never `landmark_*` fields.
+
+No C tool reaches this code path — `show-tpm`, `revoke-key`,
+`bootstrap_leaf`/`bootstrap_ca`, the MQC peer-verify in
+`mqc_peer.c`, and the `ssl_mtc.c` legacy verifier all do their
+verification via inclusion-proof + cosignature, never touching
+the landmark trust-anchor list.  `src/ssl_mtc.c:841` does GET
+`/log` but for tree-state observability, not landmarks
+specifically.
+
+**What was removed (commit … TODO #76):**
+
+- `mtc_db.c` DDL `CREATE TABLE IF NOT EXISTS mtc_landmarks`.
+- `mtc_db_save_landmark` and `mtc_db_load_landmarks`
+  functions + their `mtc_db.h` declarations.
+- `MtcStore.landmarks[]`, `MtcStore.landmark_count`,
+  `MTC_MAX_LANDMARKS`, `MTC_LANDMARK_INTERVAL` macros.
+- The `if (tree.size % MTC_LANDMARK_INTERVAL == 0)` branch in
+  `mtc_store_add_entry`.
+- Landmark population paths in `mtc_store_load`,
+  `mtc_store_reload`, and `mtc_store_save`.
+- `landmarks` array from `GET /log` response.
+- `type=landmark` entries from `GET /trust-anchors` response.
+
+**Operator note.**  Existing `mtc_landmarks` rows on Neon are
+left in place — fresh deployments simply skip the DDL.
+Operators wanting to reclaim the rows can run
+`DROP TABLE mtc_landmarks;` manually.  The Python client's
+landmark code paths now receive an empty `landmarks: []`
+array from `/log` and silently produce zero cached landmarks;
+no cert format depends on that cache so nothing breaks
+downstream.
+
+**Files:**
+
+- `mtc-keymaster/server2/c/mtc_db.{c,h}`,
+  `mtc_store.{c,h}`, `mtc_http.c`.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the
