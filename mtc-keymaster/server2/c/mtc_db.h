@@ -73,7 +73,8 @@ PGconn *mtc_db_connect(void);
  *
  * @details
  * Executes CREATE TABLE IF NOT EXISTS for: mtc_log_entries, mtc_checkpoints,
- * mtc_certificates, mtc_revocations, and mtc_enrollment_nonces.  Also
+ * mtc_certificates, mtc_revocations, mtc_enrollment_nonces,
+ * mtc_merkle_tiles, and mtc_merkle_top_nodes (TODO #74 phase 3).  Also
  * applies ALTER TABLE migrations for columns added after initial
  * deployment.  (mtc_landmarks retired 2026-05-07; see TODO #76.)
  *

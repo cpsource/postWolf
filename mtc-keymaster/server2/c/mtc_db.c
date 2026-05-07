@@ -287,7 +287,8 @@ void mtc_db_after_fork(PGconn **conn_ptr)
  *
  * Side Effects:
  *   Creates/alters tables: mtc_log_entries, mtc_checkpoints,
- *   mtc_certificates, mtc_revocations, mtc_enrollment_nonces.
+ *   mtc_certificates, mtc_revocations, mtc_enrollment_nonces,
+ *   mtc_merkle_tiles, mtc_merkle_top_nodes (TODO #74 phase 3).
  *   (mtc_landmarks retired 2026-05-07; see TODO #76.)
  ******************************************************************************/
 int mtc_db_init_schema(PGconn *conn)
@@ -349,7 +350,32 @@ int mtc_db_init_schema(PGconn *conn)
          * legacy no-label rows (label IS NULL) are unconstrained. */
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_nonce_domain_label_pending "
         "  ON mtc_enrollment_nonces (domain, label) "
-        "  WHERE status = 'pending' AND label IS NOT NULL;";
+        "  WHERE status = 'pending' AND label IS NOT NULL;"
+        /* TODO #74 phase 3: tiled Merkle tree backing store.  Tiles
+         * are addressed by (level, tile_index) tlog-style; each tile
+         * covers up to 2^TILE_HEIGHT consecutive nodes at that level.
+         * `hashes` packs node_count consecutive 32-byte hashes. */
+        "CREATE TABLE IF NOT EXISTS mtc_merkle_tiles ("
+        "  level INTEGER NOT NULL,"
+        "  tile_index BIGINT NOT NULL,"
+        "  tile_height INTEGER NOT NULL,"
+        "  first_node BIGINT NOT NULL,"
+        "  node_count INTEGER NOT NULL,"
+        "  hashes BYTEA NOT NULL,"
+        "  created_at TIMESTAMPTZ DEFAULT now(),"
+        "  updated_at TIMESTAMPTZ DEFAULT now(),"
+        "  PRIMARY KEY (level, tile_index)"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_mtc_merkle_tiles_level "
+        "  ON mtc_merkle_tiles(level);"
+        /* Top-K inner-node hashes (resident in RAM at startup).  Updated
+         * during append along with the tile rows below. */
+        "CREATE TABLE IF NOT EXISTS mtc_merkle_top_nodes ("
+        "  level INTEGER NOT NULL,"
+        "  node_index BIGINT NOT NULL,"
+        "  hash BYTEA NOT NULL,"
+        "  PRIMARY KEY (level, node_index)"
+        ");";
 
     res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
