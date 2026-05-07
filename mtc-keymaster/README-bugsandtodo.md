@@ -1,5 +1,61 @@
 # MTC Keymaster — Bugs and TODO
 
+## Open Issues
+
+Index of every TODO entry below whose header is not marked
+`DONE` / `RESOLVED` / `DEPRECATED` / `BY DESIGN`.  Sorted by
+severity then by ID; click through to the numbered entry for
+the full threat model + implementation sketch.
+
+### High
+
+- [#7](#7-server-verified-fips-source-checksums-via-mtc-transparency-log) — Server-verified FIPS source checksums via the MTC transparency log (closes a fundamental weakness in FIPS source integrity).
+
+### Medium
+
+- [#8](#8-compiler-integrity--what-if-gcc-has-been-corrupted) — Compiler integrity: defense-in-depth for the FIPS build pipeline against a corrupted gcc.
+- [#11](#11-mqc-peer-verify-uses-libcurl-8444tls-instead-of-mqc-8446) — Switch peer-verify HTTP fetches off `libcurl`/8444 onto MQC/8446 for post-quantum consistency.
+- [#13](#13-log-and-alert-on-nonce-domainfp-mismatches-during-enrollment) — Observability for failed enrollment auth (alert on `(domain, fp)` mismatches).
+- [#17](#17-mqc-client-connect-retry-subsystem) — Automatic retry/backoff layer for MQC clients (observed during Phase-7 smoke testing).
+- [#18](#18-server-side-dont-drop-the-handshake-after-revocation-cache-refresh) — Fix first-contact MQC handshake server-side; retire the client-side 100 ms retry shim.
+- [#49](#49-replace-x25519-with-ml-kem-768-on-the-bootstrap-port-8445) — Replace X25519 (last pre-quantum primitive in active code) with ML-KEM-768 on the bootstrap port.
+- [#55](#55-dnssec-trust-anchor-static-dns-root-data-vs-unbound-daemon) — Decide: static `dns-root-data` package vs `unbound` daemon for DNSSEC trust anchor (operational, becomes a hard outage at root-key rollover).
+- [#77](#77-ca-key-continuity--new-key-for-an-existing-ca-subject-must-be-signed-by-the-old-key) — Block silent CA-key takeover: new key for an existing CA subject must be signed by the previous CA key.
+
+### Low / Low–Medium
+
+- [#12](#12-consider-vendoring-cjson-to-drop-the-libjson-c-apt-dependency) — Vendor cJSON to drop the `libjson-c` apt dependency.
+- [#14](#14-purge-mainpy-references-from-the-docs) — Doc cleanup: purge `main.py` references after the deletion.
+- [#16](#16-tighten-todo-13-observability-once-mqc-authenticated-issuance-lands) — Refinement on top of #13 now that MQC-gated leaf nonces ship.
+- [#20](#20-kit-leaf--one-shot-packaging--setup-tool-for-a-new-leaf-identity) — Kit leaf: one-shot packaging / setup tool for a new leaf identity.
+- [#21](#21-kit-ca--one-shot-packaging--setup-tool-for-a-new-ca-identity) — Kit CA: one-shot packaging / setup tool for a new CA identity.
+- [#22](#22-update-factsorliecom-website-to-reflect-the-current-postwolf-architecture) — Update `factsorlie.com` website to reflect the current postWolf architecture.
+- [#26](#26-ca-assigned-leaf-labels-to-disambiguate-multiple-identities-per-subject) — CA-assigned leaf labels to disambiguate multiple identities per subject.
+- [#27](#27-decide-dockerized-redis-vs-native-redis-serverservice) — Decide: Dockerized Redis vs native `redis-server.service` (paired with #45).
+- [#28](#28-garbage-collect-revocations-past-the-revoked-certs-expiration) — Garbage-collect revocations past the revoked cert's `not_after`.
+- [#32](#32-server-side-de-duplication-for-bootstrap-re-runs) — Server-side de-duplication for bootstrap re-runs (overlaps with #57's idempotency work).
+- [#33](#33-move-dont-copy-private-keys-out-of-mtc-ca-data-after-enrollment) — Move (don't copy) private keys out of `~/.mtc-ca-data/` after enrollment.
+- [#34](#34-add-a-revocation-management-page-to-factsorliecom) — Add a revocation-management page to `factsorlie.com`.
+- [#41](#41-mqc-streamingchunked-aead-for-large-inputs) — `mqc`: streaming/chunked AEAD for large inputs.
+- [#42](#42-mqc-rotate--scrub-the-cached-password-file) — `mqc`: rotate / scrub the cached password file.
+- [#43](#43-mqc-cross-host-password-sync) — `mqc`: cross-host password sync.
+- [#44](#44-gmail-extension--encodedecode-button-that-calls-mqc-via-wsl) — Gmail extension: encode/decode button that calls `mqc` via WSL.
+- [#45](#45-retire-the-docker-compose-redis-in-favour-of-the-native-daemon-reverses-todo-27) — Retire the docker-compose redis in favour of the native daemon (resolves #27).
+- [#46](#46-increase-publicity--execute-a-round-of-outreach) — Increase publicity: execute a round of outreach.
+- [#48](#48-standing-crypto-watch--sha-256-aes-256-gcm-lattice-posture) — Standing crypto watch — SHA-256 / AES-256-GCM / lattice posture.
+- [#51](#51-split-out-an-mqc-only-library-target-drop-the-tls-surface-for-mqc-consumers) — Split out an MQC-only library target (drop the TLS surface for MQC consumers).
+- [#54](#54-mqc-handshake-transcript-raw-frame-bytes-vs-field-based-hash-low) — MQC handshake transcript: raw-frame bytes vs field-based hash (design-clarity, not exploitable).
+- [#59](#59-pre-auth-client-puzzle-before-ml-kemml-dsa-on-the-mqc-handshake-gemini-mqc-02-defense-in-depth) — Pre-auth client puzzle before ML-KEM / ML-DSA on the MQC handshake (Gemini MQC-02 defense-in-depth).
+- [#61](#61-register-cash-dns-poll-loop-falls-through-instead-of-waiting) — `register-ca.sh` DNS-poll loop falls through instead of waiting (UX wart).
+- [#72](#72---no-pin-is-honor-system-only--no-server-side-enforcement-on-port-8445) — `--no-pin` is honor-system only on port 8445 (no server-side enforcement).
+- [#75](#75-mtc_checkpoints-is-append-only-with-a-single-consumer-reading-only-the-latest-row) — `mtc_checkpoints` is append-only with a single consumer reading only the latest row (retention cap).
+
+(Markdown-anchor slugs above are GitHub-style and may differ
+from your renderer; if a link doesn't resolve, scroll to the
+matching `### N.` heading below.)
+
+---
+
 ## TODO
 
 ### 1. Client-side Merkle proof and cosignature verification — DONE
@@ -501,7 +557,7 @@ Reproducible builds (option 1) should be a longer-term goal.
 
 ---
 
-### 9. MQC cosignature verification — follow-ups
+### 9. MQC cosignature verification — follow-ups — **DONE 2026-05-06** (9a + 9b — all three surfaces shipped)
 
 **Priority:** Low–Medium — hygiene after task #2 (client-side Ed25519
 cosignature verifier in `socket-level-wrapper-MQC/mqc_peer.c`) lands.
@@ -981,7 +1037,7 @@ past decisions, and rewriting them distorts the record.
 - `fips-framework/README-ml-dsa-87.md`
 - `mtc-keymaster/server2/c/README-using-mtc-server.md`
 
-### 15. Gate leaf-nonce issuance by cryptographic caller identity (MQC-only)
+### 15. Gate leaf-nonce issuance by cryptographic caller identity (MQC-only) — **DONE 2026-05-06** (subsumed by TODO #64, commit `6ec344bf1`)
 
 **Priority:** Medium — follow-up enabled by moving `issue_leaf_nonce` to
 MQC on port 8446.
@@ -1837,7 +1893,7 @@ ca_certificate_pem SPKI — both fields must carry the same public key."*
 
 Files: `mtc_ca_validate.{c,h}`, `mtc_bootstrap.c`.
 
-### 39. Retire mtc_crypt (AES-128-CBC + byte-rotate) in favour of AES-256-GCM
+### 39. Retire mtc_crypt (AES-128-CBC + byte-rotate) in favour of AES-256-GCM — **DONE 2026-05-06** (subsumed by TODO #62, commit `265178701`)
 
 The DH bootstrap channel (port 8445) currently uses `mtc_crypt.c`:
 `pad → AES-128-CBC encrypt → byte-rotate` on encode (and the inverse
@@ -2573,7 +2629,7 @@ is one box (server + bundled tools) and a release wave to leaves.
   be wrapped in the `.md` source before datatracker submission;
   the renderer does not silently mangle them.
 
-### 53. MQC DNSSEC pin: hash the SPKI DER, not the PEM file bytes
+### 53. MQC DNSSEC pin: hash the SPKI DER, not the PEM file bytes — **DONE 2026-05-06** (commit `07797878c` + `d8355091f` mirror)
 
 **Severity:** Medium — operationally fragile, not exploitable.
 The pin still binds to the right key on a happy-path
@@ -3890,7 +3946,7 @@ ON for new deployments that want a tighter perimeter.
 
 ---
 
-### 73. Late-bind reservation nonces are bearer tokens
+### 73. Late-bind reservation nonces are bearer tokens — **BY DESIGN** (no action; documented threat model)
 
 **Severity:** Low — by-design feature with documented threat
 model.  Filed 2026-05-06 from ChatGPT review item #4
