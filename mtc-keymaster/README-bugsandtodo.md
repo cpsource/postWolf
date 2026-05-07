@@ -417,13 +417,27 @@ and its checksum — nothing downstream detects the tampering. This weakness
 exists in both OpenSSL (`fips-sources.checksums`) and wolfSSL (`fips-hash.sh`).
 
 **Solution:** Anchor FIPS source checksums in the MTC Merkle tree transparency
-log. At build time, a manifest of every FIPS source file's SHA256 hash is
+log.  At build time, a manifest of every FIPS source file's SHA256 hash is
 submitted to the C MTC server, which logs it as a new entry type (`0x02`),
-computes an inclusion proof, and signs the tree root with Ed25519. The manifest
-cannot be altered after submission without detection.
+computes an inclusion proof, and signs the tree root with the log's ML-DSA-87
+key (with periodic offline ML-DSA-87 CA-checkpoint cosignatures).  The
+manifest cannot be altered after submission without detection.
 
-**Design:** See `README-fips.plan` for the full implementation plan and
-`README-fips.md` for admin/user documentation.
+The post-phase-3 storage backing is the **tiled Merkle tree**
+(`mtc_merkle_tiled.{c,h}`, type `MtcTiledTree`) — `mtc_merkle.c` /
+`MtcMerkleTree` is retired from production callers.  Append still
+goes through `mtc_store_add_entry`, which now wraps the
+`mtc_tiled_tree_append_leaf` call in a Postgres transaction
+guarded by `pg_advisory_xact_lock(<log_id-key>)`, so concurrent
+FIPS-manifest submissions serialise cleanly at the DB layer
+without any new code in the FIPS handler.  Inclusion proofs +
+subtree hashes come from `mtc_tiled_tree_inclusion_proof` /
+`mtc_tiled_tree_subtree_hash`; the legacy `mtc_tree_*` API is
+gone.  See TODO #74 phase 3.
+
+**Design:** See `fips-framework/README-fips.plan` for the full
+implementation plan (with phase-2/3 amendments inline) and
+`fips-framework/README-fips.md` for admin/user documentation.
 
 **Summary of work:**
 
@@ -452,9 +466,16 @@ via DNS TXT validation. Downstream verifiers check the chain: CA public key
 individual file hashes. Offline verification uses the receipt's cached proof
 and cosignature — no server contact needed.
 
-**Existing code reuse:** `mtc_merkle.c` (tree operations), `mtc_store.c`
-(entry persistence, Ed25519 cosigning), `mtc_db.c` (DB patterns),
-`mtc_http.c` (endpoint handler patterns). No changes needed to `mtc_merkle.c`.
+**Existing code reuse:** `mtc_merkle_tiled.c` (tree operations on
+the tiled backing — see TODO #74 phase 3), `mtc_store.c`
+(`mtc_store_add_entry` for the append-under-advisory-lock
+transaction; `mtc_store_log_sign` / offline `mtc_ca_sign_checkpoint`
+for ML-DSA-87 signing per `README-fips-issues.md` Issue #1),
+`mtc_db.c` (DB patterns), `mtc_http.c` (endpoint handler
+patterns).  No changes needed to `mtc_merkle_tiled.c` —
+`mtc_tiled_tree_append_leaf` / `_inclusion_proof` /
+`_subtree_hash` operate on opaque leaf bytes, type `0x02`
+included.
 
 **Files to create:**
 - `fips-manifest-submit.sh` — build-time submission script
@@ -463,10 +484,15 @@ and cosignature — no server contact needed.
 **Files to modify:**
 - `mtc-keymaster/server2/c/mtc_http.c` — add FIPS manifest endpoint handlers + routing
 - `mtc-keymaster/server2/c/mtc_db.c` — add `mtc_fips_manifests` table + CRUD
-- `mtc-keymaster/server2/c/mtc_store.c` — add type `0x02` detection + manifest persistence
-- `mtc-keymaster/server2/c/mtc_store.h` — add manifest fields to `MtcStore` struct
+- `mtc-keymaster/server2/c/mtc_store.c` — add type `0x02` detection + DB-backed manifest persistence (no file fallback — file mode retired in TODO #74 phase 3)
 - `debian/rules` — call submit script in FIPS build path
 - `Makefile.am` — add new targets
+
+`mtc_store.h` does NOT need a `fips_manifests[]` field — the
+phase-2/3 refactor moved cert + revocation state out of
+`MtcStore` into Neon and the `mtc_cert_cache` LRU.  FIPS
+manifests should follow the same pattern: persist to Neon
+(`mtc_fips_manifests`), fault on lookup, no resident array.
 
 ### 8. Compiler integrity — what if gcc has been corrupted?
 

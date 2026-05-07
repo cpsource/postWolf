@@ -32,6 +32,45 @@
 > the pinned CA key, sourced from a channel the attacker does not
 > control, is the only real defence. Implementation tags `[ISSUE #2]`.
 
+> **Amendment — postWolf TODO #74 phase 2 + 3 (server-side
+> storage refactor, 2026-05-04 / 2026-05-07):** This plan was
+> originally written against the in-memory `MtcMerkleTree`
+> (`mtc_merkle.c`) and the file-mode persistence path
+> (`mtc_store_save` writing `entries.json` /
+> `certificates.json` / `revocations.json`).  Both are gone:
+>
+> - The Merkle tree is now a **tiled tree** (`MtcTiledTree`,
+>   `mtc_merkle_tiled.{c,h}`) backed by Neon
+>   (`mtc_merkle_tiles` + `mtc_merkle_top_nodes`) with bounded
+>   per-process LRUs in front.  The `mtc_tiled_tree_*` API
+>   exposes the same algorithmic surface as the legacy
+>   `mtc_tree_*` API (`_root_hash`, `_subtree_hash`,
+>   `_inclusion_proof`, `_consistency_proof`,
+>   `_append_leaf`).  The legacy `mtc_merkle.c` stays in the
+>   tree only for `mtc_rebuild_tiles`'s migration walk; new
+>   callers must NOT use it.
+> - `mtc_store_save`, `_load`, `_reload`, the `entries.json`
+>   / `certificates.json` / `revocations.json` mirrors, and
+>   the `reload_thread` + `reload_lock` plumbing are
+>   **retired**.  `MERKLE_NEON` is mandatory.
+> - `mtc_store_add_entry` now opens a Postgres transaction,
+>   takes `pg_advisory_xact_lock(FNV-1a-64(log_id))`, calls
+>   `mtc_db_save_entry` + `mtc_tiled_tree_append_leaf`, and
+>   commits.  Concurrent FIPS-manifest submissions
+>   serialise cleanly without any new code in the FIPS
+>   handler.
+>
+> Inline impact below is itemized with `[PH3]` tags.  Wherever
+> this plan says `mtc_tree_*`, `mtc_merkle.c`,
+> `mtc_store_save`, or "file-based fallback", read the `[PH3]`
+> note for the post-phase-3 form.
+>
+> The wire-format from a FIPS verifier's point of view is
+> unchanged: the receipt JSON still carries a leaf type byte
+> (`0x02`), the canonical manifest, an inclusion proof, and a
+> log signature + checkpoint cosignature.  Phase 3 is a
+> server-side storage detail.
+
 > **Amendment — Issue #10 from `README-fips-issues.md`:** All references
 > below to "Ed25519" describe the original design and have been (or
 > are being) swept to **ML-DSA-87** (FIPS 204). Concrete impact:
@@ -55,7 +94,7 @@
 
 OpenSSL's FIPS integrity system stores SHA256 checksums of source files in the same repository as the source. An attacker with write access can modify both a source file and its checksum — nothing downstream detects it. The HMAC key is public, so rebuilding and re-running `fipsinstall` produces valid MACs for the tampered binary.
 
-postWolf has the same weakness in `fips-hash.sh` / `fips_test.c`. However, postWolf already has a **Merkle Tree Certificate (MTC) transparency log** with ML-DSA-87 cosignatures (originally Ed25519; migrated as part of this work — `[ISSUE #10]`), inclusion proofs, and a REST API — implemented as a **C server** (`mtc-keymaster/server/c/`). We can leverage this infrastructure to anchor FIPS source checksums in the append-only server-side log, making tampering detectable.
+postWolf has the same weakness in `fips-hash.sh` / `fips_test.c`. However, postWolf already has a **Merkle Tree Certificate (MTC) transparency log** with ML-DSA-87 cosignatures (originally Ed25519; migrated as part of this work — `[ISSUE #10]`), inclusion proofs, and a REST API — implemented as a **C server** (`mtc-keymaster/server2/c/`). We can leverage this infrastructure to anchor FIPS source checksums in the append-only server-side log, making tampering detectable.
 
 **Goal:** At build time, log a signed manifest of FIPS source file checksums to the C MTC server. At verification time, any party can check local source files against the server-logged manifest using inclusion proofs and ML-DSA-87 signatures — with or without network access.
 
@@ -63,7 +102,7 @@ postWolf has the same weakness in `fips-hash.sh` / `fips_test.c`. However, postW
 
 ### What Gets Logged
 
-A **FIPS Build Manifest** — a canonical JSON document listing every FIPS source file and its SHA256 hash. The SHA256 of this manifest becomes a leaf in the Merkle tree via `mtc_tree_append()`.
+A **FIPS Build Manifest** — a canonical JSON document listing every FIPS source file and its SHA256 hash. The SHA256 of this manifest becomes a leaf in the Merkle tree via `mtc_store_add_entry()` → `mtc_tiled_tree_append_leaf()` (`[PH3]`; legacy `mtc_tree_append` is gone).
 
 Entry type byte: `0x02` (new — existing types are `0x00` null, `0x01` TBS certificate).
 
@@ -96,11 +135,11 @@ Add endpoint handlers following the `handle_certificate_request()` pattern (line
   2. Validate required fields: `package`, `git_commit`, `expires`, `files[]` with `path` + `sha256`
   3. Build canonical JSON string (sorted keys via `json_object_object_add()` in sorted order)
   4. Prefix with `0x02` byte, append canonical JSON → entry buffer
-  5. Call `mtc_store_add_entry(store, entry_buf, entry_sz)` → returns index
-  6. Call `mtc_tree_inclusion_proof()` for proof
-  7. Call `mtc_tree_subtree_hash()` + `mtc_store_log_sign()` for ML-DSA-87 log signature, then await an `mtc_ca_sign_checkpoint()` covering this size from the offline CA host (`[ISSUE #1]` keys split, `[ISSUE #10]` algorithm sweep)
-  8. Build response JSON with index, proof, cosignature, subtree hash
-  9. Persist via `mtc_store_save()` + `mtc_db_save_fips_manifest()`
+  5. Call `mtc_store_add_entry(store, entry_buf, entry_sz)` → returns index.  `[PH3]` This now opens a Postgres transaction, takes `pg_advisory_xact_lock(FNV-1a-64(log_id))`, calls `mtc_db_save_entry` + `mtc_tiled_tree_append_leaf`, and commits — no caller-side locking required.
+  6. `[PH3]` Call `mtc_tiled_tree_inclusion_proof(&store->tree, idx, 0, store->tree.size, &proof, &proof_count)` for the proof; the legacy `mtc_tree_*` API is gone.
+  7. `[PH3]` Call `mtc_tiled_tree_subtree_hash(&store->tree, 0, store->tree.size, &subtree_hash)` + `mtc_store_log_sign()` for the ML-DSA-87 log signature, then await an `mtc_ca_sign_checkpoint()` covering this size from the offline CA host (`[ISSUE #1]` keys split, `[ISSUE #10]` algorithm sweep)
+  8. Build response JSON with index, proof, log signature, checkpoint cosignature, subtree hash
+  9. `[PH3]` Persist via `mtc_db_save_fips_manifest()` only — the tree state is already authoritative in Neon (`mtc_log_entries` + `mtc_merkle_tiles` + `mtc_merkle_top_nodes`) by step 5.  No `mtc_store_save()` call (file mode retired).
   10. Return 201 Created
 
 - `handle_fips_manifest_get()` — `GET /fips/manifest/<index>`
@@ -109,9 +148,9 @@ Add endpoint handlers following the `handle_certificate_request()` pattern (line
   3. Return stored manifest JSON
 
 - `handle_fips_manifest_proof()` — `GET /fips/manifest/<index>/proof`
-  1. Call `mtc_tree_inclusion_proof()` with current tree size
-  2. Call `mtc_store_cosign()` for fresh signature
-  3. Return proof + cosignature
+  1. `[PH3]` Call `mtc_tiled_tree_inclusion_proof(&store->tree, idx, 0, store->tree.size, ...)` with the current tree size
+  2. Call `mtc_store_log_sign()` (or whatever roles `[ISSUE #1]` settles on) for fresh log signature; recall the latest `mtc_ca_sign_checkpoint` cosignature from `mtc_checkpoints` (`[ISSUE #1]`)
+  3. Return proof + log signature + checkpoint cosignature
 
 - `handle_fips_manifest_search()` — `GET /fips/manifest/search?package=X&tag=Y`
   1. Scan entries with type `0x02`, filter by metadata
@@ -150,9 +189,9 @@ Add functions following `mtc_db_save_certificate()` / `mtc_db_load_certificates(
 - `mtc_db_save_fips_manifest(MtcDb *db, int index, const char *manifest_json, const char *package, const char *git_tag)`
 - `mtc_db_search_fips_manifests(MtcDb *db, const char *package, const char *tag, ...)`
 
-**File: `mtc-keymaster/server/c/mtc_store.c`**
+**File: `mtc-keymaster/server2/c/mtc_store.c`**
 
-Add entry type detection for `0x02` in `mtc_store_add_entry()` (lines 469-503):
+Add entry type detection for `0x02` in `mtc_store_add_entry()`:
 ```c
 if (entrySz > 0 && entry[0] == 0x02) {
     entry_type = 2;  /* FIPS manifest */
@@ -160,18 +199,28 @@ if (entrySz > 0 && entry[0] == 0x02) {
 }
 ```
 
-Add file-based fallback persistence for manifests in `mtc_store_save()`:
-- Write to `{data_dir}/fips_manifests.json`
+`[PH3]` No file-based fallback persistence — file mode is
+retired and `MtcStore` no longer owns resident
+`certificates[]` / `revoked_indices[]` / `fips_manifests[]`
+arrays.  The submit handler calls `mtc_db_save_fips_manifest`
+directly; subsequent lookups re-fault from Neon (mirror the
+`mtc_cert_cache` LRU pattern from phase 2 if the lookup rate
+warrants it).
 
-**File: `mtc-keymaster/server/c/mtc_store.h`**
+**File: `mtc-keymaster/server2/c/mtc_store.h`**
 
-Add to `MtcStore`:
-```c
-struct json_object **fips_manifests;
-int fips_manifest_count;
-```
+`[PH3]` No new fields on `MtcStore`.  The phase-2/3 refactor
+moved cert + revocation state out of the struct; FIPS
+manifests follow the same pattern (Neon authoritative,
+LRU-faulted on demand).
 
-**No changes needed to `mtc_merkle.c`** — `mtc_tree_append()`, `mtc_tree_inclusion_proof()`, `mtc_tree_subtree_hash()`, and `mtc_store_cosign()` all work with arbitrary entry data.
+**No changes needed to `mtc_merkle_tiled.c`** —
+`mtc_tiled_tree_append_leaf`, `_inclusion_proof`,
+`_subtree_hash`, and the log/checkpoint signing helpers
+(`mtc_store_log_sign` + `mtc_ca_sign_checkpoint` per
+`[ISSUE #1]`) all operate on opaque leaf bytes including type
+`0x02`.  `mtc_merkle.c` (legacy in-memory tree) is no longer
+in any production code path; do not add new callers.
 
 ### Phase 2: Client Tooling (`fips-framework/`)
 
@@ -202,7 +251,7 @@ All verification uses the MTC Merkle tree and ML-DSA-87 cosignatures natively (`
 The Merkle inclusion proof + cosignature replaces both `openssl35 verify` (cert
 chain) and `openssl35 dgst -verify` (signature):
 
-- Manifest hash → Merkle leaf (via `mtc_tree_append`)
+- Manifest hash → Merkle leaf (via `mtc_store_add_entry` → `mtc_tiled_tree_append_leaf`; `[PH3]`)
 - Inclusion proof → binds leaf to tree root
 - ML-DSA-87 log signature → log key signs the tree root in real time (via `mtc_store_log_sign` — new helper, see `[ISSUE #1]` below)
 - ML-DSA-87 CA checkpoint → CA key signs the covering checkpoint offline (via `mtc_ca_sign_checkpoint` on the offline CA host; uploaded back to the log)
@@ -235,7 +284,7 @@ This single file contains the manifest, inclusion proof, log signature, and CA-s
 
 | Component | Existing Code | Reuse |
 |-----------|---------------|-------|
-| Merkle tree | `mtc_merkle.c`: `mtc_tree_append()`, `mtc_tree_inclusion_proof()`, `mtc_tree_subtree_hash()` | Direct — works for any entry data |
+| Merkle tree | `[PH3]` `mtc_merkle_tiled.c`: `mtc_tiled_tree_append_leaf()`, `mtc_tiled_tree_inclusion_proof()`, `mtc_tiled_tree_subtree_hash()` (legacy `mtc_merkle.c` retired in production) | Direct — operates on opaque leaf bytes, type `0x02` included |
 | ML-DSA-87 log signing | `mtc_store.c:539-583`: `mtc_store_cosign()` (originally Ed25519, migrated to ML-DSA-87 — `[ISSUE #10]`) | Renamed to `mtc_store_log_sign()` per `[ISSUE #1]` (online log key, signs every root). The CA-checkpoint cosignature lives in separate offline tooling. |
 | Entry persistence | `mtc_store.c:469-503`: `mtc_store_add_entry()` | Direct — just add type 0x02 detection |
 | DB persistence | `mtc_db.c`: `mtc_db_save_certificate()` pattern | Copy for `mtc_db_save_fips_manifest()` |
