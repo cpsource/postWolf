@@ -916,50 +916,36 @@ int main(int argc, char **argv)
         if (resp) json_object_put(resp);
         free(resp_body);
 
-        /* Wait for the parent server's view to catch up before exiting.
+        /* Confirm the server view is consistent before exiting.
          *
-         * handle_revoke ran in a forked child of the MQC listener; the
-         * child SIGHUP'd the parent so its in-memory store gets a
-         * fresh load.  Bootstrap-proxy GETs (e.g. /revoked/<n>) are
-         * served from forks-of-the-parent, and a fork that lands
-         * during the parent's reload window inherits a transiently
-         * empty revoked_indices array — reporting revoked=false.
-         *
-         * Poll /revoked/<target> over the bootstrap port until we see
-         * revoked=true, so a "Revocation accepted" exit means
-         * downstream readers will agree.  Cap at ~10s; if we still
-         * see false past that, log a warning and exit non-zero. */
+         * Pre-rwlock-gating, this was a 5×2s poll loop covering the
+         * SIGHUP-reload window where a bootstrap fork could inherit
+         * a transiently-empty revoked_indices array.  The server's
+         * reload_lock now blocks new forks during the entire reload,
+         * so a single GET after the 200 response is authoritative —
+         * any fork serving us has already taken the rdlock and
+         * therefore sees the post-mutation state. */
         {
             char poll_path[64];
-            int  attempt;
-            int  observed = 0;
+            long pcode = 0;
+            char *pbody;
             snprintf(poll_path, sizeof(poll_path), "/revoked/%d",
                      target_index);
-            for (attempt = 0; attempt < 5; attempt++) {
-                long pcode = 0;
-                char *pbody;
-                if (attempt > 0) sleep(2);
-                pbody = mqc_bootstrap_http_get(server, poll_path, &pcode);
-                if (pbody && pcode == 200 &&
-                    strstr(pbody, "\"revoked\":true")) {
-                    observed = 1;
-                    free(pbody);
-                    break;
-                }
-                free(pbody);
-            }
-            if (observed) {
+            pbody = mqc_bootstrap_http_get(server, poll_path, &pcode);
+            if (pbody && pcode == 200 &&
+                strstr(pbody, "\"revoked\":true")) {
                 printf("Server view consistent: GET %s -> revoked=true\n",
                        poll_path);
             } else {
                 fprintf(stderr,
-                    "Warning: server still reports revoked=false on %s "
-                    "after 10s.  DB row landed (200 response above), "
-                    "but the parent's in-memory store has not picked it "
-                    "up.  Try `systemctl restart mtc-ca.service` if the "
-                    "condition persists.\n", poll_path);
+                    "Warning: GET %s did not report revoked=true "
+                    "(code=%ld).  DB row landed (200 response above) "
+                    "but the server view disagrees.  Try `systemctl "
+                    "restart mtc-ca.service` if the condition persists.\n",
+                    poll_path, pcode);
                 rc = 1;
             }
+            free(pbody);
         }
 
     done:

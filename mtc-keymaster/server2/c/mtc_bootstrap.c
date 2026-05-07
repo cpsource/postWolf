@@ -1980,15 +1980,20 @@ static void *bootstrap_thread(void *arg)
             continue;
         }
 
-        /* Fork per-connection: parent resumes accept loop, child serves. */
+        /* Fork per-connection: parent resumes accept loop, child serves.
+         * Reload-lock gating mirrors the TLS/plain + MQC fork sites
+         * in mtc_http.c — see those for the POSIX-safe rationale. */
+        pthread_rwlock_rdlock(&store->reload_lock);
         {
             pid_t pid = fork();
             if (pid < 0) {
+                pthread_rwlock_unlock(&store->reload_lock);
                 LOG_ERROR("bootstrap: fork failed: %s", strerror(errno));
                 close(client_fd);
                 continue;
             }
             if (pid > 0) {
+                pthread_rwlock_unlock(&store->reload_lock);
                 /* Parent: drop socket fd — child holds its own ref.
                  * TODO #65: count this child against the global
                  * mqc-max-children cap.  SIGCHLD reaper (in
@@ -1998,7 +2003,7 @@ static void *bootstrap_thread(void *arg)
                 close(client_fd);
                 continue;
             }
-            /* Child: no longer needs the listen socket. */
+            /* Child: do NOT touch reload_lock — see TLS/plain site. */
             LOG_DEBUG("bootstrap: child pid=%d handling conn", (int)getpid());
             close(listen_fd);
             /* Detach from the parent's PGconn — see comment at the

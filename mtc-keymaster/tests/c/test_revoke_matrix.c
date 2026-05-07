@@ -343,9 +343,9 @@ static char *mqc_http_post(const char *path, const char *body, int body_len,
 /* ------------------------------------------------------------------ */
 /* Foreign-domain index discovery via /certificate/search.            */
 /*                                                                    */
-/* If a SIGHUP-reload is in flight (e.g., we just enrolled Bob), the  */
-/* bootstrap fork can land mid-reload and see a transient empty store.*/
-/* Retry on results=0 with a short sleep before giving up.            */
+/* The server's reload_lock now blocks bootstrap forks for the entire */
+/* reload window, so a single GET is authoritative — any reply we get */
+/* is post-reload-stable.                                             */
 /* ------------------------------------------------------------------ */
 static int discover_foreign_indices(const char *server_str,
                                     const char *foreign_domain,
@@ -357,34 +357,21 @@ static int discover_foreign_indices(const char *server_str,
     struct json_object *root = NULL, *results = NULL, *entry, *val;
     int n = 0, i;
     int rc = -1;
-    int attempt;
 
     snprintf(path, sizeof(path), "/certificate/search?q=%s", foreign_domain);
 
-    for (attempt = 0; attempt < 3; attempt++) {
-        if (attempt > 0) sleep(2);
+    resp = mqc_bootstrap_http_get(server_str, path, &code);
+    if (!resp || code != 200) {
+        fprintf(stderr, "[discover] GET %s: code=%ld body=%.200s\n",
+                path, code, resp ? resp : "(null)");
         free(resp);
-        if (root) { json_object_put(root); root = NULL; }
-
-        resp = mqc_bootstrap_http_get(server_str, path, &code);
-        if (!resp || code != 200) {
-            fprintf(stderr, "[discover] GET %s: code=%ld body=%.200s\n",
-                    path, code, resp ? resp : "(null)");
-            continue;
-        }
-        root = json_tokener_parse(resp);
-        if (!root) {
-            fprintf(stderr, "[discover] invalid JSON: %.200s\n", resp);
-            continue;
-        }
-        if (!json_object_object_get_ex(root, "results", &results))
-            continue;
-        n = (int)json_object_array_length(results);
-        if (n > 0) break;  /* got something to match */
-        /* results=0 is the SIGHUP-reload race; retry. */
-        fprintf(stderr,
-            "[discover] attempt %d: results=0 (likely mid-reload), retrying\n",
-            attempt + 1);
+        return -1;
+    }
+    root = json_tokener_parse(resp);
+    if (!root) {
+        fprintf(stderr, "[discover] invalid JSON: %.200s\n", resp);
+        free(resp);
+        return -1;
     }
 
     free(resp);
@@ -841,37 +828,29 @@ int main(int argc, char **argv)
 
     /* Verify persisted state: GET /revoked/<bob_idx> over bootstrap.
      *
-     * The parent's SIGHUP-driven reload races with bootstrap
-     * fork-per-connection: a child that forks between "clear
-     * revoked_indices" and "load from DB" inherits an empty array
-     * and reports revoked=false even though the DB row landed.
-     * Retry up to 5 times with 2s pauses to ride out the window. */
+     * The server's reload_lock now blocks bootstrap forks for the
+     * full reload window, so a single GET is authoritative — every
+     * fork has already taken the rdlock and therefore sees the
+     * post-mutation state. */
     {
         char path[64];
         long code = 0;
         char *resp = NULL;
         int ok = 0;
-        int attempt;
         snprintf(path, sizeof(path), "/revoked/%d", bob_id.cert_index);
-        for (attempt = 0; attempt < 5; attempt++) {
-            if (attempt > 0) sleep(2);
-            free(resp); resp = NULL;
-            resp = mqc_bootstrap_http_get(server, path, &code);
-            /* Match both formattings — handle_revoked_check uses
-             * "revoked":true (no space) on the wire, but the
-             * bootstrap http_get proxy re-serializes with a space
-             * after the colon ("revoked": true). */
-            if (resp && code == 200 &&
-                (strstr(resp, "\"revoked\":true") ||
-                 strstr(resp, "\"revoked\": true"))) {
-                ok = 1;
-                break;
-            }
+        resp = mqc_bootstrap_http_get(server, path, &code);
+        /* Match both formattings — handle_revoked_check uses
+         * "revoked":true (no space) on the wire, but the bootstrap
+         * http_get proxy re-serializes with a space after the colon
+         * ("revoked": true). */
+        if (resp && code == 200 &&
+            (strstr(resp, "\"revoked\":true") ||
+             strstr(resp, "\"revoked\": true"))) {
+            ok = 1;
         }
-        printf("[%s] verify_persisted: GET %s code=%ld %s%s\n",
+        printf("[%s] verify_persisted: GET %s code=%ld %s\n",
                ok ? "PASS" : "FAIL", path, code,
-               resp ? "(body retrieved)" : "(no body)",
-               attempt > 0 ? " [retried]" : "");
+               resp ? "(body retrieved)" : "(no body)");
         if (!ok && resp)
             printf("    actual: %.200s\n", resp);
         if (ok) g_pass++; else g_fail++;

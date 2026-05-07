@@ -93,6 +93,12 @@ static void *reload_thread(void *arg)
         if (sig != SIGHUP) continue;
 
         LOG_INFO("reload: SIGHUP received, refreshing store from DB");
+        /* Exclusive lock excludes every listener fork until reload
+         * completes.  No timeout — reload is tree-only post-phase-2,
+         * sub-second at current scale; listeners briefly stall their
+         * accept loops, which is exactly the desired behavior (no
+         * fork inherits a transiently-empty store). */
+        pthread_rwlock_wrlock(&store->reload_lock);
         if (mtc_store_reload(store) != 0) {
             LOG_WARN("reload: mtc_store_reload failed");
         } else {
@@ -101,6 +107,7 @@ static void *reload_thread(void *arg)
              * meaningful "size of the log" indicator post-reload. */
             LOG_INFO("reload: store now at %d entries", store->tree.size);
         }
+        pthread_rwlock_unlock(&store->reload_lock);
     }
     return NULL;
 }

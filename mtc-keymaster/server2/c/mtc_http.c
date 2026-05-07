@@ -2583,15 +2583,24 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
             }
         }
 
-        /* Fork per-connection: parent resumes accept loop, child serves. */
+        /* Fork per-connection: parent resumes accept loop, child serves.
+         *
+         * Hold the reload-lock as a reader across the fork itself so
+         * a SIGHUP-driven mtc_store_reload (writer) cannot run during
+         * the COW snapshot.  Parent unlocks immediately after fork;
+         * child inherits the held-lock memory but never touches the
+         * lock object again (POSIX-safe pattern). */
+        pthread_rwlock_rdlock(&store->reload_lock);
         {
             pid_t pid = fork();
             if (pid < 0) {
+                pthread_rwlock_unlock(&store->reload_lock);
                 LOG_ERROR("fork failed: %s", strerror(errno));
                 cio_close(&cio);
                 continue;
             }
             if (pid > 0) {
+                pthread_rwlock_unlock(&store->reload_lock);
                 /* Parent: drop socket fd — child holds its own ref.
                  * Bump child counter; SIGCHLD reaper decrements on exit. */
                 atomic_fetch_add(&g_active_children, 1);
@@ -2601,7 +2610,10 @@ int mtc_http_serve(const char *host, int port, MtcStore *store,
                 close(cio.fd);
                 continue;
             }
-            /* Child: no longer needs the listen socket. */
+            /* Child: no longer needs the listen socket.  Do NOT
+             * touch reload_lock — the COW copy is meaningless and
+             * any pthread_rwlock_unlock here would race with the
+             * parent's. */
             LOG_DEBUG("child pid=%d handling %s conn",
                       (int)getpid(), use_tls ? "TLS" : "plain");
             close(listen_fd);
@@ -2690,15 +2702,19 @@ static void *mqc_listener_thread(void *arg)
 
         cio.fd = mqc_get_fd(cio.mqc);
 
-        /* Fork per-connection: parent resumes accept loop, child serves. */
+        /* Fork per-connection: parent resumes accept loop, child serves.
+         * Reload-lock gating mirrors the TLS/plain fork site above. */
+        pthread_rwlock_rdlock(&store->reload_lock);
         {
             pid_t pid = fork();
             if (pid < 0) {
+                pthread_rwlock_unlock(&store->reload_lock);
                 LOG_ERROR("MQC fork failed: %s", strerror(errno));
                 cio_close(&cio);
                 continue;
             }
             if (pid > 0) {
+                pthread_rwlock_unlock(&store->reload_lock);
                 /* Parent: drop socket fd — child holds its own ref.
                  * Bump child counter; SIGCHLD reaper decrements on exit. */
                 atomic_fetch_add(&g_active_children, 1);
@@ -2707,7 +2723,7 @@ static void *mqc_listener_thread(void *arg)
                 close(cio.fd);
                 continue;
             }
-            /* Child: no longer needs the listen socket. */
+            /* Child: do NOT touch reload_lock — see TLS/plain site. */
             LOG_DEBUG("child pid=%d handling MQC conn", (int)getpid());
             close(listen_fd);
             /* Detach from the parent's PGconn — see TLS/plain fork

@@ -296,6 +296,15 @@ int mtc_store_init(MtcStore *store, const char *data_dir,
         return -1;
     }
 
+    /* Reload/fork coordination rwlock.  Default attrs (process-
+     * private) are correct here — reload thread + listener threads
+     * all live in the parent, and forked children never touch the
+     * lock again. */
+    if (pthread_rwlock_init(&store->reload_lock, NULL) != 0) {
+        fprintf(stderr, "[store] pthread_rwlock_init failed\n");
+        return -1;
+    }
+
     store->checkpoints = (struct json_object**)calloc(256,
         sizeof(struct json_object*));
 
@@ -344,6 +353,7 @@ void mtc_store_free(MtcStore *store)
     }
     free(store->certificates);
     mtc_cert_cache_free(&store->cert_cache);
+    pthread_rwlock_destroy(&store->reload_lock);
     for (i = 0; i < store->checkpoint_count; i++) {
         if (store->checkpoints[i])
             json_object_put(store->checkpoints[i]);

@@ -24,6 +24,7 @@
 #include "mtc_db.h"
 #include "mtc_cert_cache.h"
 #include <json-c/json.h>
+#include <pthread.h>
 
 #define MTC_MAX_CERTS          10000  /**< Upper bound for revocation loading   */
 #define MTC_MAX_LANDMARKS      1000   /**< Maximum landmark entries             */
@@ -81,6 +82,17 @@ typedef struct {
      * parent's cache via COW; subsequent inserts/evictions diverge
      * the child's copy from the parent's. */
     mtc_cert_cache_t cert_cache;
+
+    /* Reader-writer coordination between SIGHUP-driven reload and
+     * the listener fork sites.  Reload thread takes wrlock around
+     * mtc_store_reload (excludes any new fork); each listener takes
+     * rdlock around fork() (parent unlocks immediately after fork;
+     * child inherits the held-lock state in COW memory but never
+     * touches the lock object again, per POSIX-safe fork+lock
+     * pattern).  Closes the unfiled fork-during-reload race that
+     * the client-side settle-poll / retry-on-empty used to cover.
+     * See TODO #74 phase-2 notes. */
+    pthread_rwlock_t reload_lock;
 
     /* Checkpoints */
     struct json_object **checkpoints;  /**< Array of checkpoint json_objects
