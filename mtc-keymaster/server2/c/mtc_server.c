@@ -96,8 +96,10 @@ static void *reload_thread(void *arg)
         if (mtc_store_reload(store) != 0) {
             LOG_WARN("reload: mtc_store_reload failed");
         } else {
-            LOG_INFO("reload: store now at %d entries, %d certs",
-                     store->tree.size, store->cert_count);
+            /* In DB mode (TODO #74 phase 2) cert_count is always 0 —
+             * certs are no longer mirrored in RAM.  Tree size is the
+             * meaningful "size of the log" indicator post-reload. */
+            LOG_INFO("reload: store now at %d entries", store->tree.size);
         }
     }
     return NULL;

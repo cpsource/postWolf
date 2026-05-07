@@ -3984,6 +3984,149 @@ approval flow.
 
 ---
 
+### 74. In-memory `MtcStore` is RAM-bounded — won't scale past ~1M certs
+
+**Severity:** High — postWolf is designed for scale, and the
+current architecture has a hard ceiling at ~1M certs (see math
+below).  No impact at *today's* scale (~84 entries on
+factsorlie), but every design decision that locks in the
+parent-owned in-memory store makes the eventual restructuring
+more expensive.  Filed 2026-05-07 from a session discussion of
+why the SIGHUP-reload patch (TODO #56 / #60) exists; bumped to
+High the same day on user direction ("we are designing for
+scale").
+
+**The problem.**  The parent process holds the entire CA state
+in `MtcStore`: the Merkle tree (`store->tree`), the cert array
+(`store->certificates[]`, one full `json_object` per cert), the
+revoked-indices array, and the landmarks.  Every fork-after-
+accept child inherits this via COW and serves reads out of
+RAM.  This is the *reason* the SIGHUP-driven reload pipeline
+exists — children that mutate the DB have to signal the
+parent so the next fork's COW snapshot is fresh.
+
+**Where the wall is.**  The dominant term is the cert array;
+ML-DSA-87 SPKIs are ~2.6 KB and the wrapping JSON adds more.
+Order-of-magnitude:
+
+| Tree size | Today (cert array dominant) | After phase 2 (tree only) |
+|---|---|---|
+| 84 (today) | ~250 KB | ~3 KB |
+| 10 K | ~30 MB | ~320 KB |
+| 1 M | ~3 GB | ~32 MB |
+| 10 M | ~30 GB | ~320 MB |
+| 100 M | ~300 GB | ~3 GB (tile-tree time) |
+
+Phase 2 (lazy-fetch certs from Neon, see below) drops the
+ceiling from ~1 M to ~10 M without restructuring the tree.
+Phase 3 (tile the tree) takes it past 100 M.  The Merkle tree
+itself (32-byte hashes per inner node) and the revoked-indices
+array (4 bytes per revocation) are the only RAM costs that
+survive phase 2.
+
+**Secondary failure mode.**  `mtc_store_reload` does a *full*
+DB re-load on every SIGHUP, so reload latency grows linearly
+with `tree.size`.  At 1 M entries the reload itself is
+seconds, and the regression-guard window (where the store is
+transiently genesis-only between `mtc_tree_free` and
+`mtc_store_load` completing — see `mtc_store.c:529-555`) widens
+correspondingly.  Bootstrap forks landing in that window
+inherit the empty state, which is the unfiled "fork-during-
+reload race" the test driver and `revoke-key` settle-poll
+client-retry around today.
+
+**Industry pattern.**  Production transparency logs (Google's
+Trillian, Go's `mod/sumdb/tlog`, CT v2) use a **tiled Merkle
+tree**: only the top K levels of inner-node hashes live in
+RAM; leaves and lower-level tiles are paged from disk or
+object storage on demand, with a fixed-size LRU on tiles.
+Cert blobs themselves never live in process memory — endpoints
+stream them straight from DB-backed storage.  Reads are
+`O(log N)` tile fetches instead of `O(1)` RAM lookups, but the
+constant is small (a few KB per fetch) and the working set is
+bounded.
+
+**Suggested phasing.**
+
+1. **Now → ~10 K entries:** current design holds.  SIGHUP-
+   reload is fine.  No action.
+2. **~10 K → ~10 M:** drop ALL in-memory cert state on the
+   server — both the blob array (`store->certificates[]`) and
+   any metadata mirror.  Server reduces to:
+     - Merkle tree inner-node hashes (~32 bytes per entry,
+       cheap),
+     - CA + cosigner private keys,
+     - rate-limit / abuse counters,
+     - a small bounded LRU on the cert-lookup hot path.
+
+   Every cert lookup (`/certificate/N`, `/certificate/search`,
+   `/revoked/N`, the cert-blob portion of `/log/proof/N`)
+   becomes a Neon round-trip on cache miss, with the LRU
+   absorbing the verification-clusters-around-active-certs
+   pattern.  Per-entry server RAM drops from ~3 KB to ~32
+   bytes — roughly 100× headroom — and SIGHUP-reload
+   survives but now only carries the tree tail (cheap), not a
+   multi-MB cert array.  Trade-off: per-lookup latency picks
+   up ~10–50 ms Neon RTT on cache miss; in practice
+   verifications cluster around active certs so the LRU
+   absorbs most of it.  Effectively the server becomes a
+   tree-signer + auth front-end for Neon; reads pass through.
+3. **~10 M+:** tile the tree (CT v2 / `tlog` style) so even
+   the inner-node hashes don't all live in RAM at once.  At
+   this point shm-backed tile cache + DB write-through also
+   eliminates the SIGHUP-reload pipeline entirely — mutating
+   children update tile pages every fork already sees, no
+   signal needed, and the unfiled fork-during-reload race
+   disappears.
+
+**Trigger conditions for re-evaluation.**  Re-open this TODO
+when any of these are observed in production:
+
+- `RSS` of `mtc_server` parent exceeds ~500 MB.
+- `tree.size` exceeds 10 K.
+- Reload latency (time from SIGHUP delivery to "store now at
+  N entries" log line) exceeds 500 ms.
+- Bootstrap-fork-during-reload race fires more than once a
+  day (visible as `search-empty` retries or `revoked=false`
+  retries in client logs).
+
+**Files (when implemented):**
+
+- `mtc-keymaster/server2/c/mtc_store.c` / `.h` — replace the
+  in-memory cert array (and any metadata mirror that has
+  accreted) with a `mtc_store_get_cert(store, N, ...)` API
+  that goes Neon → LRU → caller.  `mtc_store_is_revoked(N)`
+  similarly.  `mtc_store_search_subject` becomes a Neon
+  query, not an array walk.  Tree-only state (inner hashes,
+  size, root) stays in `MtcStore`.  Replace
+  `mtc_store_reload` with shm write-through under phase 3.
+- `mtc-keymaster/server2/c/mtc_http.c` — every `for (i = 0;
+  i < store->cert_count; i++)` call site (currently in
+  `/certificate/N`, `/certificate/search`, `/revoked/N`,
+  `/log/proof/N`, the cert-renew handler) routes through
+  the new fetch API.  Each of these is the kind of thing
+  the action-ordering note above warns against accreting
+  more of.
+- `mtc-keymaster/server2/c/mtc_bootstrap.c` — same on the
+  bootstrap-proxy side; the http_get proxy at `:404` and
+  the cert-issuance commit path both touch
+  `store->certificates[]` today.
+- `mtc-keymaster/server2/c/mtc_server.c` — the SIGHUP
+  block / `reload_thread` plumbing stays under phase 2 (now
+  cheap because it only refreshes the tree tail) but goes
+  away entirely under phase 3.
+
+**Status:** OPEN, High.  Action ordering for a scale-aware
+roadmap: stop accreting features that assume the in-memory
+store (every new endpoint that does `for (i = 0; i <
+store->cert_count; i++)` is one more call site to migrate
+later); plan phase 2 ("server holds no cert state, only the
+Merkle tree + LRU") as the next major arc once current TODO
+backlog clears, since it's the cheapest ~100× headroom and
+doesn't require shm or tile-tree infrastructure.
+
+---
+
 ## Appendix: Server Directory Layout
 
 Three directories are used on the server. The first two are active in the

@@ -27,12 +27,14 @@ $(MQC_LIB):
 
 admin_recosign: admin_recosign.c \
                 $(SERVER_DIR)/mtc_store.c $(SERVER_DIR)/mtc_store.h \
+                $(SERVER_DIR)/mtc_cert_cache.c $(SERVER_DIR)/mtc_cert_cache.h \
                 $(SERVER_DIR)/mtc_merkle.c $(SERVER_DIR)/mtc_merkle.h \
                 $(SERVER_DIR)/mtc_db.c $(SERVER_DIR)/mtc_db.h \
                 $(SERVER_DIR)/mtc_log.c $(SERVER_DIR)/mtc_log.h
 	$(CC) $(CFLAGS) -o $@ \
 		admin_recosign.c \
 		$(SERVER_DIR)/mtc_store.c \
+		$(SERVER_DIR)/mtc_cert_cache.c \
 		$(SERVER_DIR)/mtc_merkle.c \
 		$(SERVER_DIR)/mtc_db.c \
 		$(SERVER_DIR)/mtc_log.c \
@@ -41,12 +43,14 @@ admin_recosign: admin_recosign.c \
 # One-shot Ed25519 → ML-DSA-87 cosigner rotation; see TODO #47.
 migrate-cosigner: migrate-cosigner.c \
                   $(SERVER_DIR)/mtc_store.c $(SERVER_DIR)/mtc_store.h \
+                  $(SERVER_DIR)/mtc_cert_cache.c $(SERVER_DIR)/mtc_cert_cache.h \
                   $(SERVER_DIR)/mtc_merkle.c $(SERVER_DIR)/mtc_merkle.h \
                   $(SERVER_DIR)/mtc_db.c $(SERVER_DIR)/mtc_db.h \
                   $(SERVER_DIR)/mtc_log.c $(SERVER_DIR)/mtc_log.h
 	$(CC) $(CFLAGS) -o $@ \
 		migrate-cosigner.c \
 		$(SERVER_DIR)/mtc_store.c \
+		$(SERVER_DIR)/mtc_cert_cache.c \
 		$(SERVER_DIR)/mtc_merkle.c \
 		$(SERVER_DIR)/mtc_db.c \
 		$(SERVER_DIR)/mtc_log.c \
@@ -55,12 +59,14 @@ migrate-cosigner: migrate-cosigner.c \
 # Upsert a leaf/CA pubkey into Neon's mtc_public_keys.
 backfill-pubkey: backfill-pubkey.c \
                  $(SERVER_DIR)/mtc_store.c $(SERVER_DIR)/mtc_store.h \
+                 $(SERVER_DIR)/mtc_cert_cache.c $(SERVER_DIR)/mtc_cert_cache.h \
                  $(SERVER_DIR)/mtc_merkle.c $(SERVER_DIR)/mtc_merkle.h \
                  $(SERVER_DIR)/mtc_db.c $(SERVER_DIR)/mtc_db.h \
                  $(SERVER_DIR)/mtc_log.c $(SERVER_DIR)/mtc_log.h
 	$(CC) $(CFLAGS) -o $@ \
 		backfill-pubkey.c \
 		$(SERVER_DIR)/mtc_store.c \
+		$(SERVER_DIR)/mtc_cert_cache.c \
 		$(SERVER_DIR)/mtc_merkle.c \
 		$(SERVER_DIR)/mtc_db.c \
 		$(SERVER_DIR)/mtc_log.c \

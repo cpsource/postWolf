@@ -464,11 +464,13 @@ static void handle_log_proof(client_io *io, MtcStore *store, int index)
 /* GET /certificate/<index> — retrieve a stored certificate by log index. */
 static void handle_get_certificate(client_io *io, MtcStore *store, int index)
 {
-    if (index < 0 || index >= store->cert_count || !store->certificates[index]) {
+    struct json_object *cert = mtc_store_get_cert(store, index);
+    if (!cert) {
         http_send_error(io, 404, "certificate not found");
         return;
     }
-    http_send_json_obj(io, 200, store->certificates[index]);
+    http_send_json_obj(io, 200, cert);
+    json_object_put(cert);
 }
 
 /* ------------------------------------------------------------------ */
@@ -591,18 +593,18 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
             json_object_put(req);
             return;
         }
-        if (peer_idx >= store->cert_count ||
-            store->certificates[peer_idx] == NULL) {
+        struct json_object *caller_cert = mtc_store_get_cert(store, peer_idx);
+        if (!caller_cert) {
             http_send_error(io, 404, "caller cert not found in log");
             json_object_put(req);
             return;
         }
-        struct json_object *caller_cert, *sc_j, *tbs_j, *subj_j;
-        caller_cert = store->certificates[peer_idx];
+        struct json_object *sc_j, *tbs_j, *subj_j;
         if (!json_object_object_get_ex(caller_cert, "standalone_certificate", &sc_j) ||
             !json_object_object_get_ex(sc_j, "tbs_entry", &tbs_j) ||
             !json_object_object_get_ex(tbs_j, "subject", &subj_j)) {
             http_send_error(io, 500, "internal error: malformed caller cert");
+            json_object_put(caller_cert);
             json_object_put(req);
             return;
         }
@@ -625,9 +627,11 @@ static void handle_enrollment_nonce(client_io *io, MtcStore *store,
             http_send_error(io, 403,
                 "only the CA for this domain (subject "
                 "'<domain>-ca') may mint leaf nonces");
+            json_object_put(caller_cert);
             json_object_put(req);
             return;
         }
+        json_object_put(caller_cert);
     }
 
     /* Optional fingerprint.  Required for CA nonces and short-lived
@@ -909,16 +913,16 @@ static void handle_cancel_nonce(client_io *io, MtcStore *store,
     }
 
     /* Step 2: verify caller is a CA (subject ends in "-ca") */
-    if (peer_idx >= store->cert_count ||
-        store->certificates[peer_idx] == NULL) {
+    caller_cert = mtc_store_get_cert(store, peer_idx);
+    if (!caller_cert) {
         http_send_error(io, 404, "caller cert not found in log");
         return;
     }
-    caller_cert = store->certificates[peer_idx];
     if (!json_object_object_get_ex(caller_cert, "standalone_certificate", &sc_j) ||
         !json_object_object_get_ex(sc_j, "tbs_entry", &tbs_j) ||
         !json_object_object_get_ex(tbs_j, "subject", &subj_j)) {
         http_send_error(io, 500, "internal error: malformed caller cert");
+        json_object_put(caller_cert);
         return;
     }
     caller_subject = json_object_get_string(subj_j);
@@ -930,8 +934,14 @@ static void handle_cancel_nonce(client_io *io, MtcStore *store,
         http_send_error(io, 403,
             "only CA identities (subject ending in '-ca') may cancel "
             "reservation nonces");
+        json_object_put(caller_cert);
         return;
     }
+    /* caller_subject borrowed from caller_cert; finished with it now. */
+    json_object_put(caller_cert);
+    caller_cert = NULL;
+    caller_subject = NULL;
+    (void)caller_subject;
 
     /* Step 3: parse body */
     if (!body) {
@@ -1064,21 +1074,25 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
     }
 
     /* --- Step 2: look up caller's cert in the log --- */
-    if (cert_index >= store->cert_count ||
-        store->certificates[cert_index] == NULL) {
+    old_cert = mtc_store_get_cert(store, cert_index);
+    if (!old_cert) {
         http_send_error(io, 404, "caller cert not found in log");
         return;
     }
-    old_cert = store->certificates[cert_index];
     if (!json_object_object_get_ex(old_cert, "standalone_certificate", &old_sc) ||
         !json_object_object_get_ex(old_sc, "tbs_entry", &old_tbs)) {
         http_send_error(io, 500, "internal error: malformed stored cert");
+        json_object_put(old_cert);
         return;
     }
     if (!json_object_object_get_ex(old_tbs, "subject", &val)) {
         http_send_error(io, 500, "internal error: no subject in stored cert");
+        json_object_put(old_cert);
         return;
     }
+    /* old_subject + old_algo are borrowed string pointers into old_cert;
+     * keep old_cert alive until we're done reading them.  copy_subject
+     * guarantees the caller-visible string outlives old_cert's put. */
     old_subject = json_object_get_string(val);
     old_algo = "ML-DSA-87";
     if (json_object_object_get_ex(old_tbs, "subject_public_key_algorithm", &val))
@@ -1089,6 +1103,7 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
         LOG_WARN("renew-cert: cert %d (%s) is revoked; refusing",
                  cert_index, old_subject);
         http_send_error(io, 403, "certificate is revoked");
+        json_object_put(old_cert);
         return;
     }
 
@@ -1096,11 +1111,13 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
     req = json_tokener_parse(body);
     if (!req) {
         http_send_error(io, 400, "invalid JSON");
+        json_object_put(old_cert);
         return;
     }
     if (!json_object_object_get_ex(req, "new_public_key_pem", &val)) {
         http_send_error(io, 400, "missing 'new_public_key_pem'");
         json_object_put(req);
+        json_object_put(old_cert);
         return;
     }
     new_pub_pem = json_object_get_string(val);
@@ -1111,6 +1128,7 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
             http_send_error(io, 400,
                 "validity_days must be between 1 and 3650");
             json_object_put(req);
+            json_object_put(old_cert);
             return;
         }
     }
@@ -1201,6 +1219,7 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
             json_object_put(tbs);
             free(entry_buf);
             json_object_put(req);
+            json_object_put(old_cert);
             return;
         }
 
@@ -1279,23 +1298,36 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
         json_object_object_add(result, "checkpoint",
             json_object_get(checkpoint));
 
-        /* Store certificate */
-        if (new_index >= store->cert_capacity) {
-            store->cert_capacity *= 2;
-            store->certificates = (struct json_object **)realloc(
-                store->certificates,
-                (size_t)store->cert_capacity * sizeof(struct json_object *));
-        }
-        while (store->cert_count <= new_index)
-            store->certificates[store->cert_count++] = NULL;
-        store->certificates[new_index] = json_object_get(result);
-
-        /* Persist */
+        /* Persist.  In DB mode (TODO #74 phase 2) the cert array is
+         * not maintained — the row in mtc_certificates is the source
+         * of truth and reads fault through cert_cache on demand.
+         * In file mode the in-memory array still acts as the read
+         * source so we update it. */
         mtc_store_save(store);
         if (store->use_db && store->db) {
             const char *cert_str = json_object_to_json_string(result);
-            if (mtc_db_save_certificate(store->db, new_index, cert_str) != 0)
+            if (mtc_db_save_certificate(store->db, new_index, cert_str) != 0) {
                 LOG_ERROR("renew-cert: DB save_certificate failed for index %d", new_index);
+                http_send_error(io, 500, "DB persist failed");
+                json_object_put(result);
+                json_object_put(tbs);
+                json_object_put(checkpoint);
+                free(proof);
+                free(entry_buf);
+                json_object_put(old_cert);
+                json_object_put(req);
+                return;
+            }
+        } else {
+            if (new_index >= store->cert_capacity) {
+                store->cert_capacity *= 2;
+                store->certificates = (struct json_object **)realloc(
+                    store->certificates,
+                    (size_t)store->cert_capacity * sizeof(struct json_object *));
+            }
+            while (store->cert_count <= new_index)
+                store->certificates[store->cert_count++] = NULL;
+            store->certificates[new_index] = json_object_get(result);
         }
 
         LOG_INFO("renew-cert: issued new cert for '%s' at index %d (was %d)",
@@ -1310,6 +1342,7 @@ static void handle_renew_cert(client_io *io, MtcStore *store,
         free(entry_buf);
     }
 
+    json_object_put(old_cert);
     json_object_put(req);
 }
 
@@ -1461,7 +1494,6 @@ static void handle_search_certificates(client_io *io, MtcStore *store, const cha
 {
     const char *qs, *qval = NULL;
     struct json_object *obj, *arr;
-    int i;
 
     qs = strchr(path, '?');
     if (qs) {
@@ -1478,24 +1510,33 @@ static void handle_search_certificates(client_io *io, MtcStore *store, const cha
     obj = json_object_new_object();
     json_object_object_add(obj, "query", json_object_new_string(qval));
 
-    arr = json_object_new_array();
-    for (i = 0; i < store->cert_count; i++) {
-        struct json_object *cert, *sc, *tbs, *val;
-        if (!store->certificates[i]) continue;
+    if (store->use_db && store->db) {
+        /* DB-backed search (TODO #74 phase 2): a single ILIKE-on-JSONB
+         * query returns the entire result set, no in-memory walk
+         * needed. */
+        arr = mtc_db_search_certs_by_subject(store->db, qval);
+        if (!arr) arr = json_object_new_array();
+    } else {
+        int i;
+        arr = json_object_new_array();
+        for (i = 0; i < store->cert_count; i++) {
+            struct json_object *cert, *sc, *tbs, *val;
+            if (!store->certificates[i]) continue;
 
-        cert = store->certificates[i];
-        if (json_object_object_get_ex(cert, "standalone_certificate", &sc) &&
-            json_object_object_get_ex(sc, "tbs_entry", &tbs) &&
-            json_object_object_get_ex(tbs, "subject", &val)) {
-            const char *subj = json_object_get_string(val);
-            /* Case-insensitive substring match */
-            if (strcasestr(subj, qval)) {
-                struct json_object *result = json_object_new_object();
-                json_object_object_add(result, "index",
-                    json_object_new_int(i));
-                json_object_object_add(result, "subject",
-                    json_object_new_string(subj));
-                json_object_array_add(arr, result);
+            cert = store->certificates[i];
+            if (json_object_object_get_ex(cert, "standalone_certificate", &sc) &&
+                json_object_object_get_ex(sc, "tbs_entry", &tbs) &&
+                json_object_object_get_ex(tbs, "subject", &val)) {
+                const char *subj = json_object_get_string(val);
+                /* Case-insensitive substring match */
+                if (strcasestr(subj, qval)) {
+                    struct json_object *result = json_object_new_object();
+                    json_object_object_add(result, "index",
+                        json_object_new_int(i));
+                    json_object_object_add(result, "subject",
+                        json_object_new_string(subj));
+                    json_object_array_add(arr, result);
+                }
             }
         }
     }
@@ -1751,22 +1792,23 @@ static void handle_revoke(client_io *io, MtcStore *store,
     }
 
     /* --- Look up CA cert --- */
-    if (ca_cert_index < 0 || ca_cert_index >= store->cert_count ||
-        store->certificates[ca_cert_index] == NULL) {
+    ca_cert_json = mtc_store_get_cert(store, ca_cert_index);
+    if (!ca_cert_json) {
         http_send_error(io, 404, "CA certificate not found");
         json_object_put(req);
         return;
     }
-    ca_cert_json = store->certificates[ca_cert_index];
     if (!json_object_object_get_ex(ca_cert_json, "standalone_certificate",
                                    &ca_sc) ||
         !json_object_object_get_ex(ca_sc, "tbs_entry", &ca_tbs)) {
         http_send_error(io, 500, "malformed CA cert");
+        json_object_put(ca_cert_json);
         json_object_put(req);
         return;
     }
     if (!json_object_object_get_ex(ca_tbs, "subject", &val)) {
         http_send_error(io, 500, "CA cert missing subject");
+        json_object_put(ca_cert_json);
         json_object_put(req);
         return;
     }
@@ -1777,6 +1819,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
     if (ca_subj_len < 3 || strcmp(ca_subject + ca_subj_len - 3, "-ca") != 0) {
         LOG_WARN("revoke: caller subject '%s' is not a CA", ca_subject);
         http_send_error(io, 403, "caller is not a CA");
+        json_object_put(ca_cert_json);
         json_object_put(req);
         return;
     }
@@ -1788,6 +1831,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
 
     if (!json_object_object_get_ex(ca_tbs, "subject_public_key_hash", &val)) {
         http_send_error(io, 500, "CA cert missing key hash");
+        json_object_put(ca_cert_json);
         json_object_put(req);
         return;
     }
@@ -1799,22 +1843,26 @@ static void handle_revoke(client_io *io, MtcStore *store,
         ca_algo = json_object_get_string(val);
 
     /* --- Look up target cert --- */
-    if (cert_index < 0 || cert_index >= store->cert_count ||
-        store->certificates[cert_index] == NULL) {
+    tgt_cert_json = mtc_store_get_cert(store, cert_index);
+    if (!tgt_cert_json) {
         http_send_error(io, 404, "target certificate not found");
+        json_object_put(ca_cert_json);
         json_object_put(req);
         return;
     }
-    tgt_cert_json = store->certificates[cert_index];
     if (!json_object_object_get_ex(tgt_cert_json, "standalone_certificate",
                                    &tgt_sc) ||
         !json_object_object_get_ex(tgt_sc, "tbs_entry", &tgt_tbs)) {
         http_send_error(io, 500, "malformed target cert");
+        json_object_put(tgt_cert_json);
+        json_object_put(ca_cert_json);
         json_object_put(req);
         return;
     }
     if (!json_object_object_get_ex(tgt_tbs, "subject", &val)) {
         http_send_error(io, 500, "target cert missing subject");
+        json_object_put(tgt_cert_json);
+        json_object_put(ca_cert_json);
         json_object_put(req);
         return;
     }
@@ -1826,8 +1874,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
         strcmp(tgt_subject + tgt_subj_len - 3, "-ca") == 0) {
         LOG_WARN("revoke: target '%s' is a CA, not a leaf", tgt_subject);
         http_send_error(io, 403, "target is not a leaf");
-        json_object_put(req);
-        return;
+        goto cleanup;
     }
 
     /* Verify target subject is in CA's domain (exact or *.domain) */
@@ -1847,8 +1894,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
                      tgt_subject, ca_domain);
             http_send_error(io, 403,
                 "target leaf is not within the CA's domain");
-            json_object_put(req);
-            return;
+            goto cleanup;
         }
     }
 
@@ -1870,8 +1916,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
                  ca_cert_index);
         http_send_error(io, 403,
             "ca_public_key_pem does not match logged CA certificate");
-        json_object_put(req);
-        return;
+        goto cleanup;
     }
 
     /* --- Verify signature --- */
@@ -1890,8 +1935,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
         sig_len = (int)strlen(sig_hex) / 2;
         if (sig_len <= 0 || sig_len > (int)sizeof(sig_bytes)) {
             http_send_error(io, 400, "invalid signature length");
-            json_object_put(req);
-            return;
+            goto cleanup;
         }
         {
             int si;
@@ -1899,8 +1943,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
                 unsigned int b;
                 if (sscanf(sig_hex + si * 2, "%02x", &b) != 1) {
                     http_send_error(io, 400, "invalid signature hex");
-                    json_object_put(req);
-                    return;
+                    goto cleanup;
                 }
                 sig_bytes[si] = (uint8_t)b;
             }
@@ -1913,8 +1956,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
         if (ret < 0) {
             LOG_WARN("revoke: CA PEM to DER failed: %d", ret);
             http_send_error(io, 400, "invalid CA public key PEM");
-            json_object_put(req);
-            return;
+            goto cleanup;
         }
         der_sz = ret;
 
@@ -1927,8 +1969,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
             else if (strcmp(ca_algo, "ML-DSA-87") == 0)  level = WC_ML_DSA_87;
             else {
                 http_send_error(io, 400, "unsupported ML-DSA variant");
-                json_object_put(req);
-                return;
+                goto cleanup;
             }
             wc_dilithium_init(&dil);
             wc_dilithium_set_level(&dil, level);
@@ -1954,8 +1995,7 @@ static void handle_revoke(client_io *io, MtcStore *store,
         else {
             http_send_error(io, 400,
                 "unsupported key algorithm for revocation");
-            json_object_put(req);
-            return;
+            goto cleanup;
         }
 
         if (ret != 0 || !verified) {
@@ -1963,29 +2003,26 @@ static void handle_revoke(client_io *io, MtcStore *store,
                      "(ca=%d target=%d algo=%s)",
                      ca_cert_index, cert_index, ca_algo);
             http_send_error(io, 403, "signature verification failed");
-            json_object_put(req);
-            return;
+            goto cleanup;
         }
     }
 
     /* Authorized — perform the revocation */
     if (mtc_store_revoke(store, cert_index, reason) != 0) {
         http_send_error(io, 500, "revocation failed");
-        json_object_put(req);
-        return;
+        goto cleanup;
     }
 
     LOG_INFO("revoke: cert %d ('%s') revoked by CA %d ('%s') reason='%s'",
              cert_index, tgt_subject, ca_cert_index, ca_subject, reason);
 
     /* Tell the parent its in-memory MtcStore is now stale (same
-     * fork-after-accept pattern as TODO #56 enrollment).  The child
-     * has updated its own copy-on-write revoked_indices array and
-     * persisted to DB; the parent's view still says revoked=false
-     * until reload.  The reload thread sigwait()s on SIGHUP and calls
-     * mtc_store_reload — without this, GET /revoked/<n> served from
-     * the parent returns the stale answer until the next service
-     * restart. */
+     * fork-after-accept pattern as TODO #56 enrollment).  Even after
+     * TODO #74 phase 2 dropped the in-memory revoked_indices array
+     * the parent still owns the Merkle tree state, and a SIGHUP-
+     * driven reload also flushes the cert_cache so the next request
+     * routed to a fresh fork doesn't serve a pre-revocation cached
+     * cert blob. */
     if (kill(getppid(), SIGHUP) != 0) {
         LOG_WARN("revoke: kill(getppid, SIGHUP) failed: %s",
                  strerror(errno));
@@ -2006,6 +2043,10 @@ static void handle_revoke(client_io *io, MtcStore *store,
         http_send_json_obj(io, 200, resp);
         json_object_put(resp);
     }
+
+cleanup:
+    json_object_put(tgt_cert_json);
+    json_object_put(ca_cert_json);
     json_object_put(req);
 }
 

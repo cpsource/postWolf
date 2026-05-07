@@ -25,7 +25,7 @@ SLC_LIB = $(SLC_DIR)/libslc.a
 MQC_DIR = ../../../socket-level-wrapper-MQC
 MQC_LIB = $(MQC_DIR)/libmqc.a
 
-SRCS = mtc_server.c mtc_merkle.c mtc_store.c mtc_http.c mtc_db.c mtc_checkendpoint.c mtc_log.c mtc_ratelimit.c mtc_crypt.c mtc_bootstrap.c mtc_bootstrap_transcript.c mtc_ca_validate.c mtc_dnssec_pin.c mtc_domain.c $(READ_CONFIG_SRC)
+SRCS = mtc_server.c mtc_merkle.c mtc_store.c mtc_http.c mtc_db.c mtc_cert_cache.c mtc_checkendpoint.c mtc_log.c mtc_ratelimit.c mtc_crypt.c mtc_bootstrap.c mtc_bootstrap_transcript.c mtc_ca_validate.c mtc_dnssec_pin.c mtc_domain.c $(READ_CONFIG_SRC)
 LDFLAGS += -lcurl
 
 all: mtc_server
@@ -36,7 +36,7 @@ $(SLC_LIB):
 $(MQC_LIB):
 	$(MAKE) -C $(MQC_DIR)
 
-mtc_server: $(SRCS) mtc_merkle.h mtc_store.h mtc_http.h mtc_db.h mtc_checkendpoint.h mtc_log.h mtc_ratelimit.h mtc_crypt.h mtc_bootstrap.h mtc_bootstrap_transcript.h mtc_ca_validate.h mtc_dnssec_pin.h mtc_domain.h $(SLC_LIB) $(MQC_LIB)
+mtc_server: $(SRCS) mtc_merkle.h mtc_store.h mtc_http.h mtc_db.h mtc_cert_cache.h mtc_checkendpoint.h mtc_log.h mtc_ratelimit.h mtc_crypt.h mtc_bootstrap.h mtc_bootstrap_transcript.h mtc_ca_validate.h mtc_dnssec_pin.h mtc_domain.h $(SLC_LIB) $(MQC_LIB)
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(SLC_LIB) $(MQC_LIB) $(LDFLAGS)
 
 make-mtc-checkpoint: mtc_checkendpoint.c mtc_checkendpoint.h mtc_db.c mtc_db.h

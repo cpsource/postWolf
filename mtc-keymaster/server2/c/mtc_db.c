@@ -874,6 +874,147 @@ int mtc_db_find_live_cert_by_pubkey_hash(PGconn *conn,
 }
 
 /******************************************************************************
+ * Function:    mtc_db_find_latest_cert_by_subject
+ *
+ * Description:
+ *   Returns the highest cert index whose subject matches.  No
+ *   revocation or expiry filter — the caller decides which downstream
+ *   gates to apply (e.g. the bootstrap CA-revocation gate looks up the
+ *   latest CA index here and then asks mtc_db_is_revoked separately).
+ *
+ * Returns:
+ *    Cert index >= 0 on match.
+ *   -1                if no match, on query error, or NULL inputs.
+ ******************************************************************************/
+int mtc_db_find_latest_cert_by_subject(PGconn *conn, const char *subject)
+{
+    PGresult   *res;
+    const char *params[1];
+    int         idx;
+
+    if (!conn || !subject) return -1;
+
+    params[0] = subject;
+    res = PQexecParams(conn,
+        "SELECT index FROM mtc_certificates "
+        "WHERE certificate->'standalone_certificate'->'tbs_entry'"
+        "        ->>'subject' = $1 "
+        "ORDER BY index DESC LIMIT 1",
+        1, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
+        PQclear(res);
+        return -1;
+    }
+    idx = atoi(PQgetvalue(res, 0, 0));
+    PQclear(res);
+    return idx;
+}
+
+/******************************************************************************
+ * Function:    mtc_db_find_latest_revoked_cert
+ *
+ * Description:
+ *   Returns the highest cert index whose (subject, spk_hash) match AND
+ *   which sits in mtc_revocations.  Used by the leaf-enrollment
+ *   duplicate-detection path to refuse re-enrolling a previously-
+ *   revoked key fingerprint under the same subject.
+ *
+ * Returns:
+ *    Cert index >= 0 on match.
+ *   -1                if no match, on query error, or NULL inputs.
+ ******************************************************************************/
+int mtc_db_find_latest_revoked_cert(PGconn *conn,
+                                     const char *subject,
+                                     const char *spk_hash)
+{
+    PGresult   *res;
+    const char *params[2];
+    int         idx;
+
+    if (!conn || !subject || !spk_hash) return -1;
+
+    params[0] = subject;
+    params[1] = spk_hash;
+    res = PQexecParams(conn,
+        "SELECT c.index FROM mtc_certificates c "
+        "WHERE c.certificate->'standalone_certificate'->'tbs_entry'"
+        "        ->>'subject' = $1 "
+        "  AND c.certificate->'standalone_certificate'->'tbs_entry'"
+        "        ->>'subject_public_key_hash' = $2 "
+        "  AND c.index IN (SELECT cert_index FROM mtc_revocations) "
+        "ORDER BY c.index DESC LIMIT 1",
+        2, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
+        PQclear(res);
+        return -1;
+    }
+    idx = atoi(PQgetvalue(res, 0, 0));
+    PQclear(res);
+    return idx;
+}
+
+/******************************************************************************
+ * Function:    mtc_db_search_certs_by_subject
+ *
+ * Description:
+ *   Returns a JSON array of {index, subject} pairs for every cert whose
+ *   subject contains the @p query substring (case-insensitive).
+ *
+ *   No subject index today — this is a JSONB scan, O(N) per query.
+ *   See TODO #74 phase-2 trigger conditions for when a follow-on
+ *   subject column + GIN index is warranted.
+ *
+ * Returns:
+ *   New json_object array.  Empty on error or empty result; caller
+ *   owns the reference.  Never returns NULL.
+ ******************************************************************************/
+struct json_object *mtc_db_search_certs_by_subject(PGconn *conn,
+                                                    const char *query)
+{
+    struct json_object *arr = json_object_new_array();
+    PGresult           *res;
+    const char         *params[1];
+    int                 i, rows;
+
+    if (!arr) return NULL;
+    if (!conn || !query || !*query) return arr;
+
+    params[0] = query;
+    /* PostgreSQL ILIKE wildcards: prepend/append '%' literals so the
+     * query matches anywhere in the subject string.  Single-arg form
+     * (build the pattern in SQL) keeps query-side parameter
+     * substitution doing the right thing — no manual quoting. */
+    res = PQexecParams(conn,
+        "SELECT index, "
+        "       certificate->'standalone_certificate'->'tbs_entry'"
+        "         ->>'subject' AS subject "
+        "FROM   mtc_certificates "
+        "WHERE  certificate->'standalone_certificate'->'tbs_entry'"
+        "         ->>'subject' ILIKE ('%' || $1 || '%') "
+        "ORDER  BY index",
+        1, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        PQclear(res);
+        return arr;
+    }
+
+    rows = PQntuples(res);
+    for (i = 0; i < rows; i++) {
+        struct json_object *row = json_object_new_object();
+        json_object_object_add(row, "index",
+            json_object_new_int(atoi(PQgetvalue(res, i, 0))));
+        json_object_object_add(row, "subject",
+            json_object_new_string(PQgetvalue(res, i, 1)));
+        json_object_array_add(arr, row);
+    }
+    PQclear(res);
+    return arr;
+}
+
+/******************************************************************************
  * Function:    mtc_db_load_all_certificates
  *
  * Description:

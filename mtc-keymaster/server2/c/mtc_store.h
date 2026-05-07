@@ -22,6 +22,7 @@
 
 #include "mtc_merkle.h"
 #include "mtc_db.h"
+#include "mtc_cert_cache.h"
 #include <json-c/json.h>
 
 #define MTC_MAX_CERTS          10000  /**< Upper bound for revocation loading   */
@@ -62,11 +63,24 @@ typedef struct {
     /* Merkle tree */
     MtcMerkleTree    tree;             /**< Append-only Merkle hash tree       */
 
-    /* Issued certificates (indexed by log index) */
-    struct json_object **certificates; /**< Array of certificate json_objects
-                                            (store owns refs, slots may be NULL)*/
-    int              cert_count;       /**< Number of slots in use             */
-    int              cert_capacity;    /**< Allocated slots                    */
+    /* Issued certificates.
+     *
+     * In DB mode (use_db = 1, production) these arrays stay empty and
+     * unused; cert reads go via mtc_store_get_cert -> cert_cache ->
+     * Neon (TODO #74 phase 2).  In file-fallback mode (use_db = 0,
+     * dev only) the legacy in-memory array semantics apply, indexed by
+     * log index.  Always read via mtc_store_get_cert; do not access
+     * the array directly. */
+    struct json_object **certificates; /**< File-mode only — index-addressed   */
+    int              cert_count;       /**< File-mode only                     */
+    int              cert_capacity;    /**< File-mode only                     */
+
+    /* Bounded LRU on the cert read path.  Populated in DB mode by
+     * mtc_store_get_cert; unused in file mode (the array above is
+     * already an in-memory store).  Each forked child inherits the
+     * parent's cache via COW; subsequent inserts/evictions diverge
+     * the child's copy from the parent's. */
+    mtc_cert_cache_t cert_cache;
 
     /* Checkpoints */
     struct json_object **checkpoints;  /**< Array of checkpoint json_objects
@@ -172,6 +186,27 @@ int  mtc_store_check_invariants(MtcStore *store);
  * @return  0 on success (an empty store is still success).
  */
 int  mtc_store_load(MtcStore *store);
+
+/**
+ * @brief    Look up a stored certificate by log index.
+ *
+ * @details
+ * Phase 2 of TODO #74: in DB mode this consults the per-process
+ * cert_cache and falls through to mtc_db_load_certificate on miss,
+ * caching the result for subsequent lookups.  In file mode it
+ * returns the in-memory array slot, taking a fresh reference for
+ * the caller.
+ *
+ * The returned json_object is always a caller-owned reference —
+ * callers MUST `json_object_put` when done, regardless of cache
+ * hit/miss or backend.  Returns NULL if the index has no cert.
+ *
+ * @param[in,out] store  Store (cache is mutated on hit/insert).
+ * @param[in]     index  Log index.
+ *
+ * @return  json_object with caller-owned ref, or NULL.
+ */
+struct json_object *mtc_store_get_cert(MtcStore *store, int index);
 
 /**
  * @brief    Append a serialised entry to the Merkle tree and persist it.

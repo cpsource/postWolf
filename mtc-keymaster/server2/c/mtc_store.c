@@ -279,9 +279,22 @@ int mtc_store_init(MtcStore *store, const char *data_dir,
 
     mtc_tree_init(&store->tree);
 
+    /* Cert array is file-mode-only (TODO #74 phase 2); in DB mode
+     * the array stays empty and reads route through cert_cache +
+     * mtc_db_load_certificate.  We allocate it either way to keep
+     * the file-mode dev path working without conditional NULL
+     * checks on every legacy access site. */
     store->cert_capacity = 256;
     store->certificates = (struct json_object**)calloc(
         (size_t)store->cert_capacity, sizeof(struct json_object*));
+
+    /* Read-path LRU.  Sized at MTC_CERT_CACHE_DEFAULT_CAP entries
+     * (~750 KB at ML-DSA-87 cert size); operator knob can grow this
+     * later if hit-rate telemetry warrants it. */
+    if (mtc_cert_cache_init(&store->cert_cache, 0) != 0) {
+        fprintf(stderr, "[store] cert_cache_init failed\n");
+        return -1;
+    }
 
     store->checkpoints = (struct json_object**)calloc(256,
         sizeof(struct json_object*));
@@ -330,11 +343,60 @@ void mtc_store_free(MtcStore *store)
             json_object_put(store->certificates[i]);
     }
     free(store->certificates);
+    mtc_cert_cache_free(&store->cert_cache);
     for (i = 0; i < store->checkpoint_count; i++) {
         if (store->checkpoints[i])
             json_object_put(store->checkpoints[i]);
     }
     free(store->checkpoints);
+}
+
+/******************************************************************************
+ * Function:    mtc_store_get_cert
+ *
+ * Description:
+ *   TODO #74 phase 2 read path.  In DB mode (use_db = 1, production)
+ *   consults the per-process cert_cache; on miss, fetches via
+ *   mtc_db_load_certificate and inserts into the cache.  In file mode
+ *   (dev-only fallback) returns a fresh reference into the legacy
+ *   in-memory array.
+ *
+ *   The returned reference is always caller-owned; callers MUST
+ *   json_object_put when done.
+ *
+ * Returns:
+ *   json_object * with caller-owned ref on success, NULL if no cert
+ *   exists at @p index.
+ ******************************************************************************/
+struct json_object *mtc_store_get_cert(MtcStore *store, int index)
+{
+    struct json_object *cert;
+
+    if (!store || index < 0) return NULL;
+
+    if (store->use_db && store->db) {
+        cert = mtc_cert_cache_get(&store->cert_cache, index);
+        if (cert) return cert;
+
+        if (mtc_db_ensure_connected(&store->db) != 0)
+            return NULL;
+
+        cert = mtc_db_load_certificate(store->db, index);
+        if (cert) {
+            mtc_cert_cache_put(&store->cert_cache, index, cert);
+            /* mtc_db_load_certificate returned a fresh ref; the cache
+             * took its own ref via json_object_get inside _put.  Hand
+             * the original ref straight to the caller — no extra get. */
+        }
+        return cert;
+    }
+
+    /* File mode — degenerate dev path.  Return a fresh ref into the
+     * in-memory array.  cert_count is the high-water mark of slots
+     * ever written, so any index beyond that is unmapped. */
+    if (index >= store->cert_count || !store->certificates[index])
+        return NULL;
+    return json_object_get(store->certificates[index]);
 }
 
 /* ------------------------------------------------------------------ */
@@ -430,6 +492,20 @@ int mtc_store_check_invariants(MtcStore *store)
 
     if (!store) return 0;
 
+    /* TODO #74 phase 2: in DB mode the cert array is empty by design,
+     * so this in-memory walk is a no-op.  An online sample-based
+     * cert/leaf check (SELECT a bounded slice from mtc_certificates
+     * and compare each to its leaf) is a reasonable follow-up if the
+     * #57 invariant ever needs runtime monitoring at scale; today the
+     * admin-side `admin_recosign --check-invariants --tokenpath` tool
+     * does the equivalent walk against the DB, so live monitoring
+     * isn't load-bearing. */
+    if (store->use_db) {
+        LOG_INFO("[store] cert/leaf invariant check skipped in DB mode "
+                 "(TODO #74 phase 2; use admin_recosign for offline check)");
+        return 0;
+    }
+
     for (i = 0; i < store->cert_count; i++) {
         struct json_object *cert = store->certificates[i];
         struct json_object *sc = NULL, *tbs = NULL, *idx_val = NULL;
@@ -522,6 +598,7 @@ int mtc_store_reload(MtcStore *store)
      * populated tree, refuse to commit the new state. */
     pre_size       = store->tree.size;
     pre_cert_count = store->cert_count;
+    (void)pre_cert_count;  /* DB mode: no in-memory cert array */
 
     /* Drop tree contents and re-init.  mtc_tree_free zeroes the
      * struct, so the subsequent re-init / load can repopulate from
@@ -529,20 +606,35 @@ int mtc_store_reload(MtcStore *store)
     mtc_tree_free(&store->tree);
     mtc_tree_init(&store->tree);
 
-    /* Drop the cert array's contents but keep the buffer; load will
-     * grow it via realloc if needed. */
-    for (i = 0; i < store->cert_count; i++) {
-        if (store->certificates[i])
-            json_object_put(store->certificates[i]);
+    /* In DB mode the cert array stays empty (TODO #74 phase 2) — the
+     * read path goes via cert_cache + Neon.  We do invalidate the
+     * cache so a SIGHUP-driven reload picks up any cert that might
+     * have been overwritten by a sibling fork's write.  In file mode
+     * we still clear the legacy array so the file load below
+     * repopulates it cleanly. */
+    if (store->use_db) {
+        mtc_cert_cache_free(&store->cert_cache);
+        if (mtc_cert_cache_init(&store->cert_cache, 0) != 0) {
+            fprintf(stderr,
+                    "[store] reload aborted: cert_cache_init failed\n");
+            return -1;
+        }
+    } else {
+        for (i = 0; i < store->cert_count; i++) {
+            if (store->certificates[i])
+                json_object_put(store->certificates[i]);
+        }
+        if (store->cert_capacity > 0 && store->certificates) {
+            memset(store->certificates, 0,
+                   (size_t)store->cert_capacity *
+                       sizeof(struct json_object *));
+        }
+        store->cert_count = 0;
     }
-    if (store->cert_capacity > 0 && store->certificates) {
-        memset(store->certificates, 0,
-               (size_t)store->cert_capacity *
-                   sizeof(struct json_object *));
-    }
-    store->cert_count = 0;
 
-    /* Revocations + landmarks reset to empty. */
+    /* Revocations no longer cached in memory (TODO #74 phase 2);
+     * mtc_store_is_revoked queries Neon directly.  Clear in file
+     * mode for the legacy in-memory binsearch path. */
     if (store->revoked_indices) {
         free(store->revoked_indices);
         store->revoked_indices = NULL;
@@ -732,44 +824,15 @@ int mtc_store_load(MtcStore *store)
         store->landmark_count = mtc_db_load_landmarks(store->db,
             store->landmarks, MTC_MAX_LANDMARKS);
 
-        /* Certificates */
-        {
-            struct json_object **certs = NULL;
-            int cert_count = 0;
-            mtc_db_load_all_certificates(store->db, &certs, &cert_count);
-            if (certs && cert_count > 0) {
-                if (cert_count > store->cert_capacity) {
-                    store->cert_capacity = cert_count * 2;
-                    store->certificates = (struct json_object**)realloc(
-                        store->certificates,
-                        (size_t)store->cert_capacity * sizeof(struct json_object*));
-                }
-                for (i = 0; i < cert_count; i++)
-                    store->certificates[i] = certs[i];
-                store->cert_count = cert_count;
-                free(certs);
-            }
-        }
+        /* Certificates and revocations are NOT pre-loaded in DB mode
+         * (TODO #74 phase 2).  Reads route through mtc_store_get_cert
+         * (cert_cache + mtc_db_load_certificate) and
+         * mtc_store_is_revoked (mtc_db_is_revoked) on demand, so the
+         * server's RAM footprint is bounded by the tree + cache, not
+         * by the total cert population. */
 
-        /* Revocations */
-        {
-            int rev_buf[MTC_MAX_CERTS];
-            int rev_count = mtc_db_load_revocations(store->db, rev_buf,
-                MTC_MAX_CERTS);
-            if (rev_count > 0) {
-                store->revocation_capacity = rev_count * 2;
-                store->revoked_indices = (int*)malloc(
-                    (size_t)store->revocation_capacity * sizeof(int));
-                memcpy(store->revoked_indices, rev_buf,
-                    (size_t)rev_count * sizeof(int));
-                store->revocation_count = rev_count;
-            }
-        }
-
-        printf("[store] loaded %d entries, %d certs, %d landmarks, "
-               "%d revocations from DB\n",
-               store->tree.size, store->cert_count, store->landmark_count,
-               store->revocation_count);
+        printf("[store] loaded %d entries, %d landmarks from DB\n",
+               store->tree.size, store->landmark_count);
         fflush(stdout);
         return 0;
     }
@@ -1172,11 +1235,36 @@ int mtc_store_get_public_key_pem(MtcStore *store, char *out, int maxSz)
  ******************************************************************************/
 int mtc_store_revoke(MtcStore *store, int cert_index, const char *reason)
 {
-    /* Check not already revoked */
+    /* Check not already revoked.  In DB mode this is a SELECT against
+     * mtc_revocations; in file mode it's the legacy in-memory
+     * binsearch. */
     if (mtc_store_is_revoked(store, cert_index))
         return 0; /* Already revoked */
 
-    /* Grow array if needed */
+    if (store->use_db && store->db) {
+        /* DB mode (TODO #74 phase 2): no in-memory revoked-indices
+         * array to maintain.  The DB row is the source of truth;
+         * mtc_store_is_revoked queries it on every check.  The
+         * caller (handle_revoke in mtc_http.c) raises SIGHUP to
+         * the parent so the parent's tree-tail reload picks up any
+         * cert appends; revocation reads always go to Neon so no
+         * cache to invalidate beyond the parent-side cert blob (which
+         * we evict here for consistency, in case the cert payload
+         * cached pre-revocation needs to be re-fetched). */
+        if (mtc_db_save_revocation(store->db, cert_index, reason) != 0) {
+            fprintf(stderr,
+                "[store] DB save_revocation failed for index %d\n",
+                cert_index);
+            return -1;
+        }
+        mtc_cert_cache_invalidate(&store->cert_cache, cert_index);
+        printf("[store] revoked cert index %d (reason: %s)\n",
+               cert_index, reason ? reason : "unspecified");
+        return 0;
+    }
+
+    /* File-mode fallback: maintain the legacy in-memory sorted array
+     * + revocations.json for dev workflows. */
     if (store->revocation_count >= store->revocation_capacity) {
         int newcap = store->revocation_capacity == 0 ? 64
                      : store->revocation_capacity * 2;
@@ -1189,7 +1277,7 @@ int mtc_store_revoke(MtcStore *store, int cert_index, const char *reason)
 
     /* Insert into sorted position via insertion sort — maintains the
      * invariant that revoked_indices is always sorted ascending for
-     * binary search in mtc_store_is_revoked(). */
+     * binary search in mtc_store_is_revoked() (file mode). */
     {
         int i = store->revocation_count;
         while (i > 0 && store->revoked_indices[i - 1] > cert_index) {
@@ -1198,13 +1286,6 @@ int mtc_store_revoke(MtcStore *store, int cert_index, const char *reason)
         }
         store->revoked_indices[i] = cert_index;
         store->revocation_count++;
-    }
-
-    /* Persist to DB */
-    if (store->use_db && store->db) {
-        if (mtc_db_save_revocation(store->db, cert_index, reason) != 0)
-            fprintf(stderr, "[store] WARNING: DB save_revocation failed for index %d\n",
-                    cert_index);
     }
 
     /* Persist to file */
@@ -1247,15 +1328,27 @@ int mtc_store_revoke(MtcStore *store, int cert_index, const char *reason)
  ******************************************************************************/
 int mtc_store_is_revoked(MtcStore *store, int cert_index)
 {
-    int lo = 0, hi = store->revocation_count - 1;
-    while (lo <= hi) {
-        int mid = (lo + hi) / 2;
-        if (store->revoked_indices[mid] == cert_index)
-            return 1;
-        else if (store->revoked_indices[mid] < cert_index)
-            lo = mid + 1;
-        else
-            hi = mid - 1;
+    if (!store) return 0;
+
+    if (store->use_db && store->db) {
+        /* DB-backed check (TODO #74 phase 2).  No in-memory mirror. */
+        if (mtc_db_ensure_connected(&store->db) != 0)
+            return 0;
+        return mtc_db_is_revoked(store->db, cert_index);
+    }
+
+    /* File-mode fallback: binsearch the legacy sorted array. */
+    {
+        int lo = 0, hi = store->revocation_count - 1;
+        while (lo <= hi) {
+            int mid = (lo + hi) / 2;
+            if (store->revoked_indices[mid] == cert_index)
+                return 1;
+            else if (store->revoked_indices[mid] < cert_index)
+                lo = mid + 1;
+            else
+                hi = mid - 1;
+        }
     }
     return 0;
 }
@@ -1278,20 +1371,39 @@ struct json_object *mtc_store_get_revocation_list(MtcStore *store)
 {
     struct json_object *obj = json_object_new_object();
     struct json_object *arr = json_object_new_array();
-    int i;
+    int i, count = 0;
     uint8_t sig[DILITHIUM_LEVEL5_SIG_SIZE];
     int sig_sz = 0;
 
     json_object_object_add(obj, "log_id",
         json_object_new_string(store->log_id));
 
-    for (i = 0; i < store->revocation_count; i++)
-        json_object_array_add(arr,
-            json_object_new_int(store->revoked_indices[i]));
+    if (store->use_db && store->db) {
+        /* DB-backed enumeration (TODO #74 phase 2).  Bounded by
+         * MTC_MAX_CERTS for safety; revocation lists beyond that need
+         * paging, which is a separate API decision (the existing
+         * /revoked endpoint returns a single JSON blob anyway). */
+        int *buf = (int *)malloc(sizeof(int) * MTC_MAX_CERTS);
+        if (buf) {
+            if (mtc_db_ensure_connected(&store->db) == 0) {
+                count = mtc_db_load_revocations(store->db, buf,
+                                                MTC_MAX_CERTS);
+            }
+            for (i = 0; i < count; i++)
+                json_object_array_add(arr,
+                    json_object_new_int(buf[i]));
+            free(buf);
+        }
+    } else {
+        for (i = 0; i < store->revocation_count; i++)
+            json_object_array_add(arr,
+                json_object_new_int(store->revoked_indices[i]));
+        count = store->revocation_count;
+    }
     json_object_object_add(obj, "revoked", arr);
 
     json_object_object_add(obj, "count",
-        json_object_new_int(store->revocation_count));
+        json_object_new_int(count));
     json_object_object_add(obj, "updated_at",
         json_object_new_double((double)time(NULL)));
 

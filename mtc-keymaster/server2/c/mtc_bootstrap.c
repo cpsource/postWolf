@@ -1156,20 +1156,30 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
             {
                 char ca_subject[520];
                 int latest_idx = -1;
-                int k;
 
                 snprintf(ca_subject, sizeof(ca_subject), "%s", subject);
-                for (k = 0; k < store->cert_count; k++) {
-                    struct json_object *entry = store->certificates[k];
-                    struct json_object *sc_j, *tbs_j, *subj_j;
-                    const char *entry_subj;
-                    if (!entry) continue;
-                    if (!json_object_object_get_ex(entry, "standalone_certificate", &sc_j)) continue;
-                    if (!json_object_object_get_ex(sc_j, "tbs_entry", &tbs_j)) continue;
-                    if (!json_object_object_get_ex(tbs_j, "subject", &subj_j)) continue;
-                    entry_subj = json_object_get_string(subj_j);
-                    if (entry_subj && strcmp(entry_subj, ca_subject) == 0) {
-                        latest_idx = k;  /* keep overwriting; highest wins */
+                if (store->use_db && store->db) {
+                    /* DB-backed lookup (TODO #74 phase 2): one query
+                     * returns the highest cert index for this subject;
+                     * mtc_store_is_revoked then checks the revocation
+                     * table separately.  Replaces the O(N) walk over
+                     * store->certificates[]. */
+                    latest_idx = mtc_db_find_latest_cert_by_subject(
+                        store->db, ca_subject);
+                } else {
+                    int k;
+                    for (k = 0; k < store->cert_count; k++) {
+                        struct json_object *entry = store->certificates[k];
+                        struct json_object *sc_j, *tbs_j, *subj_j;
+                        const char *entry_subj;
+                        if (!entry) continue;
+                        if (!json_object_object_get_ex(entry, "standalone_certificate", &sc_j)) continue;
+                        if (!json_object_object_get_ex(sc_j, "tbs_entry", &tbs_j)) continue;
+                        if (!json_object_object_get_ex(tbs_j, "subject", &subj_j)) continue;
+                        entry_subj = json_object_get_string(subj_j);
+                        if (entry_subj && strcmp(entry_subj, ca_subject) == 0) {
+                            latest_idx = k;  /* keep overwriting; highest wins */
+                        }
                     }
                 }
                 if (latest_idx >= 0 && mtc_store_is_revoked(store, latest_idx)) {
@@ -1422,32 +1432,50 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
             {
                 int latest_active_idx = -1;
                 int latest_revoked_idx = -1;
-                double now_ts = (double)time(NULL);
-                int k;
-                for (k = 0; k < store->cert_count; k++) {
-                    struct json_object *entry = store->certificates[k];
-                    struct json_object *sc_j, *tbs_j, *subj_j, *fp_j, *na_j;
-                    const char *entry_subj, *entry_fp;
-                    double entry_not_after;
-                    if (!entry) continue;
-                    if (!json_object_object_get_ex(entry, "standalone_certificate", &sc_j)) continue;
-                    if (!json_object_object_get_ex(sc_j, "tbs_entry", &tbs_j)) continue;
-                    if (!json_object_object_get_ex(tbs_j, "subject", &subj_j)) continue;
-                    if (!json_object_object_get_ex(tbs_j, "subject_public_key_hash", &fp_j)) continue;
-                    if (!json_object_object_get_ex(tbs_j, "not_after", &na_j)) continue;
-                    entry_subj = json_object_get_string(subj_j);
-                    entry_fp = json_object_get_string(fp_j);
-                    entry_not_after = json_object_get_double(na_j);
-                    if (!entry_subj || !entry_fp) continue;
-                    if (strcmp(entry_subj, subject) != 0) continue;
-                    if (strcmp(entry_fp, leaf_fp) != 0) continue;
 
-                    if (mtc_store_is_revoked(store, k)) {
-                        latest_revoked_idx = k;
-                    } else if (entry_not_after > now_ts) {
-                        latest_active_idx = k;
+                if (store->use_db && store->db) {
+                    /* DB-backed: two targeted queries replace the
+                     * O(N) walk (TODO #74 phase 2).
+                     *   - latest_active = highest non-revoked,
+                     *     in-window match by (subject, fp).
+                     *   - latest_revoked = highest revoked match by
+                     *     (subject, fp), regardless of expiry.
+                     * The existing helper mtc_db_find_live_cert_by_pubkey_hash
+                     * already does the active-and-not-expired check;
+                     * mtc_db_find_latest_revoked_cert is the new sibling
+                     * for the revoked side. */
+                    latest_active_idx = mtc_db_find_live_cert_by_pubkey_hash(
+                        store->db, subject, leaf_fp);
+                    latest_revoked_idx = mtc_db_find_latest_revoked_cert(
+                        store->db, subject, leaf_fp);
+                } else {
+                    double now_ts = (double)time(NULL);
+                    int k;
+                    for (k = 0; k < store->cert_count; k++) {
+                        struct json_object *entry = store->certificates[k];
+                        struct json_object *sc_j, *tbs_j, *subj_j, *fp_j, *na_j;
+                        const char *entry_subj, *entry_fp;
+                        double entry_not_after;
+                        if (!entry) continue;
+                        if (!json_object_object_get_ex(entry, "standalone_certificate", &sc_j)) continue;
+                        if (!json_object_object_get_ex(sc_j, "tbs_entry", &tbs_j)) continue;
+                        if (!json_object_object_get_ex(tbs_j, "subject", &subj_j)) continue;
+                        if (!json_object_object_get_ex(tbs_j, "subject_public_key_hash", &fp_j)) continue;
+                        if (!json_object_object_get_ex(tbs_j, "not_after", &na_j)) continue;
+                        entry_subj = json_object_get_string(subj_j);
+                        entry_fp = json_object_get_string(fp_j);
+                        entry_not_after = json_object_get_double(na_j);
+                        if (!entry_subj || !entry_fp) continue;
+                        if (strcmp(entry_subj, subject) != 0) continue;
+                        if (strcmp(entry_fp, leaf_fp) != 0) continue;
+
+                        if (mtc_store_is_revoked(store, k)) {
+                            latest_revoked_idx = k;
+                        } else if (entry_not_after > now_ts) {
+                            latest_active_idx = k;
+                        }
+                        /* else: expired and not revoked — silently ignore */
                     }
-                    /* else: expired and not revoked — silently ignore */
                 }
 
                 if (latest_revoked_idx >= 0) {
@@ -1728,10 +1756,10 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
             json_object_new_string(store->log_id));
 
         /* Build result — this is both the wire payload and what gets
-         * persisted to store->certificates[index] / the DB.  The label
-         * is purely in-flight (bootstrap_leaf uses it for local dir
-         * naming) and must NOT be persisted alongside the cert, so we
-         * add it to the wire copy only, below, after the persist. */
+         * persisted to the DB.  The label is purely in-flight
+         * (bootstrap_leaf uses it for local dir naming) and must NOT
+         * be persisted alongside the cert, so we add it to the wire
+         * copy only, below, after the persist. */
         result = json_object_new_object();
         json_object_object_add(result, "status",
             json_object_new_string("ok"));
@@ -1741,26 +1769,27 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
         json_object_object_add(result, "checkpoint",
             json_object_get(checkpoint));
 
-        /* Store certificate */
-        if (index >= store->cert_capacity) {
-            store->cert_capacity *= 2;
-            store->certificates = (struct json_object **)realloc(
-                store->certificates,
-                (size_t)store->cert_capacity * sizeof(struct json_object *));
+        /* Persist.  In DB mode (TODO #74 phase 2) the cert lives only
+         * in mtc_certificates — no in-memory mirror.  In file mode we
+         * still update the legacy array so dev workflows still see
+         * /certificate/N immediately.  Both DB writes are fail-closed
+         * (TODO #69): on any persistence error we log an ERROR and
+         * bail to cleanup so the client sees a transport drop and
+         * retries.  The Merkle log entry is already committed in the
+         * DB at this point — un-appending it isn't possible cross-
+         * fork — so the trade-off is a wasted log slot in exchange
+         * for fail-closed cert/pubkey persistence. */
+        if (!(store->use_db && store->db)) {
+            if (index >= store->cert_capacity) {
+                store->cert_capacity *= 2;
+                store->certificates = (struct json_object **)realloc(
+                    store->certificates,
+                    (size_t)store->cert_capacity * sizeof(struct json_object *));
+            }
+            while (store->cert_count <= index)
+                store->certificates[store->cert_count++] = NULL;
+            store->certificates[index] = json_object_get(result);
         }
-        while (store->cert_count <= index)
-            store->certificates[store->cert_count++] = NULL;
-        store->certificates[index] = json_object_get(result);
-
-        /* Persist.  Both DB writes are fail-closed (TODO #69): on
-         * any persistence error we drop the in-memory cert, log an
-         * ERROR, and bail to cleanup so the client sees a transport
-         * drop and retries.  The Merkle log entry is already
-         * committed in the DB at this point — un-appending it isn't
-         * possible cross-fork — so the trade-off is a wasted log
-         * slot in exchange for fail-closed cert/pubkey persistence.
-         * Operator can backfill via backfill-pubkey if save_pubkey
-         * fails after save_certificate succeeded. */
         mtc_store_save(store);
         if (store->use_db && store->db) {
             const char *cert_str = json_object_to_json_string(result);
@@ -1769,8 +1798,6 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                           "index %d ('%s') — failing closed (TODO #69); "
                           "wasted log slot, client will retry into a "
                           "fresh slot", index, subject);
-                json_object_put(store->certificates[index]);
-                store->certificates[index] = NULL;
                 json_object_put(result);
                 json_object_put(tbs);
                 json_object_put(checkpoint);
@@ -1802,8 +1829,6 @@ static int handle_bootstrap_client(int fd, MtcStore *store,
                               "existing cert; operator may need to "
                               "run backfill-pubkey if retries also "
                               "fail.", key_name, index);
-                    json_object_put(store->certificates[index]);
-                    store->certificates[index] = NULL;
                     json_object_put(result);
                     json_object_put(tbs);
                     json_object_put(checkpoint);

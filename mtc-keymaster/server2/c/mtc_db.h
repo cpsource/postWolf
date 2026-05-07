@@ -261,6 +261,65 @@ int  mtc_db_find_live_cert_by_pubkey_hash(PGconn *conn,
                                            const char *spk_hash);
 
 /**
+ * @brief    Find the highest log index whose cert has subject = @p subject.
+ *
+ * @details
+ * No revocation or expiry filter — the caller decides which gates to
+ * apply.  Used by the bootstrap CA-revocation gate to discover the
+ * "most recent CA cert for this domain" before checking whether that
+ * specific index sits in mtc_revocations.
+ *
+ * @param[in] conn     Active PostgreSQL connection.
+ * @param[in] subject  Exact subject string to match.
+ *
+ * @return  Cert index >= 0 if a matching cert exists.
+ *          -1 if no match, on query error, or if @p conn / @p subject
+ *             is NULL.
+ */
+int  mtc_db_find_latest_cert_by_subject(PGconn *conn, const char *subject);
+
+/**
+ * @brief    Find the highest log index whose cert matches (subject,
+ *           spk_hash) AND is currently revoked.
+ *
+ * @details
+ * Used by the leaf-enrollment duplicate-detection path: refuse a
+ * re-enrollment that resurrects a key fingerprint whose previous
+ * issuance was revoked.
+ *
+ * @param[in] conn      Active PostgreSQL connection.
+ * @param[in] subject   tbs_entry.subject.
+ * @param[in] spk_hash  tbs_entry.subject_public_key_hash (64-char lowercase hex).
+ *
+ * @return  Cert index >= 0 if a revoked match exists, -1 otherwise.
+ */
+int  mtc_db_find_latest_revoked_cert(PGconn *conn,
+                                      const char *subject,
+                                      const char *spk_hash);
+
+/**
+ * @brief    Search certificates by subject substring (case-insensitive).
+ *
+ * @details
+ * Walks every row in mtc_certificates and matches @p query against the
+ * embedded `tbs_entry.subject` JSON field.  Returns a JSON array of
+ * `{ "index": int, "subject": str }` objects.
+ *
+ * Today this is an O(N) JSONB scan with no subject index — fine while
+ * we're below the trigger conditions in TODO #74 (cert count < 10 K),
+ * after which a subject column + GIN index becomes a follow-up.
+ *
+ * @param[in] conn   Active PostgreSQL connection.
+ * @param[in] query  Case-insensitive substring (must be non-NULL,
+ *                   non-empty).
+ *
+ * @return  json_object array (caller owns; free with json_object_put).
+ *          On error or NULL inputs returns an empty array.
+ */
+struct json_object *mtc_db_search_certs_by_subject(PGconn *conn,
+                                                    const char *query);
+
+/**
  * @brief    Load all certificates into an index-addressed array.
  *
  * @details
