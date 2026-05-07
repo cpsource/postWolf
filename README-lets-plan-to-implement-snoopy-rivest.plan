@@ -1,0 +1,229 @@
+# Plan: TODO #74 phase 3 — tiled Merkle tree storage for postWolf
+
+## Context
+
+Phase 2 (commit `6ffb3c31d`) moved cert blobs and revocations out of `MtcStore` into Neon, fronted by a per-process `mtc_cert_cache` LRU. The remaining RAM cost is the Merkle tree itself: `tree->leaf_hashes[]` (32 B/leaf) + `tree->entries[]` (cert TBS bytes, ~2.6 KB/leaf) + `tree->entry_sizes[]`. At factsorlie's current 86 entries the tree is ~250 KB; at 10 M it would be ~30 GB and `mtc_store_load`/`mtc_store_reload` would take seconds.
+
+The accepted target (TODO #74 phase 3 in `mtc-keymaster/README-bugsandtodo.md:3987–4127`) is a CT v2 / Go `golang.org/x/mod/sumdb/tlog`-style tiled tree:
+- Top K levels of inner-node hashes live in RAM (per-process, COW across forks — same model as phase 2's `cert_cache`).
+- Lower levels are tiles stored in Neon with a bounded LRU in front.
+- Leaf hashes live in `mtc_log_entries.leaf_hash` already — no duplication.
+- Cert blobs continue to fault through `mtc_cert_cache` from phase 2.
+
+A second goal: retire the SIGHUP-driven `reload_thread` + `pthread_rwlock_t reload_lock` (added in `fe0532293`). With tile state authoritative in Neon, mutating children update tile rows directly under a Postgres advisory lock; no parent reload needed; no fork-during-reload race.
+
+Wire formats are frozen — inclusion-proof JSON, consistency-proof JSON, cosignature input bytes, and standalone-cert format are unchanged. Phase 3 is invisible to MQC peers; existing pre-phase-3 standalone certs continue to verify byte-for-byte.
+
+User-confirmed shape:
+- **Three commits**, each green and deployable on its own.
+- **Retire file-mode entirely** — postWolf now requires Neon. The legacy `certificates[]`, `revoked_indices[]`, `cert_count`, `cert_capacity`, `revocation_count`, `revocation_capacity`, and `entries.json` / `certificates.json` paths all go away.
+- **Append concurrency via `pg_advisory_xact_lock`**.
+
+## Recommended approach
+
+### Tile coordinate system (tlog convention)
+
+A tile at `(level, tile_index)` covers nodes `[tile_index * 2^TILE_HEIGHT, (tile_index+1) * 2^TILE_HEIGHT)` at that level. Partial tiles (the rightmost incomplete tile at any level) store only `node_count` hashes in their `hashes BYTEA`. Constants: `TILE_HEIGHT = 8` (256 nodes/tile), `TOP_K_LEVELS = 12`, `TILE_HASH_SIZE = 32`, `TILE_CACHE_DEFAULT_CAP = 1024`.
+
+For a 10 M-leaf tree (≈ 23 levels), top-12 levels = ~4096 inner nodes ≈ 128 KB resident. Tile LRU cap of 1024 tiles × 256 hashes × 32 B = ~8 MB. Total tree-state RAM is bounded at sub-30 MB regardless of tree size.
+
+### Append concurrency
+
+Every `mtc_store_add_entry` call wraps its full body in a transaction beginning with `SELECT pg_advisory_xact_lock(<key>)` where `<key>` is a deterministic int64 derived from the log_id hash. Children appending leaves N and N+1 concurrently serialize cleanly; the lock releases on commit/rollback automatically. No new infrastructure.
+
+### Commit A — schema + tile store + tile cache (no callers yet)
+
+**New files:**
+- `mtc-keymaster/server2/c/mtc_tile.h` — constants above.
+- `mtc-keymaster/server2/c/mtc_tile_cache.{c,h}` — bounded LRU keyed on `(level, tile_index)`, values are `uint8_t hashes[256 * 32]` plus `node_count` and a dirty bit. Same per-process / COW-friendly model as `mtc_cert_cache` (`mtc-keymaster/server2/c/mtc_cert_cache.{c,h}`); no mutex (single-threaded per fork; parent's reload thread retires in commit C).
+- `mtc-keymaster/server2/c/mtc_tile_store.h` — abstract storage API.
+- `mtc-keymaster/server2/c/mtc_tile_store_pg.c` — Neon implementation.
+
+**Schema additions** in `mtc_db_init_schema` at `mtc-keymaster/server2/c/mtc_db.c:293`:
+
+```sql
+CREATE TABLE IF NOT EXISTS mtc_merkle_tiles (
+    level       INTEGER  NOT NULL,
+    tile_index  BIGINT   NOT NULL,
+    tile_height INTEGER  NOT NULL,
+    first_node  BIGINT   NOT NULL,
+    node_count  INTEGER  NOT NULL,
+    hashes      BYTEA    NOT NULL,        -- packed 32-byte hashes
+    created_at  TIMESTAMPTZ DEFAULT now(),
+    updated_at  TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (level, tile_index)
+);
+CREATE INDEX IF NOT EXISTS idx_mtc_merkle_tiles_level
+    ON mtc_merkle_tiles(level);
+
+CREATE TABLE IF NOT EXISTS mtc_merkle_top_nodes (
+    level      INTEGER NOT NULL,
+    node_index BIGINT  NOT NULL,
+    hash       BYTEA   NOT NULL,
+    PRIMARY KEY (level, node_index)
+);
+```
+
+**Store API exposed from `mtc_tile_store_pg.c`:**
+- `mtc_tile_store_get_leaf_hash(conn, idx, out[32])` → `SELECT leaf_hash FROM mtc_log_entries WHERE index = $1`.
+- `mtc_tile_store_get_tile(conn, level, tile_index, hashes_out, count_out)` — fetches a tile.
+- `mtc_tile_store_put_tile(conn, level, tile_index, hashes, count)` — UPSERT.
+- `mtc_tile_store_load_top_nodes(conn, out_array)` — load top-K at startup.
+- `mtc_tile_store_put_top_node(conn, level, node_index, hash)` — UPSERT (called per top-K mutation during append).
+- `mtc_tile_store_lock_for_append(conn)` — `SELECT pg_advisory_xact_lock(<fixed key derived from log_id>)`. Held for the entire append transaction.
+- `mtc_tile_store_get_tree_size(conn, *size_out)` → `SELECT MAX(index) + 1 FROM mtc_log_entries` (returns 0 if empty).
+
+**End of Commit A:** build clean, factsorlie restarted with new schema, the two new tables exist but are empty. Service still runs the legacy tree.
+
+### Commit B — tiled tree + equivalence tests + migration tool, dual-build
+
+**New files:**
+- `mtc-keymaster/server2/c/mtc_merkle_tiled.{c,h}` — same public surface as `mtc_merkle.h` but backed by tile store + tile cache:
+  - `mtc_tiled_tree_open(tree, conn)` — reads tree size and top-K nodes; allocates tile cache.
+  - `mtc_tiled_tree_root_hash(tree, size, out)` — recursive tile-aware computation.
+  - `mtc_tiled_tree_subtree_hash(tree, start, end, out)`.
+  - `mtc_tiled_tree_inclusion_proof(tree, index, start, end, **proof, *count)` — RFC 9162 sibling-path; emits `O(log N)` hashes via tile fetches.
+  - `mtc_tiled_tree_consistency_proof(tree, old_size, new_size, **proof, *count)`.
+  - `mtc_tiled_tree_append(tree, conn, entry, entry_sz)` — under `pg_advisory_xact_lock`: insert leaf row, walk levels updating affected tiles, write completed lower tiles to DB, update top-K nodes (DB + in-memory).
+- `mtc-keymaster/tests/c/test_merkle_tiled.c` — equivalence harness using an in-memory mock of `mtc_tile_store`. Tests N ∈ {0, 1, 2, 3, 255, 256, 257, 1024, 10000}. For each N, asserts: root_hash matches legacy; every-leaf inclusion proof matches; consistency proofs match for every `(old, new) ∈ {(1, N), (N/2, N), (N-1, N)}`.
+- `mtc-keymaster/tools/c/mtc_rebuild_tiles.c` — migration tool. Steps: (1) `pg_advisory_xact_lock`; (2) `TRUNCATE mtc_merkle_tiles, mtc_merkle_top_nodes`; (3) `SELECT … FROM mtc_log_entries ORDER BY index` (verify continuity); (4) rebuild tiles bottom-up; (5) compute final root; (6) compare against `mtc_db_load_latest_checkpoint(conn, store->log_id)`'s `root_hash`; (7) abort with non-zero exit + leave tile tables empty if mismatch. Reuses `mtc_hash_leaf` and `mtc_hash_node` from `mtc_merkle.c:51, 75`.
+
+**Build wiring:**
+- Add new sources to `mtc-keymaster/server2/c/Makefile`.
+- Add `mtc_rebuild_tiles` rule to `mtc-keymaster/tools/c/Makefile` + install hook (mirrors backfill-pubkey rule at `tools/c/Makefile:60–73`).
+- `mtc-keymaster/tests/c/Makefile` — build rule for `test_merkle_tiled`.
+
+`mtc_server`, `mtc_http`, `mtc_bootstrap` **still use the legacy tree** at the end of Commit B. Service is dual-build only.
+
+**End of Commit B:** equivalence tests green for all sizes; `mtc_rebuild_tiles` against factsorlie's 86-entry log produces a root that matches the latest checkpoint.
+
+### Commit C — switch over, retire legacy + reload_thread + file-mode
+
+**Edits:**
+
+1. **`mtc-keymaster/server2/c/mtc_store.{h,c}`:**
+   - Replace `MtcMerkleTree tree;` internals with the tiled implementation (rebody the struct, keep the type name so callers don't churn).
+   - Drop fields: `pthread_rwlock_t reload_lock`, `certificates[]`, `cert_count`, `cert_capacity`, `revoked_indices[]`, `revocation_count`, `revocation_capacity`.
+   - Drop functions: `mtc_store_reload`, `mtc_store_save`.
+   - `mtc_store_init`: `mtc_tiled_tree_open(&store->tree, store->db)`. Refuse to start if `store->use_db == 0` — print a clear error pointing at `MERKLE_NEON` env / `--tokenpath`.
+   - `mtc_store_load`: deletes the `mtc_db_load_entries` rebuild loop and the `entries.json` fallback. If anything's left, fold it into `mtc_tiled_tree_open`.
+   - `mtc_store_add_entry`: open transaction, take advisory lock, persist leaf row via `mtc_db_save_entry`, call `mtc_tiled_tree_append`, commit.
+   - `mtc_store_check_invariants`: stays as the no-op it already is in DB mode.
+   - `mtc_store_is_revoked` + `mtc_store_revoke` + `mtc_store_get_revocation_list` already DB-only post-phase-2; just drop the file-mode branches inside them.
+   - `mtc_store_get_cert` already DB+LRU post-phase-2; drop the file-mode branch.
+
+2. **`mtc-keymaster/server2/c/mtc_server.c`:**
+   - Remove `reload_thread` (lines 81–104), the SIGHUP block setup (lines 355–379), and the `pthread_create` call.
+   - Keep the SIGCHLD reaper.
+
+3. **`mtc-keymaster/server2/c/mtc_http.c`** (call-site inventory from exploration):
+   - `handle_log_state` (line 372): `tree.size` and the on-demand root_hash come from the tiled tree's top-K cache.
+   - `handle_log_proof` (line 403): `mtc_tree_inclusion_proof` signature unchanged; backed by tiles.
+   - `handle_consistency` (line 1428): same.
+   - `handle_get_entry` (line 1349): replace `tree.entries[index]` reads with a new `mtc_db_load_entry_serialized(conn, idx, **out, *out_sz)` helper that fetches `serialized` from `mtc_log_entries`.
+   - `get_ct_v2_get_entries` (line 409–417): same — DB fetch instead of `tree.entries[]`.
+   - `renew-cert` handler (line 1228): unchanged at the API; downstream tiles do the work.
+   - All three fork sites: remove the `pthread_rwlock_rdlock`/`unlock` bracket (TLS at line 2576, MQC at line 2695, bootstrap at line 1986).
+
+4. **`mtc-keymaster/server2/c/mtc_bootstrap.c`:**
+   - Remove `kill(getppid(), SIGHUP)` calls (no parent reload anymore).
+   - Remove rdlock/unlock bracket at the fork site.
+   - `mtc_store_checkpoint` and `mtc_tree_subtree_hash(0, tree.size)` calls keep their signature; backed by tiles.
+
+5. **`mtc-keymaster/server2/c/mtc_store.c:539-543`** (revocation-load TBS-matching path): file-mode-only, deleted with file mode.
+
+6. **`mtc-keymaster/tools/c/admin_recosign.c:260-268`** and **`migrate-cosigner.c:212`**: both walk `tree.entries[]` for TBS extraction. Replace with `mtc_db_load_entry_serialized` per index.
+
+7. **DELETE `mtc-keymaster/server2/c/mtc_merkle.{c,h}`** and remove from `Makefile`. Legacy code is gone — equivalence tests have already proven the tiled implementation correct in commit B.
+
+8. **`mtc-keymaster/README-bugsandtodo.md`:** mark TODO #74 as **DONE 2026-MM-DD** under the same entry; add a brief commit-reference list.
+
+**Deploy procedure for commit C** (documented in the commit message):
+1. `git pull && make -f Makefile.tools && sudo make -f Makefile.tools install` on factsorlie.
+2. `sudo systemctl stop mtc-ca.service`.
+3. `mtc_rebuild_tiles --tokenpath ~/.env` — populates tile tables, validates against latest checkpoint, exits 0 on success.
+4. `sudo systemctl start mtc-ca.service`. Startup log shows `[store] tiled tree opened, N entries from DB`; no more `reload: SIGHUP received` lines ever.
+5. `git pull && make && sudo make install` on frflashy (client-only; no service touch needed).
+
+**End of Commit C:** factsorlie + frflashy on tiled tree; `RSS` post-restart sub-30 MB at any tree size; `make -f Makefile.tools` warning-clean; revoke matrix 10/10 PASS without rwlock involvement.
+
+## Critical files
+
+| File | Touched in | Nature |
+|---|---|---|
+| `mtc-keymaster/server2/c/mtc_db.{c,h}` | A | Schema additions; tile-store helpers |
+| `mtc-keymaster/server2/c/mtc_tile.h` | A | NEW — constants |
+| `mtc-keymaster/server2/c/mtc_tile_cache.{c,h}` | A | NEW — LRU |
+| `mtc-keymaster/server2/c/mtc_tile_store.h` | A | NEW — abstract API |
+| `mtc-keymaster/server2/c/mtc_tile_store_pg.c` | A | NEW — Postgres backend |
+| `mtc-keymaster/server2/c/Makefile` | A, B, C | Source list + clean target |
+| `mtc-keymaster/server2/c/mtc_merkle_tiled.{c,h}` | B | NEW — tile-aware Merkle algorithms |
+| `mtc-keymaster/tests/c/test_merkle_tiled.c` | B | NEW — equivalence tests |
+| `mtc-keymaster/tools/c/mtc_rebuild_tiles.c` | B | NEW — migration tool |
+| `mtc-keymaster/tools/c/Makefile` | B | Build rule + install hook |
+| `mtc-keymaster/tests/c/Makefile` | B | Build rule for new test |
+| `mtc-keymaster/server2/c/mtc_store.{c,h}` | C | Switch backing store; drop file mode + reload_thread plumbing |
+| `mtc-keymaster/server2/c/mtc_server.c` | C | Retire reload_thread |
+| `mtc-keymaster/server2/c/mtc_http.c` | C | Drop rdlock; switch to tiled tree; replace `tree.entries[]` reads with `mtc_db_load_entry_serialized` |
+| `mtc-keymaster/server2/c/mtc_bootstrap.c` | C | Drop rdlock + SIGHUP raise; switch to tiled tree |
+| `mtc-keymaster/tools/c/admin_recosign.c` | C | Replace `tree.entries[]` reads with DB fetch |
+| `mtc-keymaster/tools/c/migrate-cosigner.c` | C | Same |
+| `mtc-keymaster/server2/c/mtc_merkle.{c,h}` | C | DELETE |
+| `mtc-keymaster/README-bugsandtodo.md` | C | TODO #74 → DONE |
+
+## Reused functions / utilities (don't reinvent)
+
+- `mtc_hash_leaf` and `mtc_hash_node` (`mtc_merkle.c:51, 75`) — keep these as standalone helpers in `mtc_merkle_tiled.c`. Same RFC 6962 prefix bytes (`0x00` / `0x01`).
+- `mtc_db_save_entry`, `mtc_db_load_entries` (`mtc_db.c`) — leaf-row persistence stays intact. Tiled append calls these.
+- `mtc_db_ensure_connected` (`mtc_db.c`) — `mtc_rebuild_tiles` and the tiled tree both wrap long-running cursors with this (Neon idle-closes after ~5 min).
+- `mtc_db_load_latest_checkpoint` (`mtc_db.c`) — used by `mtc_rebuild_tiles` to validate the rebuilt root against the last cosigned checkpoint.
+- `mtc_cert_cache_t` from phase 2 (`mtc_cert_cache.h`) — model the tile cache on the same per-process / COW LRU pattern. The file is the canonical reference for how the new `mtc_tile_cache_t` should structure its lifetime (`init` in `mtc_store_init`, `free` in `mtc_store_free`, COW across forks, no mutex).
+- `pg_advisory_xact_lock` — Postgres built-in; no new dependency.
+- Cosignature primitive `wc_dilithium_sign_ctx_msg` (in `mtc_store_cosign`, `mtc_store.c`) — unchanged.
+
+## Verification
+
+### Equivalence (Commit B)
+
+`tests/c/test_merkle_tiled` runs locally without a live DB (the tile store API is mock-backable):
+- `N ∈ {0, 1, 2, 3, 255, 256, 257, 1024, 10000}`.
+- For each N: build legacy tree + tiled tree.
+- Assert: root_hash match; every-leaf inclusion proof match; consistency proofs match for every `(old, new) ∈ {(1, N), (N/2, N), (N-1, N)}`.
+- Memory ceiling probe: track RSS at N=1M with tile cache cap=1024. Expect RSS stable, not linear in N.
+
+### Migration (Commit B)
+
+`mtc_rebuild_tiles --tokenpath ~/.env` on factsorlie:
+- 86 entries scanned, tiles populated, final root matches latest checkpoint's `root_hash`. Exit 0.
+- Re-run — idempotent; tile tables truncated and rebuilt to identical content.
+- Negative test: manually corrupt one `mtc_log_entries.leaf_hash` byte via `psql`, re-run. Expect: rebuild produces a different root, comparison fails, tool exits non-zero, tile tables left empty (transaction rolls back). Restore the corrupted byte.
+
+### Live deploy (Commit C)
+
+After the deploy procedure:
+- `journalctl -u mtc-ca.service` startup line reads `[store] tiled tree opened, N entries from DB` (or similar); no `reload:` lines anymore.
+- `RSS` of `mtc_server` stable < 30 MB.
+- `show-tpm --verify` clean for both `factsorlie.com` and `factsorlie.com-ca`. Proofs come back via `/log/proof/N` (tile-fetched).
+- `revoke-key --is-revoked` cycles correctly for active + revoked.
+- `issue_leaf_nonce` + `bootstrap_leaf` round-trip succeeds (caller-cert lookup + tile-tree append).
+- `mtc-keymaster/tests/run-revoke-matrix.sh` → 10/10 PASS first-try.
+- frflashy `show-tpm --verify` confirms its proofs verify against factsorlie's tiled root (wire format unchanged).
+
+### Memory regression guard
+
+After all three commits + a synthetic 1 M-leaf test (run via `mtc_rebuild_tiles` populating from a generated `mtc_log_entries` row set in a test schema):
+- Restart `mtc_server`.
+- `ps -o rss= -p $(pidof mtc_server)` < 50 MB.
+- `/log/proof/<random index>` returns in < 100 ms (≤ 24 tile fetches at depth 24 with LRU warm).
+
+### Wire-format invariance
+
+Spot-check that an existing pre-phase-3 standalone cert (e.g. `factsorlie.com` idx=72) still verifies under `show-tpm --verify` post-phase-3. Same `subtree_hash` bytes; same cosignature; only the storage backing changed.
+
+## Out of scope
+
+- Sharding the log across multiple Neon databases.
+- Online migration (the rebuild step in commit C requires a brief stop).
+- Switching from `pg_advisory_xact_lock` to a more granular row-level lock — the advisory lock is sufficient at any plausible append rate for a single-CA log; revisit only if append throughput becomes a measured bottleneck.
+- Replacing wolfSSL primitives or changing the cosignature input bytes.
+- Any client-side tooling change beyond `admin_recosign.c` / `migrate-cosigner.c` adapting their `tree.entries[]` reads.
