@@ -1,8 +1,8 @@
 ```
 Internet Engineering Task Force                           C. Page, Ed.
 Internet-Draft                                              factsorlie
-Intended status: Experimental                          21 April 2026
-Expires: 23 October 2026
+Intended status: Experimental                            7 May 2026
+Expires: 6 November 2026
 ```
 
 # Merkle Quantum Connect (MQC) Transport Protocol
@@ -46,7 +46,7 @@ documents at any time.  It is inappropriate to use Internet-Drafts
 as reference material or to cite them other than as "work in
 progress."
 
-This Internet-Draft will expire on 23 October 2026.
+This Internet-Draft will expire on 6 November 2026.
 
 ## Copyright Notice
 
@@ -121,8 +121,10 @@ MTC-referenced peer identity and no X.509 on the wire.
 - MQC does not specify a congestion-control layer; it runs over
   TCP and relies on the OS TCP stack.
 - MQC is not intended as a replacement for QUIC-based transports.
-  A QUIC-style sibling protocol that reuses MQC's crypto is
-  described informally in [MQCP] but is out of scope here.
+  An informational QUIC-style sibling that reused MQC's crypto
+  was sketched as [MQCP] but has been deprecated by the
+  reference-implementation maintainers (2026-05-06); it is not
+  in scope for this document.
 
 ---
 
@@ -502,10 +504,9 @@ passive observer at the cost of one additional round trip.
 
 > **Implementation status note (informative).** The reference
 > implementation in `socket-level-wrapper-MQC/mqc_encrypted.c`
-> ships the full encrypted-mode handshake as of Phase 7 (commits
-> `de0ff9d60` and `a287aa8d0` on the postWolf tree).  Both
+> ships the full encrypted-mode handshake.  Both
 > `mqc_connect_encrypted` and `mqc_accept_encrypted` route
-> through the post-Phase-1 transcript / HKDF-Extract+Expand /
+> through the same transcript / HKDF-Extract+Expand /
 > Finished / AAD architecture defined elsewhere in this
 > document.  Callers opt in by setting
 > `cfg.encrypt_identity = 1` on the `mqc_ctx_t` (or via
@@ -1546,10 +1547,11 @@ such negotiation is actually introduced.
 - **[GOOGLE-2029]** Google, *Our pledge to migrate to post-
   quantum cryptography by 2029*, blog post, March 2026,
   <https://blog.google/innovation-and-ai/technology/safety-security/cryptography-migration-timeline/>.
-- **[MQCP]**        Merkle Quantum Connect Protocol over UDP.  A
-  sibling transport that reuses MQC's crypto over a QUIC-style
-  reliable UDP substrate.  See the `postWolf` source tree,
-  `socket-level-wrapper-QUIC/`.
+- **[MQCP]**        Merkle Quantum Connect Protocol over UDP.
+  A sibling transport that reused MQC's crypto over a QUIC-style
+  reliable UDP substrate.  Source kept for history at
+  `socket-level-wrapper-QUIC/` in the `postWolf` tree but
+  deprecated 2026-05-06; not built or installed.
 
 ---
 
@@ -1763,9 +1765,13 @@ deployment.
   ML-KEM material (plaintext), phase 2 carries the AEAD-sealed
   identity frames keyed by an early secret derived from the
   phase-1 transcript.
-- Reference-implementation status note: encrypted-mode entry
-  points are stubs in the post-Phase-1 codebase; restoration is
-  tracked under `mqc-master.plan` Phase 7.
+- Reference-implementation status note (Phase 7):
+  encrypted-mode entry points (`mqc_connect_encrypted`,
+  `mqc_accept_encrypted`) ship in `mqc_encrypted.c` against the
+  shared transcript / HKDF-Extract+Expand / Finished / AAD
+  architecture.  `mqc_accept_auto` dispatches on the parsed
+  `mode` field per connection so a single port serves both
+  modes.
 
 ### Section 8 — Key Derivation
 
@@ -1922,10 +1928,26 @@ This change closes reviewer finding #4 from
 (`subject_public_key_hash` was already mandatory in §5.2's
 table of cert fields, just not enforced by verifiers).
 
+### Server-side storage refactor (informative)
+
+TODO #74 phase 2 (commit `6ffb3c31d`, 2026-05-04) and phase 3
+(commits `7a5ccacc5` / `193a2f59a` / `26368ab3a`, 2026-05-07) on
+the postWolf reference deployment moved the Merkle tree and
+issued certs out of the server's RAM into Postgres
+(`mtc_log_entries.serialized` for cert blobs, `mtc_merkle_tiles`
++ `mtc_merkle_top_nodes` for inner-node hashes, with bounded
+per-process LRUs in front).  The pre-phase-3 SIGHUP-driven
+reload thread and reload rwlock are retired; concurrent
+appends serialize on a `pg_advisory_xact_lock(<log_id-key>)`.
+All wire bytes are unchanged — this is a server implementation
+note, not a protocol change.  Pre-phase-3 standalone certs
+continue to verify byte-for-byte under the post-phase-3 server
+because the cosignature input bytes (§10.4) are unchanged.
+
 ### Cumulative scope
 
 The numerical impact is: the .md source grew from ~810 lines
-(initial draft) to ~1700 lines (post-edit), with the bulk in
+(initial draft) to ~1900 lines (post-edit), with the bulk in
 the new transcript-construction text (§6.0), the four new
 §12.x security-considerations subsections, the AAD definition
 (§9.1.1), the Finished frame (§8.1), and the §10.6/§10.7 peer-

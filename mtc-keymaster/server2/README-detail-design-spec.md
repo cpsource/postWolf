@@ -32,26 +32,39 @@ Files that intentionally stay separate:
 
 ## 1. Process model
 
-`mtc_server` runs as a single multithreaded systemd-managed
-process (`mtc-ca.service`).  At startup it:
+`mtc_server` runs as a systemd-managed process
+(`mtc-ca.service`).  At startup it:
 
-1. Loads ML-DSA-87 keypair from `~/.mtc-ca-data/ca_key_mldsa.der`.
-   This single key is used both to issue certs (CA role) and to
-   cosign Merkle subtree roots (cosigner role).  Same key, two
-   roles.
+1. Loads the ML-DSA-87 keypair from
+   `~/.mtc-ca-data/ca_key_mldsa.der`.  This single key is used
+   both to issue certs (CA role) and to cosign Merkle subtree
+   roots (cosigner role).  Same key, two roles.
 2. Connects to Neon Postgres via `MERKLE_NEON` DSN read from
-   `~/.env`.
-3. Loads the Merkle log: entries, certificates, landmarks,
-   revocations.
-4. Spawns three listener threads on three ports.
-5. Spawns a SIGHUP-handler thread that reloads the in-memory
-   store from DB on demand (TODO #56 + #60).
-6. fork()s a child per accepted connection on each port.
+   `~/.env`.  Postgres is **required**: TODO #74 phase 3
+   (2026-05-07) retired file mode entirely — `mtc_store_init`
+   refuses to start when `MERKLE_NEON` is unset.
+3. Opens the tiled Merkle tree
+   (`mtc_tiled_tree_open`).  Resident state is just the top-K
+   inner-node hashes (levels >= `MTC_TOP_K_LEVEL_THRESHOLD`)
+   plus the bounded `mtc_tile_cache` LRU; the tree size is read
+   from `MAX(index)+1` in `mtc_log_entries`.  Lower levels live
+   in `mtc_merkle_tiles` (Section 7.4) and fault in on demand.
+4. Spawns the three port listeners (TLS 8444, DH bootstrap
+   8445, MQC 8446).
+5. fork()s a child per accepted connection on each port.
 
-The fork-after-accept model means the in-memory store is shared
-copy-on-write to children.  When a child commits a new entry, it
-sends `SIGHUP` to the parent so the parent's in-memory cache
-catches up — see TODO #56 + #60 in `README-bugsandtodo.md`.
+The fork-after-accept model gives each child a copy-on-write
+view of the parent's caches (`mtc_cert_cache`, `mtc_tile_cache`,
+top-K hash array).  Mutating children write their changes
+straight to Neon under a `pg_advisory_xact_lock(<log_id-key>)`
+so concurrent appends serialize cleanly at the DB layer.  There
+is no parent-side reload, no SIGHUP, no rwlock around the fork
+sites — TODO #74 phase 3 retired the entire `reload_thread` /
+`reload_lock` plumbing along with the in-memory `certificates[]`
+/ `revoked_indices[]` arrays that justified it (phases 2 + 3).
+Other forks see the new state on their next cache miss; the
+parent picks it up the same way the next time it touches an
+affected cert or tile.
 
 ---
 
@@ -132,10 +145,13 @@ Response:
   "ca_name":     "MTC-CA-C",
   "cosigner_id": "32473.2.ca",
   "tree_size":   <int>,
-  "root_hash":   "<hex>",
-  "landmarks":   [<int>, ...]
+  "root_hash":   "<hex>"
 }
 ```
+
+The pre-2026-05-07 `landmarks` array was dropped when TODO #76
+retired `mtc_landmarks`; the Python verifier tolerates its
+absence (defaults to `[]`).
 
 #### `GET /log/entry/<index>`
 Fetch a single log entry.
@@ -220,21 +236,22 @@ Response (`200`): `{"status": "ok", "index": N, "standalone_certificate": {...},
 sparse-deleted.
 
 #### `GET /trust-anchors`
-Trust-anchor list.  One `standalone` entry for the log itself,
-plus one `landmark` entry per cached subtree size.
+Trust-anchor list.  Single `standalone` entry for the log
+itself.
 
 Response:
 ```json
 {
   "trust_anchors": [
-    {"id": "<log_id>",    "type": "standalone"},
-    {"id": "<log_id>.0",  "type": "landmark", "tree_size": 1},
-    {"id": "<log_id>.1",  "type": "landmark", "tree_size": 2},
-    {"id": "<log_id>.2",  "type": "landmark", "tree_size": 4},
-    ...
+    {"id": "<log_id>", "type": "standalone"}
   ]
 }
 ```
+
+The pre-2026-05-07 form also enumerated one `landmark` entry
+per cached power-of-2 subtree size (backed by `mtc_landmarks`).
+TODO #76 retired both the table and the landmark anchors after
+no live client was found to consume the landmark format.
 
 The cosigner public key itself is served at `GET /ca/public-key`
 (below), not on this endpoint.
@@ -435,11 +452,12 @@ the SPKI form.  The latter would silently funnel into the
 "signature verification failed" 403 branch, masking the real
 cause; this was uncovered by the TODO #19 matrix on 2026-05-07.
 
-After `mtc_store_revoke` succeeds the handler raises `SIGHUP` to
-its parent (same fork-after-accept pattern as TODO #56 enrollment).
-Without this the parent's in-memory `revoked_indices` array stays
-stale and bootstrap-proxy GETs of `/revoked/<n>` served from
-forks-of-the-parent keep reporting `revoked=false`.
+`mtc_store_revoke` writes the revocation row directly to
+`mtc_revocations`; subsequent `/revoked/<n>` lookups (from any
+fork) hit the DB through the cert cache's revoke-aware path, so
+no parent-side reload is needed.  The pre-phase-3 `SIGHUP` raise
+was retired with the in-memory `revoked_indices[]` array (TODO
+#74 phase 3, commit 26368ab3a).
 
 Response (`200`): `{"revoked": true, "cert_index": N, "ca_cert_index": M, "target_subject": "...", "reason": "..."}`.
 
@@ -844,20 +862,50 @@ CREATE TABLE mtc_checkpoints (
 );
 ```
 
-### 7.4 `mtc_landmarks` — power-of-2 cosignature points
+### 7.4 `mtc_merkle_tiles` — packed inner-node hashes (TODO #74 phase 3)
 
 ```sql
-CREATE TABLE mtc_landmarks (
-    id         SERIAL PRIMARY KEY,
-    tree_size  INTEGER NOT NULL UNIQUE,
-    created_at TIMESTAMPTZ DEFAULT now()
+CREATE TABLE mtc_merkle_tiles (
+    level       INTEGER NOT NULL,
+    tile_index  BIGINT  NOT NULL,
+    tile_height INTEGER NOT NULL,
+    first_node  BIGINT  NOT NULL,
+    node_count  INTEGER NOT NULL,
+    hashes      BYTEA   NOT NULL,        -- packed 32-byte hashes
+    created_at  TIMESTAMPTZ DEFAULT now(),
+    updated_at  TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (level, tile_index)
+);
+CREATE INDEX idx_mtc_merkle_tiles_level ON mtc_merkle_tiles(level);
+```
+
+Each tile covers `2^MTC_TILE_HEIGHT = 256` consecutive inner
+nodes at one level.  A tile at `(level, tile_index)` covers
+positions `[tile_index * 256, (tile_index+1) * 256)`; the
+rightmost incomplete tile at any level stores only `node_count`
+hashes in its `hashes` blob.  Levels 1..11 (i.e. up to 2048
+leaves under one node) live here; level 0 is the leaf hash on
+`mtc_log_entries.leaf_hash` and is never duplicated, levels >=
+12 live in `mtc_merkle_top_nodes`.
+
+### 7.5 `mtc_merkle_top_nodes` — top-K inner-node hashes (TODO #74 phase 3)
+
+```sql
+CREATE TABLE mtc_merkle_top_nodes (
+    level      INTEGER NOT NULL,
+    node_index BIGINT  NOT NULL,
+    hash       BYTEA   NOT NULL,
+    PRIMARY KEY (level, node_index)
 );
 ```
 
-The cosigner only signs subtree roots at power-of-2 sizes (1, 2,
-4, 8, 16, …).  Landmarks record which sizes have been cosigned.
+Inner nodes at level >= `MTC_TOP_K_LEVEL_THRESHOLD = 12` live
+here (one row per node, not packed) so the server can hold
+them all in a sorted in-RAM array (`mtc_merkle_tiled.c`'s
+`top_nodes`).  At a 10 M-leaf tree (~23 levels), the top 12
+levels are ~4096 inner nodes ≈ 128 KB resident.
 
-### 7.5 `mtc_revocations`
+### 7.6 `mtc_revocations`
 
 ```sql
 CREATE TABLE mtc_revocations (
@@ -869,7 +917,7 @@ CREATE TABLE mtc_revocations (
 );
 ```
 
-### 7.6 `mtc_enrollment_nonces`
+### 7.7 `mtc_enrollment_nonces`
 
 ```sql
 CREATE TABLE mtc_enrollment_nonces (
@@ -913,7 +961,7 @@ Constants:
 | `MTC_NONCE_TTL_SECS` | 900 (15 min) | `mtc_db.h` |
 | `MTC_NONCE_MAX_TTL_DAYS` | 30 | `mtc_db.h` |
 
-### 7.7 `mtc_public_keys` — peer-key resolution
+### 7.8 `mtc_public_keys` — peer-key resolution
 
 ```sql
 CREATE TABLE mtc_public_keys (
@@ -928,7 +976,7 @@ CREATE TABLE mtc_public_keys (
 unlabeled identities, `<subject>-<label>` for labeled ones, plus
 `<subject>-ca` for CA certs).  Backs `GET /public-key/<name>`.
 
-### 7.8 `abuseipdb` — IP-reputation cache
+### 7.9 `abuseipdb` — IP-reputation cache
 
 ```sql
 CREATE TABLE abuseipdb (
@@ -1105,20 +1153,21 @@ follow-up work.
 
 | Path | Role |
 |---|---|
-| `~/.mtc-ca-data/ca_key.der` | Server's ML-DSA-87 cosigner private key |
+| `~/.mtc-ca-data/ca_key_mldsa.der` | Server's ML-DSA-87 cosigner private key (DER, chmod 0600) |
 | `~/.mtc-ca-data/<domain>-ca/` | CA-side enrollment workspace (keys, X.509 cert, nonce.txt) |
 | `~/.mtc-ca-data/server-cert.pem` | TLS 1.3 cert for port 8444 (Let's Encrypt) |
 | `~/.mtc-ca-data/server-key.pem` | TLS 1.3 private key for port 8444 |
-| `~/.mtc-ca-data/entries.json` | On-disk Merkle log mirror (Neon is canonical) |
-| `~/.mtc-ca-data/certificates.json` | On-disk cert mirror |
-| `~/.mtc-ca-data/landmarks.json` | On-disk landmark mirror |
-| `~/.mtc-ca-data/revocations.json` | On-disk revocation mirror |
 | `~/.TPM/<subject>[-<label>][-ca]/` | Client-side identity (per-leaf or per-CA) |
 | `~/.TPM/<id>/ca-cosigner.pem` | Per-leaf or per-CA pinned cosigner PEM (P0 #9b) |
 | `~/.TPM/ca-cosigner.pem` | Global cosigner cache (DNSSEC-verified post-#9b) |
 | `~/.TPM/default` | Symlink to the active identity dir |
 | `~/.TPM/peers/<cert_index>/` | Cached MQC-peer state (cert, pubkey, cosigner-fp, revocation status) |
 | `/etc/postWolf/config` | Operator-tunable knobs (Augeas-managed) |
+
+The pre-2026-05-07 on-disk JSON mirrors
+(`entries.json`, `certificates.json`, `landmarks.json`,
+`revocations.json`) were retired together with file mode in
+TODO #74 phase 3.  Neon is the only authoritative store.
 
 ---
 
@@ -1128,14 +1177,36 @@ follow-up work.
 |---|---|
 | Process entry + signal handling | `mtc_server.c` |
 | TLS 8444 + MQC 8446 dispatcher | `mtc_http.c` |
-| 8445 DH bootstrap | `mtc_bootstrap.c` |
-| Merkle store (in-memory + DB) | `mtc_store.c`, `mtc_merkle.c` |
-| Neon DB layer | `mtc_db.c` |
+| 8445 DH bootstrap | `mtc_bootstrap.c`, `mtc_bootstrap_transcript.c` |
+| Merkle store (DB-backed) | `mtc_store.c` |
+| Tiled Merkle tree (TODO #74 phase 3) | `mtc_merkle_tiled.{c,h}`, `mtc_tile.h`, `mtc_tile_store.h`, `mtc_tile_store_pg.c`, `mtc_tile_cache.{c,h}` |
+| Legacy in-memory Merkle (rebuild tool only) | `mtc_merkle.{c,h}` |
+| Cert blob LRU (TODO #74 phase 2) | `mtc_cert_cache.{c,h}` |
+| Neon DB layer | `mtc_db.{c,h}` |
 | AbuseIPDB cache | `mtc_checkendpoint.c` |
 | Rate-limit buckets | `mtc_ratelimit.c` |
-| AES-GCM helpers (8445) | `mtc_crypt.c` |
+| AES-256-GCM helpers (8445) | `mtc_crypt.c` |
 | CA X.509 validation | `mtc_ca_validate.c` |
 | DNSSEC TXT validation | `mtc_dnssec_pin.c` |
 | Domain canonicalisation | `mtc_domain.c` |
 | Augeas config parser | `../read-config/read-config.{c,h}` |
+
+The tiled-tree call surface (`mtc_tiled_tree_open` /
+`_root_hash` / `_subtree_hash` / `_inclusion_proof` /
+`_consistency_proof` / `_append_leaf`) is identical to the
+legacy `MtcMerkleTree` API by design; callers in `mtc_http.c`
++ `mtc_bootstrap.c` + `mtc_store.c` were ported by changing
+the type of the embedded tree on `MtcStore`.  Storage routing
+inside the tiled tree is: level 0 → `mtc_log_entries.leaf_hash`
+(via `mtc_tile_store_get_leaf_hash`); level 1..11 →
+`mtc_tile_cache` LRU → `mtc_merkle_tiles`; level >= 12 →
+in-RAM sorted top-K array → `mtc_merkle_top_nodes`.
+
+The legacy `mtc_merkle.{c,h}` stays in the source tree because
+the migration tool (`tools/c/mtc_rebuild_tiles.c`) loads leaves
+into a legacy in-memory tree (compacting any historical gaps)
+and walks it bottom-up to populate `mtc_merkle_tiles` /
+`mtc_merkle_top_nodes`.  No new server-side caller of
+`mtc_merkle.h` should be added — the tiled tree is the only
+production path.
 
