@@ -1,5 +1,189 @@
 # FIPS Integrity System — TODO
 
+## Conventions
+
+**All tools in this directory are written in C.** No shell
+scripts, no Python, no Go.  Verifier-side tools link against
+wolfCrypt (the post-quantum primitives, the SHA-256 hasher, the
+canonical-encoding helpers).  Tools live under
+`fips-framework/tools/` (to be created — does not exist yet).
+The current `Makefile` at the directory root references
+`fips-manifest-submit.c` / `fips-manifest-verify.c` directly;
+when `tools/` exists, that wiring moves into a recursive
+sub-Makefile mirroring the pattern in `mtc-keymaster/tools/c/`.
+
+Earlier P1 entries (items 1, 2, 3) reference `*.sh` filenames;
+those are stale ("the tool, in whichever language") and become
+`*.c` once TODO 0c lands.
+
+---
+
+## Roadmap
+
+This is the implementation roadmap for the FIPS-framework
+sub-project.  Phases are sequenced by dependency: each phase
+unblocks the next.  Within a phase, items can be parallelised.
+Every numbered task here points at a corresponding `TODO N`
+entry below for the design detail.
+
+### Phase 1 — Foundation (NOTHING ships until this lands)
+
+The Makefile, the `README.md`, and most of the design docs
+already describe v1 tools that don't exist.  Write them.
+
+- [ ] **TODO 0c** — Write `tools/fips-manifest-submit.c` +
+  `tools/fips-manifest-verify.c` from scratch.  Minimal v1
+  scope; later phases add features on top.  *Blocks
+  everything.*
+- [ ] **TODO 0b** — Replace the 32-zero placeholder in
+  `config/ca-pubkey.h` with the real pinned ML-DSA-87 pubkey
+  (2592 bytes).  *Sized for ML-DSA-87, not Ed25519.  Pair
+  with TODO 25 below.*
+- [ ] **TODO 25** — Sweep Ed25519 / 64-byte / 32-byte refs
+  in `README-fips.md`, `README.md`, `FIPS.md`,
+  `README-fips-todo.md`, and `config/ca-pubkey.h`.
+  *Doc-only; can run in parallel with 0c.*
+- [ ] Reorganise sources under `tools/`, add the recursive
+  sub-Makefile.
+
+**Exit criterion:** `make` builds two C binaries that round-
+trip a manifest end-to-end against the live MTC server on
+`factsorlie.com:8446`.
+
+### Phase 2 — Canonical schema (lock the wire format before scale)
+
+The wire-format invariants need to be right *before* any kit
+is shipped to a downstream consumer; bumping the schema after
+publication forces every cached receipt to be re-issued.
+
+- [ ] **TODO 14** — Canonical manifest format (RFC 8785 JCS)
+  + `schema_version` field (start at `1`).
+- [ ] **TODO 10** — Expand manifest binding to all 16 fields
+  (package + version + git_commit + tarball_sha256 +
+  build_scripts + toolchain + dependencies + configure_flags
+  + fips_boundary + approved_algorithms + self_test_files +
+  generated_files_policy + signed_at + leaf_cert_fp +
+  log_id + tree_size + checkpoint_hash).
+- [ ] **TODO 16** — Per-manifest leaf-key signature with
+  ctx label `"mtc-fips-manifest/v1\n\x00"`.
+
+**Exit criterion:** Round-trip a manifest where the canonical
+bytes hash byte-for-byte the same on submit + verify, and the
+leaf signature verifies under the publisher's enrolled
+ML-DSA-87 leaf cert.
+
+### Phase 3 — Server-side enforcement
+
+Make submission fail-closed under the new schema.
+
+- [ ] **TODO 27** — Mandatory transport security on
+  `POST /fips/manifest`: reject plaintext HTTP; require TLS
+  1.3 (8444) or MQC (8446).
+- [ ] **TODO 11** — Immutable `(package, tag)` policy
+  (default reject duplicates with `409 Conflict`; opt-in
+  multi-version mode).
+- [ ] **TODO 23** — Mandatory revocation check in *online*
+  mode of the verifier (default fail-closed).
+- [ ] **TODO 17** — Verifier fail-closed enumeration:
+  missing files, extra files, mode mismatch, symlink
+  surprise, generated-file-policy violation, path
+  traversal.
+
+**Exit criterion:** Negative-test suite under
+`tools/tests/` covers each rejection case + each is logged
+distinctly so an operator can diagnose without source-diving.
+
+### Phase 4 — Freshness hardening (the biggest security gap)
+
+These are the items that close the *split-view* attack the
+ChatGPT review highlighted.
+
+- [ ] **TODO 8** — Witness cosignatures + verifier policy
+  ("≥ N witnesses or ≥ 1 mirror").  *Largest remaining
+  threat-model gap.*
+- [ ] **TODO 12** — Offline revocation snapshot bundled
+  with the receipt + receipt `MAX_RECEIPT_AGE` (default 90
+  days) + `MAX_REVOCATION_AGE` (default 7 days).
+- [ ] **TODO 13** — Dual-hash (`sha256` + `sha3-384`) per
+  file to align with the post-quantum branding.
+
+**Exit criterion:** A simulated split-view attack against the
+log fails offline verification; a stolen-and-revoked
+publisher key cannot mint a verifying receipt under any
+combination of cached / network conditions.
+
+### Phase 5 — Operational polish
+
+- [ ] **TODO 1** — `expires` field on the manifest (item
+  was filed before Phase 2; relabel as redundant if TODO 10
+  already includes `signed_at` + a derived expiry).
+- [ ] **TODO 2** — Version-rollback detection state file.
+- [ ] **TODO 22** — Rollback-check hardening: fix the
+  version-comparison bug (lex vs semver), optional
+  TPM-sealed monotonic counter.
+- [ ] **TODO 3** — Self-contained kit bundle (publisher
+  cert + chain ship inside the tarball).
+- [ ] **TODO 24** — Replace the dangerous §"Key Rotation"
+  text with a proper key-transition protocol (overlap
+  window + transition document).
+- [ ] **TODO 18** — `fips-manifest-verify --strict`
+  audit-grade gate that turns on every defense-in-depth
+  check.
+
+**Exit criterion:** A kit produced today, signed,
+distributed, and verified offline 60 days from now still
+passes `--strict` under default knobs.
+
+### Phase 6 — Documentation cutover
+
+By this point all the design changes are in code; the user
+doc needs to catch up.
+
+- [ ] **TODO 9** — Rename "FIPS mode" → "FIPS
+  source-integrity mode" everywhere user-facing.
+- [ ] **TODO 19** — Sweep `README-fips.md` for the
+  CA / log-key role split (`[ISSUE #1]` amendment).
+- [ ] **TODO 20** — Sweep `README-fips.md` for mandatory
+  CA-key pinning (`[ISSUE #2]` amendment).
+- [ ] **TODO 21** — Drop "equally secure" prose for offline
+  mode.
+- [ ] **TODO 26** — Add §"What This Does and Does Not
+  Prove" up front.
+
+**Exit criterion:** A first-time reader of `README-fips.md`
++ `FIPS.md` lands at the right threat model on the first
+read.  No external pre-CMVP confusion remains.
+
+### Phase 7 — TUF roles + ecosystem
+
+These extend the basic scheme into a TUF-style multi-role
+model.  Defer until Phase 1–6 is deployed.
+
+- [ ] **TODO 4** — Timestamp role (freeze-attack
+  protection).
+- [ ] **TODO 5** — Snapshot role (mix-and-match
+  protection).
+- [ ] **TODO 6** — Scoped delegation (per-package
+  signing authority).
+- [ ] **TODO 7** — GPG keyserver cross-signing of the CA
+  pubkey.
+
+### Phase 8 — Reproducible builds + cross-cut
+
+Closes the "compromised toolchain" half of the threat model.
+Cross-cuts master `mtc-keymaster/README-bugsandtodo.md` TODO
+#8.  Likely a separate arc that touches `debian/rules` and
+`Makefile.am` outside `fips-framework/`.
+
+- [ ] **TODO 15** — Reproducible-build hooks + toolchain
+  manifest fields (the latter overlaps with TODO 10).
+- [ ] **TODO 0a** — Wire MTC verification into the TLS
+  handshake at `socket-level-wrapper/slc.c:273`.  Lives
+  outside `fips-framework/` but the verification logic is
+  shared with Phase 1's verify tool.
+
+---
+
 ## Priority 0: Code TODOs (in-tree)
 
 ### 0a. MTC verification during TLS handshake
