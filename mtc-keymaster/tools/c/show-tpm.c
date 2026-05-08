@@ -554,39 +554,65 @@ static void verify_entry(tpm_entry_t *e, const char *tpm_dir)
             strcat(e->v_errors, "certificate expired; ");
     }
 
-    /* Check pubkey_db */
+    /* Check pubkey_db.
+     *
+     * Pre-fix: this only verified that both the local and DB PEMs
+     * contained "BEGIN PUBLIC KEY" — i.e., that they were both
+     * well-formed PEM.  TWO COMPLETELY DIFFERENT KEYS BOTH PASSED.
+     * That gap is exactly what masked the post-migration desync
+     * where mtc_public_keys.factsorlie.com still held the OLD
+     * shared-key PEM while the cert at index 72 had been rewritten
+     * to bind the new key.
+     *
+     * Post-fix: compute SHA-256(db_pem) and compare against the
+     * cert's subject_public_key_hash (e->spkh_hex, same convention
+     * mtc_bootstrap.c uses when stamping spk_hash onto the leaf).
+     * That single comparison subsumes the local-vs-db check too
+     * because spkh=OK already verifies sha256(local_pem) == cert. */
     snprintf(path, sizeof(path), "/public-key/%s", e->name);
     body = mqc_http_get(path, &code);
     if (!body || code != 200) {
         e->v_pubkey_db = 0;
         strcat(e->v_errors, "public key not in Neon; ");
+    } else if (e->spkh_hex[0] == '\0') {
+        /* Cert didn't carry an spk_hash — nothing to compare against. */
+        e->v_pubkey_db = -1;
     } else {
-        /* Compare with local key */
-        char loc_key_path[PATH_MAX];
-        snprintf(loc_key_path, sizeof(loc_key_path),
-                 "%s/%s/public_key.pem", tpm_dir, e->name);
-        {
-            char *local_key = read_file(loc_key_path);
-            struct json_object *pk_obj = json_tokener_parse(body);
-            if (pk_obj && local_key) {
-                struct json_object *kv;
-                if (json_object_object_get_ex(pk_obj, "key_value", &kv)) {
-                    const char *db_key = json_object_get_string(kv);
-                    /* Trim and compare */
-                    if (strstr(local_key, "BEGIN PUBLIC KEY") &&
-                        strstr(db_key, "BEGIN PUBLIC KEY")) {
-                        e->v_pubkey_db = 1;  /* both are PEM, consider OK */
-                    } else {
-                        e->v_pubkey_db = 2;  /* mismatch */
-                        strcat(e->v_errors, "public key MISMATCH; ");
-                    }
+        struct json_object *pk_obj = json_tokener_parse(body);
+        struct json_object *kv = NULL;
+        if (pk_obj && json_object_object_get_ex(pk_obj, "key_value", &kv)) {
+            const char *db_pem = json_object_get_string(kv);
+            int db_pem_len = (int)strlen(db_pem);
+            wc_Sha256 sha;
+            unsigned char db_hash[32];
+            char db_hex[65];
+            int i;
+            if (wc_InitSha256(&sha) == 0 &&
+                wc_Sha256Update(&sha, (const byte *)db_pem,
+                                (word32)db_pem_len) == 0 &&
+                wc_Sha256Final(&sha, db_hash) == 0) {
+                wc_Sha256Free(&sha);
+                for (i = 0; i < 32; i++)
+                    snprintf(db_hex + i * 2, 3, "%02x", db_hash[i]);
+                if (strcmp(db_hex, e->spkh_hex) == 0) {
+                    e->v_pubkey_db = 1;
+                } else {
+                    e->v_pubkey_db = 2;
+                    char err[160];
+                    snprintf(err, sizeof(err),
+                        "pubkey_db MISMATCH: db sha256=%.16s... cert spk_hash=%.16s...; ",
+                        db_hex, e->spkh_hex);
+                    strcat(e->v_errors, err);
                 }
             } else {
+                wc_Sha256Free(&sha);
                 e->v_pubkey_db = 0;
             }
-            if (pk_obj) json_object_put(pk_obj);
-            free(local_key);
+        } else {
+            e->v_pubkey_db = 0;
+            strcat(e->v_errors, "public-key response missing key_value; ");
         }
+        if (pk_obj) json_object_put(pk_obj);
     }
     free(body);
 }
