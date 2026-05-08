@@ -8,6 +8,11 @@
 # paths relative to DIR; MANIFEST.* and private_key.pem excluded;
 # symlinks are followed) and DIR/MANIFEST.sig (pure ML-DSA-87 signature
 # over MANIFEST.sha256).  Verify with verify-dir.sh.
+#
+# When DIR is inside a git repo, the manifest is prefixed with a
+# `# git-commit: <hash>[-dirty]` line as a forensic anchor — the
+# signature covers it, so replays of an old manifest against a newer
+# checkout become visible.
 
 set -euo pipefail
 
@@ -20,10 +25,19 @@ DIR="$(cd "$DIR" && pwd)"
 
 [ -r "$PRIV" ] || { echo "sign-dir: missing private key: $PRIV" >&2; exit 1; }
 
+GIT_COMMIT=""
+if git -C "$DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+    GIT_COMMIT="$(git -C "$DIR" rev-parse HEAD)"
+    if ! git -C "$DIR" diff-index --quiet HEAD -- . 2>/dev/null; then
+        GIT_COMMIT="${GIT_COMMIT}-dirty"
+    fi
+fi
+
 cd "$DIR"
 
 mapfile -t FILES < <(
-    find -L . -type f \
+    find -L . -path ./.git -prune -o \
+         -type f \
          ! -name MANIFEST.sha256 \
          ! -name MANIFEST.sig \
          ! -name private_key.pem \
@@ -35,7 +49,10 @@ if [ ${#FILES[@]} -eq 0 ]; then
     exit 1
 fi
 
-sha256sum -- "${FILES[@]}" > MANIFEST.sha256
+{
+    [ -n "$GIT_COMMIT" ] && printf '# git-commit: %s\n' "$GIT_COMMIT"
+    sha256sum -- "${FILES[@]}"
+} > MANIFEST.sha256
 
 openssl40 pkeyutl -sign -rawin \
     -inkey "$PRIV" \
