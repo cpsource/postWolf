@@ -442,6 +442,11 @@ static void usage(const char *prog)
     printf("Usage: %s [options]\n\n", prog);
     printf("  --server HOST:PORT   CA server DH bootstrap endpoint\n");
     printf("  --domain DOMAIN      Domain/subject (must match issue_leaf_nonce --domain)\n");
+    printf("  --label LABEL        Per-identity label (must match issue_leaf_nonce --label).\n");
+    printf("                       Required.  Selects ~/.mtc-ca-data/<domain>-<label>/\n");
+    printf("                       for the source key + nonce, and ~/.TPM/<domain>-<label>/\n");
+    printf("                       for the saved enrollment.  Cross-checked against the\n");
+    printf("                       label echoed by the server; mismatch aborts.\n");
     printf("  --public-key FILE    Path to leaf public key PEM\n");
     printf("  --private-key FILE   Path to leaf private key PEM\n");
     printf("  --nonce NONCE        Enrollment nonce (64-char hex)\n");
@@ -471,6 +476,7 @@ int main(int argc, char *argv[])
     /* Command-line arguments */
     const char *server_arg = NULL;
     const char *subject = NULL;
+    const char *label_arg = NULL;     /* required: --label */
     const char *pub_key_path = NULL;
     const char *priv_key_path = NULL;
     const char *nonce = NULL;
@@ -519,6 +525,8 @@ int main(int argc, char *argv[])
             server_arg = argv[++i];
         else if (strcmp(argv[i], "--domain") == 0 && i + 1 < argc)
             subject = argv[++i];
+        else if (strcmp(argv[i], "--label") == 0 && i + 1 < argc)
+            label_arg = argv[++i];
         else if (strcmp(argv[i], "--public-key") == 0 && i + 1 < argc)
             pub_key_path = argv[++i];
         else if (strcmp(argv[i], "--private-key") == 0 && i + 1 < argc)
@@ -556,6 +564,17 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
+    if (!label_arg) {
+        fprintf(stderr, "Error: --label is required (per-identity isolation)\n\n");
+        usage(argv[0]);
+        return 1;
+    }
+    if (sanitize_label(label_arg) != 0) {
+        fprintf(stderr,
+            "Error: --label must be 1..%d chars, [A-Za-z0-9._-] only\n",
+            MTC_LABEL_MAX);
+        return 1;
+    }
 
     /* Canonicalize early — same gate the server applies, just
      * before the network round-trip.  README-issues.md issue #6. */
@@ -578,7 +597,9 @@ int main(int argc, char *argv[])
         server_arg = cfg ? cfg : "factsorlie.com:8445";
     }
 
-    /* Default paths from ~/.mtc-ca-data/<domain>/ if not specified */
+    /* Default paths from ~/.mtc-ca-data/<domain>-<label>/ if not specified.
+     * Per-label isolation prevents two labeled enrollments under the same
+     * subject from accidentally sharing a private key. */
     {
         static char def_pub[512], def_priv[512], def_nonce_path[512];
         static char nonce_buf[256];
@@ -587,12 +608,14 @@ int main(int argc, char *argv[])
 
         if (!pub_key_path) {
             snprintf(def_pub, sizeof(def_pub),
-                     "%s/.mtc-ca-data/%s/public_key.pem", home, subject);
+                     "%s/.mtc-ca-data/%s-%s/public_key.pem",
+                     home, subject, label_arg);
             pub_key_path = def_pub;
         }
         if (!priv_key_path) {
             snprintf(def_priv, sizeof(def_priv),
-                     "%s/.mtc-ca-data/%s/private_key.pem", home, subject);
+                     "%s/.mtc-ca-data/%s-%s/private_key.pem",
+                     home, subject, label_arg);
             priv_key_path = def_priv;
         }
         /* Persistent buffer for cosigner_fp parsed from nonce.txt
@@ -606,7 +629,8 @@ int main(int argc, char *argv[])
         if (!nonce || !cosigner_fp_arg) {
             FILE *nf;
             snprintf(def_nonce_path, sizeof(def_nonce_path),
-                     "%s/.mtc-ca-data/%s/nonce.txt", home, subject);
+                     "%s/.mtc-ca-data/%s-%s/nonce.txt",
+                     home, subject, label_arg);
             nf = fopen(def_nonce_path, "r");
             if (nf) {
                 char line[256];
@@ -1318,11 +1342,13 @@ int main(int argc, char *argv[])
 
             LOG("certificate issued at index %d", cert_index);
 
-            /* Optional label echoed by the server (present when the
-             * CA operator ran issue_leaf_nonce --label ...).  The
-             * server MUST NOT bake this into the cert; it's purely a
-             * hint for where to write on disk.  Absent field =
-             * legacy behavior (write to ~/.TPM/<subject>/). */
+            /* Label echoed by the server.  The server MUST NOT bake
+             * this into the cert; it's purely a hint for where to
+             * write on disk.  We require it to match the operator's
+             * --label argument: a divergence means the nonce was
+             * issued under a different identity than the operator
+             * thinks they're enrolling, which is a real misconfig
+             * worth aborting on. */
             if (json_object_object_get_ex(resp, "label", &lval)) {
                 const char *s = json_object_get_string(lval);
                 if (s && s[0]) {
@@ -1335,6 +1361,22 @@ int main(int argc, char *argv[])
                     label_from_server = s;
                     LOG("  server-assigned label: %s", s);
                 }
+            }
+            if (!label_from_server) {
+                LOG("ERROR: server did not echo a label, but --label %s "
+                    "was supplied — nonce was issued without a label "
+                    "(refusing to enroll under a mismatched identity).",
+                    label_arg);
+                json_object_put(resp);
+                goto done;
+            }
+            if (strcmp(label_from_server, label_arg) != 0) {
+                LOG("ERROR: server-echoed label '%s' != operator --label '%s' "
+                    "(nonce was issued for a different identity; refusing "
+                    "to enroll).",
+                    label_from_server, label_arg);
+                json_object_put(resp);
+                goto done;
             }
 
             /* --- Step 6: Save to TPM --- */

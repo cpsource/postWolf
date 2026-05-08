@@ -4,15 +4,19 @@ Generate a leaf key pair for MTC enrollment via the DH bootstrap port.
 
 Supports EC-P256, Ed25519, and ML-DSA-87 (post-quantum via openssl40).
 
+Both --domain and --label are required: every leaf identity gets its
+own per-label directory, so two labeled enrollments under the same
+subject cannot accidentally share a private key.  bootstrap_leaf
+must be invoked with the same --label to find this key.
+
 Creates the key files needed by bootstrap_leaf:
-    ~/.mtc-ca-data/<domain>/private_key.pem
-    ~/.mtc-ca-data/<domain>/public_key.pem
-    ~/.mtc-ca-data/<domain>/public_key.txt
+    ~/.mtc-ca-data/<domain>-<label>/private_key.pem
+    ~/.mtc-ca-data/<domain>-<label>/public_key.pem
+    ~/.mtc-ca-data/<domain>-<label>/public_key.txt
 
 Usage:
-    python3 create_leaf_keypair.py --domain my-device.example.com
-    python3 create_leaf_keypair.py --domain my-device.example.com --algorithm EC-P256
-    python3 create_leaf_keypair.py --domain my-device.example.com --algorithm Ed25519
+    python3 create_leaf_keypair.py --domain my-device.example.com --label Alice
+    python3 create_leaf_keypair.py --domain my-device.example.com --label main --algorithm EC-P256
 """
 
 import argparse
@@ -44,9 +48,21 @@ def check_openssl40():
         sys.exit(1)
 
 
-def generate_leaf(domain, out_base, algorithm):
+LABEL_RE = __import__("re").compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def validate_label(label):
+    """Match the bootstrap_leaf / issue_leaf_nonce sanitize_label charset."""
+    if not LABEL_RE.match(label):
+        print(f"ERROR: --label must be 1..64 chars, [A-Za-z0-9._-] only",
+              file=sys.stderr)
+        sys.exit(1)
+    return label
+
+
+def generate_leaf(domain, out_base, algorithm, label):
     """Generate leaf keypair using openssl40."""
-    out_dir = Path(out_base) / domain
+    out_dir = Path(out_base) / f"{domain}-{label}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     key_path = out_dir / "private_key.pem"
@@ -113,10 +129,10 @@ def generate_leaf(domain, out_base, algorithm):
 
     print(f"\nNext steps:")
     print(f"  1. CA operator issues a nonce:")
-    print(f"     python3 issue_leaf_nonce.py --domain \"{domain}\" --key-file {pub_path}")
+    print(f"     issue_leaf_nonce --domain \"{domain}\" --label {label} --key-file {pub_path}")
     print(f"")
     print(f"  2. Enroll via bootstrap (after receiving nonce):")
-    print(f"     bootstrap_leaf --domain \"{domain}\" --nonce <NONCE>")
+    print(f"     bootstrap_leaf --domain \"{domain}\" --label {label} --nonce <NONCE>")
 
 
 def main():
@@ -124,14 +140,19 @@ def main():
         description="Generate a leaf key pair for MTC bootstrap enrollment")
     parser.add_argument("--domain", required=True,
                         help="Leaf domain/subject (e.g., my-device.example.com)")
+    parser.add_argument("--label", required=True,
+                        help="Per-identity label (1..64 chars, [A-Za-z0-9._-]). "
+                             "Output dir is <domain>-<label>; bootstrap_leaf "
+                             "must be run with the same --label to find this key.")
     parser.add_argument("--out", default=str(DEFAULT_OUT),
                         help=f"Base output directory (default: {DEFAULT_OUT})")
     parser.add_argument("--algorithm", default=DEFAULT_ALGORITHM,
                         help=f"Key algorithm (default: {DEFAULT_ALGORITHM})")
     args = parser.parse_args()
 
+    label = validate_label(args.label)
     check_openssl40()
-    generate_leaf(args.domain, args.out, args.algorithm)
+    generate_leaf(args.domain, args.out, args.algorithm, label)
 
 
 if __name__ == "__main__":

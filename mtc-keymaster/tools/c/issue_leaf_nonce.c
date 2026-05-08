@@ -696,14 +696,23 @@ int main(int argc, char *argv[])
                            server_label, label_arg);
             }
 
-            /* --- Save to <out_base>/<domain>/nonce.txt --- */
+            /* --- Save to <out_base>/<domain>[-<label>]/nonce.txt ---
+             * When the server returned a label, we write into the
+             * labeled subdir so bootstrap_leaf --label finds it
+             * without a fallback to the bare-subject path.  Unlabeled
+             * (legacy) nonces still land at <out_base>/<domain>/. */
             {
-                char out_dir[768];
-                char out_file[900];
+                char out_dir[1024];
+                char out_file[1056];
                 FILE *nf;
 
                 ensure_dir(out_base);
-                snprintf(out_dir, sizeof(out_dir), "%s/%s", out_base, domain);
+                if (server_label && server_label[0])
+                    snprintf(out_dir, sizeof(out_dir), "%s/%s-%s",
+                             out_base, domain, server_label);
+                else
+                    snprintf(out_dir, sizeof(out_dir), "%s/%s",
+                             out_base, domain);
                 if (ensure_dir(out_dir) != 0 && errno != EEXIST) {
                     fprintf(stderr, "Warning: cannot create %s: %s\n",
                             out_dir, strerror(errno));
