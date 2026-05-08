@@ -21,6 +21,45 @@ Currently stubbed — TLS 1.3 cert chain validation works, but the Merkle proof
 
 **Depends on:** FIPS framework tools being functional (same verification logic).
 
+### 0c. **Meta-blocker — `fips-manifest-{submit,verify}.c` don't exist yet** (P0)
+
+The `Makefile` references both targets and the `README.md` /
+`README-fips.md` describe their CLI surface, but the C source
+files have never been written.  `ls fips-framework/*.c` is
+empty.  Every other TODO in this file (server-side endpoint
+work, manifest-format work, verifier-policy work, witness
+cosignatures, dual-hash, leaf-key sig, ...) ultimately lands in
+these two binaries.  **Nothing else in the FIPS arc can ship
+until v1 tools exist.**
+
+**v1 scope** (the minimum to unblock everything below; further
+features land via the numbered TODOs):
+
+- `fips-manifest-submit.c`:
+  - Walk a source dir, SHA-256 every file.
+  - Build canonical JSON manifest (initial schema; TODO 14
+    upgrades to JCS).
+  - POST to `MTC_SERVER/fips/manifest`.
+  - Save receipt to `fips-manifest-receipt.json`.
+- `fips-manifest-verify.c`:
+  - Read receipt + source dir.
+  - Re-hash files, compare to manifest.
+  - Replay Merkle inclusion proof.
+  - Verify ML-DSA-87 cosignature against pinned CA pubkey
+    (`config/ca-pubkey.h` per TODO 0b).
+  - `--offline` flag flips off network fetches.
+
+Build against wolfCrypt (the existing `Makefile` is correct).
+Reuse `mtc_dnssec_pin.c` / `mtc_peer.c` patterns from
+`socket-level-wrapper-MQC/` for the SPKI-DER-backed pinning
+work (TODO 53 already shipped that pattern).
+
+The existing P1 items (1, 2, 3) that say `fips-manifest-*.sh`
+predate the decision to write the tools in C; treat those
+file-name references as "the tool, in whichever language it
+ends up in".  When this TODO closes, also sweep those `.sh`
+mentions to `.c`.
+
 ### 0b. Pin actual CA public key
 **File:** `fips-framework/config/ca-pubkey.h:20`
 
@@ -623,13 +662,261 @@ fips-manifest-verify --strict --manifest fips-manifest-receipt.json .
 
 ---
 
+## Priority 4: Independent-review backlog (`README-fips-issues.md`)
+
+[`README-fips-issues.md`](./README-fips-issues.md) holds 12
+"non-negotiable" edits the first independent reviewer required
+on `README-fips.md`.  Three landed as the `[ISSUE #N]`
+amendment blocks at the top of `README-fips.plan` (#1, #2,
+#10), but the user-facing 88 KB doc (`README-fips.md`) has
+never been swept.  Triaged below; rows that aren't subsumed by
+TODOs 8–18 (ChatGPT) become numbered entries here.
+
+| Issue | Title | Verdict | Lands as |
+|---|---|---|---|
+| §1  | CA / server role confusion | **OPEN — doc** (plan amended via `[ISSUE #1]`; user doc not swept) | TODO 19 |
+| §2  | Receipt-with-tarball / mandatory pinning | **OPEN — doc + verifier** (plan amended via `[ISSUE #2]`; verifier and user doc not swept) | TODO 20 |
+| §3  | Offline mode is not "equally secure" | **OPEN — doc prose** | TODO 21 |
+| §4  | Rollback check too weak | **OPEN — partial** (existing item 2 covers basic rollback; version-comparison bug + TPM-sealed counter open) | TODO 22 |
+| §5  | Manifest must include the file set | **SUBSUMED** by TODO 10 (manifest binding) + TODO 17 (verifier fail-closed) |
+| §6  | Canonical JSON needs formal definition | **SUBSUMED** by TODO 14 (canonical manifest + schema version) |
+| §7  | The leaf must sign the manifest | **SUBSUMED** by TODO 16 (per-manifest leaf-key sig) |
+| §8  | Revocation should not be optional for **online** mode | **OPEN** — distinct from TODO 12 (offline) | TODO 23 |
+| §9  | Key rotation instructions are dangerous | **OPEN — runbook fix** | TODO 24 |
+| §10 | Ed25519 / 64-byte signature artefacts in user doc | **OPEN — doc** (plan amended via `[ISSUE #10]`; user doc not swept; 15 Ed25519 references remain) | TODO 25 |
+| §11 | Threat model needs explicit limits | **OPEN — doc** (overlaps TODO 9 disclaimer; broader scope) | TODO 26 |
+| §12 | Transport security missing on submission | **OPEN** — server should reject plain-HTTP `POST /fips/manifest` | TODO 27 |
+
+### TODO 19. Sweep CA / server role split into `README-fips.md` (P0 — doc)
+
+> Closes Issue #1 in user-facing prose.
+
+`README-fips.plan` already carries the `[ISSUE #1]` amendment
+splitting "log key (online, signs every root)" from "CA key
+(offline, signs periodic checkpoints + log-key cert)".  The
+88 KB user doc still describes both roles as one key in
+several places.
+
+**Required edits in `README-fips.md`:**
+
+- §"The Solution" — replace single-key narrative with the
+  two-key model.
+- §"Initial Server Setup" — distinguish `log_key.der`
+  (on-server) from `ca_key.der` (offline machine), specify the
+  log-key-certificate ceremony.
+- §"What You Need" — make pinning the *CA* pubkey (not log
+  pubkey) the verifier's anchor.
+- Architecture diagram — show both keys + the log-key-cert.
+
+No code changes; pure prose.
+
+### TODO 20. Mandatory CA-key pinning — verifier enforcement + doc sweep (P0)
+
+> Closes Issue #2.
+
+`[ISSUE #2]` amendment in the plan made CA-key pinning
+mandatory ("receipts not chaining to a pinned key MUST fail
+closed — no TOFU, no fallback to network/website/receipt-
+embedded keys").  Two things still pending:
+
+- **Verifier enforcement** (lands in TODO 0c's
+  `fips-manifest-verify.c`): if no pinned key is reachable
+  via `config/ca-pubkey.h` / `MTC_CA_PUBKEY` env / per-user
+  pin, abort with `NO_PINNED_CA` rather than fall through to
+  the receipt's embedded key or a server fetch.  Test
+  fixture: a receipt with a forged embedded pubkey must
+  fail-closed.
+- **Doc sweep** in `README-fips.md`: every passage that
+  describes pinning as optional or "TOFU acceptable for first
+  contact" rewritten per the amendment.  Bootstrap channels
+  (DNS TXT, GPG keyserver, project website, signed git tag,
+  CMVP cert) are for *acquisition + key-change detection*
+  only, never for verification-time trust.
+
+### TODO 21. Drop "equally secure" prose for offline mode (P1 — doc)
+
+> Closes Issue #3.
+
+Several passages in `README-fips.md` claim offline
+verification is "equally secure" to online.  It isn't —
+offline can't reach the live revocation list (TODO 12) and
+can't refresh witness cosignatures (TODO 8).  Rewrite to:
+"Offline verification proves the manifest was logged at
+checkpoint-time; freshness and revocation guarantees are
+weaker than online and decay with receipt age (see
+MAX_RECEIPT_AGE)."
+
+No code changes; pure prose.  Coordinate with TODO 12 (offline
+revocation policy) so the doc and the verifier agree.
+
+### TODO 22. Rollback check hardening (P1)
+
+> Closes Issue #4.  Layers on top of existing item 2.
+
+Existing item 2 records the highest-accepted version per
+package in `~/.config/mtc-fips/last-verified.json` and rejects
+older.  Two reviewer concerns survive:
+
+- **Version comparison bug**: lexicographic vs numeric.
+  `v0.10.0 < v0.9.0` lex-wise; need a real semver comparator
+  (or canonicalize both into a `(major, minor, patch)` tuple
+  before compare).
+- **TPM-sealed monotonic counter** (defense-in-depth, marked
+  in `README-fips-issues.md` as TODO note, not v1 requirement):
+  the per-package state file is local-disk and an attacker
+  with file-write access trivially defeats rollback detection.
+  A TPM-sealed monotonic counter (`TPM2_NV_DefineSpace` with
+  `TPMA_NV_NO_DA` + monotonic counter attribute) makes
+  rollback detection survive disk-write compromise.  Optional;
+  v1 ships without it but the design should accommodate
+  binding the counter index into the per-package state.
+
+### TODO 23. Mandatory revocation in **online** mode (P1)
+
+> Closes Issue #8.  Distinct from TODO 12 (offline policy).
+
+Online verification should always query
+`GET /revoked/<leaf_index>` before trusting a manifest;
+today the spec lets the verifier skip the call.  An attacker
+who steals a publisher's private key can sign manifests until
+the verifier's cache TTL expires — even when the verifier has
+network access and could check.
+
+**Required behaviour.**
+
+- `fips-manifest-verify` (online mode, default): query
+  `GET /revoked/<leaf_index>` *before* trusting any
+  signature; abort on `revoked=true` or HTTP failure
+  (fail-closed, same policy as MQC's
+  `mqc-revocation-policy=mandatory`).
+- `--allow-stale-revocation` flag for emergency operation
+  during log-server outage; logs a loud warning.
+- Rename `--offline` warning text so users don't confuse
+  "skip-network" with "weakened-revocation".
+
+### TODO 24. Key-rotation runbook fix (P1 — doc + tooling)
+
+> Closes Issue #9.
+
+`README-fips.md` §"Key Rotation" currently describes a
+procedure that, if followed verbatim, leaves verifiers stuck
+with the OLD pinned key while the server signs with the NEW
+one — bricking every offline verifier.
+
+**Required behaviour:**
+
+- Replace the §"Key Rotation" section with a **key-transition
+  protocol**:
+  1. Generate new CA key pair offline.
+  2. Sign a *transition document* with the OLD CA key
+     attesting to the NEW CA pubkey (with overlap window).
+  3. Publish the transition document via every pin channel
+     (DNS TXT, GPG keyserver, project website, signed git
+     tag, the log itself as a special entry type).
+  4. Verifiers see receipts cosigned by *either* key during
+     the overlap window; after the cutover date they pin
+     only the NEW key.
+  5. OLD CA key is destroyed only after the overlap window
+     closes.
+- New tool (or `admin_recosign` flag): emit + sign the
+  transition document.
+- Verifier learns to walk a chain of transition documents
+  back to a pinned key on first contact (same channel
+  constraints as TODO 20 — pinned acquisition channel only).
+
+### TODO 25. Sweep Ed25519 / 64-byte sig refs in user docs (P1 — doc)
+
+> Closes Issue #10 in user-facing prose.
+
+`[ISSUE #10]` amendment in the plan documented the migration
+to ML-DSA-87 (4627-byte sig, 2592-byte pubkey, 4896-byte
+private key).  The 88 KB user doc + the verifier-tool README +
+the local TODO file still carry **15** stale references to
+Ed25519 / 32-byte pubkey / 64-byte signature; the 32-zero
+placeholder in `config/ca-pubkey.h` is dimensioned for
+Ed25519, not ML-DSA-87.
+
+**Required edits:**
+
+- `README-fips.md` — every `Ed25519` → `ML-DSA-87`; every
+  `64-byte signature` → `4627-byte signature`; every
+  `32-byte public key` → `2592-byte public key`.  Also adjust
+  the architecture diagrams + "What Each Layer Proves"
+  table.
+- `fips-framework/README.md` — same sweep (5 references).
+- `README-fips-todo.md` (this file) — items 0a, 0b
+  reference Ed25519 verbs; rewrite to ML-DSA-87 and the
+  `wc_dilithium_verify_ctx_msg` API.
+- `config/ca-pubkey.h` — the 32-byte array becomes 2592
+  bytes; the placeholder regenerates as a 2592-zero array
+  with the same TODO marker.
+- `FIPS.md` — top-level design doc; sweep.
+
+Pair with TODO 0b (pin the actual CA pubkey) so the byte-array
+size + the real key bytes land together.
+
+### TODO 26. Add §"What This Does and Does Not Prove" to user doc (P1 — doc)
+
+> Closes Issue #11.  Broader than TODO 9 (CMVP terminology).
+
+Add an up-front section to `README-fips.md` enumerating the
+threat model exhaustively:
+
+**Does prove (under the stated assumptions):**
+
+- The named files in the named package at the named tag have
+  the listed SHA-256 (and SHA3-384, post-TODO-13) hashes.
+- That manifest was logged in the transparency log under the
+  named tree-state, signed by the log key + cosigned by the
+  CA + (post-TODO-8) cosigned by witnesses.
+- The publisher leaf signed the manifest (post-TODO-16).
+- The publisher leaf is enrolled and unrevoked (post-TODO-23).
+
+**Does not prove:**
+
+- The compiler/linker/assembler are not malicious (TODO 15).
+- The runtime environment / dependencies are not malicious.
+- The publisher's key was not stolen.
+- The CA's offline key was not compromised.
+- The pinned channel (DNS, GPG keyserver) was not subverted.
+- Cryptographic primitives remain unbroken.
+- This is a FIPS 140-3 validated module (TODO 9 — it isn't).
+
+Land before any external publicity (master TODO #46).
+
+### TODO 27. Mandatory transport security on submission (P1)
+
+> Closes Issue #12.
+
+`POST /fips/manifest` today has no transport-security
+requirement — a publisher could submit over plaintext HTTP on
+port 8444, leaking the manifest contents and offering a MitM
+the chance to swap manifests in flight before the leaf-sig
+(TODO 16) lands.
+
+**Required behaviour:**
+
+- **Server enforcement:** `mtc_http.c` rejects
+  `POST /fips/manifest` on the plaintext-HTTP listener (port
+  8444 when `url-local-port-disabled=No`); requires either
+  TLS 1.3 (port 8444 with TLS) or MQC (port 8446).  Same
+  pattern as `/renew-cert` (MQC-only) per design spec §3.2.
+- **Recommended preference:** MQC for postWolf-internal
+  deployments (per `README-fips-issues.md` §12 design
+  preference).  Document but don't force.
+- `fips-manifest-submit.c` (TODO 0c): default to MQC when the
+  caller has a `~/.TPM/<subject>/` identity, fall back to
+  TLS otherwise; never plaintext.
+
+---
+
 ## Reference
 
 - Current design: `README-fips.md` and `README-fips.plan`
 - Design rationale: `FIPS.md`
-- External reviews: `README-fips-issues.md` (12-item review),
-  `README-fips-chatgpt-issues.md` (9-item ChatGPT review,
-  triaged above)
+- External reviews: `README-fips-issues.md` (12-item review,
+  triaged in Priority 4), `README-fips-chatgpt-issues.md`
+  (9-item ChatGPT review, triaged in Priority 3)
 - Keyserver status: `README-keyserver.md`
 - TUF spec: https://theupdateframework.github.io/specification/latest/
 - TUF overview: https://theupdateframework.io/overview/
