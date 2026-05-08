@@ -791,7 +791,7 @@ fips-framework/test/canonical/
 
 Independent implementations self-check by JCS-canonicalizing each `.input.json` and comparing the byte output to the corresponding `.canonical.bin`. Cases ending in "MUST reject" assert parse failure.
 
-These fixtures do not exist in the v1 source tree yet (`[TODO]` in `README-todo.md`); the fixture set is mandatory before any second implementation of this spec is considered conformant.
+These fixtures do not exist in the v1 source tree yet (`[TODO]` in `README-fips-todo.md`); the fixture set is mandatory before any second implementation of this spec is considered conformant.
 
 ---
 

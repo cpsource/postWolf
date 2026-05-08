@@ -500,7 +500,7 @@ this TODO up, start there.
   the first commit in the FIPS-framework arc so the resulting
   design changes feed through to the plan + user docs before any
   server-side implementation lands.
-- [`README-todo.md`](../fips-framework/README-todo.md) — FIPS-local
+- [`README-fips-todo.md`](../fips-framework/README-fips-todo.md) — FIPS-local
   TODO 0a (`slc.c:273` — wire MTC verify into the TLS handshake)
   and 0b (pin the real CA Ed25519 pubkey, retire the 32-zero
   placeholder).  Both predate the ML-DSA-87 cosigner migration
@@ -513,7 +513,7 @@ this TODO up, start there.
 
 **Doc rot to clean up before any new feature work.**  The
 verifier-tool README (`fips-framework/README.md`) and
-`README-todo.md` still reference Ed25519 cosignatures and the
+`README-fips-todo.md` still reference Ed25519 cosignatures and the
 32-byte CA-pubkey placeholder; the cosigner migration to
 ML-DSA-87 (TODO #47, commit `2280` series) and the SPKI-DER
 pinning (TODO #53) both happened after those docs were written.
