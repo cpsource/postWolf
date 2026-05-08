@@ -435,9 +435,89 @@ subtree hashes come from `mtc_tiled_tree_inclusion_proof` /
 `mtc_tiled_tree_subtree_hash`; the legacy `mtc_tree_*` API is
 gone.  See TODO #74 phase 3.
 
-**Design:** See `fips-framework/README-fips.plan` for the full
-implementation plan (with phase-2/3 amendments inline) and
-`fips-framework/README-fips.md` for admin/user documentation.
+**Where the work lives.**  All FIPS-framework development —
+client tooling (`fips-manifest-submit`, `fips-manifest-verify`),
+config (pinned CA pubkey, schema-version policy), the
+implementation plan, the user/admin docs, and the issues
+backlog from external review — lives in
+[`fips-framework/`](../fips-framework/) at the postWolf repo
+root.  Server-side handler code (the `POST /fips/manifest`
+dispatcher, `mtc_fips_manifests` schema, type-`0x02` detection
+in `mtc_store_add_entry`) belongs in
+`mtc-keymaster/server2/c/`, but the design surface and all
+verifier-side code live under `fips-framework/`.  When picking
+this TODO up, start there.
+
+**Key references in `fips-framework/`:**
+
+- [`README-fips.md`](../fips-framework/README-fips.md) — admin/user
+  reference (~88 KB, canonical "how the scheme works + how to
+  verify").
+- [`README-fips.plan`](../fips-framework/README-fips.plan) — implementation
+  plan with `[ISSUE #1]` / `[ISSUE #2]` / `[ISSUE #10]` / `[PH3]`
+  amendment blocks tracking the design's evolution.  The `[PH3]`
+  block at the top documents the post-phase-3 server storage
+  refactor.
+- [`README-fips-issues.md`](../fips-framework/README-fips-issues.md)
+  — first independent review (12 numbered issues) with per-issue
+  triage verdicts; drives the `[ISSUE #N]` amendments throughout
+  the plan and the user-facing doc.
+- [`README-fips-chatgpt-issues.md`](../fips-framework/README-fips-chatgpt-issues.md)
+  — ChatGPT review (2026-05-07).  9 items grouped P0/P1/P2 and
+  *not yet triaged* against the current design.  Headline
+  concerns:
+    - **P0 — receipt freshness / split-view attack:** offline
+      verification only proves "logged under *some* root";
+      need witness cosignatures + a "≥ N witnesses or ≥ 1
+      independent mirror" policy.
+    - **P0 — terminology:** rename "FIPS mode" to
+      "FIPS source-integrity mode" / "FIPS build attestation
+      mode" until and unless the module is CMVP-validated, to
+      avoid implying FIPS 140-3 validation.
+    - **P0 — manifest must bind more than file hashes:** add
+      package + version/tag + git commit + tarball hash + build-
+      script hashes + toolchain identity + dependency hashes +
+      configure flags + FIPS boundary def + approved-algorithm
+      list + self-test files + generated-file policy + timestamp
+      + publisher leaf-cert fingerprint + log ID + tree size +
+      checkpoint hash.
+    - **P1 — publisher authorization** for `(package, namespace,
+      tag)` is underspecified; today any enrolled leaf can submit
+      a manifest for any package.
+    - **P1 — "latest tag" ambiguity** in
+      `search?package=X&tag=Y`: define immutable-or-all-manifests
+      rather than silently returning the newest.
+    - **P1 — offline revocation/staleness policy** so a cached
+      receipt can't survive a publisher-key revocation.
+    - **P1 — dual-hash story** (SHA-256 + SHA3-384/512) to align
+      with the post-quantum branding.
+    - **P2 — canonicalization** (RFC 8785 JCS / canonical CBOR /
+      strict line format), not pretty JSON.
+    - **P2 — build-system trust** (compromised compilers,
+      poisoned deps, env vars, host) — partial overlap with TODO
+      #8.
+  Triaging this review is part of the TODO #7 work; do it as
+  the first commit in the FIPS-framework arc so the resulting
+  design changes feed through to the plan + user docs before any
+  server-side implementation lands.
+- [`README-todo.md`](../fips-framework/README-todo.md) — FIPS-local
+  TODO 0a (`slc.c:273` — wire MTC verify into the TLS handshake)
+  and 0b (pin the real CA Ed25519 pubkey, retire the 32-zero
+  placeholder).  Both predate the ML-DSA-87 cosigner migration
+  and need to sweep with `[ISSUE #10]`.
+- [`README-hash-and-sign.md`](../fips-framework/README-hash-and-sign.md),
+  [`README-ml-dsa-87.md`](../fips-framework/README-ml-dsa-87.md),
+  [`README-keyserver.md`](../fips-framework/README-keyserver.md),
+  [`FIPS.md`](../fips-framework/FIPS.md) — supporting design
+  docs.
+
+**Doc rot to clean up before any new feature work.**  The
+verifier-tool README (`fips-framework/README.md`) and
+`README-todo.md` still reference Ed25519 cosignatures and the
+32-byte CA-pubkey placeholder; the cosigner migration to
+ML-DSA-87 (TODO #47, commit `2280` series) and the SPKI-DER
+pinning (TODO #53) both happened after those docs were written.
+Sweeping them is a small first commit.
 
 **Summary of work:**
 
