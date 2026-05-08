@@ -560,6 +560,7 @@ static struct json_object *build_receipt(MtcStore *store,
                                          int leaf_index,
                                          const uint8_t *leaf_bytes,
                                          size_t leaf_bytes_len,
+                                         const char *publisher_pem,
                                          char *err, size_t err_sz)
 {
     int tree_size = store->tree.size;
@@ -647,6 +648,14 @@ static struct json_object *build_receipt(MtcStore *store,
     json_object_object_add(r, "inclusion_proof", proof_arr);
     json_object_object_add(r, "leaf_bytes_b64", json_object_new_string(leaf_b64));
     json_object_object_add(r, "leaf_index",     json_object_new_int(leaf_index));
+    /* Embed publisher pubkey PEM so the verifier can run fully offline.
+     * The verifier MUST sha256-compare this PEM against the cert's
+     * spk_hash before trusting it (same posture as show-tpm pubkey_db
+     * check) — receipt-embedded data isn't authoritative, only the
+     * cosigned tree_root + leaf is. */
+    if (publisher_pem)
+        json_object_object_add(r, "publisher_pubkey_pem",
+                               json_object_new_string(publisher_pem));
     json_object_object_add(r, "tree_root",      json_object_new_string(root_hex));
     json_object_object_add(r, "tree_size",      json_object_new_int(tree_size));
 
@@ -832,7 +841,8 @@ int mtc_fips_submit(MtcStore *store,
         if (out_status) *out_status = 400;
         return -1;
     }
-    free(pub_pem);
+    /* Keep pub_pem live to embed in the receipt below; free at function
+     * exit instead of here. */
     free(signing_input);
     free(cert_spk_hash);
 
@@ -889,7 +899,9 @@ int mtc_fips_submit(MtcStore *store,
     rcpt_err[0] = 0;
     struct json_object *receipt = build_receipt(store, new_idx,
                                                 leaf, leaf_len,
+                                                pub_pem,
                                                 rcpt_err, sizeof(rcpt_err));
+    free(pub_pem);
     free(leaf);
     json_object_put(m);
     if (!receipt) {
