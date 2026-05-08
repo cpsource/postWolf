@@ -54,6 +54,7 @@
 #include "mtc_ca_validate.h"
 #include "mtc_domain.h"
 #include "mtc_ratelimit.h"
+#include "mtc_fips.h"
 #include "mqc.h"
 #include "../../read-config/read-config.h"
 #include <pthread.h>
@@ -2296,6 +2297,40 @@ static void handle_request(client_io *io, MtcStore *store)
                 return;
             }
             handle_renew_cert(io, store, body, body_len);
+        }
+        else if (strcmp(path, "/fips/manifest") == 0) {
+            /* FIPS-manifest submission.  Validation pipeline lives in
+             * mtc_fips.c (spec-canonical-leaf v1).  Errors are surfaced
+             * as a generic 4xx string to the client; the operator-side
+             * detail is logged via INFO/WARN inside mtc_fips_submit. */
+            if (!mtc_ratelimit_check(io->ip_str, RL_ENROLL)) {
+                http_send_error(io, 429, "rate limit exceeded");
+                return;
+            }
+            struct json_object *receipt = NULL;
+            int status = 500;
+            char err_msg[512];
+            err_msg[0] = 0;
+            int rc = mtc_fips_submit(store,
+                                     (const uint8_t *)body, (size_t)body_len,
+                                     &receipt, &status,
+                                     err_msg, sizeof(err_msg));
+            if (rc == 0 && receipt) {
+                http_send_json_obj(io, 200, receipt);
+                json_object_put(receipt);
+            } else {
+                LOG_INFO("[fips] submission rejected: %s", err_msg);
+                if (receipt) json_object_put(receipt);
+                /* Generic surface — no field-level detail to the client */
+                if (status == 403)
+                    http_send_error(io, 403, "publisher revoked");
+                else if (status == 429)
+                    http_send_error(io, 429, "rate limit exceeded");
+                else if (status >= 500)
+                    http_send_error(io, 500, "internal error");
+                else
+                    http_send_error(io, 400, "invalid manifest");
+            }
         }
         else if (strcmp(path, "/cancel-nonce") == 0) {
             if (!mtc_ratelimit_check(io->ip_str, RL_REVOKE)) {

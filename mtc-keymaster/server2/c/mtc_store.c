@@ -480,10 +480,16 @@ int mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz)
         goto rollback;
     }
 
-    /* Compute leaf hash + extract TBS JSON for the indexed JSONB column. */
-    entry_type = (entrySz > 0 && entry[0] == 0x01) ? 1 : 0;
+    /* Compute leaf hash + extract TBS JSON for the indexed JSONB column.
+     * Recognised entry_type prefix bytes:
+     *   0x01 — cert leaf (the original log content type)
+     *   0x02 — FIPS-manifest leaf (mtc_fips.c); body is canonical JSON
+     * Anything else is treated as type 0 with no TBS extraction. */
+    entry_type = 0;
+    if (entrySz > 0 && (entry[0] == 0x01 || entry[0] == 0x02))
+        entry_type = entry[0];
     mtc_hash_leaf(entry, entrySz, lh);
-    if (entry_type == 1 && entrySz > 1) {
+    if ((entry_type == 1 || entry_type == 2) && entrySz > 1) {
         tbs_str = (char *)malloc((size_t)entrySz);
         if (!tbs_str) goto rollback;
         memcpy(tbs_str, entry + 1, (size_t)(entrySz - 1));

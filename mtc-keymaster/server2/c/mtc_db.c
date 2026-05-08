@@ -375,7 +375,21 @@ int mtc_db_init_schema(PGconn *conn)
         "  node_index BIGINT NOT NULL,"
         "  hash BYTEA NOT NULL,"
         "  PRIMARY KEY (level, node_index)"
-        ");";
+        ");"
+        /* FIPS-manifest search index.  The canonical leaf bytes already
+         * live in mtc_log_entries.serialized (entry_type=2) — this table
+         * is purely a query helper for "show me manifests for pkg X" and
+         * "what's the latest version for pkg X" lookups.  log_index is a
+         * 1-1 reference to mtc_log_entries.index. */
+        "CREATE TABLE IF NOT EXISTS mtc_fips_manifest_entries ("
+        "  log_index    INTEGER PRIMARY KEY REFERENCES mtc_log_entries(index),"
+        "  publisher    TEXT NOT NULL,"
+        "  package      TEXT NOT NULL,"
+        "  version      TEXT NOT NULL,"
+        "  submitted_at TIMESTAMPTZ DEFAULT now()"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_fips_pkg_ver "
+        "  ON mtc_fips_manifest_entries(package, version);";
 
     res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
