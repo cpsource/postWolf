@@ -126,7 +126,7 @@ Files array sorted by `path`. Canonical form uses json-c with sorted keys and no
 
 ### Phase 1: C Server Extensions
 
-**File: `mtc-keymaster/server/c/mtc_http.c`**
+**File: `mtc-keymaster/server2/c/mtc_http.c`**
 
 Add endpoint handlers following the `handle_certificate_request()` pattern (lines 395-593):
 
@@ -170,7 +170,7 @@ Add routing in `handle_request()` (lines 901-1019):
 }
 ```
 
-**File: `mtc-keymaster/server/c/mtc_db.c`**
+**File: `mtc-keymaster/server2/c/mtc_db.c`**
 
 Add `mtc_fips_manifests` table to schema initialization (`mtc_db_init_schema()`):
 ```sql
@@ -303,10 +303,10 @@ This single file contains the manifest, inclusion proof, log signature, and CA-s
 | `fips-framework/fips-manifest-submit.c` | **Create** — kit registration tool (hash, POST, save receipt) |
 | `fips-framework/fips-manifest-verify.c` | **Create** — kit verification tool (proof replay, ML-DSA-87 verify via `wc_dilithium_verify_ctx_msg()`) |
 | `fips-framework/config/ca-pubkey.h` | **Create** — pinned CA ML-DSA-87 public key (2592 bytes) for compiled-in offline verify; `[ISSUE #2]` mandatory pin source |
-| `mtc-keymaster/server/c/mtc_http.c` | **Modify** — add 4 FIPS manifest endpoint handlers + routing |
-| `mtc-keymaster/server/c/mtc_db.c` | **Modify** — add `mtc_fips_manifests` table + CRUD functions |
-| `mtc-keymaster/server/c/mtc_store.c` | **Modify** — add type 0x02 detection + manifest persistence |
-| `mtc-keymaster/server/c/mtc_store.h` | **Modify** — add manifest fields to `MtcStore` struct |
+| `mtc-keymaster/server2/c/mtc_http.c` | **Modify** — add 4 FIPS manifest endpoint handlers + routing |
+| `mtc-keymaster/server2/c/mtc_db.c` | **Modify** — add `mtc_fips_manifests` table + CRUD functions |
+| `mtc-keymaster/server2/c/mtc_store.c` | **Modify** — add type 0x02 detection + DB-backed manifest persistence (no file fallback — file mode retired in TODO #74 phase 3) |
+| `mtc-keymaster/server2/c/mtc_store.h` | **(no change)** `[PH3]` — phase-2/3 retired the resident-array pattern; `mtc_store.h` does NOT need a `fips_manifests[]` field. Manifests fault from Neon (`mtc_fips_manifests`) like phase-2 cert blobs do via `mtc_cert_cache`. |
 | `debian/rules` | **Modify** — call submit script in FIPS build path |
 | `Makefile.am` | **Modify** — add new targets |
 

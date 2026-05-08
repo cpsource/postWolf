@@ -409,170 +409,21 @@ so it can be tuned without code changes.
 
 ### 7. Server-verified FIPS source checksums via MTC transparency log
 
-**Priority:** High — addresses a fundamental weakness in FIPS source integrity
+**Priority:** High.  Anchor FIPS source-file SHA-256 hashes in
+the MTC transparency log so that post-publication tampering of
+a source file *and* its checksum is detectable downstream
+(closes the OpenSSL `fips-sources.checksums` /
+wolfSSL `fips-hash.sh` weakness).
 
-**Problem:** FIPS source file checksums are stored in the same repository as
-the source code. An attacker with write access can modify both a source file
-and its checksum — nothing downstream detects the tampering. This weakness
-exists in both OpenSSL (`fips-sources.checksums`) and wolfSSL (`fips-hash.sh`).
-
-**Solution:** Anchor FIPS source checksums in the MTC Merkle tree transparency
-log.  At build time, a manifest of every FIPS source file's SHA256 hash is
-submitted to the C MTC server, which logs it as a new entry type (`0x02`),
-computes an inclusion proof, and signs the tree root with the log's ML-DSA-87
-key (with periodic offline ML-DSA-87 CA-checkpoint cosignatures).  The
-manifest cannot be altered after submission without detection.
-
-The post-phase-3 storage backing is the **tiled Merkle tree**
-(`mtc_merkle_tiled.{c,h}`, type `MtcTiledTree`) — `mtc_merkle.c` /
-`MtcMerkleTree` is retired from production callers.  Append still
-goes through `mtc_store_add_entry`, which now wraps the
-`mtc_tiled_tree_append_leaf` call in a Postgres transaction
-guarded by `pg_advisory_xact_lock(<log_id-key>)`, so concurrent
-FIPS-manifest submissions serialise cleanly at the DB layer
-without any new code in the FIPS handler.  Inclusion proofs +
-subtree hashes come from `mtc_tiled_tree_inclusion_proof` /
-`mtc_tiled_tree_subtree_hash`; the legacy `mtc_tree_*` API is
-gone.  See TODO #74 phase 3.
-
-**Where the work lives.**  All FIPS-framework development —
-client tooling (`fips-manifest-submit`, `fips-manifest-verify`),
-config (pinned CA pubkey, schema-version policy), the
-implementation plan, the user/admin docs, and the issues
-backlog from external review — lives in
-[`fips-framework/`](../fips-framework/) at the postWolf repo
-root.  Server-side handler code (the `POST /fips/manifest`
-dispatcher, `mtc_fips_manifests` schema, type-`0x02` detection
-in `mtc_store_add_entry`) belongs in
-`mtc-keymaster/server2/c/`, but the design surface and all
-verifier-side code live under `fips-framework/`.  When picking
-this TODO up, start there.
-
-**Key references in `fips-framework/`:**
-
-- [`README-fips.md`](../fips-framework/README-fips.md) — admin/user
-  reference (~88 KB, canonical "how the scheme works + how to
-  verify").
-- [`README-fips.plan`](../fips-framework/README-fips.plan) — implementation
-  plan with `[ISSUE #1]` / `[ISSUE #2]` / `[ISSUE #10]` / `[PH3]`
-  amendment blocks tracking the design's evolution.  The `[PH3]`
-  block at the top documents the post-phase-3 server storage
-  refactor.
-- [`README-fips-issues.md`](../fips-framework/README-fips-issues.md)
-  — first independent review (12 numbered issues) with per-issue
-  triage verdicts; drives the `[ISSUE #N]` amendments throughout
-  the plan and the user-facing doc.
-- [`README-fips-chatgpt-issues.md`](../fips-framework/README-fips-chatgpt-issues.md)
-  — ChatGPT review (2026-05-07).  9 items grouped P0/P1/P2 and
-  *not yet triaged* against the current design.  Headline
-  concerns:
-    - **P0 — receipt freshness / split-view attack:** offline
-      verification only proves "logged under *some* root";
-      need witness cosignatures + a "≥ N witnesses or ≥ 1
-      independent mirror" policy.
-    - **P0 — terminology:** rename "FIPS mode" to
-      "FIPS source-integrity mode" / "FIPS build attestation
-      mode" until and unless the module is CMVP-validated, to
-      avoid implying FIPS 140-3 validation.
-    - **P0 — manifest must bind more than file hashes:** add
-      package + version/tag + git commit + tarball hash + build-
-      script hashes + toolchain identity + dependency hashes +
-      configure flags + FIPS boundary def + approved-algorithm
-      list + self-test files + generated-file policy + timestamp
-      + publisher leaf-cert fingerprint + log ID + tree size +
-      checkpoint hash.
-    - **P1 — publisher authorization** for `(package, namespace,
-      tag)` is underspecified; today any enrolled leaf can submit
-      a manifest for any package.
-    - **P1 — "latest tag" ambiguity** in
-      `search?package=X&tag=Y`: define immutable-or-all-manifests
-      rather than silently returning the newest.
-    - **P1 — offline revocation/staleness policy** so a cached
-      receipt can't survive a publisher-key revocation.
-    - **P1 — dual-hash story** (SHA-256 + SHA3-384/512) to align
-      with the post-quantum branding.
-    - **P2 — canonicalization** (RFC 8785 JCS / canonical CBOR /
-      strict line format), not pretty JSON.
-    - **P2 — build-system trust** (compromised compilers,
-      poisoned deps, env vars, host) — partial overlap with TODO
-      #8.
-  Triaging this review is part of the TODO #7 work; do it as
-  the first commit in the FIPS-framework arc so the resulting
-  design changes feed through to the plan + user docs before any
-  server-side implementation lands.
-- [`README-fips-todo.md`](../fips-framework/README-fips-todo.md) — FIPS-local
-  TODO 0a (`slc.c:273` — wire MTC verify into the TLS handshake)
-  and 0b (pin the real CA Ed25519 pubkey, retire the 32-zero
-  placeholder).  Both predate the ML-DSA-87 cosigner migration
-  and need to sweep with `[ISSUE #10]`.
-- [`README-hash-and-sign.md`](../fips-framework/README-hash-and-sign.md),
-  [`README-ml-dsa-87.md`](../fips-framework/README-ml-dsa-87.md),
-  [`README-keyserver.md`](../fips-framework/README-keyserver.md),
-  [`FIPS.md`](../fips-framework/FIPS.md) — supporting design
-  docs.
-
-**Doc rot to clean up before any new feature work.**  The
-verifier-tool README (`fips-framework/README.md`) and
-`README-fips-todo.md` still reference Ed25519 cosignatures and the
-32-byte CA-pubkey placeholder; the cosigner migration to
-ML-DSA-87 (TODO #47, commit `2280` series) and the SPKI-DER
-pinning (TODO #53) both happened after those docs were written.
-Sweeping them is a small first commit.
-
-**Summary of work:**
-
-1. **C server extensions** — Add entry type `0x02` (FIPS manifest) to the
-   existing Merkle tree. Add four new HTTP endpoints:
-   - `POST /fips/manifest` — submit a manifest
-   - `GET /fips/manifest/<index>` — retrieve a manifest
-   - `GET /fips/manifest/<index>/proof` — fresh inclusion proof
-   - `GET /fips/manifest/search?package=X&tag=Y` — search manifests
-   
-2. **Database** — Add `mtc_fips_manifests` table with package/tag indexing.
-
-3. **Client scripts** — Create `fips-manifest-submit.sh` (build-time: compute
-   checksums, POST to server, save receipt) and `fips-manifest-verify.sh`
-   (verification: compare local files against logged manifest, verify proof
-   and cosignature). Supports online and offline modes.
-
-4. **Build integration** — Call `fips-manifest-submit.sh` after `fips-hash.sh`
-   in `debian/rules` and `Makefile.am`. Ship `fips-manifest-receipt.json` with
-   the package for offline verification.
-
-**Trust model:** The leaf (kit publisher) operates independently from the CA
-after enrollment. The CA vouches for the leaf's identity at enrollment time
-via DNS TXT validation. Downstream verifiers check the chain: CA public key
-(obtained out-of-band) → CA enrollment → leaf certificate → FIPS manifest →
-individual file hashes. Offline verification uses the receipt's cached proof
-and cosignature — no server contact needed.
-
-**Existing code reuse:** `mtc_merkle_tiled.c` (tree operations on
-the tiled backing — see TODO #74 phase 3), `mtc_store.c`
-(`mtc_store_add_entry` for the append-under-advisory-lock
-transaction; `mtc_store_log_sign` / offline `mtc_ca_sign_checkpoint`
-for ML-DSA-87 signing per `README-fips-issues.md` Issue #1),
-`mtc_db.c` (DB patterns), `mtc_http.c` (endpoint handler
-patterns).  No changes needed to `mtc_merkle_tiled.c` —
-`mtc_tiled_tree_append_leaf` / `_inclusion_proof` /
-`_subtree_hash` operate on opaque leaf bytes, type `0x02`
-included.
-
-**Files to create:**
-- `fips-manifest-submit.sh` — build-time submission script
-- `fips-manifest-verify.sh` — verification script (online + offline)
-
-**Files to modify:**
-- `mtc-keymaster/server2/c/mtc_http.c` — add FIPS manifest endpoint handlers + routing
-- `mtc-keymaster/server2/c/mtc_db.c` — add `mtc_fips_manifests` table + CRUD
-- `mtc-keymaster/server2/c/mtc_store.c` — add type `0x02` detection + DB-backed manifest persistence (no file fallback — file mode retired in TODO #74 phase 3)
-- `debian/rules` — call submit script in FIPS build path
-- `Makefile.am` — add new targets
-
-`mtc_store.h` does NOT need a `fips_manifests[]` field — the
-phase-2/3 refactor moved cert + revocation state out of
-`MtcStore` into Neon and the `mtc_cert_cache` LRU.  FIPS
-manifests should follow the same pattern: persist to Neon
-(`mtc_fips_manifests`), fault on lookup, no resident array.
+**Sub-project — full design + roadmap + numbered backlog lives in
+[`fips-framework/`](../fips-framework/).**  Start in
+[`fips-framework/README-fips-todo.md`](../fips-framework/README-fips-todo.md)
+(roadmap at the top, ~30 numbered TODOs grouped P0–P4 by
+external-review source).  Server-side handler work lands in
+`mtc-keymaster/server2/c/` (a `POST /fips/manifest` endpoint +
+`mtc_fips_manifests` schema + leaf type `0x02` detection in
+`mtc_store_add_entry`); verifier-side and client tooling stays
+in `fips-framework/tools/`.
 
 ### 8. Compiler integrity — what if gcc has been corrupted?
 
