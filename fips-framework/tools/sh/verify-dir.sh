@@ -38,19 +38,20 @@ sha256sum --quiet --strict --check MANIFEST.sha256
 grep '^# ' MANIFEST.sha256 || true
 
 # If the manifest recorded a git commit AND DIR is in a git repo,
-# compare against current HEAD.  Mismatch is reported but does NOT
-# fail the verify — the signature already proves integrity of the
-# bytes on disk; this just surfaces replay-old-manifest scenarios.
+# check that the recorded commit object exists in this repo (any
+# branch / any history).  This catches "manifest from a different
+# repo" and "fabricated commit hash" without forcing HEAD to match
+# — natural workflows leave HEAD ahead of the recorded commit and
+# we don't want to warn on those.  Stripping `-dirty` because the
+# suffix is informational; the real check is the bare hash.
+# Non-fatal regardless: the ML-DSA-87 signature is what gates exit.
 RECORDED_COMMIT="$(awk '/^# git-commit:/ {print $3; exit}' MANIFEST.sha256)"
-if [ -n "$RECORDED_COMMIT" ] && git rev-parse --verify HEAD >/dev/null 2>&1; then
-    CURRENT_COMMIT="$(git rev-parse HEAD)"
-    if ! git diff-index --quiet HEAD -- . 2>/dev/null; then
-        CURRENT_COMMIT="${CURRENT_COMMIT}-dirty"
-    fi
-    if [ "$RECORDED_COMMIT" = "$CURRENT_COMMIT" ]; then
-        echo "git HEAD match: $CURRENT_COMMIT"
+if [ -n "$RECORDED_COMMIT" ] && git rev-parse --git-dir >/dev/null 2>&1; then
+    BARE_HASH="${RECORDED_COMMIT%-dirty}"
+    if git cat-file -e "${BARE_HASH}^{commit}" 2>/dev/null; then
+        echo "git commit found: $RECORDED_COMMIT"
     else
-        echo "WARNING: recorded commit ($RECORDED_COMMIT) != current HEAD ($CURRENT_COMMIT)"
+        echo "WARNING: recorded commit $RECORDED_COMMIT not found in local repo"
     fi
 fi
 

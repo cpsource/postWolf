@@ -10,9 +10,14 @@
 # over MANIFEST.sha256).  Verify with verify-dir.sh.
 #
 # When DIR is inside a git repo, the manifest is prefixed with a
-# `# git-commit: <hash>[-dirty]` line as a forensic anchor — the
-# signature covers it, so replays of an old manifest against a newer
-# checkout become visible.
+# `# git-commit: <hash>[-dirty]` line.  The signature covers it.
+# verify-dir.sh checks that the recorded hash exists as a commit
+# object in the local repo (not necessarily HEAD), which catches
+# manifests sourced from a different repo and outright fabricated
+# commit IDs.  It deliberately does NOT compare to HEAD — natural
+# workflows (commit-after-sign, verify against historical tags) leave
+# the recorded commit somewhere in the repo's history but not at the
+# tip, and we don't want to warn on those.
 
 set -euo pipefail
 
