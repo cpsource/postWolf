@@ -1,0 +1,8 @@
+domain:         factsorlie.com
+label:          Alice
+package:        postWolf-fips-test
+version:        v0.0.1
+now:            1778000000
+validity_days:  90
+publisher_cert_index: 74
+spk_hash:       2f86144c32ee6e5f4d457143cadd042a512a81ec602f1f74e30b04ca68f1b8fc
