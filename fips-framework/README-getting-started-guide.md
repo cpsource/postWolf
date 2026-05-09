@@ -274,7 +274,7 @@ pipeline.
 | Tool | Purpose |
 |---|---|
 | `sign-dir.sh DOMAIN [DIR]` | Walk `DIR` (default `.`), recursively hash every regular file (symlinks followed; `.git`, `MANIFEST.*`, `private_key.pem` excluded; sorted via `LC_ALL=C`), prepend `# publisher:`, `# publisher-cert-index:`, optional `# git-commit:` header lines, write `MANIFEST.sha256`, then sign it with ML-DSA-87 from `~/.TPM/<DOMAIN>/private_key.pem` → `MANIFEST.sig`. |
-| `verify-dir.sh DOMAIN [DIR]` | Three-stage check: (1) `MANIFEST.sig` is a valid ML-DSA-87 signature over `MANIFEST.sha256` under DOMAIN's public key; (2) `sha256sum --strict --check MANIFEST.sha256` passes; (3) header cross-checks: `# publisher:` matches the `DOMAIN` argument (FAIL on mismatch), `# publisher-cert-index:` matches `~/.TPM/<DOMAIN>/index` if known (WARN on rotation), `# git-commit:` (if present) exists in the local repo (any branch). **Pubkey resolution:** uses `~/.TPM/<DOMAIN>/public_key.pem` if present (local-identity); otherwise shells out to `fetch-publisher-key --domain <DOMAIN> --cert-index <recorded>` for the authoritative PEM from the server (server-fetch).  Output line annotates which path was taken (`key=local-identity ...` vs `key=server-fetch ...`). |
+| `verify-dir.sh [-v] DOMAIN [DIR]` | Three-stage check: (1) `MANIFEST.sig` is a valid ML-DSA-87 signature over `MANIFEST.sha256` under DOMAIN's public key; (2) `sha256sum --strict --check MANIFEST.sha256` passes; (3) header cross-checks: `# publisher:` matches the `DOMAIN` argument (FAIL on mismatch), `# publisher-cert-index:` matches `~/.TPM/<DOMAIN>/index` if known (WARN on rotation), `# git-commit:` (if present) exists in the local repo (any branch). **Pubkey resolution:** uses `~/.TPM/<DOMAIN>/public_key.pem` if present (local-identity); otherwise shells out to `fetch-publisher-key --domain <DOMAIN> --cert-index <recorded>` for the authoritative PEM from the server (server-fetch).  Output line annotates which path was taken (`key=local-identity ...` vs `key=server-fetch ...`).  `-v` / `--verbose` surfaces per-file `<path>: OK` lines from `sha256sum` (default is quiet — only failures are printed). |
 
 ### `fips-framework/tools/python/`
 
@@ -306,8 +306,11 @@ publisher's public key.
 # Sign
 bash fips-framework/tools/sh/sign-dir.sh <your-domain> path/to/release/
 
-# Verify
+# Verify (quiet — exits 0 on success, prints failures only)
 bash fips-framework/tools/sh/verify-dir.sh <your-domain> path/to/release/
+
+# Verify (verbose — prints `<path>: OK` for each file as it's checked)
+bash fips-framework/tools/sh/verify-dir.sh -v <your-domain> path/to/release/
 ```
 
 This produces `path/to/release/MANIFEST.sha256` and `MANIFEST.sig`.

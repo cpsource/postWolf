@@ -1,6 +1,6 @@
 # publisher: factsorlie.com
 # publisher-cert-index: 72
-# git-commit: 3f30fe6780d4020e07a032f9cc226f3551096df4-dirty
+# git-commit: d79fd3186cfffd4be033db20fd9a9ac9a5499c80-dirty
 a8e28ecfcd0fbc9ccee859fffad05e7a0536b6c6c6a80eb6035a50d2a19efe11  .gitignore
 410137f015d00624e633596e70ed191c519154c04337634446f49d503e73ebf7  FIPS.md
 a89a4519cdf84df837df9f888f56856fbb2767d814492a6efd1c8191414214f6  README-discussions.md
@@ -9,7 +9,7 @@ fdcb8f64b8cdc2ba146ded369b27b57e8112199c2d826b3913160b72218ade46  README-fips-is
 351b3132b1747e84857cdedcb15642fab4cdb3762692dba2196fcc5d0d40c024  README-fips-todo.md
 e565e63e0fb8096cd198980269060f20c0bbb0b48ca3c6bdb33a63b0b0ae656b  README-fips.md
 b8e545ee49088cf8fee502d9c4e10345ae4d28c0ac1b0e89a3b1d252f217f575  README-fips.plan
-a3a05b9a25af8cb4941fb3fa163cce20ab70f81424f3094f74acb3a66e0548a6  README-getting-started-guide.md
+536c483daeddbda457e86afdf791e4d9749fcaed0a947b31dc6dec4ab0116292  README-getting-started-guide.md
 bef759e173f264ff70028797e9afba700b33670c5b1e996c9877d3ff70219c33  README-hash-and-sign.md
 3da18d3f76a50bc886ee12c9bba33c7c3b36c174fad13718e0078fcb945573f3  README-implement.md
 6471464e98fd1ff0e32be2df552b5faab5299aa2738192cd1c06f4c7ac55c1b2  README-keyserver.md
