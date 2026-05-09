@@ -24,7 +24,7 @@ LIST_LIBS   = $(shell pkg-config --libs augeas) \
               -lhiredis -lpthread -lunbound -lcrypto -lcurl
 
 TARGETS = fips-manifest-submit fips-manifest-verify fips-manifest-list \
-          fips-manifest-revoke
+          fips-manifest-revoke fetch-publisher-key
 
 all: $(TARGETS)
 
@@ -47,6 +47,13 @@ fips-manifest-revoke: fips-manifest-revoke.c $(READ_CONFIG_SRC) $(MQC_LIB)
 		fips-manifest-revoke.c $(READ_CONFIG_SRC) $(MQC_LIB) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(LIST_LIBS)
 
+# Fetch a publisher's PEM authoritatively from the server (for
+# verify-dir.sh's cross-publisher fallback).
+fetch-publisher-key: fetch-publisher-key.c $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) $(LIST_CFLAGS) -o $@ \
+		fetch-publisher-key.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(LIST_LIBS)
+
 clean:
 	rm -f $(TARGETS)
 
@@ -56,5 +63,6 @@ install: all
 	install -m 755 fips-manifest-verify /usr/local/bin/fips-manifest-verify
 	install -m 755 fips-manifest-list   /usr/local/bin/fips-manifest-list
 	install -m 755 fips-manifest-revoke /usr/local/bin/fips-manifest-revoke
+	install -m 755 fetch-publisher-key  /usr/local/bin/fetch-publisher-key
 
 .PHONY: all clean install

@@ -4,17 +4,17 @@
 # Usage: verify-dir.sh DOMAIN [DIR]
 #
 #   DOMAIN  publisher identity, e.g. `factsorlie.com-Alice`.
-#           The verification key is resolved in two steps, in order:
+#           The verification key is resolved as follows:
 #             1. ~/.TPM/<DOMAIN>/public_key.pem   (local-identity case —
 #                you have an enrolled identity for this DOMAIN here).
-#             2. ~/.TPM/peers/<N>/public_key.pem  (peer-cache fallback —
-#                you've previously talked to this DOMAIN over MQC and
-#                its key is cached, but DOMAIN is not one of *your*
-#                identities; N comes from the manifest's signed
-#                `# publisher-cert-index:` header line).
-#           The peer-cache copy is integrity-checked at MQC handshake
-#           time against the cert's subject_public_key_hash, so the
-#           trust property is the same.
+#             2. Server fetch via `fetch-publisher-key --domain DOMAIN
+#                --cert-index <N>` (cross-publisher case — DOMAIN is
+#                not one of *your* identities).  N comes from the
+#                manifest's signed `# publisher-cert-index:` header
+#                line.  fetch-publisher-key talks to the MTC server
+#                over MQC, validates sha256(returned PEM) against the
+#                cert's subject_public_key_hash, and writes the PEM.
+#                This is the same trust model mqc_peer.c uses.
 #   DIR     directory containing MANIFEST.sha256 + MANIFEST.sig
 #           (default: current dir).
 #
@@ -28,8 +28,8 @@
 #          — caller asserted DOMAIN, manifest claims otherwise).
 #        - `# publisher-cert-index:` matches ~/.TPM/<DOMAIN>/index
 #          (WARN on mismatch).  Only checked in the local-identity
-#          case; the peer-cache fallback has no local notion of
-#          "current" cert index for DOMAIN.
+#          case; the server-fetch path's spk-hash check already
+#          confirms the cert/key pair is current.
 #        - `# git-commit:` (if recorded and DIR is in a git repo)
 #          exists as a commit object in the local repo (any branch,
 #          any history).  WARN on mismatch.
@@ -52,33 +52,47 @@ DIR="$(cd "$DIR" && pwd)"
 [ -r "$DIR/MANIFEST.sig"    ] || { echo "verify-dir: missing $DIR/MANIFEST.sig" >&2; exit 1; }
 
 # Read the manifest's recorded cert index up front — we need it to
-# resolve the peer-cache fallback if the local identity dir is absent.
+# drive the server-fetch fallback if the local identity dir is absent.
 RECORDED_CERT_INDEX="$(awk '/^# publisher-cert-index:/ {print $3; exit}' "$DIR/MANIFEST.sha256")"
 
 TPM_DIR="$HOME/.TPM/$DOMAIN"
 LOCAL_PUB="$TPM_DIR/public_key.pem"
-PEER_PUB=""
-if [ -n "$RECORDED_CERT_INDEX" ]; then
-    PEER_PUB="$HOME/.TPM/peers/$RECORDED_CERT_INDEX/public_key.pem"
-fi
-
+TMP_PUB=""
 PUB=""
 PUB_SOURCE=""
+
+cleanup() {
+    [ -n "$TMP_PUB" ] && [ -f "$TMP_PUB" ] && rm -f "$TMP_PUB"
+}
+trap cleanup EXIT
+
 if [ -r "$LOCAL_PUB" ]; then
     PUB="$LOCAL_PUB"
     PUB_SOURCE="local-identity ($TPM_DIR)"
-elif [ -n "$PEER_PUB" ] && [ -r "$PEER_PUB" ]; then
-    PUB="$PEER_PUB"
-    PUB_SOURCE="peer-cache (~/.TPM/peers/$RECORDED_CERT_INDEX)"
 else
-    echo "verify-dir: cannot find a public key for $DOMAIN:" >&2
-    echo "  tried $LOCAL_PUB" >&2
-    if [ -n "$PEER_PUB" ]; then
-        echo "  tried $PEER_PUB (from manifest's cert index $RECORDED_CERT_INDEX)" >&2
-    else
-        echo "  manifest has no '# publisher-cert-index:' line — cannot fall back" >&2
+    if [ -z "$RECORDED_CERT_INDEX" ]; then
+        echo "verify-dir: no local identity at $TPM_DIR and manifest has" >&2
+        echo "            no '# publisher-cert-index:' line — cannot fetch" >&2
+        echo "            authoritative public key from server" >&2
+        exit 1
     fi
-    exit 1
+    if ! command -v fetch-publisher-key >/dev/null 2>&1; then
+        echo "verify-dir: no local identity at $TPM_DIR and the" >&2
+        echo "            fetch-publisher-key helper is not on PATH" >&2
+        echo "            (build with: make -f Makefile.tools fips)" >&2
+        exit 1
+    fi
+    TMP_PUB="$(mktemp -t verify-dir-pub.XXXXXX.pem)"
+    if ! fetch-publisher-key \
+            --domain "$DOMAIN" \
+            --cert-index "$RECORDED_CERT_INDEX" \
+            --out "$TMP_PUB" 2>&1; then
+        echo "verify-dir: fetch-publisher-key failed for DOMAIN=$DOMAIN" >&2
+        echo "            cert_index=$RECORDED_CERT_INDEX" >&2
+        exit 1
+    fi
+    PUB="$TMP_PUB"
+    PUB_SOURCE="server-fetch (DOMAIN=$DOMAIN, cert_index=$RECORDED_CERT_INDEX)"
 fi
 
 cd "$DIR"
@@ -106,7 +120,7 @@ fi
 
 # Stage 3b — cert-index informational.  Only meaningful in the
 # local-identity case (we have a "current" cert index here);
-# skipped silently when verifying via peer-cache.
+# skipped silently in the server-fetch case.
 INDEX_FILE="$TPM_DIR/index"
 if [ -n "$RECORDED_CERT_INDEX" ] && [ -r "$INDEX_FILE" ]; then
     CURRENT_CERT_INDEX="$(cat "$INDEX_FILE")"
