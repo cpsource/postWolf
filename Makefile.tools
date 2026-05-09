@@ -1,7 +1,8 @@
 # Makefile.tools — top-level build for postWolf tools
 #
-# Builds the socket-level wrappers (SLC, MQC) and MTC keymaster tools
-# (server, show-tpm, bootstrap_ca, bootstrap_leaf).
+# Builds the socket-level wrappers (SLC, MQC), MTC keymaster tools
+# (server, show-tpm, bootstrap_ca, bootstrap_leaf), and the FIPS-manifest
+# tools (fips-manifest-{submit,verify,list}).
 #
 # The postWolf library itself is built separately via autotools:
 #   ./configure.sh && make -f Makefile && sudo make -f Makefile install && sudo ldconfig
@@ -21,10 +22,11 @@ MQC_DIR = socket-level-wrapper-MQC
 MTC_DIR   = mtc-keymaster/server2/c
 TOOLS_DIR = mtc-keymaster/tools/c
 TESTS_DIR = mtc-keymaster/tests/c
+FIPS_DIR  = fips-framework/tools/c
 
-.PHONY: all install clean slc mqc quic mtc tools tests install-lib
+.PHONY: all install clean slc mqc quic mtc tools tests fips install-lib
 
-all: slc mqc mtc tools tests
+all: slc mqc mtc tools tests fips
 
 # Socket-level wrapper (TLS)
 slc:
@@ -55,6 +57,12 @@ tools: mqc mtc
 # path, so there's no `install` step.
 tests: mqc mtc
 	$(MAKE) -C $(TESTS_DIR)
+
+# FIPS-manifest tools (fips-manifest-{submit,verify,list}) — self-contained;
+# links the installed libpostWolf via pkg-config the same way the MTC tools
+# do, so the library must already be installed.
+fips:
+	$(MAKE) -C $(FIPS_DIR)
 
 # Install postWolf library (autotools) + ldconfig
 install-lib:
@@ -135,6 +143,7 @@ install: all
 		$(DESTDIR)/usr/local/bin/verify.py
 	install -m 755 mtc-keymaster/tools/python/verify_certificate.py \
 		$(DESTDIR)/usr/local/bin/verify_certificate.py
+	$(MAKE) -C $(FIPS_DIR) install
 
 clean:
 	$(MAKE) -C $(SLC_DIR) clean
@@ -142,6 +151,7 @@ clean:
 	$(MAKE) -C $(MTC_DIR) clean
 	$(MAKE) -C $(TOOLS_DIR) clean
 	$(MAKE) -C $(TESTS_DIR) clean
+	$(MAKE) -C $(FIPS_DIR) clean
 
 # -- Phase 4 system-level tests --------------------------------------
 # Aggregate regression suite (P4a).  Builds dependent test binaries
