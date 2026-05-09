@@ -27,6 +27,10 @@ the open issue list.
 
 ## [Unreleased]
 
+(no changes since 0.1.2)
+
+## [0.1.2] — 2026-05-09
+
 ### Added
 
 - `backup/` directory with the postWolf MTC Neon database backup
