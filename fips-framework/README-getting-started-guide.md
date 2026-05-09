@@ -273,7 +273,7 @@ pipeline.
 
 | Tool | Purpose |
 |---|---|
-| `sign-dir.sh DOMAIN [DIR]` | Walk `DIR` (default `.`), recursively hash every regular file (symlinks followed; `.git`, `MANIFEST.*`, `private_key.pem` excluded; sorted via `LC_ALL=C`), prepend `# publisher:`, `# publisher-cert-index:`, optional `# git-commit:` header lines, write `MANIFEST.sha256`, then sign it with ML-DSA-87 from `~/.TPM/<DOMAIN>/private_key.pem` → `MANIFEST.sig`. |
+| `sign-dir.sh [-g] DOMAIN [DIR]` | Walk `DIR` (default `.`), recursively hash every regular file (symlinks followed; `.git`, `MANIFEST.*`, `private_key.pem` excluded; sorted via `LC_ALL=C`), prepend `# publisher:`, `# publisher-cert-index:`, optional `# git-commit:` header lines, write `MANIFEST.sha256`, then sign it with ML-DSA-87 from `~/.TPM/<DOMAIN>/private_key.pem` → `MANIFEST.sig`.  `-g` / `--respect-gitignore` switches the file walk to `git ls-files --cached --others --exclude-standard`, which excludes anything matched by `.gitignore` (build artifacts, secrets, etc.).  Recommended when signing a directory inside a git repo so the manifest verifies on a fresh clone. |
 | `verify-dir.sh [-v] DOMAIN [DIR]` | Three-stage check: (1) `MANIFEST.sig` is a valid ML-DSA-87 signature over `MANIFEST.sha256` under DOMAIN's public key; (2) `sha256sum --strict --check MANIFEST.sha256` passes; (3) header cross-checks: `# publisher:` matches the `DOMAIN` argument (FAIL on mismatch), `# publisher-cert-index:` matches `~/.TPM/<DOMAIN>/index` if known (WARN on rotation), `# git-commit:` (if present) exists in the local repo (any branch). **Pubkey resolution:** uses `~/.TPM/<DOMAIN>/public_key.pem` if present (local-identity); otherwise shells out to `fetch-publisher-key --domain <DOMAIN> --cert-index <recorded>` for the authoritative PEM from the server (server-fetch).  Output line annotates which path was taken (`key=local-identity ...` vs `key=server-fetch ...`).  `-v` / `--verbose` surfaces per-file `<path>: OK` lines from `sha256sum` (default is quiet — only failures are printed). |
 
 ### `fips-framework/tools/python/`
@@ -303,8 +303,12 @@ distribution + verification by anyone who can resolve the
 publisher's public key.
 
 ```sh
-# Sign
+# Sign (walks every file under DIR)
 bash fips-framework/tools/sh/sign-dir.sh <your-domain> path/to/release/
+
+# Sign respecting .gitignore (recommended inside a git repo —
+# excludes build artifacts so the manifest verifies on a fresh clone)
+bash fips-framework/tools/sh/sign-dir.sh -g <your-domain> path/to/release/
 
 # Verify (quiet — exits 0 on success, prints failures only)
 bash fips-framework/tools/sh/verify-dir.sh <your-domain> path/to/release/

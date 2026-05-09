@@ -29,8 +29,23 @@
 
 set -euo pipefail
 
+RESPECT_GITIGNORE=0
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -g|--respect-gitignore) RESPECT_GITIGNORE=1; shift ;;
+        -h|--help)
+            echo "Usage: sign-dir.sh [-g|--respect-gitignore] DOMAIN [DIR]" >&2
+            exit 0 ;;
+        --) shift; while [ $# -gt 0 ]; do POSITIONAL+=("$1"); shift; done ;;
+        -*) echo "sign-dir: unknown flag '$1'" >&2; exit 1 ;;
+        *)  POSITIONAL+=("$1"); shift ;;
+    esac
+done
+set -- "${POSITIONAL[@]}"
+
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
-    echo "Usage: sign-dir.sh DOMAIN [DIR]" >&2
+    echo "Usage: sign-dir.sh [-g|--respect-gitignore] DOMAIN [DIR]" >&2
     exit 1
 fi
 
@@ -58,14 +73,41 @@ fi
 
 cd "$DIR"
 
-mapfile -t FILES < <(
-    find -L . -path ./.git -prune -o \
-         -type f \
-         ! -name MANIFEST.sha256 \
-         ! -name MANIFEST.sig \
-         ! -name private_key.pem \
-         -printf '%P\n' | LC_ALL=C sort
-)
+if [ "$RESPECT_GITIGNORE" = "1" ]; then
+    if ! git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1; then
+        echo "sign-dir: --respect-gitignore set but $DIR is not in a git repo" >&2
+        exit 1
+    fi
+    # tracked + untracked-but-not-ignored.  -z + read -d '' handles
+    # paths with spaces / unusual chars; awk filter drops the same
+    # special files the find branch hides.
+    mapfile -d '' FILES_RAW < <(
+        git -C "$DIR" ls-files -z --cached --others --exclude-standard
+    )
+    FILES=()
+    for f in "${FILES_RAW[@]}"; do
+        case "$f" in
+            MANIFEST.sha256|MANIFEST.sig|private_key.pem) continue ;;
+            */private_key.pem)                            continue ;;
+        esac
+        # ls-files lists tracked entries even if currently absent from
+        # the worktree (e.g. partial checkout).  Skip those — sha256sum
+        # would fail.
+        [ -f "$f" ] || continue
+        FILES+=("$f")
+    done
+    # Sort with the same locale-stable order as the find branch.
+    mapfile -t FILES < <(printf '%s\n' "${FILES[@]}" | LC_ALL=C sort)
+else
+    mapfile -t FILES < <(
+        find -L . -path ./.git -prune -o \
+             -type f \
+             ! -name MANIFEST.sha256 \
+             ! -name MANIFEST.sig \
+             ! -name private_key.pem \
+             -printf '%P\n' | LC_ALL=C sort
+    )
+fi
 
 if [ ${#FILES[@]} -eq 0 ]; then
     echo "sign-dir: no files to sign in $DIR" >&2
@@ -84,4 +126,6 @@ openssl40 pkeyutl -sign -rawin \
     -in MANIFEST.sha256 \
     -out MANIFEST.sig
 
-echo "signed $DIR as $DOMAIN (cert index $CERT_INDEX, ${#FILES[@]} files)"
+SRC_NOTE=""
+[ "$RESPECT_GITIGNORE" = "1" ] && SRC_NOTE=" [respect-gitignore]"
+echo "signed $DIR as $DOMAIN (cert index $CERT_INDEX, ${#FILES[@]} files)$SRC_NOTE"
