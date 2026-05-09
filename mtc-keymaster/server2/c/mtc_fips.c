@@ -1421,6 +1421,39 @@ int mtc_fips_revoke(MtcStore *store,
         return -1;
     }
 
+    /* ---- 5b. Defense-in-depth revocation gate on the revoker cert ----
+     *
+     * Normal MQC handshake aborts revoked peers at the wire (see
+     * mqc_peer.c::mqc_peer_verify, MANDATORY policy default).  This
+     * in-handler check covers the corner case where mqc-revocation-
+     * policy = disabled (emergency-recovery only) and the request
+     * still reached us.
+     *
+     * Asymmetric: leaf publishers (revoker_kind = "publisher") are
+     * blocked if revoked, but CAs (revoker_kind = "ca") are still
+     * allowed even if revoked — by user direction, so that recovery
+     * work (cleaning up bad releases under a freshly-revoked CA)
+     * stays possible.  Logged at WARN either way for the audit
+     * trail. */
+    if (strcmp(revoker_kind, "publisher") == 0 &&
+        mtc_db_is_revoked(conn, revoker_cert_index))
+    {
+        set_err(out_err_msg, err_msg_sz,
+                "revoke: publisher cert %d is revoked — refusing self-revoke",
+                revoker_cert_index);
+        WARN("%s", out_err_msg);
+        free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+        json_object_put(req);
+        *out_status = 403;
+        return -1;
+    }
+    if (strcmp(revoker_kind, "ca") == 0 &&
+        mtc_db_is_revoked(conn, revoker_cert_index))
+    {
+        WARN("fips-revoke: accepting request from REVOKED CA %d "
+             "(recovery-mode allowance)", revoker_cert_index);
+    }
+
     /* ---- 6. Authority branch ---- */
     if (strcmp(revoker_kind, "publisher") == 0) {
         if (revoker_cert_index != manifest_pub_cert_idx) {
