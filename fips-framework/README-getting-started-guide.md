@@ -249,6 +249,7 @@ by `sudo make -f Makefile.tools install`.
 | `fips-manifest-list` | observer | Browse the FIPS log over MQC.  Read-only.  Table view shows `status` column (`OK`/`Cert Revoked`/`Manifest Revoked`/`Manifest & Cert Revoked`); detail view (`fips-manifest-list <log_index>`) shows the parsed manifest + nested revocation block.  No DB credentials required — works on any leaf host. |
 | `fips-manifest-verify` | consumer | Offline 6-stage verifier of a receipt + on-disk source tree.  Stages: strict-parse, cosignature, inclusion-proof, manifest signature, time bounds, file hashes.  Add `--check-revocation` to bring step 5.5 online (manifest + cert revocation queries). |
 | `fips-manifest-revoke` | author / CA | Sign + POST a revocation request for one log_index over MQC.  `--as publisher` is self-revoke (must hold the cert that submitted the manifest); `--as ca` is takedown (caller must hold a `-ca` cert in the publisher's domain). |
+| `fetch-publisher-key` | helper | Fetch a publisher's ML-DSA-87 PEM authoritatively from the server over MQC: `GET /public-key/<DOMAIN>`, optionally cross-check `sha256(pem) == cert.spk_hash` via `GET /certificate/<N>` when `--cert-index N` is given.  Writes the PEM to `--out` (default stdout).  Used internally by `verify-dir.sh` for cross-publisher verification — invoke directly when you want the bytes for some other check. |
 
 Common flags across the MQC-aware tools (`list`, `revoke`,
 `verify --check-revocation`):
@@ -273,7 +274,7 @@ pipeline.
 | Tool | Purpose |
 |---|---|
 | `sign-dir.sh DOMAIN [DIR]` | Walk `DIR` (default `.`), recursively hash every regular file (symlinks followed; `.git`, `MANIFEST.*`, `private_key.pem` excluded; sorted via `LC_ALL=C`), prepend `# publisher:`, `# publisher-cert-index:`, optional `# git-commit:` header lines, write `MANIFEST.sha256`, then sign it with ML-DSA-87 from `~/.TPM/<DOMAIN>/private_key.pem` → `MANIFEST.sig`. |
-| `verify-dir.sh DOMAIN [DIR]` | Three-stage check: (1) `MANIFEST.sig` is a valid ML-DSA-87 signature over `MANIFEST.sha256` under `~/.TPM/<DOMAIN>/public_key.pem`; (2) `sha256sum --strict --check MANIFEST.sha256` passes; (3) header cross-checks: `# publisher:` matches the `DOMAIN` argument (FAIL on mismatch), `# publisher-cert-index:` matches `~/.TPM/<DOMAIN>/index` (WARN on rotation), `# git-commit:` (if present) exists in the local repo (any branch). |
+| `verify-dir.sh DOMAIN [DIR]` | Three-stage check: (1) `MANIFEST.sig` is a valid ML-DSA-87 signature over `MANIFEST.sha256` under DOMAIN's public key; (2) `sha256sum --strict --check MANIFEST.sha256` passes; (3) header cross-checks: `# publisher:` matches the `DOMAIN` argument (FAIL on mismatch), `# publisher-cert-index:` matches `~/.TPM/<DOMAIN>/index` if known (WARN on rotation), `# git-commit:` (if present) exists in the local repo (any branch). **Pubkey resolution:** uses `~/.TPM/<DOMAIN>/public_key.pem` if present (local-identity); otherwise shells out to `fetch-publisher-key --domain <DOMAIN> --cert-index <recorded>` for the authoritative PEM from the server (server-fetch).  Output line annotates which path was taken (`key=local-identity ...` vs `key=server-fetch ...`). |
 
 ### `fips-framework/tools/python/`
 
@@ -296,10 +297,10 @@ Currently empty (placeholder for future Python helpers — see
 
 The `tools/sh/` pair predates the canonical-leaf pipeline and
 solves a smaller problem: **prove who signed an arbitrary directory
-tree, without anchoring in the transparency log**.  Use it when
-you don't want a server round-trip — e.g., to ship a release
-tarball with a sidecar signature any consumer can verify offline
-using just your public key.
+tree, without anchoring in the transparency log**.  Use it for
+release tarballs and the like — anchor-free signing for
+distribution + verification by anyone who can resolve the
+publisher's public key.
 
 ```sh
 # Sign
@@ -312,6 +313,19 @@ bash fips-framework/tools/sh/verify-dir.sh <your-domain> path/to/release/
 This produces `path/to/release/MANIFEST.sha256` and `MANIFEST.sig`.
 The MANIFEST file is human-readable; the `.sig` is the raw
 ML-DSA-87 signature over those bytes.
+
+**Verifier identity layout:**
+
+- If the verifier *is* the publisher (or has the publisher's
+  identity dir under `~/.TPM/<DOMAIN>/`), `verify-dir.sh` reads
+  `public_key.pem` straight from disk and works fully offline.
+- If the verifier is a third party that has *never* enrolled
+  for `<DOMAIN>`, `verify-dir.sh` automatically shells out to
+  `fetch-publisher-key --domain <DOMAIN> --cert-index <recorded>`,
+  which queries the MTC server over MQC for the authoritative PEM
+  and validates `sha256(pem) == cert.spk_hash` before returning it.
+  Same trust model live MQC handshakes use; never relies on a
+  stale-able local peer-cache.
 
 The fips-framework directory itself is signed this way (commit
 `29e2f7910` and onward) — see `fips-framework/MANIFEST.{sha256,sig}`.
