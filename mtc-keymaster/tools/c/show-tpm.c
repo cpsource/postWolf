@@ -617,6 +617,153 @@ static void verify_entry(tpm_entry_t *e, const char *tpm_dir)
     free(body);
 }
 
+/* ------------------------------------------------------------------ */
+/* Peer-cache consistency check (~/.TPM/peers/<idx>/)                 */
+/* ------------------------------------------------------------------ */
+
+/* mqc_peer_get_cached_pubkey loads BOTH certificate.json and
+ * public_key.pem from ~/.TPM/peers/<index>/ when the server (or any
+ * MQC client) verifies a connecting peer.  If those two files are out
+ * of sync — typically because a leaf re-keyed but the cached cert
+ * wasn't refreshed — every handshake referencing that index aborts
+ * with PUBKEY_HASH_MISMATCH at the receiver.
+ *
+ * Per-identity check_spkh() can't catch this: it only walks the
+ * identity dirs (factsorlie.com/, factsorlie.com-Alice/, …), not the
+ * peers/ cache.  Walking peers/ separately and replaying the same
+ * sha256(pem) == cert.spk_hash assertion is the canary that would
+ * have caught the post-migration desync that masked itself behind
+ * "All entries verified OK" earlier.  Returns 0 if every cached peer
+ * is consistent, non-zero (number of failures) otherwise. */
+static int verify_peers_cache(const char *tpm_dir)
+{
+    char peers_dir[PATH_MAX];
+    DIR *d;
+    struct dirent *de;
+    int total = 0, mismatched = 0, missing = 0;
+
+    snprintf(peers_dir, sizeof(peers_dir), "%s/peers", tpm_dir);
+    d = opendir(peers_dir);
+    if (!d) {
+        /* No peers cache present — nothing to verify. */
+        return 0;
+    }
+
+    printf("Peer cache: %s\n", peers_dir);
+
+    while ((de = readdir(d)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        /* Cert-index dirs are numeric.  Anything else (cosigner-fp.hex
+         * etc) is sibling state we shouldn't try to verify here. */
+        const char *p;
+        int looks_numeric = (de->d_name[0] != 0);
+        for (p = de->d_name; *p; p++) {
+            if (*p < '0' || *p > '9') { looks_numeric = 0; break; }
+        }
+        if (!looks_numeric) continue;
+        /* cert_index fits in int → at most 11 decimal digits; leave room
+         * to spare so `peers_dir + "/" + name + "/" + "certificate.json"`
+         * can never truncate inside cert_path / pem_path below. */
+        if (strlen(de->d_name) > 16) continue;
+
+        char dir_path[PATH_MAX + 32];
+        char cert_path[PATH_MAX + 64];
+        char pem_path[PATH_MAX + 64];
+        struct stat st;
+
+        snprintf(dir_path, sizeof(dir_path), "%s/%s", peers_dir, de->d_name);
+        if (stat(dir_path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+
+        snprintf(cert_path, sizeof(cert_path), "%s/certificate.json", dir_path);
+        snprintf(pem_path,  sizeof(pem_path),  "%s/public_key.pem",   dir_path);
+
+        total++;
+
+        char *cert_str = read_file(cert_path);
+        int   pem_len  = 0;
+        unsigned char *pem = read_file_bytes(pem_path, &pem_len);
+        if (!cert_str || !pem) {
+            printf("  [?] cert_index=%-6s  MISSING %s\n",
+                   de->d_name,
+                   !cert_str ? "certificate.json" :
+                   !pem      ? "public_key.pem"   : "?");
+            missing++;
+            free(cert_str); free(pem);
+            continue;
+        }
+
+        struct json_object *cj = json_tokener_parse(cert_str);
+        free(cert_str);
+        if (!cj) {
+            printf("  [X] cert_index=%-6s  certificate.json not valid JSON\n",
+                   de->d_name);
+            mismatched++;
+            free(pem);
+            continue;
+        }
+
+        struct json_object *sc = NULL, *tbs = NULL, *spkh = NULL;
+        const char *expected = NULL;
+        if (json_object_object_get_ex(cj, "standalone_certificate", &sc) &&
+            json_object_object_get_ex(sc, "tbs_entry", &tbs) &&
+            json_object_object_get_ex(tbs, "subject_public_key_hash", &spkh))
+        {
+            expected = json_object_get_string(spkh);
+        }
+        if (!expected || strlen(expected) != 64) {
+            printf("  [X] cert_index=%-6s  cached cert lacks spk_hash\n",
+                   de->d_name);
+            mismatched++;
+            json_object_put(cj);
+            free(pem);
+            continue;
+        }
+
+        wc_Sha256 sha;
+        unsigned char hash[32];
+        char actual[65];
+        if (wc_InitSha256(&sha) != 0 ||
+            wc_Sha256Update(&sha, pem, (word32)pem_len) != 0 ||
+            wc_Sha256Final(&sha, hash) != 0)
+        {
+            wc_Sha256Free(&sha);
+            printf("  [?] cert_index=%-6s  SHA-256 init failed\n", de->d_name);
+            mismatched++;
+            json_object_put(cj);
+            free(pem);
+            continue;
+        }
+        wc_Sha256Free(&sha);
+        for (int i = 0; i < 32; i++)
+            snprintf(actual + i * 2, 3, "%02x", hash[i]);
+
+        if (strcmp(actual, expected) != 0) {
+            printf("  [X] cert_index=%-6s  MISMATCH: pem sha256=%.16s... "
+                   "cached cert spk_hash=%.16s...\n",
+                   de->d_name, actual, expected);
+            mismatched++;
+        } else {
+            printf("  [+] cert_index=%-6s  OK\n", de->d_name);
+        }
+
+        json_object_put(cj);
+        free(pem);
+    }
+    closedir(d);
+
+    if (total == 0) {
+        printf("  (no cached peers)\n");
+    } else if (mismatched + missing > 0) {
+        printf("  %d/%d peers OK; %d mismatched, %d missing\n",
+               total - mismatched - missing, total, mismatched, missing);
+    } else {
+        printf("  all %d cached peers consistent\n", total);
+    }
+    putchar('\n');
+
+    return mismatched + missing;
+}
+
 static void print_entry(const tpm_entry_t *e, int verbose, int verify)
 {
     (void)verbose;  /* TODO: use for detailed file listing */
@@ -1047,12 +1194,12 @@ int main(int argc, char *argv[])
     }
 
     if (verify) {
+        int peer_fail = verify_peers_cache(tpm_dir);
+        if (peer_fail > 0) all_ok = 0;
         if (all_ok)
             printf("All entries verified OK.\n");
-        else {
+        else
             printf("Some entries have verification issues (see above).\n");
-            all_ok = 0;
-        }
     }
 
     /* Cleanup MQC */
