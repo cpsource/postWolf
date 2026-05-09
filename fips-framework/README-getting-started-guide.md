@@ -304,17 +304,17 @@ publisher's public key.
 
 ```sh
 # Sign (walks every file under DIR)
-bash fips-framework/tools/sh/sign-dir.sh <your-domain> path/to/release/
+sign-dir.sh <your-domain> path/to/release/
 
 # Sign respecting .gitignore (recommended inside a git repo —
 # excludes build artifacts so the manifest verifies on a fresh clone)
-bash fips-framework/tools/sh/sign-dir.sh -g <your-domain> path/to/release/
+sign-dir.sh -g <your-domain> path/to/release/
 
 # Verify (quiet — exits 0 on success, prints failures only)
-bash fips-framework/tools/sh/verify-dir.sh <your-domain> path/to/release/
+verify-dir.sh <your-domain> path/to/release/
 
 # Verify (verbose — prints `<path>: OK` for each file as it's checked)
-bash fips-framework/tools/sh/verify-dir.sh -v <your-domain> path/to/release/
+verify-dir.sh -v <your-domain> path/to/release/
 ```
 
 This produces `path/to/release/MANIFEST.sha256` and `MANIFEST.sig`.

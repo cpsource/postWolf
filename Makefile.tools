@@ -144,6 +144,10 @@ install: all
 	install -m 755 mtc-keymaster/tools/python/verify_certificate.py \
 		$(DESTDIR)/usr/local/bin/verify_certificate.py
 	$(MAKE) -C $(FIPS_DIR) install
+	install -m 755 fips-framework/tools/sh/sign-dir.sh \
+		$(DESTDIR)/usr/local/bin/sign-dir.sh
+	install -m 755 fips-framework/tools/sh/verify-dir.sh \
+		$(DESTDIR)/usr/local/bin/verify-dir.sh
 
 clean:
 	$(MAKE) -C $(SLC_DIR) clean
