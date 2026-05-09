@@ -8,7 +8,7 @@
 #   2. auth-bundle.tar.enc.json -> tar -xf - -C ~/
 #                                  (drops .claude/.credentials.json,
 #                                   .config/gh/{config,hosts}.yml,
-#                                   .ssh/*, .gnupg/*)
+#                                   .ssh/*, .gnupg/*, .aws/*)
 #
 # Both blobs were sealed with mqc (AES-256-GCM, scrypt KDF) using the
 # MQC_MASTER_PASSWORD that was in ~/.env at backup time.  Since ~/.env

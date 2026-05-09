@@ -29,6 +29,17 @@ the open issue list.
 
 ### Added
 
+- `backup/` directory with the postWolf MTC Neon database backup
+  pipeline, modelled on FrFlashCards' `tools/neon_tools/`:
+  - `backup.sh` orchestrator (pg_dump → S3 sync → 3d/2w/1m
+    retention → cleanup → list)
+  - `backup-development.sh` / `backup-schema-only.sh` /
+    `cp-to-s3.sh` / `age-backups.{sh,py}`
+  - `install-pg17.sh` — fetches PostgreSQL 17 client + libpq from
+    apt.postgresql.org and extracts under `pg17/` (LD_LIBRARY_PATH
+    used so the system libpq stays at v16; pgdg apt repo is
+    intentionally not added — see CHANGELOG entry under "Fixed"
+    for why).  S3 bucket: `postwolf-neon-backups` (us-east-1).
 - TODO #78 in `mtc-keymaster/README-bugsandtodo.md` —
   external-review-derived hardening proposal for the `mqc`
   symmetric envelope (name the cipher, bind metadata as AEAD AAD,
@@ -46,11 +57,25 @@ the open issue list.
   artifacts and a `restore.sh` for fresh-machine setup:
   - `env.enc.json` — `mqc`-sealed copy of `~/.env`
   - `auth-bundle.tar.enc.json` — `mqc`-sealed tar of
-    `.claude/.credentials.json`, `.config/gh/`, `.ssh/`, `.gnupg/`
+    `.claude/.credentials.json`, `.config/gh/`, `.ssh/`, `.gnupg/`,
+    `.aws/`
   Both blobs use AES-256-GCM with a scrypt-derived key from
   `MQC_MASTER_PASSWORD`.  `restore.sh` prompts (or takes `-p
   PASSWORD`), supports `--env-only` / `--auth-only` / `-n` dry-run /
   `-f` force, and shows the tar manifest before extracting.
+
+### Fixed
+
+- `mtc_db_connect()` now issues `SET search_path = public` after
+  `PQconnectdb` so unqualified table references work regardless of
+  Neon pooler state.  Neon's pgbouncer-style pooler reuses backends
+  across clients and doesn't replay role/database SET defaults — so a
+  fresh client could inherit a backend with empty `search_path` and
+  every `CREATE TABLE IF NOT EXISTS mtc_log_entries (…)` would fail
+  with "no schema has been selected".  Latent until something forced
+  `mtc-ca` to reconnect; surfaced when an apt postinstall hook
+  restarted the service after a transitive `libpq5` upgrade (which
+  is why `backup/install-pg17.sh` does NOT add the pgdg apt repo).
 
 ## [0.1.1] — 2026-05-09
 
