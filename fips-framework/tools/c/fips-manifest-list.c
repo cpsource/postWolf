@@ -245,23 +245,32 @@ static void render_table(struct json_object *resp)
         l = (int)strlen(jstr(e, "version"));      if (l > wi[4]) wi[4] = l;
     }
 
+    /* Status column header. */
+    const char *status_hdr = "status";
+    int wstatus = (int)strlen(status_hdr);
+    /* Widest possible status string is "Manifest & Cert Revoked" (23). */
+    if (wstatus < 23) wstatus = 23;
+
     printf("%-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
            wi[0], "log_index", wi[1], "submitted_at",
-           wi[2], "publisher", wi[3], "package", wi[4], "version", "rev");
-    int totw = wi[0] + wi[1] + wi[2] + wi[3] + wi[4] + 13;
+           wi[2], "publisher", wi[3], "package", wi[4], "version",
+           status_hdr);
+    int totw = wi[0] + wi[1] + wi[2] + wi[3] + wi[4] + wstatus + 10;
     for (int i = 0; i < totw; i++) putchar('-');
     putchar('\n');
 
+    int any_revoked = 0;
     for (size_t i = 0; i < n; i++) {
         struct json_object *e = json_object_array_get_idx(arr, i);
         char ix[16];
         snprintf(ix, sizeof(ix), "%d", jint(e, "log_index"));
         int cr = jbool(e, "publisher_cert_revoked");
         int mr = jbool(e, "manifest_revoked");
+        if (cr || mr) any_revoked = 1;
         const char *rev =
-            (cr && mr) ? "BOTH"  :
-             cr        ? "CERT"  :
-             mr        ? "MANIF" : "";
+            (cr && mr) ? "Manifest & Cert Revoked" :
+             cr        ? "Cert Revoked"            :
+             mr        ? "Manifest Revoked"        : "OK";
         printf("%-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
                wi[0], ix,
                wi[1], jstr(e, "submitted_at"),
@@ -272,6 +281,9 @@ static void render_table(struct json_object *resp)
     }
     if (n == 0) puts("(no rows)");
     else printf("\n%zu row%s\n", n, n == 1 ? "" : "s");
+    if (any_revoked)
+        printf("\nFor further information, type "
+               "fips-manifest-list <log_index>\n");
 }
 
 static void render_detail(struct json_object *resp)
