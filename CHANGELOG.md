@@ -27,7 +27,16 @@ the open issue list.
 
 ## [Unreleased]
 
-(no changes since 0.1.0)
+### Added
+
+- `skills/` directory + `README-skills.md` at the repo root.
+  Mirrors of the user-authored Claude Code skills
+  (`cut-release`, `wolfssl-merge-to-postWolf`,
+  `wolfssl-issue-review`, `auto-doc-cpsource`,
+  `code-review-cpsource`) so the workflows are version-controlled
+  alongside the code they operate on.  Install on a fresh machine
+  with `cp -r ~/postWolf/skills/* ~/.claude/skills/`; full
+  authoring + update guide in `README-skills.md`.
 
 ## [0.1.0] — 2026-05-09
 
