@@ -27,6 +27,10 @@ the open issue list.
 
 ## [Unreleased]
 
+(no changes since 0.1.1)
+
+## [0.1.1] — 2026-05-09
+
 ### Added
 
 - `skills/` directory + `README-skills.md` at the repo root.
