@@ -1,6 +1,6 @@
 # publisher: factsorlie.com
 # publisher-cert-index: 72
-# git-commit: edd36e0c662bea99a7c4c4e8df145a42ba6fa317
+# git-commit: b451c0d16f8f8751054ef53f2fbd4eed0e12114c-dirty
 a8e28ecfcd0fbc9ccee859fffad05e7a0536b6c6c6a80eb6035a50d2a19efe11  .gitignore
 410137f015d00624e633596e70ed191c519154c04337634446f49d503e73ebf7  FIPS.md
 a89a4519cdf84df837df9f888f56856fbb2767d814492a6efd1c8191414214f6  README-discussions.md
@@ -42,4 +42,4 @@ aa2ebef333c90bf12ce6ff554009a14d60f2f052136e0366a3a2179cf6259344  tools/c/fips-m
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  tools/python/.gitignore
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  tools/sh/.gitignore
 1ff2529316810ac25b5e757cc6c48e611a68203f5364fd1fa64b3539d201e8a5  tools/sh/sign-dir.sh
-4ca061983c141fe1db746d1b11e2feb5dd5db9b8f6c2e50c7e811194a1021392  tools/sh/verify-dir.sh
+f0fb83cbf64e7f8c87df9a530ce881bdf60153979eb73346c7210b8bafb653b6  tools/sh/verify-dir.sh
