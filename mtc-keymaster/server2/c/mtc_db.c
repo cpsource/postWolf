@@ -185,6 +185,21 @@ PGconn *mtc_db_connect(void)
         return NULL;
     }
 
+    /* Neon's pgbouncer-style pooler doesn't replay role/database SET
+     * defaults onto pooled backends, so a fresh client session can
+     * inherit a backend whose search_path is empty.  Set it explicitly
+     * so unqualified references (CREATE TABLE, SELECT FROM mtc_*) hit
+     * the public schema regardless of pool state. */
+    PGresult *r = PQexec(conn, "SET search_path = public");
+    if (PQresultStatus(r) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "[db] SET search_path failed: %s\n",
+                PQerrorMessage(conn));
+        PQclear(r);
+        PQfinish(conn);
+        return NULL;
+    }
+    PQclear(r);
+
     printf("[db] connected to Neon PostgreSQL\n");
     fflush(stdout);
     return conn;
