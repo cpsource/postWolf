@@ -29,6 +29,13 @@ the open issue list.
 
 ### Added
 
+- TODO #78 in `mtc-keymaster/README-bugsandtodo.md` —
+  external-review-derived hardening proposal for the `mqc`
+  symmetric envelope (name the cipher, bind metadata as AEAD AAD,
+  raise KDF cost or move to Argon2id, add `key_id` + monotonic
+  version for rollback protection).  Severity Medium.  Original
+  review captured verbatim in
+  `socket-level-wrapper-MQC/README-mqc-tool-hardening-todo-78.md`.
 - `server-configuration-data/` directory with two encrypted-at-rest
   artifacts and a `restore.sh` for fresh-machine setup:
   - `env.enc.json` — `mqc`-sealed copy of `~/.env`

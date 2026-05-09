@@ -21,6 +21,7 @@ the full threat model + implementation sketch.
 - [#49](#49-replace-x25519-with-ml-kem-768-on-the-bootstrap-port-8445) — Replace X25519 (last pre-quantum primitive in active code) with ML-KEM-768 on the bootstrap port.
 - [#55](#55-dnssec-trust-anchor-static-dns-root-data-vs-unbound-daemon) — Decide: static `dns-root-data` package vs `unbound` daemon for DNSSEC trust anchor (operational, becomes a hard outage at root-key rollover).
 - [#77](#77-ca-key-continuity--new-key-for-an-existing-ca-subject-must-be-signed-by-the-old-key) — Block silent CA-key takeover: new key for an existing CA subject must be signed by the previous CA key.
+- [#78](#78-harden-the-mqc-symmetric-envelope-currently-in-socket-level-wrapper-mqcexamplesmqcc) — Harden the `mqc` symmetric envelope: name the cipher, bind metadata as AEAD AAD, raise KDF cost, add `key_id` + monotonic version for rollback protection.
 
 ### Low / Low–Medium
 
@@ -4500,6 +4501,99 @@ path would be:
 The Merkle tree structure itself (SHA-256 hashes) is quantum-resistant —
 Grover's algorithm only halves the effective hash length (256→128 bits),
 which remains secure.
+
+### 78. Harden the `mqc` symmetric envelope (currently in `socket-level-wrapper-MQC/examples/mqc.c`)
+
+Filed 2026-05-09 against the JSON envelope produced by
+`mqc --encode` (the format used for
+`server-configuration-data/{env,auth-bundle.tar}.enc.json`).
+Original external review captured verbatim in
+`socket-level-wrapper-MQC/README-mqc-tool-hardening-todo-78.md`.
+Current envelope:
+
+```json
+{"v":"mqc-1","tool":"mqc/0.1.0","created":"2026-05-09T17:43:28Z",
+ "domain":"factsorlie.com-ca","kdf":"scrypt","N":32768,"r":8,"p":1,
+ "salt":"...","iv":"...","ct":"...","tag":"..."}
+```
+
+External-review verdict: "mostly good shape" — `scrypt`
+(N=32768, r=8, p=1), random-looking salt, 12-byte IV, ciphertext +
+16-byte tag (consistent with AES-GCM or ChaCha20-Poly1305).  Six
+concrete weak spots:
+
+1. **No algorithm field.**  `kdf` is named but the cipher isn't.
+   Add an explicit `"cipher": "AES-256-GCM"` (or
+   `"XChaCha20-Poly1305"`) to the envelope so the decryptor doesn't
+   have to assume.
+2. **Header may not be authenticated.**  Fields like `domain`,
+   `tool`, `created`, `N`, `r`, `p`, `salt`, `iv` should be passed
+   to the AEAD as **associated data** (AAD).  Without that, an
+   attacker who can't decrypt can still tamper with metadata —
+   e.g. swap `domain`, replay an old `created`, lower the KDF cost
+   in a future re-encrypt.  Confirm the implementation actually
+   binds them; if not, fix.
+3. **scrypt parameters are decent but not strong for at-rest
+   secrets.**  Bump to `N=1048576, r=8, p=1` (or higher) if the
+   ~5–10 s decrypt latency is acceptable, OR switch to **Argon2id**
+   with sensible parameters.  Document the picked params in a
+   `policy:` field so future re-encrypts can detect downgrades.
+4. **No key identifier / recipient.**  The decryptor currently has
+   to know out-of-band which password was used.  Add a `key_id` (a
+   public hash of the password derived via a separate KDF salt, or
+   a UUID assigned at first encrypt) so the operator can tell which
+   key is needed before attempting decrypt.
+5. **No rollback protection.**  Anyone who can swap the file can
+   replace it with an older valid envelope.  Add a monotonic
+   `version` counter, record the expected file hash in the MTC log,
+   or sign the envelope with the publisher's ML-DSA-87 key (matches
+   the rest of the postWolf trust model).
+6. **Domain binding is only useful if authenticated.**  The
+   `domain` field is informative but if it isn't in the AEAD AAD,
+   an attacker can change it without invalidating the tag.  Same
+   fix as #2 — bind the entire header into AAD.
+
+Proposed envelope after fix:
+
+```json
+{
+  "v": "mqc-2",
+  "tool": "mqc/0.2.0",
+  "cipher": "AES-256-GCM",
+  "kdf": "argon2id",
+  "kdf_params": {"m": 65536, "t": 3, "p": 1},
+  "key_id": "<hex>",
+  "domain": "factsorlie.com-ca",
+  "version": 7,
+  "created": "...",
+  "salt": "...", "iv": "...",
+  "aad_v": 1,           // tells the decryptor which AAD construction was used
+  "ct": "...", "tag": "..."
+}
+```
+
+AAD construction (one option): canonical JSON of the envelope with
+`ct` and `tag` set to `""`.  Decryptor reproduces the same canonical
+form before verifying the tag.  Same trick `spec-canonical-leaf.md`
+uses for the manifest signature input.
+
+**Why now:** the `server-configuration-data/` artifacts (commit
+`f67151542`) are committed encrypted to the repo; they need to be
+robust against meaningful tampering classes, not just confidential.
+The current envelope is a `mqc-1` blob — bumping to `mqc-2` would
+be a one-shot re-encrypt; old `mqc-1` blobs stay readable by the
+decoder for backward decode.
+
+**How to apply:** see `socket-level-wrapper-MQC/examples/mqc.c`
+for the current encode/decode path.  Six edits map onto the six
+weak spots above.  Coordinate with whatever else consumes the
+envelope (right now: the operator running `restore.sh` directly,
+plus the `--env` mode of `mqc` itself).
+
+Severity: **Medium** — the current envelope is confidentiality-OK,
+but the metadata-tampering and rollback gaps are real.  No active
+exploit; preemptive hardening before anyone scripts against the
+envelope shape.
 
 ---
 
