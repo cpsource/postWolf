@@ -27,7 +27,17 @@ the open issue list.
 
 ## [Unreleased]
 
-(no changes since 0.1.1)
+### Added
+
+- `server-configuration-data/` directory with two encrypted-at-rest
+  artifacts and a `restore.sh` for fresh-machine setup:
+  - `env.enc.json` — `mqc`-sealed copy of `~/.env`
+  - `auth-bundle.tar.enc.json` — `mqc`-sealed tar of
+    `.claude/.credentials.json`, `.config/gh/`, `.ssh/`, `.gnupg/`
+  Both blobs use AES-256-GCM with a scrypt-derived key from
+  `MQC_MASTER_PASSWORD`.  `restore.sh` prompts (or takes `-p
+  PASSWORD`), supports `--env-only` / `--auth-only` / `-n` dry-run /
+  `-f` force, and shows the tar manifest before extracting.
 
 ## [0.1.1] — 2026-05-09
 
