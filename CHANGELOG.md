@@ -6,9 +6,11 @@ upstream wolfSSL versions are referenced only at merge-from-upstream
 points (e.g. via `wolfssl-merge-to-postWolf`).
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Releases will be cut with semver-style tags (`vMAJOR.MINOR.PATCH`)
-once the wire formats freeze; until then everything lives under
-`[Unreleased]`.
+Tags follow semver-style `vMAJOR.MINOR.PATCH`.  The project is
+intentionally in `0.x` — wire formats (MQC, FIPS canonical-leaf,
+on-disk schemas) are still subject to flag-day changes; per SemVer
+2.0 anything goes in `0.MINOR.PATCH`.  `1.0.0` will be cut when the
+public surface is committed to.
 
 postWolf is a fork of wolfSSL with three additional layers built on
 top:
@@ -24,6 +26,17 @@ project's narrative, and `mtc-keymaster/README-bugsandtodo.md` for
 the open issue list.
 
 ## [Unreleased]
+
+(no changes since 0.1.0)
+
+## [0.1.0] — 2026-05-09
+
+First tagged release of the postWolf-specific stack on top of
+upstream wolfSSL.  The MQC + MTC + FIPS-framework story is
+end-to-end functional: identities can enrol, MQC handshakes run
+post-quantum, FIPS manifests can be browsed/revoked over MQC, and
+directory signatures verify cross-host with authoritative key
+fetch from the log server.
 
 ### Added
 - **FIPS-manifest revocation pipeline** — `POST /fips/revoke` endpoint
