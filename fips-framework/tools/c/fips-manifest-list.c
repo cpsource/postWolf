@@ -256,13 +256,19 @@ static void render_table(struct json_object *resp)
         struct json_object *e = json_object_array_get_idx(arr, i);
         char ix[16];
         snprintf(ix, sizeof(ix), "%d", jint(e, "log_index"));
+        int cr = jbool(e, "publisher_cert_revoked");
+        int mr = jbool(e, "manifest_revoked");
+        const char *rev =
+            (cr && mr) ? "BOTH"  :
+             cr        ? "CERT"  :
+             mr        ? "MANIF" : "";
         printf("%-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
                wi[0], ix,
                wi[1], jstr(e, "submitted_at"),
                wi[2], jstr(e, "publisher"),
                wi[3], jstr(e, "package"),
                wi[4], jstr(e, "version"),
-               jbool(e, "publisher_cert_revoked") ? "REVOKED" : "");
+               rev);
     }
     if (n == 0) puts("(no rows)");
     else printf("\n%zu row%s\n", n, n == 1 ? "" : "s");
@@ -283,6 +289,21 @@ static void render_detail(struct json_object *resp)
     printf("publisher_cert_index: %d%s\n",
            jint(e, "publisher_cert_index"),
            jbool(e, "publisher_cert_revoked") ? "  (cert REVOKED)" : "");
+    printf("manifest_revoked:     %s\n",
+           jbool(e, "manifest_revoked") ? "yes" : "no");
+    {
+        struct json_object *rev = NULL;
+        if (json_object_object_get_ex(e, "revocation", &rev) && rev) {
+            printf("  revoker_kind:       %s\n", jstr(rev, "revoker_kind"));
+            printf("  revoker_cert_index: %d\n",
+                   jint(rev, "revoker_cert_index"));
+            printf("  reason:             %s\n", jstr(rev, "reason"));
+            struct json_object *v;
+            if (json_object_object_get_ex(rev, "revoked_at", &v))
+                printf("  revoked_at:         %.0f\n",
+                       json_object_get_double(v));
+        }
+    }
 
     struct json_object *m = NULL;
     if (json_object_object_get_ex(e, "manifest", &m) && m) {

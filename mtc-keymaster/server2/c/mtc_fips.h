@@ -110,4 +110,53 @@ int mtc_fips_list(MtcStore *store,
 #define MTC_FIPS_LIST_LIMIT_DEFAULT 50
 #define MTC_FIPS_LIST_LIMIT_MAX     1000
 
+/* Bound on revoke-request body size — pre-crypto filter, well above
+ * any legitimate JSON envelope (PEM ~3.5 KiB + sig hex ~9.2 KiB). */
+#define MTC_FIPS_REVOKE_BODY_MAX  (32 * 1024)
+
+/* Freshness window for revoke timestamps (seconds, ±). */
+#define MTC_FIPS_REVOKE_SKEW_SEC  300
+
+/**
+ * @brief Process a /fips/revoke submission body.
+ *
+ * Mirrors the cert-revoke validation pipeline but for FIPS-manifest
+ * leaves.  Authorisation: either the publisher leaf cert (self-revoke)
+ * OR the publisher's CA may sign.  See spec-canonical-leaf.md
+ * "Manifest revocation".
+ *
+ * @param store         Live MtcStore.
+ * @param body          Raw POST body (UTF-8 JSON envelope).
+ * @param body_len      Length of body in bytes.
+ * @param out_response  On success, fresh json_object (caller frees) of
+ *                      shape {revoked:true, log_index, revoker_kind,
+ *                      revoker_cert_index, reason}.
+ * @param out_status    HTTP-shaped status (200, 400, 403, 404, 500).
+ * @param out_err_msg   Operator-facing error string (logged at INFO/WARN,
+ *                      NOT echoed unmodified to the client).
+ * @param err_msg_sz    Size of out_err_msg buffer.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int mtc_fips_revoke(MtcStore *store,
+                    const uint8_t *body, size_t body_len,
+                    struct json_object **out_response,
+                    int *out_status,
+                    char *out_err_msg, size_t err_msg_sz);
+
+/**
+ * @brief Read-side: get latest revocation for a manifest by log_index.
+ *
+ * Used by /fips/revoked/<n>.  If the manifest has never been revoked,
+ * out_response is `{log_index, revoked: false}`; if it has,
+ * `{log_index, revoked: true, revoker_kind, revoker_cert_index,
+ *  reason, revoked_at}` (latest row).
+ *
+ * @return 0 on success, -1 on failure (sets out_status).
+ */
+int mtc_fips_revoke_status(MtcStore *store, int log_index,
+                           struct json_object **out_response,
+                           int *out_status,
+                           char *out_err_msg, size_t err_msg_sz);
+
 #endif /* MTC_FIPS_H */

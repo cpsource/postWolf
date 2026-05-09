@@ -2232,6 +2232,28 @@ static void dispatch_get(client_io *io, MtcStore *store, const char *path)
              strncmp(path, "/fips/list?", 11) == 0) {
         handle_fips_list(io, store, path);
     }
+    else if (strncmp(path, "/fips/revoked/", 14) == 0) {
+        int idx = safe_atoi(path + 14, 100000000);
+        if (idx < 0) { http_send_error(io, 400, "invalid log_index"); }
+        else {
+            struct json_object *resp = NULL;
+            int status = 500;
+            char err[256]; err[0] = 0;
+            int rc = mtc_fips_revoke_status(store, idx, &resp, &status,
+                                            err, sizeof(err));
+            if (rc == 0 && resp) {
+                http_send_json_obj(io, 200, resp);
+                json_object_put(resp);
+            } else {
+                if (resp) json_object_put(resp);
+                if (err[0]) LOG_INFO("[fips] revoked-status: %s", err);
+                if (status == 503)
+                    http_send_error(io, 503, "database unavailable");
+                else
+                    http_send_error(io, 500, "internal error");
+            }
+        }
+    }
     else {
         http_send_error(io, 404, "not found");
     }
@@ -2433,6 +2455,44 @@ static void handle_request(client_io *io, MtcStore *store)
                     http_send_error(io, 500, "internal error");
                 else
                     http_send_error(io, 400, "invalid manifest");
+            }
+        }
+        else if (strcmp(path, "/fips/revoke") == 0) {
+            /* FIPS-manifest revocation.  Validation pipeline lives in
+             * mtc_fips.c::mtc_fips_revoke (spec-canonical-leaf.md
+             * "Manifest revocation").  Same surface posture as
+             * /fips/manifest: generic 4xx string out, operator detail
+             * logged inside the handler. */
+            if (!mtc_ratelimit_check(io->ip_str, RL_REVOKE)) {
+                http_send_error(io, 429, "rate limit exceeded");
+                return;
+            }
+            struct json_object *resp = NULL;
+            int status = 500;
+            char err_msg[512];
+            err_msg[0] = 0;
+            int rc = mtc_fips_revoke(store,
+                                     (const uint8_t *)body, (size_t)body_len,
+                                     &resp, &status,
+                                     err_msg, sizeof(err_msg));
+            if (rc == 0 && resp) {
+                http_send_json_obj(io, 200, resp);
+                json_object_put(resp);
+            } else {
+                LOG_INFO("[fips] revoke rejected: %s", err_msg);
+                if (resp) json_object_put(resp);
+                if (status == 403)
+                    http_send_error(io, 403, "not authorized");
+                else if (status == 404)
+                    http_send_error(io, 404, "not found");
+                else if (status == 429)
+                    http_send_error(io, 429, "rate limit exceeded");
+                else if (status == 503)
+                    http_send_error(io, 503, "database unavailable");
+                else if (status >= 500)
+                    http_send_error(io, 500, "internal error");
+                else
+                    http_send_error(io, 400, "invalid request");
             }
         }
         else if (strcmp(path, "/cancel-nonce") == 0) {

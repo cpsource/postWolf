@@ -24,12 +24,26 @@
  * Usage:
  *   fips-manifest-verify --receipt FILE --source-dir DIR
  *                        [--cosigner-pem FILE]    (default: ~/.TPM/ca-cosigner.pem)
+ *                        [--check-revocation]     (online opt-in; see below)
+ *                        [--tpm-path PATH]        (identity for the MQC query)
+ *                        [-s, --server H[:P]]     (default: [global] url-server)
  *                        [-v|--verbose]
  *
  * Receipt-embedded publisher_pubkey_pem is sanity-checked against the
  * canonical leaf's spk_hash before being trusted, defending against
  * a malicious receipt forging a different pubkey.
+ *
+ * --check-revocation is opt-in: omitting it preserves the pure-offline
+ * 6-stage check (matches README-fips-todo.md TODO 12 deferral).  When
+ * set, between stage 5 (time bounds) and stage 6 (file hashes) the
+ * verifier opens MQC and asks the server:
+ *   GET /fips/revoked/<log_index>           — manifest-level revocation
+ *   GET /revoked/<publisher_cert_index>     — publisher cert revocation
+ * If either reports revoked, the verifier exits non-zero with a clear
+ * message before walking the source tree.
  */
+
+#define _GNU_SOURCE
 
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/settings.h>
@@ -52,6 +66,15 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+
+/* MQC plumbing for the optional --check-revocation flag.  Pulled in
+ * unconditionally to keep the binary self-contained; the network code
+ * paths only execute when the flag is set. */
+#include "mqc.h"
+#include "mqc_peer.h"
+#include "read-config.h"
+#include "../../../socket-level-wrapper-MQC/config.h"
+#include "config.h"
 
 #define MAX_RECEIPT_SIZE      (8 * 1024 * 1024)
 #define MAX_LEAF_SIZE         (16 * 1024 * 1024)
@@ -347,11 +370,129 @@ static void walk_dir(const char *base, const char *rel_prefix, file_list *fl)
 
 /* ---------------- main ---------------- */
 
+/* ------------------------------------------------------------------ */
+/* MQC GET helper for --check-revocation (mirrors fips-manifest-list) */
+/* ------------------------------------------------------------------ */
+
+static char *mqc_http_get(mqc_ctx_t *ctx, const char *host, int port,
+                          const char *path, long *code)
+{
+    if (code) *code = 0;
+    mqc_conn_t *conn = mqc_connect(ctx, host, port);
+    if (!conn) { usleep(100000); conn = mqc_connect(ctx, host, port); }
+    if (!conn) return NULL;
+
+    char req[1024];
+    snprintf(req, sizeof(req),
+             "GET %s HTTP/1.1\r\nHost: %s:%d\r\nConnection: close\r\n\r\n",
+             path, host, port);
+    if (mqc_write(conn, req, (int)strlen(req)) < 0) {
+        mqc_close(conn); return NULL;
+    }
+
+    int buf_cap = 16384, buf_sz = 0, n;
+    char *buf = (char *)malloc((size_t)buf_cap);
+    if (!buf) { mqc_close(conn); return NULL; }
+    while (1) {
+        if (buf_sz >= buf_cap - 1) {
+            char *tmp;
+            buf_cap *= 2;
+            tmp = (char *)realloc(buf, (size_t)buf_cap);
+            if (!tmp) break;
+            buf = tmp;
+        }
+        n = mqc_read(conn, buf + buf_sz, buf_cap - 1 - buf_sz);
+        if (n <= 0) break;
+        buf_sz += n;
+        buf[buf_sz] = '\0';
+        char *bs = strstr(buf, "\r\n\r\n");
+        if (bs) {
+            char *cl = strcasestr(buf, "Content-Length:");
+            bs += 4;
+            if (cl) {
+                int content_len = atoi(cl + 15);
+                if (buf_sz - (int)(bs - buf) >= content_len) break;
+            } else break;
+        }
+    }
+    buf[buf_sz] = '\0';
+    mqc_close(conn);
+
+    long status = 0;
+    if (buf_sz >= 12 && strncmp(buf, "HTTP/1.", 7) == 0)
+        status = atol(buf + 9);
+    if (code) *code = status;
+
+    char *bs = strstr(buf, "\r\n\r\n");
+    if (!bs) { free(buf); return NULL; }
+    bs += 4;
+    char *result = strdup(bs);
+    free(buf);
+    return result;
+}
+
+/* Returns 1 if the server reports the named index revoked, 0 if not,
+ * -1 on transport / parse failure (treated as failure by the caller —
+ * fail-closed semantics for an opt-in safety check). */
+static int query_revocation(mqc_ctx_t *ctx, const char *host, int port,
+                            const char *path)
+{
+    long code = 0;
+    char *body = mqc_http_get(ctx, host, port, path, &code);
+    if (!body || code != 200) {
+        free(body);
+        return -1;
+    }
+    struct json_object *r = json_tokener_parse(body);
+    free(body);
+    if (!r) return -1;
+    struct json_object *v = NULL;
+    int revoked = -1;
+    if (json_object_object_get_ex(r, "revoked", &v))
+        revoked = json_object_get_boolean(v) ? 1 : 0;
+    json_object_put(r);
+    return revoked;
+}
+
+/* Auto-discover a TPM identity dir if the user didn't pass --tpm-path.
+ * Returns malloc'd path or NULL.  Same convention as fips-manifest-list. */
+static char *autodiscover_tpm(void)
+{
+    const char *home = getenv("HOME");
+    if (!home) return NULL;
+    char tpm_dir[1024];
+    snprintf(tpm_dir, sizeof(tpm_dir), "%s/.TPM", home);
+    DIR *d = opendir(tpm_dir);
+    if (!d) return NULL;
+    struct dirent *de;
+    char *result = NULL;
+    while ((de = readdir(d)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        if (strcmp(de->d_name, "peers")   == 0) continue;
+        if (strcmp(de->d_name, "ech")     == 0) continue;
+        if (strcmp(de->d_name, "default") == 0) continue;
+        char path[2048];
+        struct stat st;
+        snprintf(path, sizeof(path), "%s/%s", tpm_dir, de->d_name);
+        if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        char p[2200];
+        snprintf(p, sizeof(p), "%s/certificate.json", path);
+        if (access(p, R_OK) != 0) continue;
+        result = strdup(path);
+        break;
+    }
+    closedir(d);
+    return result;
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
         "Usage: %s --receipt FILE --source-dir DIR\n"
         "         [--cosigner-pem FILE]    (default: ~/.TPM/ca-cosigner.pem)\n"
+        "         [--check-revocation]     (online opt-in)\n"
+        "         [--tpm-path PATH]        (identity for the MQC query)\n"
+        "         [--server H[:P]]         (default: [global] url-server)\n"
         "         [-v|--verbose]\n",
         prog);
     exit(2);
@@ -361,13 +502,26 @@ int main(int argc, char **argv)
 {
     const char *receipt_path = NULL, *source_dir = NULL;
     const char *cosigner_pem_path = NULL;
+    int check_revocation = 0;
+    const char *cli_tpm_path = NULL;
+    const char *cli_server = NULL;
 
+    /* Long-only IDs to avoid clashing with the existing -s short flag
+     * (which is bound to --source-dir). */
+    enum {
+        OPT_CHECK_REV = 1000,
+        OPT_TPM_PATH,
+        OPT_SERVER,
+    };
     static struct option opts[] = {
-        {"receipt",       required_argument, 0, 'r'},
-        {"source-dir",    required_argument, 0, 's'},
-        {"cosigner-pem",  required_argument, 0, 'c'},
-        {"verbose",       no_argument,       0, 'v'},
-        {"help",          no_argument,       0, 'h'},
+        {"receipt",          required_argument, 0, 'r'},
+        {"source-dir",       required_argument, 0, 's'},
+        {"cosigner-pem",     required_argument, 0, 'c'},
+        {"check-revocation", no_argument,       0, OPT_CHECK_REV},
+        {"tpm-path",         required_argument, 0, OPT_TPM_PATH},
+        {"server",           required_argument, 0, OPT_SERVER},
+        {"verbose",          no_argument,       0, 'v'},
+        {"help",             no_argument,       0, 'h'},
         {0,0,0,0}
     };
     int c;
@@ -376,6 +530,9 @@ int main(int argc, char **argv)
             case 'r': receipt_path = optarg; break;
             case 's': source_dir   = optarg; break;
             case 'c': cosigner_pem_path = optarg; break;
+            case OPT_CHECK_REV: check_revocation = 1; break;
+            case OPT_TPM_PATH:  cli_tpm_path = optarg; break;
+            case OPT_SERVER:    cli_server   = optarg; break;
             case 'v': g_verbose = 1; break;
             default:  usage(argv[0]);
         }
@@ -629,6 +786,70 @@ int main(int argc, char **argv)
             die("expires %.0f < now %.0f", expires, now);
         VLOG("time bounds: OK (now=%.0f in [%.0f, %.0f])",
              now, not_before, expires);
+    }
+
+    /* === Optional online step: revocation check === */
+    if (check_revocation) {
+        char *tpm_owned = NULL;
+        const char *tpm_path = cli_tpm_path;
+        if (!tpm_path) {
+            tpm_owned = autodiscover_tpm();
+            if (!tpm_owned)
+                die("--check-revocation: no TPM identity under $HOME/.TPM "
+                    "(use --tpm-path)");
+            tpm_path = tpm_owned;
+        }
+
+        char *server_owned = NULL;
+        const char *server = cli_server;
+        if (!server) {
+            server_owned = read_config_url("global/url-server");
+            server = server_owned ? server_owned : MQC_DEFAULT_SERVER;
+        }
+        const char *colon_slash = strstr(server, "://");
+        if (colon_slash) server = colon_slash + 3;
+
+        char host_buf[256];
+        int port = MQC_DEFAULT_SERVER_PORT;
+        snprintf(host_buf, sizeof(host_buf), "%s", server);
+        {
+            char *cn = strrchr(host_buf, ':');
+            if (cn) { *cn = 0; port = atoi(cn + 1); }
+        }
+
+        static unsigned char ca_pubkey[DILITHIUM_LEVEL5_PUB_KEY_SIZE];
+        if (mqc_load_ca_pubkey(host_buf, ca_pubkey) != 0)
+            die("--check-revocation: cannot load CA cosigner pubkey from %s",
+                host_buf);
+
+        mqc_cfg_t mc;
+        memset(&mc, 0, sizeof(mc));
+        mc.role         = MQC_CLIENT;
+        mc.tpm_path     = tpm_path;
+        mc.mtc_server   = host_buf;
+        mc.ca_pubkey    = ca_pubkey;
+        mc.ca_pubkey_sz = DILITHIUM_LEVEL5_PUB_KEY_SIZE;
+        mqc_ctx_t *mctx = mqc_ctx_new(&mc);
+        if (!mctx) die("--check-revocation: MQC ctx creation failed");
+
+        char path[64];
+        snprintf(path, sizeof(path), "/fips/revoked/%d", leaf_index);
+        int mr = query_revocation(mctx, host_buf, port, path);
+        snprintf(path, sizeof(path), "/revoked/%d", cert_index);
+        int cr = query_revocation(mctx, host_buf, port, path);
+        mqc_ctx_free(mctx);
+        free(tpm_owned);
+        free(server_owned);
+
+        if (mr < 0 || cr < 0)
+            die("--check-revocation: server query failed "
+                "(manifest=%d cert=%d) — fail-closed", mr, cr);
+        if (mr == 1)
+            die("manifest revoked (log_index=%d)", leaf_index);
+        if (cr == 1)
+            die("publisher cert revoked (cert_index=%d)", cert_index);
+        VLOG("revocation: OK (manifest %d not revoked; cert %d not revoked)",
+             leaf_index, cert_index);
     }
 
     /* === Step 6: file hashes === */

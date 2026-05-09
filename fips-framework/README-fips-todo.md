@@ -82,8 +82,14 @@ Make submission fail-closed under the new schema.
 - [ ] **TODO 11** — Immutable `(package, tag)` policy
   (default reject duplicates with `409 Conflict`; opt-in
   multi-version mode).
-- [ ] **TODO 23** — Mandatory revocation check in *online*
+- [~] **TODO 23** — Mandatory revocation check in *online*
   mode of the verifier (default fail-closed).
+  *Partially addressed:* `fips-manifest-verify --check-revocation`
+  (opt-in) queries `/fips/revoked/<log_index>` AND
+  `/revoked/<publisher_cert_index>` between stages 5 and 6 and
+  fails-closed on either revoked / transport failure.  Still open:
+  flipping the default from off to on, and resolving its
+  interaction with TODO 12 (offline snapshot bundling).
 - [ ] **TODO 17** — Verifier fail-closed enumeration:
   missing files, extra files, mode mismatch, symlink
   surprise, generated-file-policy violation, path
@@ -865,7 +871,7 @@ TODOs 8–18 (ChatGPT) become numbered entries here.
 | §5  | Manifest must include the file set | **SUBSUMED** by TODO 10 (manifest binding) + TODO 17 (verifier fail-closed) |
 | §6  | Canonical JSON needs formal definition | **SUBSUMED** by TODO 14 (canonical manifest + schema version) |
 | §7  | The leaf must sign the manifest | **SUBSUMED** by TODO 16 (per-manifest leaf-key sig) |
-| §8  | Revocation should not be optional for **online** mode | **OPEN** — distinct from TODO 12 (offline) | TODO 23 |
+| §8  | Revocation should not be optional for **online** mode | **PARTIAL** — `--check-revocation` flag landed (manifest + cert revoke); flipping default still open | TODO 23 |
 | §9  | Key rotation instructions are dangerous | **OPEN — runbook fix** | TODO 24 |
 | §10 | Ed25519 / 64-byte signature artefacts in user doc | **OPEN — doc** (plan amended via `[ISSUE #10]`; user doc not swept; 15 Ed25519 references remain) | TODO 25 |
 | §11 | Threat model needs explicit limits | **OPEN — doc** (overlaps TODO 9 disclaimer; broader scope) | TODO 26 |

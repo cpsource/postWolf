@@ -352,6 +352,38 @@ int  mtc_db_load_all_certificates(PGconn *conn,
 int  mtc_db_save_revocation(PGconn *conn, int cert_index, const char *reason);
 
 /**
+ * @brief    Save a FIPS-manifest revocation row.
+ *
+ * @param[in] conn               Active PostgreSQL connection.
+ * @param[in] log_index          Log index of the manifest leaf to revoke.
+ * @param[in] revoker_kind       "publisher" or "ca".
+ * @param[in] revoker_cert_index Cert index of the signing identity.
+ * @param[in] reason             Free-text reason; NULL → "unspecified".
+ *
+ * @return   0 on success, -1 on failure.
+ *
+ * @note  Multiple rows per log_index allowed; "is revoked" = at least
+ *        one row exists (mirrors mtc_revocations).
+ */
+int  mtc_db_save_fips_revocation(PGconn *conn, int log_index,
+                                 const char *revoker_kind,
+                                 int revoker_cert_index,
+                                 const char *reason);
+
+/**
+ * @brief    Load the most-recent FIPS revocation row for a manifest.
+ *
+ * @param[in] conn       Active PostgreSQL connection.
+ * @param[in] log_index  Log index of the manifest leaf.
+ *
+ * @return  Caller-owned json_object with fields {revoker_kind,
+ *          revoker_cert_index, reason, revoked_at} on success;
+ *          NULL if not revoked, on query error, or on NULL conn.
+ */
+struct json_object *mtc_db_load_fips_revocation_latest(PGconn *conn,
+                                                       int log_index);
+
+/**
  * @brief    Load revoked certificate indices.
  *
  * @param[in]  conn       Active PostgreSQL connection.

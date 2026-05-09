@@ -990,7 +990,9 @@ int mtc_fips_list(MtcStore *store,
             "       (SELECT 1 FROM mtc_revocations rv "
             "          WHERE rv.cert_index = "
             "            (le.tbs_data->>'publisher_cert_index')::int "
-            "          LIMIT 1) "
+            "          LIMIT 1), "
+            "       (SELECT 1 FROM mtc_fips_manifest_revocations fr "
+            "          WHERE fr.log_index = m.log_index LIMIT 1) "
             "FROM mtc_fips_manifest_entries m "
             "JOIN mtc_log_entries le ON le.index = m.log_index "
             "WHERE m.log_index = $1",
@@ -1025,6 +1027,9 @@ int mtc_fips_list(MtcStore *store,
                 json_object_new_int(atoi(PQgetvalue(r, 0, 6))));
         json_object_object_add(e, "publisher_cert_revoked",
             json_object_new_boolean(!PQgetisnull(r, 0, 7)));
+        int manifest_revoked = !PQgetisnull(r, 0, 8);
+        json_object_object_add(e, "manifest_revoked",
+            json_object_new_boolean(manifest_revoked));
 
         /* Re-parse the canonical manifest JSON (Postgres returns it as text;
          * embedding the parsed tree gives the client a structured view
@@ -1035,6 +1040,13 @@ int mtc_fips_list(MtcStore *store,
             json_object_object_add(e, "manifest", tbs);
         }
         PQclear(r);
+
+        /* Detail mode: surface the latest revocation row inline if revoked. */
+        if (manifest_revoked) {
+            struct json_object *latest = mtc_db_load_fips_revocation_latest(
+                conn, detail_log_index);
+            if (latest) json_object_object_add(e, "revocation", latest);
+        }
 
         struct json_object *resp = json_object_new_object();
         json_object_object_add(resp, "entry", e);
@@ -1059,7 +1071,9 @@ int mtc_fips_list(MtcStore *store,
         "          JOIN mtc_log_entries le ON le.index = m.log_index "
         "          WHERE rv.cert_index = "
         "            (le.tbs_data->>'publisher_cert_index')::int "
-        "          LIMIT 1) "
+        "          LIMIT 1), "
+        "       (SELECT 1 FROM mtc_fips_manifest_revocations fr "
+        "          WHERE fr.log_index = m.log_index LIMIT 1) "
         "FROM mtc_fips_manifest_entries m "
         "WHERE 1=1");
     if (filter_publisher) {
@@ -1105,6 +1119,8 @@ int mtc_fips_list(MtcStore *store,
             json_object_new_string(PQgetvalue(r, i, 4)));
         json_object_object_add(e, "publisher_cert_revoked",
             json_object_new_boolean(!PQgetisnull(r, i, 5)));
+        json_object_object_add(e, "manifest_revoked",
+            json_object_new_boolean(!PQgetisnull(r, i, 6)));
         json_object_array_add(arr, e);
     }
     PQclear(r);
@@ -1113,6 +1129,507 @@ int mtc_fips_list(MtcStore *store,
     json_object_object_add(resp, "entries", arr);
     json_object_object_add(resp, "count", json_object_new_int(rows));
     json_object_object_add(resp, "limit", json_object_new_int(limit));
+    *out_response = resp;
+    *out_status = 200;
+    return 0;
+}
+
+/* ================================================================== */
+/* /fips/revoke — manifest revocation                                  */
+/* ================================================================== */
+
+/* Local helper.  Returns 1 if leaf_subject is in CA's domain (exact match
+ * to ca_domain or ends in ".ca_domain"), 0 otherwise.  Mirrors the inline
+ * check in mtc_http.c::handle_revoke at lines 1947-1966; kept private so
+ * we don't disturb the cert-revoke path. */
+static int subject_in_ca_domain(const char *ca_domain,
+                                const char *leaf_subject)
+{
+    if (!ca_domain || !leaf_subject) return 0;
+    size_t cl = strlen(ca_domain);
+    size_t ll = strlen(leaf_subject);
+    if (ll == cl && strcmp(leaf_subject, ca_domain) == 0) return 1;
+    if (ll > cl + 1 &&
+        leaf_subject[ll - cl - 1] == '.' &&
+        strcmp(leaf_subject + ll - cl, ca_domain) == 0) return 1;
+    return 0;
+}
+
+/* Pull the manifest's publisher_cert_index from mtc_log_entries.tbs_data.
+ * The FIPS leaf json has the field at the top level of tbs_data.
+ * Returns 0 on success (out written), -1 if not found / parse error. */
+static int load_manifest_publisher_cert_index(PGconn *conn, int log_index,
+                                              int *out_pub_idx)
+{
+    char ix[16];
+    snprintf(ix, sizeof(ix), "%d", log_index);
+    const char *p[1] = { ix };
+    PGresult *r = PQexecParams(conn,
+        "SELECT (tbs_data->>'publisher_cert_index')::int "
+        "FROM mtc_log_entries WHERE index = $1",
+        1, NULL, p, NULL, NULL, 0);
+    if (PQresultStatus(r) != PGRES_TUPLES_OK ||
+        PQntuples(r) != 1 ||
+        PQgetisnull(r, 0, 0))
+    {
+        PQclear(r);
+        return -1;
+    }
+    *out_pub_idx = atoi(PQgetvalue(r, 0, 0));
+    PQclear(r);
+    return 0;
+}
+
+/* Pull subject + spk_hash + algorithm for an entry_type=1 cert at the
+ * given log index.  Caller free()s out_subject + out_spk_hash + out_algo.
+ * Returns 0 on success, -1 on not-found / wrong-type / parse error. */
+static int load_revoker_cert_fields(PGconn *conn, int cert_index,
+                                    char **out_subject,
+                                    char **out_spk_hash,
+                                    char **out_algo)
+{
+    *out_subject = *out_spk_hash = *out_algo = NULL;
+    char ix[16];
+    snprintf(ix, sizeof(ix), "%d", cert_index);
+    const char *p[1] = { ix };
+    PGresult *r = PQexecParams(conn,
+        "SELECT entry_type, "
+        "       tbs_data->>'subject', "
+        "       tbs_data->>'spk_hash', "
+        "       tbs_data->>'spk_algorithm' "
+        "FROM mtc_log_entries WHERE index = $1",
+        1, NULL, p, NULL, NULL, 0);
+    if (PQresultStatus(r) != PGRES_TUPLES_OK || PQntuples(r) != 1) {
+        PQclear(r);
+        return -1;
+    }
+    int et = atoi(PQgetvalue(r, 0, 0));
+    if (et != 1) { PQclear(r); return -1; }
+    const char *subj = PQgetvalue(r, 0, 1);
+    const char *spkh = PQgetvalue(r, 0, 2);
+    const char *algo = PQgetvalue(r, 0, 3);
+    if (!subj || !*subj || !spkh || !*spkh) { PQclear(r); return -1; }
+    *out_subject  = strdup(subj);
+    *out_spk_hash = strdup(spkh);
+    *out_algo     = strdup(algo ? algo : "");
+    PQclear(r);
+    if (!*out_subject || !*out_spk_hash || !*out_algo) {
+        free(*out_subject);  *out_subject  = NULL;
+        free(*out_spk_hash); *out_spk_hash = NULL;
+        free(*out_algo);     *out_algo     = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+/* Decode lowercase-hex string of expected_len bytes into out_bytes.
+ * Returns 0 on success, -1 on malformed input / wrong length. */
+static int hex_decode(const char *hex, uint8_t *out_bytes, size_t expected_len)
+{
+    if (!hex || strlen(hex) != expected_len * 2) return -1;
+    for (size_t i = 0; i < expected_len; i++) {
+        unsigned int b;
+        if (sscanf(hex + i * 2, "%02x", &b) != 1) return -1;
+        out_bytes[i] = (uint8_t)b;
+    }
+    return 0;
+}
+
+int mtc_fips_revoke(MtcStore *store,
+                    const uint8_t *body, size_t body_len,
+                    struct json_object **out_response,
+                    int *out_status,
+                    char *out_err_msg, size_t err_msg_sz)
+{
+    if (!store || !body || !out_response || !out_status) {
+        set_err(out_err_msg, err_msg_sz, "revoke: bad args");
+        if (out_status) *out_status = 500;
+        return -1;
+    }
+    *out_response = NULL;
+    *out_status = 500;
+
+    if (!store->db) {
+        set_err(out_err_msg, err_msg_sz, "revoke: DB not connected");
+        *out_status = 503;
+        return -1;
+    }
+    if (body_len == 0 || body_len > MTC_FIPS_REVOKE_BODY_MAX) {
+        set_err(out_err_msg, err_msg_sz, "revoke: body length %zu out of range",
+                body_len);
+        *out_status = 400;
+        return -1;
+    }
+    PGconn *conn = (PGconn *)store->db;
+
+    /* ---- 1. Strict JSON parse + field extraction ---- */
+    struct json_tokener *tok = json_tokener_new();
+    if (!tok) {
+        set_err(out_err_msg, err_msg_sz, "revoke: tokener_new failed");
+        return -1;
+    }
+    struct json_object *req = json_tokener_parse_ex(tok,
+        (const char *)body, (int)body_len);
+    int tok_err = (req == NULL) ? (int)json_tokener_get_error(tok)
+                                 : (int)json_tokener_success;
+    json_tokener_free(tok);
+    if (!req || tok_err != json_tokener_success) {
+        if (req) json_object_put(req);
+        set_err(out_err_msg, err_msg_sz, "revoke: JSON parse failed");
+        *out_status = 400;
+        return -1;
+    }
+    if (!json_object_is_type(req, json_type_object)) {
+        json_object_put(req);
+        set_err(out_err_msg, err_msg_sz, "revoke: body is not a JSON object");
+        *out_status = 400;
+        return -1;
+    }
+
+    int log_index = -1, revoker_cert_index = -1;
+    long timestamp = 0;
+    const char *revoker_kind = NULL;
+    const char *reason       = "";
+    const char *pub_pem      = NULL;
+    const char *sig_hex      = NULL;
+    struct json_object *v = NULL;
+
+#define REQ_STR(field, dst) do {                                       \
+        if (!json_object_object_get_ex(req, field, &v) ||              \
+            !json_object_is_type(v, json_type_string)) {               \
+            set_err(out_err_msg, err_msg_sz, "revoke: missing/bad '%s'", field); \
+            json_object_put(req); *out_status = 400; return -1;        \
+        }                                                              \
+        dst = json_object_get_string(v);                               \
+    } while (0)
+#define REQ_INT(field, dst) do {                                       \
+        if (!json_object_object_get_ex(req, field, &v) ||              \
+            !json_object_is_type(v, json_type_int)) {                  \
+            set_err(out_err_msg, err_msg_sz, "revoke: missing/bad '%s'", field); \
+            json_object_put(req); *out_status = 400; return -1;        \
+        }                                                              \
+        dst = json_object_get_int(v);                                  \
+    } while (0)
+
+    REQ_INT("log_index", log_index);
+    REQ_STR("revoker_kind", revoker_kind);
+    REQ_INT("revoker_cert_index", revoker_cert_index);
+    if (json_object_object_get_ex(req, "reason", &v) &&
+        json_object_is_type(v, json_type_string))
+        reason = json_object_get_string(v);
+    if (!json_object_object_get_ex(req, "timestamp", &v) ||
+        !(json_object_is_type(v, json_type_int))) {
+        set_err(out_err_msg, err_msg_sz, "revoke: missing/bad 'timestamp'");
+        json_object_put(req);
+        *out_status = 400;
+        return -1;
+    }
+    timestamp = (long)json_object_get_int64(v);
+    REQ_STR("public_key_pem", pub_pem);
+    REQ_STR("signature", sig_hex);
+#undef REQ_STR
+#undef REQ_INT
+
+    if (log_index < 0 || revoker_cert_index < 0) {
+        set_err(out_err_msg, err_msg_sz, "revoke: negative index");
+        json_object_put(req);
+        *out_status = 400;
+        return -1;
+    }
+    if (strcmp(revoker_kind, "publisher") != 0 &&
+        strcmp(revoker_kind, "ca") != 0)
+    {
+        set_err(out_err_msg, err_msg_sz, "revoke: bad revoker_kind '%s'",
+                revoker_kind);
+        json_object_put(req);
+        *out_status = 400;
+        return -1;
+    }
+    if (strlen(reason) > 256) {
+        set_err(out_err_msg, err_msg_sz, "revoke: reason too long");
+        json_object_put(req);
+        *out_status = 400;
+        return -1;
+    }
+
+    /* ---- 2. Freshness window ---- */
+    long now = (long)time(NULL);
+    if (timestamp < now - MTC_FIPS_REVOKE_SKEW_SEC ||
+        timestamp > now + MTC_FIPS_REVOKE_SKEW_SEC)
+    {
+        set_err(out_err_msg, err_msg_sz,
+                "revoke: stale/future timestamp %ld (server now=%ld)",
+                timestamp, now);
+        WARN("%s", out_err_msg);
+        json_object_put(req);
+        *out_status = 403;
+        return -1;
+    }
+
+    /* ---- 3. Manifest must exist in mtc_fips_manifest_entries ---- */
+    {
+        char ix[16];
+        snprintf(ix, sizeof(ix), "%d", log_index);
+        const char *p[1] = { ix };
+        PGresult *r = PQexecParams(conn,
+            "SELECT 1 FROM mtc_fips_manifest_entries WHERE log_index = $1",
+            1, NULL, p, NULL, NULL, 0);
+        int ok = (PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1);
+        PQclear(r);
+        if (!ok) {
+            set_err(out_err_msg, err_msg_sz,
+                    "revoke: no manifest at log_index %d", log_index);
+            json_object_put(req);
+            *out_status = 404;
+            return -1;
+        }
+    }
+
+    /* ---- 4. Recover manifest's declared publisher_cert_index ---- */
+    int manifest_pub_cert_idx = -1;
+    if (load_manifest_publisher_cert_index(conn, log_index,
+                                           &manifest_pub_cert_idx) != 0)
+    {
+        set_err(out_err_msg, err_msg_sz,
+                "revoke: cannot read publisher_cert_index for log %d",
+                log_index);
+        json_object_put(req);
+        *out_status = 500;
+        return -1;
+    }
+
+    /* ---- 5. Load revoker cert subject + spk_hash + algorithm ---- */
+    char *revoker_subject = NULL, *revoker_spk_hash = NULL, *revoker_algo = NULL;
+    if (load_revoker_cert_fields(conn, revoker_cert_index,
+                                 &revoker_subject, &revoker_spk_hash,
+                                 &revoker_algo) != 0)
+    {
+        set_err(out_err_msg, err_msg_sz,
+                "revoke: revoker cert %d not found / wrong type",
+                revoker_cert_index);
+        json_object_put(req);
+        *out_status = 404;
+        return -1;
+    }
+    if (strcmp(revoker_algo, "ML-DSA-87") != 0) {
+        set_err(out_err_msg, err_msg_sz,
+                "revoke: revoker cert algo '%s' unsupported (need ML-DSA-87)",
+                revoker_algo);
+        free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+        json_object_put(req);
+        *out_status = 400;
+        return -1;
+    }
+
+    /* ---- 6. Authority branch ---- */
+    if (strcmp(revoker_kind, "publisher") == 0) {
+        if (revoker_cert_index != manifest_pub_cert_idx) {
+            set_err(out_err_msg, err_msg_sz,
+                    "revoke: publisher cert %d != manifest publisher %d",
+                    revoker_cert_index, manifest_pub_cert_idx);
+            WARN("%s", out_err_msg);
+            free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+            json_object_put(req);
+            *out_status = 403;
+            return -1;
+        }
+    } else { /* "ca" */
+        size_t sl = strlen(revoker_subject);
+        if (sl < 3 || strcmp(revoker_subject + sl - 3, "-ca") != 0) {
+            set_err(out_err_msg, err_msg_sz,
+                    "revoke: revoker '%s' is not a CA", revoker_subject);
+            WARN("%s", out_err_msg);
+            free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+            json_object_put(req);
+            *out_status = 403;
+            return -1;
+        }
+        char ca_domain[256];
+        size_t cdlen = sl - 3;
+        if (cdlen >= sizeof(ca_domain)) cdlen = sizeof(ca_domain) - 1;
+        memcpy(ca_domain, revoker_subject, cdlen);
+        ca_domain[cdlen] = '\0';
+
+        char *publisher_subject = NULL, *publisher_spkh = NULL,
+             *publisher_algo = NULL;
+        if (load_revoker_cert_fields(conn, manifest_pub_cert_idx,
+                                     &publisher_subject, &publisher_spkh,
+                                     &publisher_algo) != 0)
+        {
+            set_err(out_err_msg, err_msg_sz,
+                    "revoke: cannot load publisher cert %d for domain check",
+                    manifest_pub_cert_idx);
+            free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+            json_object_put(req);
+            *out_status = 500;
+            return -1;
+        }
+        int in_dom = subject_in_ca_domain(ca_domain, publisher_subject);
+        free(publisher_subject); free(publisher_spkh); free(publisher_algo);
+        if (!in_dom) {
+            set_err(out_err_msg, err_msg_sz,
+                    "revoke: publisher cert %d not in CA '%s' domain",
+                    manifest_pub_cert_idx, ca_domain);
+            WARN("%s", out_err_msg);
+            free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+            json_object_put(req);
+            *out_status = 403;
+            return -1;
+        }
+    }
+
+    /* ---- 7. sha256(public_key_pem) == revoker.spk_hash ---- */
+    {
+        char hex[65];
+        if (sha256_hex((const uint8_t *)pub_pem, strlen(pub_pem), hex) != 0) {
+            set_err(out_err_msg, err_msg_sz, "revoke: sha256 PEM failed");
+            free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+            json_object_put(req);
+            *out_status = 500;
+            return -1;
+        }
+        if (strcmp(hex, revoker_spk_hash) != 0) {
+            set_err(out_err_msg, err_msg_sz,
+                    "revoke: PEM hash %.16s... != cert spk_hash %.16s...",
+                    hex, revoker_spk_hash);
+            WARN("%s", out_err_msg);
+            free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+            json_object_put(req);
+            *out_status = 403;
+            return -1;
+        }
+    }
+
+    /* ---- 8. ML-DSA-87 signature verify ---- */
+    {
+        size_t sig_hex_len = strlen(sig_hex);
+        if (sig_hex_len != MLDSA87_SIG_SIZE * 2) {
+            set_err(out_err_msg, err_msg_sz,
+                    "revoke: signature hex len %zu != %d",
+                    sig_hex_len, MLDSA87_SIG_SIZE * 2);
+            free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+            json_object_put(req);
+            *out_status = 400;
+            return -1;
+        }
+        uint8_t *sig = (uint8_t *)malloc(MLDSA87_SIG_SIZE);
+        if (!sig) {
+            free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+            json_object_put(req);
+            return -1;
+        }
+        if (hex_decode(sig_hex, sig, MLDSA87_SIG_SIZE) != 0) {
+            set_err(out_err_msg, err_msg_sz, "revoke: bad signature hex");
+            free(sig);
+            free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+            json_object_put(req);
+            *out_status = 400;
+            return -1;
+        }
+
+        char sign_msg[1024];
+        int sm_len = snprintf(sign_msg, sizeof(sign_msg),
+            "fips-revoke:%s:%d:%d:%s:%ld",
+            revoker_kind, revoker_cert_index, log_index, reason, timestamp);
+        if (sm_len <= 0 || (size_t)sm_len >= sizeof(sign_msg)) {
+            set_err(out_err_msg, err_msg_sz, "revoke: signing input too long");
+            free(sig);
+            free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+            json_object_put(req);
+            *out_status = 400;
+            return -1;
+        }
+        int vrc = verify_mldsa87_signature(pub_pem,
+                                           (const uint8_t *)sign_msg,
+                                           (size_t)sm_len,
+                                           sig, (size_t)MLDSA87_SIG_SIZE);
+        free(sig);
+        if (vrc != 0) {
+            set_err(out_err_msg, err_msg_sz,
+                    "revoke: signature verification failed "
+                    "(kind=%s revoker=%d log=%d)",
+                    revoker_kind, revoker_cert_index, log_index);
+            WARN("%s", out_err_msg);
+            free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+            json_object_put(req);
+            *out_status = 403;
+            return -1;
+        }
+    }
+
+    /* ---- 9. Persist ---- */
+    if (mtc_db_save_fips_revocation(conn, log_index, revoker_kind,
+                                    revoker_cert_index, reason) != 0)
+    {
+        set_err(out_err_msg, err_msg_sz, "revoke: DB insert failed");
+        free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+        json_object_put(req);
+        *out_status = 500;
+        return -1;
+    }
+    INFO("fips-revoke: log_index=%d revoker=%s/%d reason=%.40s",
+         log_index, revoker_kind, revoker_cert_index, reason);
+
+    struct json_object *resp = json_object_new_object();
+    json_object_object_add(resp, "revoked", json_object_new_boolean(1));
+    json_object_object_add(resp, "log_index", json_object_new_int(log_index));
+    json_object_object_add(resp, "revoker_kind",
+        json_object_new_string(revoker_kind));
+    json_object_object_add(resp, "revoker_cert_index",
+        json_object_new_int(revoker_cert_index));
+    json_object_object_add(resp, "reason",
+        json_object_new_string(reason[0] ? reason : "unspecified"));
+    *out_response = resp;
+    *out_status = 200;
+
+    free(revoker_subject); free(revoker_spk_hash); free(revoker_algo);
+    json_object_put(req);
+    return 0;
+}
+
+int mtc_fips_revoke_status(MtcStore *store, int log_index,
+                           struct json_object **out_response,
+                           int *out_status,
+                           char *out_err_msg, size_t err_msg_sz)
+{
+    if (!store || !out_response || !out_status) {
+        set_err(out_err_msg, err_msg_sz, "revoke_status: bad args");
+        if (out_status) *out_status = 500;
+        return -1;
+    }
+    *out_response = NULL;
+    *out_status = 500;
+    if (!store->db) {
+        set_err(out_err_msg, err_msg_sz, "revoke_status: DB not connected");
+        *out_status = 503;
+        return -1;
+    }
+
+    struct json_object *resp = json_object_new_object();
+    json_object_object_add(resp, "log_index", json_object_new_int(log_index));
+
+    struct json_object *latest =
+        mtc_db_load_fips_revocation_latest((PGconn *)store->db, log_index);
+    if (!latest) {
+        json_object_object_add(resp, "revoked", json_object_new_boolean(0));
+    } else {
+        json_object_object_add(resp, "revoked", json_object_new_boolean(1));
+        struct json_object *v;
+        if (json_object_object_get_ex(latest, "revoker_kind", &v))
+            json_object_object_add(resp, "revoker_kind",
+                json_object_new_string(json_object_get_string(v)));
+        if (json_object_object_get_ex(latest, "revoker_cert_index", &v))
+            json_object_object_add(resp, "revoker_cert_index",
+                json_object_new_int(json_object_get_int(v)));
+        if (json_object_object_get_ex(latest, "reason", &v))
+            json_object_object_add(resp, "reason",
+                json_object_new_string(json_object_get_string(v)));
+        if (json_object_object_get_ex(latest, "revoked_at", &v))
+            json_object_object_add(resp, "revoked_at",
+                json_object_new_double(json_object_get_double(v)));
+        json_object_put(latest);
+    }
+
     *out_response = resp;
     *out_status = 200;
     return 0;

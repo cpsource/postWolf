@@ -23,19 +23,28 @@ LIST_CFLAGS = -I$(MQC_DIR) -I$(MTC_KEYMASTER)/read-config \
 LIST_LIBS   = $(shell pkg-config --libs augeas) \
               -lhiredis -lpthread -lunbound -lcrypto -lcurl
 
-TARGETS = fips-manifest-submit fips-manifest-verify fips-manifest-list
+TARGETS = fips-manifest-submit fips-manifest-verify fips-manifest-list \
+          fips-manifest-revoke
 
 all: $(TARGETS)
 
 fips-manifest-submit: fips-manifest-submit.c
 	$(CC) $(CFLAGS) -o $@ $< $(POSTWOLF_LIBS) $(JSON_LIBS)
 
-fips-manifest-verify: fips-manifest-verify.c
-	$(CC) $(CFLAGS) -o $@ $< $(POSTWOLF_LIBS) $(JSON_LIBS)
+fips-manifest-verify: fips-manifest-verify.c $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) $(LIST_CFLAGS) -o $@ \
+		fips-manifest-verify.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(LIST_LIBS)
 
 fips-manifest-list: fips-manifest-list.c $(READ_CONFIG_SRC) $(MQC_LIB)
 	$(CC) $(CFLAGS) $(LIST_CFLAGS) -o $@ \
 		fips-manifest-list.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(LIST_LIBS)
+
+# Same MQC + read-config wiring as fips-manifest-list.
+fips-manifest-revoke: fips-manifest-revoke.c $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) $(LIST_CFLAGS) -o $@ \
+		fips-manifest-revoke.c $(READ_CONFIG_SRC) $(MQC_LIB) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(LIST_LIBS)
 
 clean:
@@ -46,5 +55,6 @@ install: all
 	install -m 755 fips-manifest-submit /usr/local/bin/fips-manifest-submit
 	install -m 755 fips-manifest-verify /usr/local/bin/fips-manifest-verify
 	install -m 755 fips-manifest-list   /usr/local/bin/fips-manifest-list
+	install -m 755 fips-manifest-revoke /usr/local/bin/fips-manifest-revoke
 
 .PHONY: all clean install

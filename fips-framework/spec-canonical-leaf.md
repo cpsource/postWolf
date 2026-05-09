@@ -218,3 +218,85 @@ when `fips-manifest-submit --dry-run` lands (next deliverable in
 Each vector is a directory with `manifest.json` (the canonical
 bytes) plus a `verdict.txt` (`ACCEPT` or one of the rejection
 reasons in §"Server-side validation order").
+
+## Manifest revocation
+
+Once a manifest is appended at `log_index N`, two parties may
+revoke it:
+
+- The **publisher** itself (the leaf identity at the manifest's
+  `publisher_cert_index`) — self-revoke for "I'm pulling back this
+  release".
+- That publisher's **CA** (subject ends in `-ca`, leaf in CA's
+  domain) — for compliance / takedown.
+
+Both paths use the same wire envelope; the `revoker_kind` field
+selects the auth branch.
+
+### Wire envelope (`POST /fips/revoke`)
+
+```json
+{
+  "log_index":          <int>,
+  "revoker_kind":       "publisher" | "ca",
+  "revoker_cert_index": <int>,
+  "reason":             "<string, ≤256 chars>",
+  "timestamp":          <unix epoch int>,
+  "public_key_pem":     "-----BEGIN PUBLIC KEY-----\n...",
+  "signature":          "<lowercase hex of ML-DSA-87 sig>"
+}
+```
+
+### Signing input
+
+ML-DSA-87 over the raw bytes of:
+
+```
+fips-revoke:<revoker_kind>:<revoker_cert_index>:<log_index>:<reason>:<timestamp>
+```
+
+Field separators are literal `:`; reasons containing `:` are
+ambiguous on the wire and rejected by the ≤256-char + JSON-strict
+checks at the request layer.
+
+### Server-side validation order
+
+1. Strict JSON parse (reject unknown fields, non-object body,
+   oversized body — pre-DB filter).
+2. Freshness window ±300s on `timestamp`.
+3. `mtc_fips_manifest_entries` row at `log_index` MUST exist.
+4. `mtc_log_entries.tbs_data->>'publisher_cert_index'` recovered
+   for the manifest leaf.
+5. Revoker cert at `revoker_cert_index` MUST exist with
+   `entry_type=1` and `spk_algorithm = ML-DSA-87`.
+6. Authority branch:
+   - `publisher`: `revoker_cert_index` MUST equal the manifest's
+     `publisher_cert_index`.
+   - `ca`: revoker subject ends in `-ca`; manifest's publisher cert
+     subject MUST equal the derived CA domain or end in `.<ca-domain>`
+     (same rule as `/revoke`).
+7. `sha256(public_key_pem) == revoker.spk_hash` (defends against
+   PEM-substitution).
+8. `wc_dilithium_verify_ctx_msg(NULL, 0, ...)` over the signing
+   input above (pure mode, no context).
+9. INSERT one row into `mtc_fips_manifest_revocations`.
+
+### Storage invariant
+
+Revocations are **DB-only**, not appended to the merkle log —
+identical posture to cert revocation (`mtc_revocations`).  Multiple
+rows per `log_index` are allowed; "revoked" means at least one row
+exists, mirroring the cert-revoke idempotency contract.
+
+### Verifier integration (opt-in)
+
+`fips-manifest-verify --check-revocation` is offline-by-default
+to preserve the receipt-only audit story.  When set, between
+stage 5 (time bounds) and stage 6 (file hashes) the verifier opens
+MQC and queries:
+
+- `GET /fips/revoked/<log_index>` — manifest-level revocation
+- `GET /revoked/<publisher_cert_index>` — publisher cert revocation
+
+Either reporting revoked aborts the verify with non-zero exit.
+Transport / parse failures fail-closed (also non-zero).

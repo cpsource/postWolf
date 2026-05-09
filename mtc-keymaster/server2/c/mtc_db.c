@@ -389,7 +389,18 @@ int mtc_db_init_schema(PGconn *conn)
         "  submitted_at TIMESTAMPTZ DEFAULT now()"
         ");"
         "CREATE INDEX IF NOT EXISTS idx_fips_pkg_ver "
-        "  ON mtc_fips_manifest_entries(package, version);";
+        "  ON mtc_fips_manifest_entries(package, version);"
+        "CREATE TABLE IF NOT EXISTS mtc_fips_manifest_revocations ("
+        "  id                 SERIAL PRIMARY KEY,"
+        "  log_index          INTEGER NOT NULL REFERENCES mtc_log_entries(index),"
+        "  revoker_kind       TEXT    NOT NULL,"
+        "  revoker_cert_index INTEGER NOT NULL,"
+        "  reason             TEXT,"
+        "  revoked_at         DOUBLE PRECISION NOT NULL,"
+        "  created_at         TIMESTAMPTZ DEFAULT now()"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_mtc_fips_revocations_log_index "
+        "  ON mtc_fips_manifest_revocations(log_index);";
 
     res = PQexec(conn, sql);
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
@@ -1126,6 +1137,115 @@ int mtc_db_save_revocation(PGconn *conn, int cert_index, const char *reason)
     }
     PQclear(res);
     return 0;
+}
+
+/******************************************************************************
+ * Function:    mtc_db_save_fips_revocation
+ *
+ * Description:
+ *   Records a FIPS-manifest revocation.  Mirrors mtc_db_save_revocation
+ *   but keyed on log_index (the manifest leaf in mtc_log_entries).
+ *   Stores the revoker's identity (publisher self-revoke vs. CA takedown)
+ *   for later audit.
+ *
+ * Input Arguments:
+ *   conn               - Active PostgreSQL connection.
+ *   log_index          - Log index of the manifest leaf to revoke.
+ *   revoker_kind       - "publisher" or "ca" (validated upstream).
+ *   revoker_cert_index - Cert index of the signer.
+ *   reason             - Human-readable reason.  NULL → "unspecified".
+ *
+ * Returns:
+ *    0  on success.
+ *   -1  on query failure.
+ *
+ * Notes:
+ *   Multiple revocation rows for the same log_index are allowed; "is
+ *   revoked" semantics mean "at least one row exists" — same idempotent
+ *   shape as mtc_revocations.
+ ******************************************************************************/
+int mtc_db_save_fips_revocation(PGconn *conn, int log_index,
+                                const char *revoker_kind,
+                                int revoker_cert_index,
+                                const char *reason)
+{
+    PGresult *res;
+    char li_str[16], ri_str[16], ts_str[32];
+    const char *params[5];
+
+    snprintf(li_str, sizeof(li_str), "%d", log_index);
+    snprintf(ri_str, sizeof(ri_str), "%d", revoker_cert_index);
+    snprintf(ts_str, sizeof(ts_str), "%.6f", (double)time(NULL));
+    params[0] = li_str;
+    params[1] = revoker_kind;
+    params[2] = ri_str;
+    params[3] = reason ? reason : "unspecified";
+    params[4] = ts_str;
+
+    res = PQexecParams(conn,
+        "INSERT INTO mtc_fips_manifest_revocations "
+        "  (log_index, revoker_kind, revoker_cert_index, reason, revoked_at) "
+        "VALUES ($1, $2, $3, $4, $5)",
+        5, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "[db] save_fips_revocation failed: %s\n",
+                PQerrorMessage(conn));
+        PQclear(res);
+        return -1;
+    }
+    PQclear(res);
+    return 0;
+}
+
+/******************************************************************************
+ * Function:    mtc_db_load_fips_revocation_latest
+ *
+ * Description:
+ *   Loads the most recent FIPS-manifest revocation row for a given
+ *   log_index, or NULL if the manifest has never been revoked.  Returned
+ *   json_object has the shape:
+ *     {revoker_kind, revoker_cert_index, reason, revoked_at}
+ *
+ * Returns:
+ *   Caller-owned json_object on success (call json_object_put when done).
+ *   NULL if not revoked, on query error, or on NULL conn.
+ ******************************************************************************/
+struct json_object *mtc_db_load_fips_revocation_latest(PGconn *conn,
+                                                       int log_index)
+{
+    PGresult *res;
+    char li_str[16];
+    const char *params[1];
+
+    if (!conn) return NULL;
+
+    snprintf(li_str, sizeof(li_str), "%d", log_index);
+    params[0] = li_str;
+
+    res = PQexecParams(conn,
+        "SELECT revoker_kind, revoker_cert_index, reason, revoked_at "
+        "FROM mtc_fips_manifest_revocations "
+        "WHERE log_index = $1 "
+        "ORDER BY revoked_at DESC LIMIT 1",
+        1, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
+        PQclear(res);
+        return NULL;
+    }
+
+    struct json_object *obj = json_object_new_object();
+    json_object_object_add(obj, "revoker_kind",
+        json_object_new_string(PQgetvalue(res, 0, 0)));
+    json_object_object_add(obj, "revoker_cert_index",
+        json_object_new_int(atoi(PQgetvalue(res, 0, 1))));
+    json_object_object_add(obj, "reason",
+        json_object_new_string(PQgetvalue(res, 0, 2)));
+    json_object_object_add(obj, "revoked_at",
+        json_object_new_double(atof(PQgetvalue(res, 0, 3))));
+    PQclear(res);
+    return obj;
 }
 
 /******************************************************************************
