@@ -66,4 +66,48 @@ int mtc_fips_submit(MtcStore *store,
                     int *out_status,
                     char *out_err_msg, size_t err_msg_sz);
 
+/**
+ * @brief Browse the FIPS-manifest log (read-only).
+ *
+ * Server-side replacement for direct DB access from leaves: lets any
+ * client with a valid MQC handshake browse mtc_fips_manifest_entries
+ * (joined against mtc_log_entries / mtc_revocations) without holding
+ * MERKLE_NEON credentials.
+ *
+ * @param store              Live MtcStore (DB connection).
+ * @param filter_publisher   Optional exact-match filter (NULL = no filter).
+ * @param filter_package     Optional exact-match filter (NULL = no filter).
+ * @param filter_version     Optional exact-match filter (NULL = no filter).
+ * @param limit              Cap rows in list mode (<=0 means default 50).
+ * @param detail_log_index   If >= 0, return single-row detail (includes
+ *                           parsed manifest tbs_data); otherwise list mode.
+ * @param out_response       On success, fresh json_object (caller frees).
+ * @param out_status         HTTP-shaped status (200, 400, 404, 500).
+ * @param out_err_msg        Operator-facing error string.
+ * @param err_msg_sz         Size of out_err_msg buffer.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int mtc_fips_list(MtcStore *store,
+                  const char *filter_publisher,
+                  const char *filter_package,
+                  const char *filter_version,
+                  int limit,
+                  int detail_log_index,
+                  struct json_object **out_response,
+                  int *out_status,
+                  char *out_err_msg, size_t err_msg_sz);
+
+/* Bounds applied by mtc_fips_list to filter strings (length only — values
+ * are passed via PQexecParams placeholders, so SQL injection is impossible
+ * regardless; this is a pre-DB sanity / DoS guard).  Must be >= the
+ * matching ingest-side maxima in mtc_fips_submit. */
+#define MTC_FIPS_LIST_FILTER_MAX  256
+
+/* Default + maximum row cap for the list-mode response.  A leaf calling
+ * /fips/list with no ?limit= gets the default; values above the cap are
+ * silently clamped. */
+#define MTC_FIPS_LIST_LIMIT_DEFAULT 50
+#define MTC_FIPS_LIST_LIMIT_MAX     1000
+
 #endif /* MTC_FIPS_H */

@@ -1,15 +1,27 @@
 # fips-framework/tools/c — C tools for the FIPS-manifest workflow.
-# Built against the installed postWolf library via pkg-config.
+# Built against the installed postWolf library via pkg-config; MQC
+# transport sources are pulled directly from the in-tree wrapper.
 
 CC      ?= gcc
 CFLAGS  += -Wall -Wextra -Werror -O2
 CFLAGS  += $(shell pkg-config --cflags postWolf) -DWOLFSSL_USE_OPTIONS_H
 CFLAGS  += $(shell pkg-config --cflags json-c)
-CFLAGS  += $(shell pkg-config --cflags libpq)
 
 POSTWOLF_LIBS = $(shell pkg-config --libs postWolf)
 JSON_LIBS     = $(shell pkg-config --libs json-c)
-PQ_LIBS       = $(shell pkg-config --libs libpq)
+
+# fips-manifest-list talks to the server over MQC (port 8446) — no
+# direct DB credentials required.  It pulls in the in-tree libmqc.a +
+# the read-config helper for url-server lookup.
+MQC_DIR        = ../../../socket-level-wrapper-MQC
+MQC_LIB        = $(MQC_DIR)/libmqc.a
+MTC_KEYMASTER  = ../../../mtc-keymaster
+READ_CONFIG_SRC = $(MTC_KEYMASTER)/read-config/read-config.c
+
+LIST_CFLAGS = -I$(MQC_DIR) -I$(MTC_KEYMASTER)/read-config \
+              $(shell pkg-config --cflags augeas)
+LIST_LIBS   = $(shell pkg-config --libs augeas) \
+              -lhiredis -lpthread -lunbound -lcrypto -lcurl
 
 TARGETS = fips-manifest-submit fips-manifest-verify fips-manifest-list
 
@@ -21,8 +33,10 @@ fips-manifest-submit: fips-manifest-submit.c
 fips-manifest-verify: fips-manifest-verify.c
 	$(CC) $(CFLAGS) -o $@ $< $(POSTWOLF_LIBS) $(JSON_LIBS)
 
-fips-manifest-list: fips-manifest-list.c
-	$(CC) $(CFLAGS) -o $@ $< $(JSON_LIBS) $(PQ_LIBS)
+fips-manifest-list: fips-manifest-list.c $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) $(LIST_CFLAGS) -o $@ \
+		fips-manifest-list.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(LIST_LIBS)
 
 clean:
 	rm -f $(TARGETS)

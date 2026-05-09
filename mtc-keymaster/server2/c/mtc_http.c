@@ -1523,6 +1523,105 @@ static void handle_search_certificates(client_io *io, MtcStore *store, const cha
     json_object_put(obj);
 }
 
+/* GET /fips/list — read-only browse over the FIPS-manifest log.
+ *
+ * Lets a leaf with a valid MQC handshake browse mtc_fips_manifest_entries
+ * (joined with mtc_log_entries / mtc_revocations) without holding direct
+ * MERKLE_NEON DB credentials.  Query string keys: publisher, package,
+ * version, limit, log_index.  All optional; log_index switches to a
+ * single-row detail response that includes the parsed manifest tbs JSON.
+ *
+ * Conservative percent-decoder: only %20 is recognised (space).  Any
+ * other percent escape is left as-is and then rejected by the
+ * filter_str_ok charset guard inside mtc_fips_list.  This is enough for
+ * our domain (publisher = DNS name, package + version = identifier-like
+ * strings) and avoids pulling in libcurl for an unused capability. */
+static void handle_fips_list(client_io *io, MtcStore *store, const char *path)
+{
+    char publisher[MTC_FIPS_LIST_FILTER_MAX + 1] = {0};
+    char package[MTC_FIPS_LIST_FILTER_MAX + 1] = {0};
+    char version[MTC_FIPS_LIST_FILTER_MAX + 1] = {0};
+    int  has_publisher = 0, has_package = 0, has_version = 0;
+    int  limit = 0;
+    int  detail_index = -1;
+
+    const char *qs = strchr(path, '?');
+    if (qs) {
+        const char *p = qs + 1;
+        while (*p) {
+            const char *amp = strchr(p, '&');
+            size_t pair_len = amp ? (size_t)(amp - p) : strlen(p);
+            const char *eq = memchr(p, '=', pair_len);
+            if (eq) {
+                size_t klen = (size_t)(eq - p);
+                size_t vlen = pair_len - klen - 1;
+                const char *vstart = eq + 1;
+                /* Decode value: only %20 -> ' '; everything else passes through. */
+                char dec[MTC_FIPS_LIST_FILTER_MAX + 1] = {0};
+                size_t dlen = 0;
+                for (size_t i = 0; i < vlen && dlen < sizeof(dec) - 1; i++) {
+                    if (vstart[i] == '+') {
+                        dec[dlen++] = ' ';
+                    } else if (vstart[i] == '%' && i + 2 < vlen &&
+                               vstart[i+1] == '2' &&
+                               (vstart[i+2] == '0' || vstart[i+2] == 'F' ||
+                                vstart[i+2] == 'f')) {
+                        dec[dlen++] = (vstart[i+2] == '0') ? ' ' : '/';
+                        i += 2;
+                    } else {
+                        dec[dlen++] = vstart[i];
+                    }
+                }
+                dec[dlen] = 0;
+
+                if (klen == 9 && strncmp(p, "publisher", 9) == 0) {
+                    snprintf(publisher, sizeof(publisher), "%s", dec);
+                    has_publisher = 1;
+                } else if (klen == 7 && strncmp(p, "package", 7) == 0) {
+                    snprintf(package, sizeof(package), "%s", dec);
+                    has_package = 1;
+                } else if (klen == 7 && strncmp(p, "version", 7) == 0) {
+                    snprintf(version, sizeof(version), "%s", dec);
+                    has_version = 1;
+                } else if (klen == 5 && strncmp(p, "limit", 5) == 0) {
+                    limit = safe_atoi(dec, MTC_FIPS_LIST_LIMIT_MAX);
+                    if (limit < 0) limit = 0;
+                } else if (klen == 9 && strncmp(p, "log_index", 9) == 0) {
+                    detail_index = safe_atoi(dec, 100000000);
+                    if (detail_index < 0) {
+                        http_send_error(io, 400, "invalid log_index");
+                        return;
+                    }
+                }
+                /* unknown keys ignored */
+            }
+            if (!amp) break;
+            p = amp + 1;
+        }
+    }
+
+    struct json_object *resp = NULL;
+    int status = 500;
+    char err[512]; err[0] = 0;
+    int rc = mtc_fips_list(store,
+                           has_publisher ? publisher : NULL,
+                           has_package   ? package   : NULL,
+                           has_version   ? version   : NULL,
+                           limit, detail_index,
+                           &resp, &status, err, sizeof(err));
+    if (rc == 0 && resp) {
+        http_send_json_obj(io, 200, resp);
+        json_object_put(resp);
+    } else {
+        if (resp) json_object_put(resp);
+        if (err[0]) LOG_INFO("[fips] list rejected: %s", err);
+        if (status == 404) http_send_error(io, 404, "not found");
+        else if (status == 400) http_send_error(io, 400, "invalid filter");
+        else if (status == 503) http_send_error(io, 503, "database unavailable");
+        else http_send_error(io, 500, "internal error");
+    }
+}
+
 /* GET /ca/public-key — CA ML-DSA-87 public key in PEM format. */
 static void handle_ca_public_key(client_io *io, MtcStore *store)
 {
@@ -2128,6 +2227,10 @@ static void dispatch_get(client_io *io, MtcStore *store, const char *path)
     }
     else if (strcmp(path, "/ech/configs") == 0) {
         handle_ech_configs(io, store);
+    }
+    else if (strcmp(path, "/fips/list") == 0 ||
+             strncmp(path, "/fips/list?", 11) == 0) {
+        handle_fips_list(io, store, path);
     }
     else {
         http_send_error(io, 404, "not found");

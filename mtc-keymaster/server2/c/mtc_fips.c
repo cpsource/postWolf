@@ -917,3 +917,203 @@ int mtc_fips_submit(MtcStore *store,
     if (out_status)  *out_status = 200;
     return 0;
 }
+
+/* ---------------------------------------------------------------- */
+/* mtc_fips_list — read-only browse over mtc_fips_manifest_entries  */
+/* ---------------------------------------------------------------- */
+
+/* Conservative pre-DB charset/length filter for a filter parameter.
+ * Returns 1 if acceptable, 0 if rejected.  Filter values are passed via
+ * PQexecParams placeholders so SQL injection is moot; this guard just
+ * keeps obviously-malformed input from reaching the query layer at all. */
+static int filter_str_ok(const char *s)
+{
+    if (!s) return 1;  /* NULL = no filter, always OK */
+    size_t n = strlen(s);
+    if (n == 0 || n > MTC_FIPS_LIST_FILTER_MAX) return 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        /* Allow printable ASCII minus the SQL/JSON metacharacters that
+         * shouldn't appear in publisher/package/version. */
+        if (c < 0x20 || c == 0x7f) return 0;
+        if (c == '\'' || c == '"' || c == ';' || c == '\\') return 0;
+    }
+    return 1;
+}
+
+int mtc_fips_list(MtcStore *store,
+                  const char *filter_publisher,
+                  const char *filter_package,
+                  const char *filter_version,
+                  int limit,
+                  int detail_log_index,
+                  struct json_object **out_response,
+                  int *out_status,
+                  char *out_err_msg, size_t err_msg_sz)
+{
+    if (!store || !out_response || !out_status) {
+        set_err(out_err_msg, err_msg_sz, "list: bad args");
+        if (out_status) *out_status = 500;
+        return -1;
+    }
+    *out_response = NULL;
+    *out_status = 500;
+
+    if (!store->db) {
+        set_err(out_err_msg, err_msg_sz, "list: DB not connected");
+        *out_status = 503;
+        return -1;
+    }
+
+    if (!filter_str_ok(filter_publisher) ||
+        !filter_str_ok(filter_package) ||
+        !filter_str_ok(filter_version))
+    {
+        set_err(out_err_msg, err_msg_sz, "list: malformed filter");
+        *out_status = 400;
+        return -1;
+    }
+
+    PGconn *conn = (PGconn *)store->db;
+
+    /* Detail mode: single-row lookup including parsed manifest tbs_data. */
+    if (detail_log_index >= 0) {
+        char ix[32];
+        snprintf(ix, sizeof(ix), "%d", detail_log_index);
+        const char *p[1] = { ix };
+        PGresult *r = PQexecParams(conn,
+            "SELECT m.log_index, m.publisher, m.package, m.version, "
+            "       to_char(m.submitted_at AT TIME ZONE 'UTC', "
+            "               'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+            "       le.tbs_data, "
+            "       (le.tbs_data->>'publisher_cert_index')::int, "
+            "       (SELECT 1 FROM mtc_revocations rv "
+            "          WHERE rv.cert_index = "
+            "            (le.tbs_data->>'publisher_cert_index')::int "
+            "          LIMIT 1) "
+            "FROM mtc_fips_manifest_entries m "
+            "JOIN mtc_log_entries le ON le.index = m.log_index "
+            "WHERE m.log_index = $1",
+            1, NULL, p, NULL, NULL, 0);
+        if (PQresultStatus(r) != PGRES_TUPLES_OK) {
+            set_err(out_err_msg, err_msg_sz, "list: detail query failed: %s",
+                    PQerrorMessage(conn));
+            PQclear(r);
+            return -1;
+        }
+        if (PQntuples(r) == 0) {
+            PQclear(r);
+            set_err(out_err_msg, err_msg_sz, "list: no manifest at log_index %d",
+                    detail_log_index);
+            *out_status = 404;
+            return -1;
+        }
+
+        struct json_object *e = json_object_new_object();
+        json_object_object_add(e, "log_index",
+            json_object_new_int(atoi(PQgetvalue(r, 0, 0))));
+        json_object_object_add(e, "publisher",
+            json_object_new_string(PQgetvalue(r, 0, 1)));
+        json_object_object_add(e, "package",
+            json_object_new_string(PQgetvalue(r, 0, 2)));
+        json_object_object_add(e, "version",
+            json_object_new_string(PQgetvalue(r, 0, 3)));
+        json_object_object_add(e, "submitted_at",
+            json_object_new_string(PQgetvalue(r, 0, 4)));
+        if (!PQgetisnull(r, 0, 6))
+            json_object_object_add(e, "publisher_cert_index",
+                json_object_new_int(atoi(PQgetvalue(r, 0, 6))));
+        json_object_object_add(e, "publisher_cert_revoked",
+            json_object_new_boolean(!PQgetisnull(r, 0, 7)));
+
+        /* Re-parse the canonical manifest JSON (Postgres returns it as text;
+         * embedding the parsed tree gives the client a structured view
+         * without re-tokenising). */
+        const char *tbs_str = PQgetvalue(r, 0, 5);
+        struct json_object *tbs = json_tokener_parse(tbs_str);
+        if (tbs) {
+            json_object_object_add(e, "manifest", tbs);
+        }
+        PQclear(r);
+
+        struct json_object *resp = json_object_new_object();
+        json_object_object_add(resp, "entry", e);
+        *out_response = resp;
+        *out_status = 200;
+        return 0;
+    }
+
+    /* List mode. */
+    if (limit <= 0) limit = MTC_FIPS_LIST_LIMIT_DEFAULT;
+    if (limit > MTC_FIPS_LIST_LIMIT_MAX) limit = MTC_FIPS_LIST_LIMIT_MAX;
+
+    char sql[2048];
+    const char *params[3] = {0};
+    int nparams = 0;
+    int n = snprintf(sql, sizeof(sql),
+        "SELECT m.log_index, "
+        "       to_char(m.submitted_at AT TIME ZONE 'UTC', "
+        "               'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+        "       m.publisher, m.package, m.version, "
+        "       (SELECT 1 FROM mtc_revocations rv "
+        "          JOIN mtc_log_entries le ON le.index = m.log_index "
+        "          WHERE rv.cert_index = "
+        "            (le.tbs_data->>'publisher_cert_index')::int "
+        "          LIMIT 1) "
+        "FROM mtc_fips_manifest_entries m "
+        "WHERE 1=1");
+    if (filter_publisher) {
+        n += snprintf(sql + n, sizeof(sql) - n,
+                      " AND m.publisher = $%d", ++nparams);
+        params[nparams - 1] = filter_publisher;
+    }
+    if (filter_package) {
+        n += snprintf(sql + n, sizeof(sql) - n,
+                      " AND m.package = $%d", ++nparams);
+        params[nparams - 1] = filter_package;
+    }
+    if (filter_version) {
+        n += snprintf(sql + n, sizeof(sql) - n,
+                      " AND m.version = $%d", ++nparams);
+        params[nparams - 1] = filter_version;
+    }
+    snprintf(sql + n, sizeof(sql) - n,
+             " ORDER BY m.log_index DESC LIMIT %d", limit);
+
+    PGresult *r = PQexecParams(conn, sql, nparams, NULL, params,
+                               NULL, NULL, 0);
+    if (PQresultStatus(r) != PGRES_TUPLES_OK) {
+        set_err(out_err_msg, err_msg_sz, "list: query failed: %s",
+                PQerrorMessage(conn));
+        PQclear(r);
+        return -1;
+    }
+
+    int rows = PQntuples(r);
+    struct json_object *arr = json_object_new_array();
+    for (int i = 0; i < rows; i++) {
+        struct json_object *e = json_object_new_object();
+        json_object_object_add(e, "log_index",
+            json_object_new_int(atoi(PQgetvalue(r, i, 0))));
+        json_object_object_add(e, "submitted_at",
+            json_object_new_string(PQgetvalue(r, i, 1)));
+        json_object_object_add(e, "publisher",
+            json_object_new_string(PQgetvalue(r, i, 2)));
+        json_object_object_add(e, "package",
+            json_object_new_string(PQgetvalue(r, i, 3)));
+        json_object_object_add(e, "version",
+            json_object_new_string(PQgetvalue(r, i, 4)));
+        json_object_object_add(e, "publisher_cert_revoked",
+            json_object_new_boolean(!PQgetisnull(r, i, 5)));
+        json_object_array_add(arr, e);
+    }
+    PQclear(r);
+
+    struct json_object *resp = json_object_new_object();
+    json_object_object_add(resp, "entries", arr);
+    json_object_object_add(resp, "count", json_object_new_int(rows));
+    json_object_object_add(resp, "limit", json_object_new_int(limit));
+    *out_response = resp;
+    *out_status = 200;
+    return 0;
+}
