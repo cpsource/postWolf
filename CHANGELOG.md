@@ -6,8 +6,9 @@ upstream wolfSSL versions are referenced only at merge-from-upstream
 points (e.g. via `wolfssl-merge-to-postWolf`).
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Releases are tracked by phase branches (`phase-N`) rather than semver
-tags; each merged-to-master phase is one entry below.
+Releases will be cut with semver-style tags (`vMAJOR.MINOR.PATCH`)
+once the wire formats freeze; until then everything lives under
+`[Unreleased]`.
 
 postWolf is a fork of wolfSSL with three additional layers built on
 top:
@@ -22,7 +23,7 @@ See `CLAUDE.md` for the architectural overview, `README.md` for the
 project's narrative, and `mtc-keymaster/README-bugsandtodo.md` for
 the open issue list.
 
-## [Unreleased] — phase-31
+## [Unreleased]
 
 ### Added
 - **FIPS-manifest revocation pipeline** — `POST /fips/revoke` endpoint
@@ -110,9 +111,8 @@ the open issue list.
   `fips-framework/tools/c/Makefile` and never built the current
   sources).
 
-## Earlier phases
+## Earlier history
 
-Pre-phase-31 history is recorded in the merged commit graph and the
-phase-N branches (most recent: `phase-29`, `phase-30`).  See
-`mtc-keymaster/README-bugsandtodo.md` for a feature-by-feature
-status table.
+Pre-`[Unreleased]` history lives in the commit graph (`git log
+master`) and is summarised feature-by-feature in
+`mtc-keymaster/README-bugsandtodo.md`.
