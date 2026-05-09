@@ -36,6 +36,12 @@ the open issue list.
   version for rollback protection).  Severity Medium.  Original
   review captured verbatim in
   `socket-level-wrapper-MQC/README-mqc-tool-hardening-todo-78.md`.
+- TODO #79 + `socket-level-wrapper-MQC/README-argon2.md` — switch
+  the `mqc` KDF from scrypt to Argon2id (RFC 9106).  One slice of
+  #78, carved out so it can land independently.  Reference doc
+  covers what Argon2id is, why over scrypt, library options
+  (wolfCrypt recommended), migration shape, and verification
+  recipe.
 - `server-configuration-data/` directory with two encrypted-at-rest
   artifacts and a `restore.sh` for fresh-machine setup:
   - `env.enc.json` — `mqc`-sealed copy of `~/.env`

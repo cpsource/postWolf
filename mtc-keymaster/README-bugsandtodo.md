@@ -22,6 +22,7 @@ the full threat model + implementation sketch.
 - [#55](#55-dnssec-trust-anchor-static-dns-root-data-vs-unbound-daemon) — Decide: static `dns-root-data` package vs `unbound` daemon for DNSSEC trust anchor (operational, becomes a hard outage at root-key rollover).
 - [#77](#77-ca-key-continuity--new-key-for-an-existing-ca-subject-must-be-signed-by-the-old-key) — Block silent CA-key takeover: new key for an existing CA subject must be signed by the previous CA key.
 - [#78](#78-harden-the-mqc-symmetric-envelope-currently-in-socket-level-wrapper-mqcexamplesmqcc) — Harden the `mqc` symmetric envelope: name the cipher, bind metadata as AEAD AAD, raise KDF cost, add `key_id` + monotonic version for rollback protection.
+- [#79](#79-switch-mqc-kdf-from-scrypt-to-argon2id) — Switch `mqc`'s KDF from scrypt to Argon2id (RFC 9106).  One slice of #78; carved out so it can land independently.  Reference doc: `socket-level-wrapper-MQC/README-argon2.md`.
 
 ### Low / Low–Medium
 
@@ -4594,6 +4595,56 @@ Severity: **Medium** — the current envelope is confidentiality-OK,
 but the metadata-tampering and rollback gaps are real.  No active
 exploit; preemptive hardening before anyone scripts against the
 envelope shape.
+
+### 79. Switch `mqc` KDF from scrypt to Argon2id
+
+Filed 2026-05-09.  One slice of #78 (item §3 in the external
+review), carved out as a standalone TODO so it can land
+independently of the larger envelope rework.
+
+Background reference doc:
+`socket-level-wrapper-MQC/README-argon2.md` — covers what Argon2id
+is, why over scrypt, library choices (libargon2 vs wolfCrypt vs
+OpenSSL 3+ provider), the migration shape, and the verification
+recipe.
+
+Short version: the current `mqc` envelope uses **scrypt**
+(`N=32768, r=8, p=1`).  scrypt is memory-hard and not obviously
+broken, but Argon2id (RFC 9106, PHC-2015 winner) is the modern
+recommended default — clearer parameter story, RFC-standardised,
+better resistance to GPU/ASIC attacks via its hybrid memory-access
+pattern.
+
+**Implementation sketch:**
+
+1. Pick the library — recommendation: **wolfCrypt's
+   `wc_Argon2_Hash`**, since the rest of `mqc.c`'s primitives
+   (AES-GCM, RNG) already come from wolfCrypt.  Confirm
+   `--enable-argon2` is on the postWolf build (or add it).
+2. Edit `socket-level-wrapper-MQC/examples/mqc.c`: replace the
+   scrypt-derive call with `wc_Argon2_Hash(...)`.  Initial
+   parameters: **`m=65536 KiB (64 MiB), t=3, p=1`** — roughly the
+   same wall-clock cost as the current scrypt settings on modern
+   x86_64.
+3. Bump envelope version `"v": "mqc-1"` → `"v": "mqc-2"`.  Replace
+   the scrypt knobs with:
+   ```json
+   "kdf": "argon2id",
+   "kdf_params": { "m": 65536, "t": 3, "p": 1 }
+   ```
+4. Decoder MUST keep reading legacy `mqc-1` (scrypt) blobs — the
+   committed `server-configuration-data/{env,auth-bundle.tar}.enc.json`
+   files were sealed under that version.  After the cutover,
+   re-encode them with `mqc-2` and commit the refreshed blobs in
+   the same change.
+
+**Coordinates with #78:** the AAD-binding, `key_id`, and rollback-
+counter additions in #78 should land at the same envelope-version
+bump (`mqc-2`).  Reasonable to merge #78 + #79 into a single PR;
+they're filed separately to keep the scope of each readable.
+
+Severity: **Medium** — same posture as #78, with which it shares
+the cutover.
 
 ---
 
