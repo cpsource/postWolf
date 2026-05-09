@@ -41,6 +41,7 @@
 #include "mqc_peer.h"
 #include "read-config.h"
 #include "../../../socket-level-wrapper-MQC/config.h"  /* MQC_DEFAULT_SERVER */
+#include "config.h"  /* MQC_DEFAULT_SERVER_PORT fallback if MQC header absent */
 
 #define DEFAULT_TPM_DIR  ".TPM"
 
@@ -410,7 +411,7 @@ int main(int argc, char **argv)
     if (colon_slash) server = colon_slash + 3;
 
     char host_buf[256];
-    int port = 8446;
+    int port = MQC_DEFAULT_SERVER_PORT;
     {
         snprintf(host_buf, sizeof(host_buf), "%s", server);
         char *colon = strrchr(host_buf, ':');
