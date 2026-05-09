@@ -39,8 +39,23 @@
 
 set -euo pipefail
 
+VERBOSE=0
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -v|--verbose) VERBOSE=1; shift ;;
+        -h|--help)
+            echo "Usage: verify-dir.sh [-v|--verbose] DOMAIN [DIR]" >&2
+            exit 0 ;;
+        --) shift; while [ $# -gt 0 ]; do POSITIONAL+=("$1"); shift; done ;;
+        -*) echo "verify-dir: unknown flag '$1'" >&2; exit 1 ;;
+        *)  POSITIONAL+=("$1"); shift ;;
+    esac
+done
+set -- "${POSITIONAL[@]}"
+
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
-    echo "Usage: verify-dir.sh DOMAIN [DIR]" >&2
+    echo "Usage: verify-dir.sh [-v|--verbose] DOMAIN [DIR]" >&2
     exit 1
 fi
 
@@ -102,7 +117,11 @@ openssl40 pkeyutl -verify -rawin -pubin \
     -in MANIFEST.sha256 \
     -sigfile MANIFEST.sig
 
-sha256sum --quiet --strict --check MANIFEST.sha256
+if [ "$VERBOSE" = "1" ]; then
+    sha256sum --strict --check MANIFEST.sha256
+else
+    sha256sum --quiet --strict --check MANIFEST.sha256
+fi
 
 # Surface all signed metadata lines for the operator.
 grep '^# ' MANIFEST.sha256 || true
