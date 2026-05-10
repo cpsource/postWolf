@@ -61,6 +61,46 @@ the open issue list.
 
 ### Fixed
 
+- **Concurrent fips submits silently corrupting state** — forked-after-
+  accept workers inherited the parent's PGconn struct in
+  `store->tree.conn` (set once at server-startup time before the fork).
+  `mtc_db_after_fork` (TODO #25) cleared `store->db` so the next
+  `mtc_db_ensure_connected` would lazily open a fresh per-child
+  connection, but left `store->tree.conn` pointing at the parent's
+  PGconn — every tile read/write in a child went through the
+  inherited fd, multiple children sharing one TLS socket corrupted
+  the GCM record stream (`SSL error: decryption failed or bad record
+  mac`), and subsequent queries failed with `no connection to the
+  server`.  In `mtc_store_add_entry`, after `mtc_db_ensure_connected`,
+  re-point `store->tree.conn = store->db` so the freshly-opened
+  per-child PGconn is used for tile-store I/O too.
+
+- **Stale `store->tree.size` in forked workers** — a sibling worker
+  committing a new leaf doesn't propagate to other children's
+  in-memory tree.  Without sync, a stale worker assigns the now-
+  occupied `idx_target = store->tree.size`, `mtc_db_save_entry`'s
+  `ON CONFLICT (index) DO NOTHING` clause silently dropped the new
+  payload, the rest of the pipeline (tile writes, search-index
+  INSERT, receipt builder) ran on a corrupt picture and ultimately
+  reported `inclusion_proof failed` even though the leaf was
+  technically in the SQL log.  In `mtc_store_add_entry`, after
+  taking the per-log advisory lock, resync `store->tree.size` from
+  `mtc_tile_store_get_tree_size` (== `MAX(index)+1` over
+  `mtc_log_entries`).  The lock guarantees no other worker advances
+  the DB between the SELECT and the subsequent INSERT.
+
+- **`mtc_db_save_entry` silent drop on conflict** — removed
+  `ON CONFLICT (index) DO NOTHING` from the insert.  Callers
+  (`mtc_store_add_entry`) hold the advisory lock AND resync
+  `tree.size` before assigning, so a duplicate-key error means a
+  real invariant violation that should surface, not be silently
+  swallowed.
+
+- **`mtc_tile_store_get_tile` on -2** — log the underlying
+  `PQerrorMessage` text instead of returning -2 silently.  Without
+  it, a query failure propagated upward as a generic "inclusion
+  proof failed" with no operator-side breadcrumb.
+
 - **`fips-manifest-submit`'s response reader** — `mqc_read` consumes a
   frame's length prefix BEFORE checking that the frame fits in the
   caller's buffer, so a frame larger than the buffer returns -1

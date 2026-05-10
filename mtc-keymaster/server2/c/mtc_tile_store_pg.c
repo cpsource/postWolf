@@ -92,6 +92,10 @@ int mtc_tile_store_get_tile(PGconn *conn, int level, int64_t tile_index,
         2, NULL, params, NULL, NULL, 1 /* binary result */);
 
     if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr,
+            "[tile_store] get_tile(level=%d, idx=%" PRId64
+            ") query failed: %s",
+            level, tile_index, PQerrorMessage(conn));
         rc = -2;
         goto out;
     }

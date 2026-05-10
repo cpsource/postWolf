@@ -463,6 +463,15 @@ int mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz)
         fprintf(stderr, "[store] add_entry: DB connection lost\n");
         return -1;
     }
+    /* Forked-after-accept workers inherit the parent's PGconn pointer in
+     * store->tree.conn (set once at server-startup time in the parent
+     * before fork).  mtc_db_after_fork nulls store->db so ensure_connected
+     * opens a fresh per-child PGconn — but tree.conn still references the
+     * parent's struct + fd.  Multiple children sharing one TLS socket
+     * corrupts the GCM record stream ("bad record mac" / "no connection
+     * to the server").  Re-point tree.conn at the freshly-opened
+     * per-child PGconn so all tile-store reads/writes go through it. */
+    store->tree.conn = store->db;
 
     /* BEGIN. */
     res = PQexec(store->db, "BEGIN");
@@ -478,6 +487,37 @@ int mtc_store_add_entry(MtcStore *store, const uint8_t *entry, int entrySz)
     if (mtc_tile_store_lock_for_append(store->db, store->log_id) != 0) {
         fprintf(stderr, "[store] add_entry: advisory lock failed\n");
         goto rollback;
+    }
+
+    /* Resync in-memory tree.size from the DB before assigning an index.
+     *
+     * Forked workers each carry their own MtcStore in process memory,
+     * and only the worker that handled the last add knows the new
+     * size — the others stay at whatever tree.size they observed at
+     * fork-time / last successful local add.  Without this resync,
+     * a stale worker assigns the old idx_target, mtc_db_save_entry's
+     * `ON CONFLICT (index) DO NOTHING` silently drops the row, and
+     * the rest of the pipeline (tile writes, search-index INSERT,
+     * receipt builder) gets a corrupt picture.
+     *
+     * We hold the advisory lock, so no other worker can advance the
+     * DB under us between the SELECT and the subsequent INSERT.
+     * The tile cache is append-only — node_get fault-throughs to DB
+     * when a slot is past the cached node_count — so the resync
+     * doesn't need an explicit cache invalidate. */
+    {
+        int64_t db_size = 0;
+        if (mtc_tile_store_get_tree_size(store->db, &db_size) != 0) {
+            fprintf(stderr, "[store] add_entry: get_tree_size failed\n");
+            goto rollback;
+        }
+        if ((int)db_size != store->tree.size) {
+            fprintf(stderr,
+                "[store] add_entry: resync tree.size %d -> %lld "
+                "(sibling worker advance)\n",
+                store->tree.size, (long long)db_size);
+            store->tree.size = (int)db_size;
+        }
     }
 
     /* Compute leaf hash + extract TBS JSON for the indexed JSONB column.

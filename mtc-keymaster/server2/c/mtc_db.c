@@ -471,9 +471,14 @@ int mtc_db_save_entry(PGconn *conn, int index, int entry_type,
     params[3] = (const char*)serialized; paramLengths[3] = serialized_sz; paramFormats[3] = 1;
     params[4] = (const char*)leaf_hash;  paramLengths[4] = 32;           paramFormats[4] = 1;
 
+    /* No ON CONFLICT clause: callers (mtc_store_add_entry) hold the
+     * per-log advisory lock AND resync tree.size from the DB before
+     * assigning the index, so a duplicate-key error means a real
+     * invariant violation that we want to surface, not silently
+     * drop the new payload. */
     res = PQexecParams(conn,
         "INSERT INTO mtc_log_entries (index, entry_type, tbs_data, serialized, leaf_hash) "
-        "VALUES ($1, $2, $3, $4, $5) ON CONFLICT (index) DO NOTHING",
+        "VALUES ($1, $2, $3, $4, $5)",
         5, NULL, params, paramLengths, paramFormats, 0);
 
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
