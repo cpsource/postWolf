@@ -51,6 +51,7 @@ the full threat model + implementation sketch.
 - [#61](#61-register-cash-dns-poll-loop-falls-through-instead-of-waiting) — `register-ca.sh` DNS-poll loop falls through instead of waiting (UX wart).
 - [#72](#72---no-pin-is-honor-system-only--no-server-side-enforcement-on-port-8445) — `--no-pin` is honor-system only on port 8445 (no server-side enforcement).
 - [#75](#75-mtc_checkpoints-is-append-only-with-a-single-consumer-reading-only-the-latest-row) — `mtc_checkpoints` is append-only with a single consumer reading only the latest row (retention cap).
+- [#80](#80-idempotent-retries-for-mutating-mqc-endpoints-corruption-induced-double-submit) — Idempotent retries for mutating MQC endpoints — cosmic-ray-induced double-submit can silently duplicate `/fips/manifest` rows in NEON (low probability, silent when it hits).
 
 (Markdown-anchor slugs above are GitHub-style and may differ
 from your renderer; if a link doesn't resolve, scroll to the
@@ -4645,6 +4646,663 @@ they're filed separately to keep the scope of each readable.
 
 Severity: **Medium** — same posture as #78, with which it shares
 the cutover.
+
+---
+
+### 80. Idempotent retries for mutating MQC endpoints (corruption-induced double-submit)
+
+Filed 2026-05-10.  Surfaced during a design discussion about
+TCP-CRC weakness and MQC's response to it.
+
+**The scenario.**  MQC has at-most-once delivery on the wire (any
+GCM-tag failure tears down the connection — see TODO discussion
+in `socket-level-wrapper-MQC/draft-page-mqc-protocol-00.md` §9).
+Idempotency is entirely the application's responsibility.  Today,
+postWolf's mutating endpoints handle this inconsistently.
+
+Concrete failure mode:
+
+```
+client → server: POST /fips/manifest  (canonical leaf for foo-1.0)
+server: parses, validates sig
+        INSERT INTO mtc_log_entries (index=12345, ...)
+        INSERT INTO mtc_fips_manifest_entries (log_index=12345, ...)
+        builds receipt JSON
+server → client: [response frame] ← cosmic ray flips a bit here
+client: GCM tag fails → -1 → connection dead → "submit failed"
+client: human re-runs the submit
+server: parses, validates sig
+        INSERT INTO mtc_log_entries (index=12346, ...)
+        INSERT INTO mtc_fips_manifest_entries (log_index=12346, ...)
+        ← second copy: different log_index, same leaf_hash, same content
+```
+
+The duplicate is *semantically silent*.  Both receipts validate
+under `fips-manifest-verify`.  The merkle log accumulates two
+indistinguishable entries.  `/fips/list` shows the manifest
+twice.
+
+**Per-endpoint retry safety today:**
+
+| Endpoint | Wire-retry safe? | DB consequence on retry | Why |
+|---|---|---|---|
+| `GET /fips/list`, `/log/diagnostics`, `/checkpoint`, `/revoked/N`, `/fetch-publisher-key` | Yes | None | Read-only |
+| `POST /revoke` (cert revoke) | Idempotent in semantics | Duplicate row in `mtc_revocations` (same `cert_index`).  `is_revoked()` returns true if ≥1 row exists.  Pollutes table; doesn't break correctness. | Multi-row by design |
+| `POST /fips/manifest` (submit) | **NOT idempotent** | Two `mtc_log_entries` rows with different `index`, same `leaf_hash`.  Two `mtc_fips_manifest_entries` rows for the same `(publisher, package, version)`.  Merkle log bloated; `/fips/list` shows duplicates. | No content-dedup check; no idempotency token |
+| `POST /enrollment` (CA/leaf bootstrap, port 8445) | **NOT idempotent** | New `cert_index` issued, new cert in `mtc_certificates`.  Old cert orphaned. | Each call mints fresh material |
+| `POST /renew-cert` | **NOT idempotent** | Same as enrollment — duplicate cert issued | Same |
+
+**What probability are we actually talking about?**
+
+- TCP-CRC false-pass rate is ~2⁻¹⁶ per packet on random
+  corruption, and known-blind to specific bit-pattern swaps
+  (Stone & Partridge 2000 measured ~1 undetected error per
+  16M–10B packets on real networks).
+- The corruption has to land on the *response*, not the request
+  (request corruption already aborts before the DB touch).
+- Submission patterns are bursty (CI builds, batch publishes),
+  exactly when retries-after-glitch are most likely.
+
+So it's a low-probability event that becomes user-visible weirdness
+when it does happen, on the one endpoint where the operator may
+not notice (no UI flagging "you have two log entries for the same
+content").
+
+**Defenses that already exist (but don't close the gap):**
+
+- Leaf is content-addressed: `leaf_hash = SHA-256(canonical_json)`
+  is deterministic.  The server has the information to detect
+  duplicates; it just doesn't act on it.
+- `mtc_log_entries.leaf_hash` is NOT a `UNIQUE` constraint and
+  shouldn't be — `leaf_hash` is computed differently for cert-
+  leaves (entry_type 0x01) vs FIPS-manifest-leaves (entry_type
+  0x02), so a global UNIQUE would be wrong.
+- `fips-manifest-submit` doesn't auto-retry; a human has to re-run.
+  So the duplicate is consciously caused.
+
+**Three fixes, in order of invasiveness:**
+
+1. **Server-side content-addressed dedup (smallest, recommended for
+   submit).**  In the `/fips/manifest` handler in `mtc_fips.c`,
+   before the `INSERT INTO mtc_log_entries`:
+   ```sql
+   SELECT log_index FROM mtc_fips_manifest_entries
+   WHERE log_index IN (
+       SELECT index FROM mtc_log_entries
+       WHERE entry_type = 0x02 AND leaf_hash = $1
+   ) LIMIT 1;
+   ```
+   If a row exists, return the *existing* receipt (re-build it from
+   the stored leaf + cosignature) instead of minting a new one.
+   Idempotency falls out of the canonical-leaf design — same input
+   bytes always hash to the same `leaf_hash`.  ~20 lines of SQL +
+   one branch.  Only works for content-deterministic endpoints
+   (submit); doesn't help enrollment/renewal where freshness is
+   intrinsic.
+
+2. **Idempotency-Key header (Stripe-style, more general).**  Client
+   generates a UUID per logical operation, passes
+   `Idempotency-Key: <uuid>` as an HTTP header inside the MQC
+   frame.  Server stores `(idempotency_key, response_body,
+   expires_at)` in a small table; on second request with same key,
+   returns the cached response.  Works for any mutating endpoint,
+   including enrollment/renewal.  Cost: new state table + expiry
+   policy.
+
+   **Placement note (where the key has to live):** the key needs
+   to be inside whatever envelope the AEAD authenticates.  If an
+   attacker can rewrite the key without breaking integrity, they
+   take any captured legitimate request, change just the key, and
+   force the server to treat it as a fresh operation — defeating
+   the whole mechanism.
+
+   **In MQC specifically, this is a non-issue** because the
+   *entire* HTTP request — request line + headers + body — is the
+   AEAD plaintext of one frame.  An `Idempotency-Key: <uuid>` HTTP
+   header is automatically encrypted *and* authenticated by GCM,
+   bound to the rest of the request via the same tag.  An attacker
+   can't flip the key without invalidating the tag.
+
+   (Terminology clean-up vs. the original draft of this entry: the
+   key lives in the AEAD *plaintext*, not the AAD.  AAD in MQC is
+   the 31-byte frame metadata — `label || version || direction ||
+   frame_type || sequence || plaintext_length` — only.  HTTP-level
+   fields are inside the encrypted payload, not the AAD.  The
+   original "AAD-covered" wording was sloppy; "AEAD-covered" is
+   the right framing.)
+
+   The placement caveat *would* bite in adjacent settings worth
+   not replicating: HTTP-over-TLS terminated at a proxy that
+   re-encrypts to the backend (key briefly in the clear at the
+   proxy hop); idempotency keys carried as URL query parameters
+   that get consumed by access-log / tracing pipelines from copies
+   outside the AEAD envelope; "smart" servers that strip the key
+   before computing a content hash for dedup, then key the cache
+   on `(key, content_hash)` — at that point a tampered key changes
+   the cache lookup independently of the content.
+
+   Practical implication for postWolf: put `Idempotency-Key` in
+   the HTTP headers inside the MQC AEAD frame.  Don't mirror it
+   into a query parameter, don't add a parallel handshake field,
+   don't consult any out-of-band source — read it from the
+   HTTP-parsed header, which already lives in the
+   `wc_AesGcmDecrypt`-verified plaintext.
+
+3. **Submit-then-verify dance at the client (no server change).**
+   `fips-manifest-submit` could, on connection failure after
+   sending the request, do a follow-up
+   `GET /fips/list?leaf_hash=<h>` before retrying — and skip the
+   retry if the server already has the manifest.  Pure-client fix.
+   Requires `/fips/list` to expose `leaf_hash` filtering, which it
+   doesn't today.
+
+**Recommendation.**  Option 1 for `/fips/manifest`, since it
+leverages the canonical-leaf design that's already there, doesn't
+need a new wire field, doesn't change the receipt shape, and makes
+retries genuinely safe at the wire level.  Cert revoke is already
+de-facto idempotent (multi-row table is the design).
+Enrollment/renewal are rare enough to live with current behaviour
+or get an Idempotency-Key band-aid later.
+
+**Cross-references:**
+
+- Overlaps with #32 ("Server-side de-duplication for bootstrap
+  re-runs") and the broader idempotency thread under #57 — option 2
+  here would subsume both.
+- TODO #17 (MQC client connect/retry subsystem) is the natural
+  *consumer* of this work: an automated retry layer is far safer
+  if the server is genuinely idempotent.
+
+**Severity:** Low–Medium — low actual exposure (rare TCP-CRC
+escape, on the response, on a mutating endpoint), but silent when
+it happens, and the fix for the most-affected endpoint is small
+and self-contained.
+
+#### Appendix to #80: SQL transactions vs. idempotency keys
+
+A natural reaction to "we need exactly-once write semantics" is
+"can't we just use a SQL transaction?"  These are different
+problems and they compose; they don't substitute.
+
+**SQL transaction (`BEGIN … COMMIT/ROLLBACK`)** is about
+**atomicity *within* one server-side operation**.  N writes
+become a single unit; the database guarantees either all of them
+become visible or none of them do.  The decision point (commit
+vs. rollback) is *yours, on the server side*, before you respond
+to anyone.  Crash mid-transaction → the DB auto-rolls back on
+recovery.  The problem it solves: concurrent writers
+interleaving, partial-state visibility, incomplete multi-statement
+updates.
+
+**Idempotency key** is about **atomicity *across* the network
+round-trip — between the client and the server**.  The decision
+point isn't "should this work commit?", it's "did the client
+actually find out whether the work happened?"  Even with a
+perfectly atomic SQL transaction on the server, this gap exists:
+
+```
+client → server:  POST /fips/manifest, Idempotency-Key: abc-123
+server:           BEGIN
+                  INSERT INTO mtc_log_entries ...
+                  INSERT INTO mtc_fips_manifest_entries ...
+                  COMMIT                                ← DB write is durable
+server → client:  200 OK { "log_index": 12345, ... }   ← cosmic ray flips a bit
+client:           GCM tag fails → "submit failed" → retry
+
+[second attempt]
+client → server:  POST /fips/manifest, Idempotency-Key: abc-123  ← same key
+server:           SELECT response FROM idempotency_cache
+                    WHERE key = 'abc-123';             ← hit
+server → client:  200 OK { "log_index": 12345, ... }   ← same response, no second insert
+```
+
+The SQL transaction protected the *server's internal state* from
+being half-written.  The idempotency key protects the
+*client-server contract* from being executed twice.
+
+**They compose.**  A textbook idempotent request handler uses
+both:
+
+```sql
+BEGIN;
+  -- First, did we already do this?
+  SELECT response FROM idempotency_cache WHERE key = $1;
+  IF found THEN
+      RETURN cached response;
+      COMMIT;  -- nothing to do
+  ELSE
+      -- Do the actual work
+      INSERT INTO mtc_log_entries (...) RETURNING index;
+      INSERT INTO mtc_fips_manifest_entries (...);
+      -- Snapshot the response inside the same transaction
+      INSERT INTO idempotency_cache (key, response, expires_at) VALUES ($1, ...);
+      COMMIT;
+      RETURN fresh response;
+  END IF;
+```
+
+The transaction makes "did the work + cached the receipt" atomic
+together — the cache and the log can never diverge.  The key
+makes the *whole thing* (work + cache + response) replayable
+from the client's side.
+
+**Why HTTP APIs use idempotency keys instead of "client opens a
+transaction, then commits over the network."**  That style does
+exist (XA two-phase commit, distributed transactions) and is
+mostly a disaster:
+
+- Server has to hold an open transaction, holding row locks,
+  while waiting for the client's `COMMIT`.  If the client's
+  network dies, locks are held until timeout — denial of service
+  by accident.
+- The client still has the "did my COMMIT message arrive?"
+  problem.  So you've added complexity (long-lived server state,
+  distributed locking) without solving the at-least-once delivery
+  problem at the boundary.
+- In stateless / forked-per-request architectures (exactly what
+  postWolf is), the server doesn't have anywhere natural to hold
+  an open transaction across requests.
+
+Idempotency keys flip the model: instead of the client
+*controlling* commit timing, the server *commits as soon as it
+can* and the client can *safely re-ask* with the same key until
+they get an answer.  State lives in the server's idempotency
+table, not in held locks.
+
+**Framing.**  A SQL transaction asks: *"if I do A and B, can I be
+sure they land together or not at all?"*  An idempotency key
+asks: *"if I tell you to do A and don't hear back, can I tell you
+again without you doing A twice?"*  Different questions; both have
+to be answered to make a distributed system correct.
+
+**postWolf today.**  The server side is fine — every mutating
+endpoint already runs its writes inside a Postgres transaction
+(see `mtc_db_save_entry` and the wrapping `mtc_store_add_entry`
+flow), so half-written log entries can't happen.  The gap that
+#80 is about is the client-server gap: the server has done its
+honest work and the client just doesn't know it.  That's the gap
+idempotency keys close, and SQL transactions can't.
+
+#### Appendix to #80: Who picks the idempotency key, and how?
+
+**Client-generated, large random.**  Stripe-style convention is
+a UUIDv4 (122 bits of entropy) in the `Idempotency-Key` HTTP
+header.  The reasoning matters; it's not just "use a random
+thing."
+
+**Why the client generates it, not the server.**
+
+The whole point is that the client can retry safely *without
+first asking the server anything*.  If the server issued the key,
+the client would have to fetch it before sending the real
+request — and that fetch itself faces the exact same network-
+failure mode you're trying to fix.  You'd need a round trip just
+to safely make a round trip.  Client-generated keys break the
+recursion: the client mints the key locally, then the request
+that carries it is the *first* and *only* network operation that
+needs to be idempotent.
+
+**Why "large random" specifically.**
+
+Three properties matter:
+
+1. **Global uniqueness across all clients without coordination.**
+   No client should ever accidentally pick a key another client
+   has already used (silent dedup into a different client's prior
+   write would leak data across tenants).  UUIDv4's 122 random
+   bits give a birthday-bound collision probability of ~2⁻⁶¹
+   between any two uses — well below cosmic-ray fault rates.
+   Practically: never happens.
+2. **Unguessable.**  If the key is predictable, an attacker who
+   sees `Idempotency-Key: req-001` can guess `req-002` and either
+   replay it or pre-poison the cache.  UUIDv4 is CSPRNG-derived,
+   so the next one isn't guessable.  (Inside MQC this is largely
+   moot because the AEAD covers the key, but client code talking
+   to non-MQC endpoints should still pick unguessable keys by
+   default.)
+3. **Stable across retries.**  The client must remember the key
+   between attempt 1 and attempt 2 — otherwise dedup is
+   impossible.  This is the part developers most often get wrong:
+   a quick retry loop that calls `uuid_v4()` afresh on each
+   iteration defeats the entire mechanism.  The key has to be
+   generated *once per logical operation* and persisted at least
+   until the response is observed (or the operation is
+   abandoned).
+
+**Variants worth knowing about.**
+
+- **UUIDv4** (random): the default.  Stripe, GitHub, AWS S3
+  multipart all use it.
+- **UUIDv7** (timestamp + random): same uniqueness, but sortable
+  by creation time — nicer for server-side index maintenance and
+  TTL eviction.
+- **Content hash of the canonical request** (e.g., `sha256(canonical_body)`):
+  keys and dedup are *implicit* — same input bytes always produce
+  the same key, retries collide automatically, the client doesn't
+  have to persist anything.  Downside: can't distinguish "user
+  *meant* to submit the same thing twice" from "network failed
+  and we retried."  For postWolf's `/fips/manifest`, "same
+  canonical leaf = same operation" is exactly the desired
+  semantic, so this is essentially what option 1 in #80 already
+  proposes (`leaf_hash` IS the content hash, used as the dedup
+  key without an explicit header).
+- **Client-chosen meaningful string** (e.g.,
+  `submit-foo-1.0-build-2026-05-10`): human-readable, helpful for
+  debugging, but easy to accidentally collide.  Not recommended
+  unless the client truly controls the namespace.
+
+**Server-side rules that make it actually work.**
+
+1. **Cache `(key → response, request_hash, expires_at)`.** Storing
+   just the response isn't enough — you also need to compare the
+   *new* request body to the *original* one.
+2. **On retry with same key + same request body**: return the
+   cached response.
+3. **On retry with same key + DIFFERENT request body**: return
+   `409 Conflict`.  This is the load-bearing security check —
+   without it, an attacker who learns a victim's key could reuse
+   it to "steal" the cached response slot for a wholly different
+   operation.  Stripe specifically calls this out in their docs.
+4. **TTL the cache.**  Stripe holds keys for 24 hours; postWolf
+   could hold them for an hour or a day.  After expiry, the same
+   key + same body would re-execute, which is fine because by
+   then any legitimate retry is long done.
+
+**Per-endpoint key strategy for postWolf:**
+
+| Endpoint | Best key strategy | Why |
+|---|---|---|
+| `/fips/manifest` | Content hash (`leaf_hash`) — implicit, no header | Canonical leaf is already deterministic; "same leaf = same operation" is the desired semantic |
+| `/revoke`, `/fips/revoke` | Already de-facto idempotent (multi-row table); explicit key not needed | Multiple revoke rows for the same target are harmless |
+| `/enrollment`, `/renew-cert` | Client-generated UUIDv4 in `Idempotency-Key` header | Each enrollment should mint fresh material; "same enrollment intent" needs an explicit identifier; content hash is wrong here because cert generation is intentionally non-deterministic |
+
+The shortcut for `/fips/manifest` is the cleanest entry point:
+the canonical leaf already *is* a content-addressed identifier,
+so the server can dedup on `leaf_hash` without the client even
+sending an extra header.  That's why option 1 in #80 is the
+recommended starting point — it solves the most-affected endpoint
+with no client-side change at all.
+
+#### Appendix to #80: Write-ahead idempotency pattern (claim first, complete second)
+
+If option 2 lands, the implementation pattern matters more than
+the cache schema.  The right shape is **write-ahead idempotency**:
+the cache row gets created at the *start* of the operation
+(status `in_process`), then updated to `complete` at the end —
+not inserted-at-end.
+
+**Sketch:**
+
+```sql
+-- Step 1: stake a claim (atomic with UNIQUE constraint on key)
+INSERT INTO idempotency (key, status, request_hash, started_at)
+VALUES ($1, 'in_process', $2, now())
+ON CONFLICT (key) DO NOTHING
+RETURNING id;
+
+-- Step 2: branch on whether we won the race
+IF inserted THEN
+    -- We're the first to claim this key.  Do the work.
+    INSERT INTO mtc_log_entries (...) RETURNING index;
+    INSERT INTO mtc_fips_manifest_entries (...);
+    -- Build response R
+    UPDATE idempotency
+       SET status = 'complete', response = $R, completed_at = now()
+     WHERE key = $1;
+    RETURN R;
+ELSE
+    -- Someone else is already handling this key.  Look up state.
+    SELECT status, request_hash, response FROM idempotency WHERE key = $1;
+    IF status = 'complete' AND request_hash = $2 THEN
+        RETURN cached response;
+    ELSIF status = 'complete' AND request_hash != $2 THEN
+        RETURN 409 Conflict;            -- key reuse with different body
+    ELSIF status = 'in_process' THEN
+        RETURN 409 In Progress;         -- concurrent retry
+    END IF;
+END IF;
+```
+
+**Why claim-first beats cache-at-end.**
+
+The naïve "insert into the cache only at the end" pattern has a
+concurrent-requests hole:
+
+```
+[bad: cache-at-end]
+Req A: SELECT cache WHERE key=K → not found
+Req B: SELECT cache WHERE key=K → not found     ← both pass the gate
+Req A: do the work, INSERT cache → succeeds
+Req B: do the work, INSERT cache → UNIQUE conflict
+       → rolls back; either returns A's response (race-prone) or errors
+```
+
+Both requests *did the work*.  Even if you wrap B's transaction
+so the conflict rolls back B's writes, you've still computed two
+leaf hashes and run two ML-DSA-87 verifies — wasted CPU at best,
+a tail-latency cliff at worst.
+
+Claim-first prevents the duplicate work entirely: Req B's INSERT
+hits the UNIQUE constraint immediately and branches into the
+"already in progress" path without ever touching
+`mtc_log_entries`.
+
+**Two real gotchas.**
+
+1. **What does Req B do RIGHT NOW while A is still working?**
+   Three reasonable answers:
+   - **Return `409 In Progress` immediately**, expect the client
+     to retry with backoff.  Simplest.  Stripe does this.
+   - **Block on a Postgres advisory lock** keyed on the
+     idempotency key, then re-read the cache row.  Cleaner client
+     experience but holds a server connection open during the
+     work.
+   - **Long-poll** (sleep + re-check up to N seconds).  Compromise;
+     usually overkill.
+
+   For postWolf's forked-per-request model, immediate `409` is the
+   right call — there's no shared "wait queue" across forks
+   anyway, and holding a fork open just to wait for a sibling
+   fork doesn't compose with the existing rate-limit gates
+   (`mqc-max-children`, the per-IP redis bucket).
+
+2. **Stale `in_process` rows after a crash.**  If the server (or
+   the forked child) dies between staking the claim and updating
+   to `complete`, the row sits in `in_process` forever, and every
+   legitimate retry of that key sees "already in progress" and
+   never makes forward progress.
+
+   Fix: a **TTL on `in_process` status**.  Any row in
+   `in_process` for more than X seconds (5 minutes is a sensible
+   default — well over the longest plausible request) is treated
+   as if it doesn't exist.  Two ways to implement:
+   - Lookup-time check:
+     `SELECT ... WHERE NOT (status='in_process' AND started_at < now() - interval '5 minutes')`.
+     Simpler — no cron — and easy to reason about per-request.
+   - Periodic GC sweep:
+     `DELETE FROM idempotency WHERE status='in_process' AND started_at < now() - interval '5 minutes'`.
+     Useful for keeping the table small once volume picks up;
+     pair with the lookup-time check, don't replace it.
+
+**Bonus: debugging visibility.**  Claim-first leaves a trail.
+When something goes weird, `SELECT * FROM idempotency WHERE
+status='in_process'` shows exactly which operations are mid-flight
+or wedged.  Cache-at-end leaves no in-flight record at all.
+
+**How this maps onto #80's three options:**
+
+- **Option 2 (Idempotency-Key header)** — yes, exactly this
+  pattern.  The key is the client's UUIDv4; the request_hash is
+  `sha256(canonical_request_body)`; the table is new
+  (`mtc_idempotency` or similar).  Apply uniformly across
+  `/fips/manifest`, `/enrollment`, `/renew-cert`.
+- **Option 1 (content-dedup on `leaf_hash`)** — the in_process
+  state isn't strictly needed.  The natural key (`leaf_hash`)
+  already lives in `mtc_log_entries`, and the "claim" is the row
+  insert itself.  A `UNIQUE (entry_type, leaf_hash)` constraint
+  would force the second concurrent submit to roll back at the
+  DB level.  You inherit the wasted-work problem of cache-at-end,
+  but for `/fips/manifest` the work is cheap (one ML-DSA-87
+  verify, ~ms), so it's tolerable.  Real lift is much smaller
+  than option 2.
+- **Generalisation across TODOs #32, #57, #80**: same write-ahead
+  table can serve all three (bootstrap re-runs, broader
+  idempotency, cosmic-ray retries).  Bootstrap in particular is
+  expensive (DH exchange, cert minting), so claim-first's
+  duplicate-work prevention is genuinely valuable there — argues
+  for building this once as a shared mechanism rather than
+  per-endpoint patches.
+
+#### Appendix to #80: Handling a stale `in_process` row (the hard case)
+
+The gnarly part of write-ahead idempotency: a retry arrives, sees
+status `in_process`, and the server doesn't know whether the
+original is still chugging away, has crashed, or finished but
+failed to mark itself complete.
+
+**What `in_process` for time T actually means** — five
+possibilities:
+
+1. Original is still running normally (slow operation, busy DB)
+2. Original crashed mid-work (fork died, OOM, kernel kill,
+   `kill -9`)
+3. Original completed the work but the
+   `UPDATE → 'complete'` failed
+4. Original is hung (deadlock, infinite loop, slow disk)
+5. Original client gave up; server is still working but nobody's
+   listening
+
+The retry client can't tell which.  Neither can the server, in
+the general case.  The question becomes: **how do you choose to
+be wrong?**  Two failure modes are possible:
+
+- **Wait too long / fail too aggressively** → legitimate retries
+  can't make progress
+- **Re-claim too aggressively** → duplicate work, defeats the
+  whole point
+
+Three reasonable strategies trade between those.
+
+**Strategy 1: Hard TTL boundary.**  Pick one number — say 5
+minutes.  Before that, return `409 In Progress`.  After that,
+treat the row as if it doesn't exist and re-claim.
+
+```sql
+SELECT * FROM idempotency
+ WHERE key = $1
+   AND NOT (status = 'in_process' AND started_at < now() - interval '5 minutes');
+```
+
+*Pros:* simple, predictable, single SQL query.
+
+*Cons:* the boundary is arbitrary.  A retry at 4:59 fails; at
+5:01 it succeeds and may double-execute a still-running
+operation.
+
+*When it's enough:* when your operations are *fast* relative to
+the TTL.
+
+**Strategy 2: Liveness probe via Postgres advisory lock.**
+
+```sql
+-- Original request, on its libpq connection:
+INSERT INTO idempotency (key, status='in_process') ON CONFLICT DO NOTHING;
+SELECT pg_advisory_lock(hashtext($1));     -- session-scoped lock
+-- ...do the work...
+UPDATE idempotency SET status='complete' WHERE key = $1;
+-- (lock auto-released when session ends)
+
+-- Retry hits in_process row:
+SELECT pg_try_advisory_lock(hashtext($1)); -- non-blocking
+-- returns false: original session still alive → 409 In Progress
+-- returns true:  original session dead (lock auto-released) → re-claim
+```
+
+*Pros:* correct.  Postgres releases session-scoped advisory
+locks on any disconnect, including crashes / RSTs / kernel kills.
+So `pg_try_advisory_lock = true` *means* the original is gone —
+no guessing.
+
+*Cons:*
+- The lock and the work must share a connection.
+- **Neon's pooler complicates this.**  Pgbouncer-style pooling
+  multiplexes sessions across backend connections; session-scoped
+  locks can leak across "logical" sessions or release early.
+  (See `feedback_neon_pooler_search_path.md` for a related
+  pooler quirk we already hit.)  Would need to verify Neon's
+  session-pooling mode honors session-locks correctly, or use
+  transaction-scoped locks (`pg_advisory_xact_lock`) inside a
+  long transaction — which then has the "long transaction holds
+  row locks" problem.
+
+*When it's worth it:* when operations are *slow enough* that a
+TTL is awkward (minutes to hours), or when correctness on the
+in-flight question genuinely matters.
+
+**Strategy 3: Tiered backoff with explicit signaling.**  Return
+*different* responses based on how long the row has been
+`in_process`:
+
+```
+T < 1 sec:      409 In Progress,  Retry-After: 1
+1 ≤ T < 30 sec: 409 In Progress,  Retry-After: 5
+30 sec ≤ T < 5 min: 202 Accepted, includes started_at, hint "may be slow or stuck"
+T ≥ 5 min:      re-claim and proceed
+```
+
+*Pros:* client gets actionable info at each tier; operators see
+the awkward middle in metrics.
+
+*Cons:* more wire-format complexity, more client-side state.
+Overkill for a low-frequency scenario.
+
+**Recommendation for postWolf:** Strategy 1 (hard TTL) with a
+5-minute window, *and* return a useful response payload so
+retries aren't blind:
+
+```
+HTTP 409 Conflict
+{
+  "error": "idempotency_in_progress",
+  "key": "abc-123-...",
+  "started_at": "2026-05-10T14:32:01Z",
+  "elapsed_sec": 4,
+  "retry_after_sec": 2
+}
+```
+
+Reasoning:
+
+1. **postWolf's operations are fast.**  ML-DSA verify + DB writes
+   complete in well under a second.  An `in_process` row older
+   than a few seconds is far more likely "crashed" than "still
+   working."  A 5-minute TTL is three orders of magnitude past
+   the 95th-percentile completion time — gives the rare slow
+   case room to finish while making crashes self-heal.
+2. **Forked-per-request architecture means crashes are
+   localized.**  A fork dying takes just one connection with it;
+   subsequent retries get fresh forks.  The TTL window only
+   needs to outlast the longest legitimate request, not anything
+   cluster-wide.
+3. **The probability of landing in the awkward middle is tiny.**
+   Cosmic-ray retries (the original motivation for #80) happen
+   *after* the response was sent — by definition the work
+   completed, so the cache row is `complete`, not `in_process`.
+   The `in_process` window only matters for genuine concurrent
+   requests or active hangs, both rare.
+4. **Strategy 2 buys you correctness you don't need at the cost
+   of complexity that bites you.**  Especially given Neon's
+   pooler quirks — session-scoped advisory locks across a pooled
+   connection are a footgun waiting to fire.
+
+**Belt-and-suspenders addition.**  When re-claiming a stale
+`in_process` row, *log it loudly*:
+`[idempotency] reclaiming stale row key=... started_at=... age=...`
+at `LOG_INFO` (or `MQC_SECURITY` if you want to be paranoid).
+If you see these in production, it tells you either (a)
+operations are taking longer than the TTL allows (legitimately)
+and the TTL needs raising, or (b) something is crashing mid-work
+that you should investigate.  Either way you want to know.
 
 ---
 
