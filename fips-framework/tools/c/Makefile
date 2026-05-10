@@ -28,8 +28,14 @@ TARGETS = fips-manifest-submit fips-manifest-verify fips-manifest-list \
 
 all: $(TARGETS)
 
-fips-manifest-submit: fips-manifest-submit.c
-	$(CC) $(CFLAGS) -o $@ $< $(POSTWOLF_LIBS) $(JSON_LIBS)
+# fips-manifest-submit POSTs to /fips/manifest over MQC by default
+# (--dry-run preserves offline mode), so it gets the same MQC +
+# read-config wiring as the other MQC-talking tools.  Its inline
+# mqc_http_post mirrors fips-manifest-revoke.c's.
+fips-manifest-submit: fips-manifest-submit.c $(READ_CONFIG_SRC) $(MQC_LIB)
+	$(CC) $(CFLAGS) $(LIST_CFLAGS) -o $@ \
+		fips-manifest-submit.c $(READ_CONFIG_SRC) $(MQC_LIB) \
+		$(POSTWOLF_LIBS) $(JSON_LIBS) $(LIST_LIBS)
 
 fips-manifest-verify: fips-manifest-verify.c $(READ_CONFIG_SRC) $(MQC_LIB)
 	$(CC) $(CFLAGS) $(LIST_CFLAGS) -o $@ \

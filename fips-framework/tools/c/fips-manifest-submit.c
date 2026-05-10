@@ -1,26 +1,40 @@
 /*
- * fips-manifest-submit — build a FIPS-manifest canonical leaf.
+ * fips-manifest-submit — wrap an already-signed MANIFEST.sha256 as a
+ * FIPS canonical leaf and (by default) POST it to the MTC log over MQC.
  *
- * Phase-1 (this revision): --dry-run only.  Builds the
- * canonical-leaf bytes per fips-framework/spec-canonical-leaf.md,
- * signs them with the publisher's ML-DSA-87 key from
- * ~/.TPM/<DOMAIN>-<LABEL>/, self-verifies the signature, and writes
- * the result to stdout (or --out).  No network.
+ * Reads the file→hash table from <source-dir>/MANIFEST.sha256 (which
+ * sign-dir.sh produced — typically with -g, so gitignored artefacts
+ * are excluded) instead of re-walking + re-hashing.  Adds the FIPS-
+ * specific metadata (package, version, validity window, schema_version,
+ * publisher_cert_index from the manifest header), wraps as the canonical
+ * leaf JSON per fips-framework/spec-canonical-leaf.md, signs it with
+ * the publisher's ML-DSA-87 key from ~/.TPM/<DOMAIN>-<LABEL>/, and
+ * (default mode) POSTs the canonical JSON to /fips/manifest.
  *
- * Phase-2 (later): same construction, then POST to /fips/manifest
- * over MQC and persist the receipt.
+ * Why read MANIFEST.sha256 instead of walking?  sign-dir.sh has already
+ * produced and signed the file→hash table for the publisher's chosen
+ * "kit" (the .gitignore-respecting set when invoked with -g).  Walking
+ * again would duplicate that work and risk producing a different file
+ * set than what verify-dir.sh would check.  Single source of truth.
+ *
+ * The server's JSON receipt is persisted under
+ * <tpm_dir>/fips-receipts/<package>-<version>-<log_index>.json
+ * so it can be fed straight into `fips-manifest-verify --receipt`.
+ *
+ * --dry-run preserves the offline mode: builds and signs but does not
+ * POST; emits raw leaf bytes (0x02 || canonical_json) to stdout (or --out).
  *
  * Usage:
  *   fips-manifest-submit --domain DOMAIN --label LABEL \
- *                        --package PKG  --version VER \
- *                        --source-dir DIR \
- *                        [--out FILE]            (default: stdout)
- *                        [--validity-days N]     (default: 30, max: 365)
- *                        [--dry-run]             (default: on; only mode)
- *                        [--pretty]              (also emit indented JSON to stderr)
- *
- * Output (stdout):
- *   final canonical leaf bytes — 0x02 || canonical_json — raw binary.
+ *                        --package PKG --version VER \
+ *                        --source-dir DIR
+ *                        [--manifest PATH]      (default: <source-dir>/MANIFEST.sha256)
+ *                        [--out FILE]           (also save raw leaf)
+ *                        [--receipt-out FILE]   (override receipt path)
+ *                        [--validity-days N]    (default: 30, max: 365)
+ *                        [--dry-run]            (build + sign, skip POST)
+ *                        [--pretty]             (indented JSON to stderr)
+ *                        [-s, --server H[:P]]   (default: [global] url-server)
  *
  * Exit code: 0 on success, non-zero on any failure.
  */
@@ -48,6 +62,18 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+
+/* MQC plumbing for the wire-submit path (default mode).  Pulled in
+ * unconditionally; the network code only executes when --dry-run is
+ * off.  mqc_http_post lives at the bottom of this file (same pattern
+ * as fips-manifest-revoke.c — each tool keeps its own inline copy
+ * pending a future shared-helper refactor). */
+#define _GNU_SOURCE   /* strcasestr */
+#include "mqc.h"
+#include "mqc_peer.h"
+#include "read-config.h"
+#include "../../../socket-level-wrapper-MQC/config.h"
+#include "config.h"
 
 #define FIPS_ENTRY_TYPE       0x02
 #define MTC_HASH_SIZE         32
@@ -117,34 +143,6 @@ static int read_whole_file(const char *path, uint8_t **out, size_t *out_sz)
     p[sz] = 0;
     fclose(fp);
     *out = p; *out_sz = (size_t)sz;
-    return 0;
-}
-
-static int sha256_file_hex(const char *path, char out_hex[65])
-{
-    FILE *fp = fopen(path, "rb");
-    if (!fp) return -1;
-    wc_Sha256 sha;
-    if (wc_InitSha256(&sha) != 0) { fclose(fp); return -1; }
-    uint8_t buf[8192];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
-        if (wc_Sha256Update(&sha, buf, (word32)n) != 0) {
-            wc_Sha256Free(&sha); fclose(fp); return -1;
-        }
-    }
-    uint8_t h[32];
-    if (wc_Sha256Final(&sha, h) != 0) {
-        wc_Sha256Free(&sha); fclose(fp); return -1;
-    }
-    wc_Sha256Free(&sha);
-    fclose(fp);
-    static const char hex[] = "0123456789abcdef";
-    for (int i = 0; i < 32; i++) {
-        out_hex[i*2]   = hex[(h[i] >> 4) & 0xf];
-        out_hex[i*2+1] = hex[h[i] & 0xf];
-    }
-    out_hex[64] = 0;
     return 0;
 }
 
@@ -259,58 +257,98 @@ static int fl_cmp(const void *a, const void *b)
                   ((const file_entry *)b)->path);
 }
 
-/* base_dir: absolute path; rel_prefix: relative prefix accumulated
- * as we descend (empty at top level).  Same exclusions as
- * sign-dir.sh: skip .git/, MANIFEST.sha256, MANIFEST.sig,
- * private_key.pem.  Symlinks followed. */
-static void walk_dir(const char *base_dir, const char *rel_prefix,
-                     file_list *fl)
+/* read_manifest — populate `fl` from a sign-dir.sh-style MANIFEST.sha256.
+ *
+ * Format produced by fips-framework/tools/sh/sign-dir.sh:
+ *   # publisher: <DOMAIN>
+ *   # publisher-cert-index: <N>
+ *   # git-commit: <HEAD>[-dirty]      (optional)
+ *   <sha256-hex>  <relpath>
+ *   <sha256-hex>  <relpath>
+ *   ...
+ *
+ * Out-params (any may be NULL): publisher_out, cert_index_out,
+ * git_commit_out (each receive heap-allocated strings except
+ * cert_index_out which is an int*).  Lines starting with '#' are
+ * header lines; the three known headers above are parsed, others
+ * are ignored.  Blank lines skipped.  Body lines must be exactly
+ * "<64-hex-chars>  <path>" (two-space separator, sha256sum format).
+ */
+static void read_manifest(const char *manifest_path,
+                          file_list *fl,
+                          char **publisher_out,
+                          int  *cert_index_out,
+                          char **git_commit_out)
 {
-    char abs[4096];
-    if (rel_prefix[0])
-        snprintf(abs, sizeof(abs), "%s/%s", base_dir, rel_prefix);
-    else
-        snprintf(abs, sizeof(abs), "%s", base_dir);
+    FILE *f = fopen(manifest_path, "r");
+    if (!f) die("cannot open MANIFEST: %s: %s",
+                manifest_path, strerror(errno));
 
-    DIR *d = opendir(abs);
-    if (!d) die("opendir(%s): %s", abs, strerror(errno));
+    if (publisher_out)  *publisher_out  = NULL;
+    if (cert_index_out) *cert_index_out = -1;
+    if (git_commit_out) *git_commit_out = NULL;
 
-    struct dirent *de;
-    while ((de = readdir(d))) {
-        const char *name = de->d_name;
-        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
-        if (!strcmp(name, ".git")) continue;
-        if (!strcmp(name, "MANIFEST.sha256") ||
-            !strcmp(name, "MANIFEST.sig") ||
-            !strcmp(name, "private_key.pem")) continue;
+    char line[PATH_FIELD_MAX + 128];
+    while (fgets(line, sizeof(line), f)) {
+        size_t n = strlen(line);
+        while (n > 0 && (line[n-1] == '\n' || line[n-1] == '\r'))
+            line[--n] = 0;
+        if (n == 0) continue;
 
-        char rel[PATH_FIELD_MAX + 64];
-        if (rel_prefix[0])
-            snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, name);
-        else
-            snprintf(rel, sizeof(rel), "%s", name);
-
-        char child_abs[4096];
-        snprintf(child_abs, sizeof(child_abs), "%s/%s", base_dir, rel);
-
-        struct stat st;
-        if (stat(child_abs, &st) != 0) continue;   /* broken symlink */
-
-        if (S_ISDIR(st.st_mode)) {
-            walk_dir(base_dir, rel, fl);
-        } else if (S_ISREG(st.st_mode)) {
-            file_entry e;
-            if (strlen(rel) > PATH_FIELD_MAX)
-                die("path > %d bytes: %s", PATH_FIELD_MAX, rel);
-            if (validate_relpath(rel) != 0)
-                die("invalid path: %s", rel);
-            snprintf(e.path, sizeof(e.path), "%s", rel);
-            if (sha256_file_hex(child_abs, e.sha256) != 0)
-                die("sha256 failed for %s", child_abs);
-            fl_push(fl, &e);
+        if (line[0] == '#') {
+            const char *p = line + 1;
+            while (*p == ' ' || *p == '\t') p++;
+            if (publisher_out && !*publisher_out &&
+                strncmp(p, "publisher:", 10) == 0) {
+                p += 10;
+                while (*p == ' ' || *p == '\t') p++;
+                *publisher_out = strdup(p);
+            } else if (cert_index_out && *cert_index_out < 0 &&
+                       strncmp(p, "publisher-cert-index:", 21) == 0) {
+                p += 21;
+                while (*p == ' ' || *p == '\t') p++;
+                *cert_index_out = atoi(p);
+            } else if (git_commit_out && !*git_commit_out &&
+                       strncmp(p, "git-commit:", 11) == 0) {
+                p += 11;
+                while (*p == ' ' || *p == '\t') p++;
+                *git_commit_out = strdup(p);
+            }
+            continue;
         }
+
+        /* Body line: <64-hex>  <path>  (sha256sum format) */
+        if (n < 67 || line[64] != ' ' || line[65] != ' ') {
+            fclose(f);
+            die("MANIFEST line not in <64-hex>'  '<path> form: %s", line);
+        }
+        char hash[65];
+        memcpy(hash, line, 64);
+        hash[64] = 0;
+        for (int i = 0; i < 64; i++) {
+            char c = hash[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+                fclose(f);
+                die("MANIFEST hash not lowercase hex: %s", hash);
+            }
+        }
+        const char *path = line + 66;
+        size_t path_len = n - 66;
+        if (path_len > PATH_FIELD_MAX) {
+            fclose(f);
+            die("MANIFEST path > %d bytes: %s", PATH_FIELD_MAX, path);
+        }
+        if (validate_relpath(path) != 0) {
+            fclose(f);
+            die("MANIFEST has invalid path: %s", path);
+        }
+
+        file_entry e;
+        snprintf(e.path,   sizeof(e.path),   "%s", path);
+        snprintf(e.sha256, sizeof(e.sha256), "%s", hash);
+        fl_push(fl, &e);
     }
-    closedir(d);
+    fclose(f);
 }
 
 /* -------- key loading ----------------------------------------------- */
@@ -477,28 +515,84 @@ static void serialize_canonical(struct json_object *m,
     buf_append(out, s, strlen(s));
 }
 
-static int git_head_commit(const char *src_dir, char out[80])
+/* git_commit comes from MANIFEST.sha256's `# git-commit:` header
+ * (recorded by sign-dir.sh).  No git probes here. */
+
+/* -------- mqc HTTP POST (mirrors fips-manifest-revoke.c::mqc_http_post) -- */
+
+static char *mqc_http_post(mqc_ctx_t *ctx, const char *host, int port,
+                           const char *path, const char *body, int body_len,
+                           long *code)
 {
-    char cmd[4200];
-    snprintf(cmd, sizeof(cmd),
-        "git -C '%s' rev-parse HEAD 2>/dev/null", src_dir);
-    FILE *p = popen(cmd, "r");
-    if (!p) return -1;
-    if (!fgets(out, 80, p)) { pclose(p); return -1; }
-    pclose(p);
-    size_t n = strlen(out);
-    while (n > 0 && (out[n-1] == '\n' || out[n-1] == '\r')) out[--n] = 0;
-    if (n != 40 && n != 64) return -1;
-    for (size_t i = 0; i < n; i++) {
-        char c = out[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return -1;
+    if (code) *code = 0;
+    mqc_conn_t *conn = mqc_connect(ctx, host, port);
+    if (!conn) { usleep(100000); conn = mqc_connect(ctx, host, port); }
+    if (!conn) return NULL;
+
+    char hdr[1024];
+    snprintf(hdr, sizeof(hdr),
+             "POST %s HTTP/1.1\r\n"
+             "Host: %s:%d\r\n"
+             "Content-Type: application/json\r\n"
+             "Content-Length: %d\r\n"
+             "Connection: close\r\n\r\n",
+             path, host, port, body_len);
+    if (mqc_write(conn, hdr, (int)strlen(hdr)) < 0) {
+        mqc_close(conn); return NULL;
     }
-    /* dirty? */
-    snprintf(cmd, sizeof(cmd),
-        "git -C '%s' diff-index --quiet HEAD -- . 2>/dev/null", src_dir);
-    if (system(cmd) != 0)
-        snprintf(out + n, 80 - n, "-dirty");
-    return 0;
+    if (body_len > 0 && mqc_write(conn, body, body_len) < 0) {
+        mqc_close(conn); return NULL;
+    }
+
+    /* mqc_read consumes the frame length prefix BEFORE checking that
+     * the frame fits in the caller's buffer; if total_len > sz, it
+     * returns -1 with the frame data already off the wire (lost).
+     * The server packs HTTP header + body into a single AEAD frame
+     * (mtc_http.c::http_send_json comment), so a fips-manifest receipt
+     * with the full canonical leaf + inclusion proof + cosignatures
+     * easily exceeds 16 KB.  Pre-size to MQC_MAX_MSG (1 MiB, the
+     * single-frame ceiling) so the first read can always fit. */
+    int buf_cap = 1024 * 1024, buf_sz = 0, n;
+    char *buf = (char *)malloc((size_t)buf_cap);
+    if (!buf) { mqc_close(conn); return NULL; }
+
+    while (1) {
+        if (buf_sz >= buf_cap - 1) {
+            char *tmp;
+            buf_cap *= 2;
+            tmp = (char *)realloc(buf, (size_t)buf_cap);
+            if (!tmp) break;
+            buf = tmp;
+        }
+        n = mqc_read(conn, buf + buf_sz, buf_cap - 1 - buf_sz);
+        if (n <= 0) break;
+        buf_sz += n;
+        buf[buf_sz] = '\0';
+        char *bs = strstr(buf, "\r\n\r\n");
+        if (bs) {
+            char *cl = strcasestr(buf, "Content-Length:");
+            bs += 4;
+            if (cl) {
+                int content_len = atoi(cl + 15);
+                int header_len  = (int)(bs - buf);
+                if (buf_sz - header_len >= content_len) break;
+            } else break;
+        }
+    }
+    buf[buf_sz] = '\0';
+    mqc_close(conn);
+
+    long status = 0;
+    if (buf_sz >= 12 && strncmp(buf, "HTTP/1.", 7) == 0)
+        status = atol(buf + 9);
+    if (code) *code = status;
+
+    char *bs = strstr(buf, "\r\n\r\n");
+    if (!bs) { free(buf); return NULL; }
+    bs += 4;
+    char *result = strdup(bs);
+    free(buf);
+    return result;
 }
 
 /* -------- main ------------------------------------------------------ */
@@ -506,18 +600,31 @@ static int git_head_commit(const char *src_dir, char out[80])
 static void usage(const char *prog)
 {
     fprintf(stderr,
-        "Usage: %s --domain D --label L --package P --version V \\\n"
-        "                            --source-dir DIR [--out FILE]\n"
-        "                            [--validity-days N] [--dry-run] [--pretty]\n"
+        "Usage: %s --domain D [--label L] --package P --version V \\\n"
+        "                            --source-dir DIR\n"
+        "                            [--manifest PATH]      (default: <source-dir>/MANIFEST.sha256)\n"
+        "                            [--out FILE]           (also save raw leaf)\n"
+        "                            [--receipt-out FILE]   (override receipt path)\n"
+        "                            [--validity-days N]    (default: 30, max: 365)\n"
+        "                            [--dry-run]            (build + sign, skip POST)\n"
+        "                            [--pretty]             (indented JSON to stderr)\n"
+        "                            [-s, --server H[:P]]   (default: [global] url-server)\n"
         "                            [--now EPOCH]\n"
         "\n"
-        "Builds canonical FIPS-manifest leaf bytes per\n"
-        "fips-framework/spec-canonical-leaf.md and signs with the\n"
-        "publisher key at ~/.TPM/<DOMAIN>-<LABEL>/.  Currently\n"
-        "--dry-run is the only mode (network submission lands in\n"
-        "phase 2).  Default output: raw canonical-leaf bytes\n"
-        "(0x02 || canonical_json) on stdout.  --pretty also writes\n"
-        "indented JSON to stderr for inspection.\n",
+        "Reads <source-dir>/MANIFEST.sha256 (produced by sign-dir.sh,\n"
+        "typically with -g so gitignored files are excluded), wraps the\n"
+        "file→hash table as a FIPS canonical leaf with the FIPS-specific\n"
+        "metadata (package, version, validity window, schema_version),\n"
+        "signs it with the publisher key at ~/.TPM/<DOMAIN>-<LABEL>/, and\n"
+        "(default mode) POSTs to /fips/manifest over MQC.  Server's\n"
+        "receipt persisted under\n"
+        "<tpm_dir>/fips-receipts/<package>-<version>-<log_index>.json.\n"
+        "\n"
+        "--dry-run skips the network step; emits raw leaf bytes\n"
+        "(0x02 || canonical_json) on stdout (or --out).\n"
+        "\n"
+        "Pre-req: run `sign-dir.sh -g <DOMAIN> <source-dir>` first to\n"
+        "produce MANIFEST.sha256 + MANIFEST.sig.\n",
         prog);
     exit(2);
 }
@@ -526,46 +633,56 @@ int main(int argc, char **argv)
 {
     const char *domain = NULL, *label = NULL, *package = NULL;
     const char *version = NULL, *source_dir = NULL, *out_path = NULL;
+    const char *receipt_out_path = NULL;
+    const char *manifest_path_cli = NULL;
+    const char *cli_server = NULL;
     int validity_days = VALIDITY_DAYS_DEFAULT;
-    int dry_run = 1;   /* phase 1: only mode */
+    int dry_run = 0;
     long now_override = -1;   /* >=0 pins not_before; for reproducible test vectors */
 
     static struct option opts[] = {
-        {"domain",         required_argument, 0, 'd'},
-        {"label",          required_argument, 0, 'l'},
-        {"package",        required_argument, 0, 'p'},
-        {"version",        required_argument, 0, 'v'},
-        {"source-dir",     required_argument, 0, 's'},
-        {"out",            required_argument, 0, 'o'},
-        {"validity-days",  required_argument, 0, 't'},
-        {"dry-run",        no_argument,       0, 'n'},
-        {"pretty",         no_argument,       0, 'P'},
-        {"now",            required_argument, 0, 'N'},
-        {"help",           no_argument,       0, 'h'},
+        {"domain",            required_argument, 0, 'd'},
+        {"label",             required_argument, 0, 'l'},
+        {"package",           required_argument, 0, 'p'},
+        {"version",           required_argument, 0, 'v'},
+        {"source-dir",        required_argument, 0, 'S'},
+        {"manifest",          required_argument, 0, 'M'},
+        {"out",               required_argument, 0, 'o'},
+        {"receipt-out",       required_argument, 0, 'R'},
+        {"validity-days",     required_argument, 0, 't'},
+        {"dry-run",           no_argument,       0, 'n'},
+        {"pretty",            no_argument,       0, 'P'},
+        {"server",            required_argument, 0, 's'},
+        {"now",               required_argument, 0, 'N'},
+        {"help",              no_argument,       0, 'h'},
         {0,0,0,0}
     };
     int c;
-    while ((c = getopt_long(argc, argv, "d:l:p:v:s:o:t:nPN:h", opts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv,
+                            "d:l:p:v:S:M:o:R:t:nPs:N:h", opts, NULL)) != -1) {
         switch (c) {
             case 'd': domain = optarg; break;
             case 'l': label = optarg; break;
             case 'p': package = optarg; break;
             case 'v': version = optarg; break;
-            case 's': source_dir = optarg; break;
+            case 'S': source_dir = optarg; break;
+            case 'M': manifest_path_cli = optarg; break;
             case 'o': out_path = optarg; break;
+            case 'R': receipt_out_path = optarg; break;
             case 't': validity_days = atoi(optarg); break;
             case 'n': dry_run = 1; break;
             case 'P': g_pretty = 1; break;
+            case 's': cli_server = optarg; break;
             case 'N': now_override = atol(optarg); break;
             default:  usage(argv[0]);
         }
     }
 
-    if (!domain || !label || !package || !version || !source_dir)
+    if (!domain || !package || !version || !source_dir)
         usage(argv[0]);
     if (validity_days < 1 || validity_days > VALIDITY_DAYS_MAX)
         die("--validity-days out of range (1..%d)", VALIDITY_DAYS_MAX);
-    if (validate_label(label) != 0)
+    if (label && validate_label(label) != 0)
         die("invalid --label");
     if (validate_package(package) != 0)
         die("invalid --package");
@@ -574,14 +691,17 @@ int main(int argc, char **argv)
     if (validate_publisher(domain) != 0)
         die("invalid --domain (must be lowercase ASCII LDH)");
 
-    if (!dry_run)
-        die("non-dry-run not implemented in phase 1");
-
-    /* Locate the TPM identity */
+    /* Locate the TPM identity.  --label is optional: when omitted, the
+     * identity dir is ~/.TPM/<DOMAIN>/ (matches sign-dir.sh's
+     * convention).  When set, ~/.TPM/<DOMAIN>-<LABEL>/. */
     const char *home = getenv("HOME");
     if (!home) die("HOME unset");
     char tpm_dir[2048];
-    snprintf(tpm_dir, sizeof(tpm_dir), "%s/.TPM/%s-%s", home, domain, label);
+    if (label && label[0])
+        snprintf(tpm_dir, sizeof(tpm_dir), "%s/.TPM/%s-%s",
+                 home, domain, label);
+    else
+        snprintf(tpm_dir, sizeof(tpm_dir), "%s/.TPM/%s", home, domain);
     struct stat st;
     if (stat(tpm_dir, &st) != 0 || !S_ISDIR(st.st_mode))
         die("TPM identity not found: %s", tpm_dir);
@@ -599,11 +719,34 @@ int main(int argc, char **argv)
         die("subject mismatch: cert says '%s' but --domain is '%s'",
             pk.subject, domain);
 
-    /* Walk + hash files */
+    /* Read sign-dir.sh-produced MANIFEST.sha256 instead of re-walking
+     * the source tree.  Single source of truth: whatever set sign-dir.sh
+     * decided to include (with -g, .gitignored artefacts are excluded). */
+    char default_manifest[8192];
+    const char *manifest_path = manifest_path_cli;
+    if (!manifest_path) {
+        snprintf(default_manifest, sizeof(default_manifest),
+                 "%s/MANIFEST.sha256", src_abs);
+        manifest_path = default_manifest;
+    }
+
     file_list files;
     fl_init(&files);
-    walk_dir(src_abs, "", &files);
-    if (files.n == 0) die("no files under %s", src_abs);
+    char *m_publisher = NULL;
+    int   m_cert_index = -1;
+    char *m_git_commit = NULL;
+    read_manifest(manifest_path, &files,
+                  &m_publisher, &m_cert_index, &m_git_commit);
+    if (files.n == 0)
+        die("MANIFEST contained no file entries: %s", manifest_path);
+
+    /* Cross-check the manifest header against CLI / cert. */
+    if (m_publisher && strcmp(m_publisher, domain) != 0)
+        die("MANIFEST publisher '%s' != --domain '%s'", m_publisher, domain);
+    if (m_cert_index >= 0 && m_cert_index != pk.cert_index)
+        die("MANIFEST publisher-cert-index %d != cert.json index %d",
+            m_cert_index, pk.cert_index);
+
     qsort(files.items, files.n, sizeof(file_entry), fl_cmp);
 
     /* Reject duplicates after sort */
@@ -612,9 +755,16 @@ int main(int argc, char **argv)
             die("duplicate path after sort: %s", files.items[i].path);
     }
 
-    /* Optional git_commit */
+    /* git_commit comes from MANIFEST header (sign-dir.sh records it).
+     * If the source dir wasn't a git repo at sign time, the header is
+     * absent and the canonical leaf simply omits the field. */
     char git_commit[80] = {0};
-    int has_git = (git_head_commit(src_abs, git_commit) == 0);
+    int has_git = 0;
+    if (m_git_commit && m_git_commit[0] &&
+        strlen(m_git_commit) < sizeof(git_commit)) {
+        snprintf(git_commit, sizeof(git_commit), "%s", m_git_commit);
+        has_git = 1;
+    }
 
     /* Validity window.  --now pins not_before for reproducible
      * canonical bytes (test vectors); default is wall-clock time. */
@@ -714,25 +864,169 @@ int main(int argc, char **argv)
     }
     json_object_put(m_final);
 
-    /* Emit final canonical leaf bytes: 0x02 prefix + canonical JSON */
+    /* Build the leaf bytes (0x02 prefix + canonical JSON).  The
+     * server's /fips/manifest body excludes the prefix — that's
+     * a leaf-internal marker the server prepends before
+     * mtc_store_add_entry — but --out and --dry-run stdout emit
+     * the full leaf for offline inspection / piping into verify. */
     buf_t leaf; buf_init(&leaf);
     uint8_t prefix = FIPS_ENTRY_TYPE;
     buf_append(&leaf, &prefix, 1);
     buf_append(&leaf, final_bytes.data, final_bytes.len);
 
-    FILE *out = stdout;
+    /* Optional: also save the raw leaf bytes locally. */
     if (out_path) {
-        out = fopen(out_path, "wb");
-        if (!out) die("cannot write %s: %s", out_path, strerror(errno));
+        FILE *of = fopen(out_path, "wb");
+        if (!of) die("cannot write %s: %s", out_path, strerror(errno));
+        if (fwrite(leaf.data, 1, leaf.len, of) != leaf.len)
+            die("fwrite failed");
+        fclose(of);
     }
-    if (fwrite(leaf.data, 1, leaf.len, out) != leaf.len)
-        die("fwrite failed");
-    if (out_path) fclose(out);
+
+    if (dry_run) {
+        /* Offline mode: emit raw leaf bytes to stdout if --out wasn't
+         * given.  Don't network. */
+        if (!out_path) {
+            if (fwrite(leaf.data, 1, leaf.len, stdout) != leaf.len)
+                die("fwrite failed");
+        }
+        fprintf(stderr,
+            "fips-manifest-submit: [dry-run] built %zu-byte canonical leaf "
+            "(%zu files from %s, signature %zu B64-chars, cert_index %d)\n",
+            leaf.len, files.n, manifest_path,
+            (size_t)sig_b64_sz, pk.cert_index);
+        buf_free(&signing_bytes); buf_free(&final_bytes); buf_free(&leaf);
+        fl_free(&files);
+        free_publisher_key(&pk);
+        free(m_publisher); free(m_git_commit);
+        return 0;
+    }
+
+    /* ---- wire-POST mode (default) -------------------------------- */
+
+    /* Resolve server: --server, then [global] url-server, then default. */
+    char *server_owned = NULL;
+    const char *server = cli_server;
+    if (!server) {
+        server_owned = read_config_url("global/url-server");
+        server = server_owned ? server_owned : MQC_DEFAULT_SERVER;
+    }
+    const char *colon_slash = strstr(server, "://");
+    if (colon_slash) server = colon_slash + 3;
+
+    char host_buf[256];
+    int port = MQC_DEFAULT_SERVER_PORT;
+    snprintf(host_buf, sizeof(host_buf), "%s", server);
+    {
+        char *cn = strrchr(host_buf, ':');
+        if (cn) { *cn = 0; port = atoi(cn + 1); }
+    }
+
+    static unsigned char ca_pubkey[DILITHIUM_LEVEL5_PUB_KEY_SIZE];
+    if (mqc_load_ca_pubkey(host_buf, ca_pubkey) != 0)
+        die("could not load CA cosigner pubkey from %s", host_buf);
+
+    mqc_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.role         = MQC_CLIENT;
+    cfg.tpm_path     = tpm_dir;
+    cfg.mtc_server   = host_buf;
+    cfg.ca_pubkey    = ca_pubkey;
+    cfg.ca_pubkey_sz = DILITHIUM_LEVEL5_PUB_KEY_SIZE;
+
+    mqc_ctx_t *ctx = mqc_ctx_new(&cfg);
+    if (!ctx) die("MQC context creation failed (tpm_path=%s)", tpm_dir);
+
+    /* Server expects canonical JSON only, NOT the 0x02-prefixed leaf. */
+    long code = 0;
+    char *resp = mqc_http_post(ctx, host_buf, port, "/fips/manifest",
+                               (const char *)final_bytes.data,
+                               (int)final_bytes.len, &code);
+    mqc_ctx_free(ctx);
+
+    if (!resp) {
+        free(server_owned);
+        free(m_publisher); free(m_git_commit);
+        die("MQC POST %s:%d/fips/manifest failed", host_buf, port);
+    }
+    if (code != 200) {
+        fprintf(stderr,
+            "fips-manifest-submit: server returned HTTP %ld\n%s\n",
+            code, resp);
+        free(resp);
+        free(server_owned);
+        buf_free(&signing_bytes); buf_free(&final_bytes); buf_free(&leaf);
+        fl_free(&files);
+        free_publisher_key(&pk);
+        free(m_publisher); free(m_git_commit);
+        return 1;
+    }
+
+    /* Parse the receipt to pull out leaf_index for the persistence path. */
+    struct json_object *r = json_tokener_parse(resp);
+    if (!r) {
+        fprintf(stderr,
+            "fips-manifest-submit: server reply not valid JSON: %s\n", resp);
+        free(resp);
+        free(server_owned);
+        free(m_publisher); free(m_git_commit);
+        return 1;
+    }
+    int leaf_index = -1;
+    {
+        struct json_object *v;
+        if (json_object_object_get_ex(r, "leaf_index", &v))
+            leaf_index = json_object_get_int(v);
+    }
+
+    /* Persist the receipt.  Default path:
+     *   <tpm_dir>/fips-receipts/<package>-<version>-<log_index>.json
+     * --receipt-out overrides. */
+    char default_receipt_path[4096];
+    if (!receipt_out_path) {
+        char dir[2200];
+        snprintf(dir, sizeof(dir), "%s/fips-receipts", tpm_dir);
+        if (mkdir(dir, 0700) != 0 && errno != EEXIST)
+            fprintf(stderr,
+                "fips-manifest-submit: warning: mkdir %s: %s\n",
+                dir, strerror(errno));
+        snprintf(default_receipt_path, sizeof(default_receipt_path),
+                 "%s/%s-%s-%d.json",
+                 dir, package, version, leaf_index);
+        receipt_out_path = default_receipt_path;
+    }
+
+    {
+        FILE *rf = fopen(receipt_out_path, "wb");
+        if (!rf) {
+            fprintf(stderr,
+                "fips-manifest-submit: warning: cannot write %s: %s\n",
+                receipt_out_path, strerror(errno));
+        } else {
+            const char *pretty = json_object_to_json_string_ext(
+                r, JSON_C_TO_STRING_PRETTY | JSON_C_TO_STRING_NOSLASHESCAPE);
+            size_t pn = strlen(pretty);
+            if (fwrite(pretty, 1, pn, rf) != pn ||
+                fwrite("\n", 1, 1, rf) != 1) {
+                fprintf(stderr,
+                    "fips-manifest-submit: warning: write to %s failed\n",
+                    receipt_out_path);
+            }
+            fclose(rf);
+            chmod(receipt_out_path, 0600);
+        }
+    }
 
     fprintf(stderr,
-        "fips-manifest-submit: built %zu-byte canonical leaf "
-        "(%zu files, signature %zu B64-chars, cert_index %d)\n",
-        leaf.len, files.n, (size_t)sig_b64_sz, pk.cert_index);
+        "fips-manifest-submit: submitted: log_index=%d "
+        "(%zu files, %zu-byte canonical leaf, cert_index %d)\n"
+        "fips-manifest-submit: receipt: %s\n",
+        leaf_index, files.n, leaf.len, pk.cert_index, receipt_out_path);
+
+    json_object_put(r);
+    free(resp);
+    free(server_owned);
+    free(m_publisher); free(m_git_commit);
 
     buf_free(&signing_bytes); buf_free(&final_bytes); buf_free(&leaf);
     fl_free(&files);

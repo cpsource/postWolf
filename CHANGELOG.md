@@ -41,6 +41,41 @@ the open issue list.
   `show-tpm --verify` flags `[TILES STALE]` only when `lag > 1` AND
   `last_tile_update_age_sec > 3600`.  Read-only endpoint, no schema
   changes.
+- **`fips-manifest-submit` phase-2 wire submit** — the tool now POSTs
+  the canonical leaf to `/fips/manifest` over MQC by default
+  (`--dry-run` preserves the offline build-and-sign mode).  Reads
+  `<source-dir>/MANIFEST.sha256` (produced by `sign-dir.sh`) instead
+  of re-walking + re-hashing the source tree, so the file→hash table
+  is whatever sign-dir.sh decided to include (with `-g`, gitignored
+  artefacts are excluded).  `# publisher:`, `# publisher-cert-index:`,
+  and `# git-commit:` headers from the manifest are cross-checked
+  against `--domain` + on-disk cert + carried into the canonical
+  leaf.  Server's JSON receipt persisted under
+  `<tpm_dir>/fips-receipts/<package>-<version>-<log_index>.json`
+  for later `fips-manifest-verify --receipt` use.  New flags:
+  `--manifest PATH`, `--receipt-out FILE`, `-s/--server H[:P]`.
+  `--label` is now optional (matches `sign-dir.sh`'s `~/.TPM/<DOMAIN>/`
+  convention).  Inline `mqc_http_post` mirrors the same shape used
+  by `fips-manifest-revoke`.  Closes the supported-submitter gap
+  under TODO #7.
+
+### Fixed
+
+- **`fips-manifest-submit`'s response reader** — `mqc_read` consumes a
+  frame's length prefix BEFORE checking that the frame fits in the
+  caller's buffer, so a frame larger than the buffer returns -1
+  with the bytes already off the wire (`socket-level-wrapper-MQC/
+  mqc_common.c:1860-1861`).  The server packs HTTP header + body
+  into one AEAD frame (`mtc_http.c::http_send_json` comment), and a
+  fips-manifest receipt with the full canonical leaf + inclusion
+  proof + cosignatures easily exceeds the prior 16 KB initial
+  buffer.  Pre-size to `MQC_MAX_MSG` (1 MiB, the single-frame
+  ceiling) so the first read can always fit.  Same latent bug
+  exists in the inlined `mqc_http_get`/`mqc_http_post` copies in
+  `fips-manifest-revoke.c`, `fips-manifest-list.c`,
+  `fips-manifest-verify.c`, and the mtc-keymaster client tools —
+  not fixed here; they happen to work today only because their
+  response payloads are small.
 
 ## [0.1.2] — 2026-05-09
 
