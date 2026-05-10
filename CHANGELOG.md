@@ -27,6 +27,10 @@ the open issue list.
 
 ## [Unreleased]
 
+(no changes since 0.1.3)
+
+## [0.1.3] — 2026-05-10
+
 ### Added
 
 - **`GET /log/diagnostics` server endpoint** + `show-tpm --verify`
