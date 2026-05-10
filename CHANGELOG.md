@@ -27,7 +27,18 @@ the open issue list.
 
 ## [Unreleased]
 
-(no changes since 0.1.2)
+### Added
+
+- **`GET /log/diagnostics` server endpoint** + `show-tpm --verify`
+  consumer.  Returns `{log_entries_count, log_entries_max_index,
+  checkpoint_tree_size, tiles_max_leaf_coverage,
+  last_tile_update_age_sec, last_tile_update_iso}` so operators can
+  detect the "leaves committed to `mtc_log_entries` but
+  `mtc_merkle_tiles` not advanced" class of inconsistency that the
+  cosigned-checkpoint summary alone can't see.  When tiles lag the
+  log, `show-tpm --verify` flags `[TILES STALE]` with a remediation
+  hint pointing at `mtc_rebuild_tiles`.  Read-only endpoint, no
+  schema changes.
 
 ## [0.1.2] — 2026-05-09
 

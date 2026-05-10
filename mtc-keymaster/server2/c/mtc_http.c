@@ -1428,6 +1428,102 @@ static void handle_checkpoint(client_io *io, MtcStore *store)
     json_object_put(cp);
 }
 
+/* GET /log/diagnostics — operator-side health probe.
+ *
+ * Returns counters that let `show-tpm` (and other clients) detect
+ * inconsistencies between the SQL log and the on-disk Merkle tile
+ * store.  Symptom we care about: leaves are appended to
+ * mtc_log_entries but mtc_merkle_tiles isn't advanced, so receipt
+ * builders for newly-added leaves fail with "inclusion_proof
+ * failed".  Cosigned checkpoint stays at the older size and
+ * show-tpm previously had no signal.
+ *
+ * Response shape:
+ *   {
+ *     "log_entries_count":          <int>,
+ *     "log_entries_max_index":      <int>,
+ *     "checkpoint_tree_size":       <int>,
+ *     "tiles_max_leaf_coverage":    <int>,
+ *     "last_tile_update_age_sec":   <int>,
+ *     "last_tile_update_iso":       "<UTC ISO 8601>"
+ *   }
+ *
+ * Coverage = MAX(first_node + node_count) over level=0 tiles.  When
+ * tiles_max_leaf_coverage < log_entries_count, the tile store is
+ * lagging the log and any submit landing above coverage will fail
+ * to produce a receipt.
+ */
+static void handle_log_diagnostics(client_io *io, MtcStore *store)
+{
+    if (!store->use_db || !store->db) {
+        http_send_error(io, 503, "diagnostics require DB-backed store");
+        return;
+    }
+
+    long log_count = -1, log_max_index = -1;
+    long tiles_coverage = 0;
+    long stale_sec = -1;
+    char tile_iso[64] = {0};
+    int  cp_tree_size = -1;
+
+    PGresult *r;
+
+    r = PQexec(store->db,
+        "SELECT COUNT(*)::bigint, COALESCE(MAX(index), -1)::bigint "
+        "FROM mtc_log_entries");
+    if (PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1) {
+        log_count     = atol(PQgetvalue(r, 0, 0));
+        log_max_index = atol(PQgetvalue(r, 0, 1));
+    }
+    PQclear(r);
+
+    /* Leaves live at level=1 in this schema; level=2+ are interior
+     * tile nodes.  Coverage = max(first_node + node_count) at the
+     * leaf level, which is the count of leaves the tile-store can
+     * build proofs for. */
+    r = PQexec(store->db,
+        "SELECT COALESCE(MAX(first_node + node_count), 0)::bigint, "
+        "       COALESCE(EXTRACT(EPOCH FROM (NOW() - MAX(updated_at)))::bigint, -1), "
+        "       COALESCE(to_char(MAX(updated_at) AT TIME ZONE 'UTC', "
+        "                        'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), '') "
+        "FROM mtc_merkle_tiles WHERE level = 1");
+    if (PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1) {
+        tiles_coverage = atol(PQgetvalue(r, 0, 0));
+        stale_sec      = atol(PQgetvalue(r, 0, 1));
+        snprintf(tile_iso, sizeof(tile_iso), "%s", PQgetvalue(r, 0, 2));
+    }
+    PQclear(r);
+
+    /* Checkpoint tree_size: pull the latest row's payload and parse. */
+    {
+        struct json_object *cp =
+            mtc_db_load_latest_checkpoint(store->db, store->log_id);
+        if (cp) {
+            struct json_object *v = NULL;
+            if (json_object_object_get_ex(cp, "tree_size", &v))
+                cp_tree_size = json_object_get_int(v);
+            json_object_put(cp);
+        }
+    }
+
+    struct json_object *out = json_object_new_object();
+    json_object_object_add(out, "log_entries_count",
+        json_object_new_int64(log_count));
+    json_object_object_add(out, "log_entries_max_index",
+        json_object_new_int64(log_max_index));
+    json_object_object_add(out, "checkpoint_tree_size",
+        json_object_new_int(cp_tree_size));
+    json_object_object_add(out, "tiles_max_leaf_coverage",
+        json_object_new_int64(tiles_coverage));
+    json_object_object_add(out, "last_tile_update_age_sec",
+        json_object_new_int64(stale_sec));
+    json_object_object_add(out, "last_tile_update_iso",
+        json_object_new_string(tile_iso));
+
+    http_send_json_obj(io, 200, out);
+    json_object_put(out);
+}
+
 /* GET /log/consistency?old=N&new=M — Merkle consistency proof. */
 static void handle_consistency(client_io *io, MtcStore *store, const char *path)
 {
@@ -2196,6 +2292,9 @@ static void dispatch_get(client_io *io, MtcStore *store, const char *path)
     }
     else if (strcmp(path, "/log/checkpoint") == 0) {
         handle_checkpoint(io, store);
+    }
+    else if (strcmp(path, "/log/diagnostics") == 0) {
+        handle_log_diagnostics(io, store);
     }
     else if (strncmp(path, "/log/consistency", 16) == 0) {
         handle_consistency(io, store, path);

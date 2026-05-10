@@ -1175,6 +1175,63 @@ int main(int argc, char *argv[])
             }
             free(body);
         }
+
+        /* Log diagnostics — operator-side health probe.  Catches the
+         * "leaves committed to mtc_log_entries but mtc_merkle_tiles
+         * not advanced" class of inconsistency that the cosigned-
+         * checkpoint summary above can't see (it only reports the
+         * last-cosigned size, not whether tiles have caught up since).
+         *
+         * Best-effort: fields default to placeholders if the server is
+         * an older build without /log/diagnostics. */
+        if (verify) {
+            long code = 0;
+            char *body = mqc_http_get("/log/diagnostics", &code);
+            if (body && code == 200) {
+                struct json_object *d = json_tokener_parse(body);
+                if (d) {
+                    struct json_object *v;
+                    long log_count   = -1, log_max = -1;
+                    long tiles_cov   = -1;
+                    long stale_sec   = -1;
+                    int  cp_size     = -1;
+                    const char *iso  = "";
+                    if (json_object_object_get_ex(d, "log_entries_count", &v))
+                        log_count = json_object_get_int64(v);
+                    if (json_object_object_get_ex(d, "log_entries_max_index", &v))
+                        log_max = json_object_get_int64(v);
+                    if (json_object_object_get_ex(d, "tiles_max_leaf_coverage", &v))
+                        tiles_cov = json_object_get_int64(v);
+                    if (json_object_object_get_ex(d, "last_tile_update_age_sec", &v))
+                        stale_sec = json_object_get_int64(v);
+                    if (json_object_object_get_ex(d, "checkpoint_tree_size", &v))
+                        cp_size = json_object_get_int(v);
+                    if (json_object_object_get_ex(d, "last_tile_update_iso", &v))
+                        iso = json_object_get_string(v);
+
+                    int lag = (log_count >= 0 && tiles_cov >= 0)
+                              ? (int)(log_count - tiles_cov) : -1;
+                    const char *flag = "OK";
+                    if (lag > 0) flag = "TILES STALE";
+                    else if (cp_size >= 0 && log_count > 0 &&
+                             cp_size < log_count - 0) flag = "CKPT BEHIND";
+
+                    printf("Log:       entries=%ld  max_index=%ld  "
+                           "checkpoint=%d  tiles_cover=%ld  lag=%d  [%s]\n",
+                           log_count, log_max, cp_size, tiles_cov, lag, flag);
+                    if (stale_sec >= 0)
+                        printf("           last tile update: %s "
+                               "(%ld sec ago)\n", iso, stale_sec);
+                    if (lag > 0)
+                        printf("           WARNING: %d leaf%s past tile "
+                               "coverage — fips submits will receipt-fail; "
+                               "run mtc_rebuild_tiles to rebuild\n",
+                               lag, lag == 1 ? "" : "s");
+                    json_object_put(d);
+                }
+            }
+            free(body);
+        }
     }
 
     /* Print header */
