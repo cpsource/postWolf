@@ -33,12 +33,14 @@ the open issue list.
   consumer.  Returns `{log_entries_count, log_entries_max_index,
   checkpoint_tree_size, tiles_max_leaf_coverage,
   last_tile_update_age_sec, last_tile_update_iso}` so operators can
-  detect the "leaves committed to `mtc_log_entries` but
-  `mtc_merkle_tiles` not advanced" class of inconsistency that the
-  cosigned-checkpoint summary alone can't see.  When tiles lag the
-  log, `show-tpm --verify` flags `[TILES STALE]` with a remediation
-  hint pointing at `mtc_rebuild_tiles`.  Read-only endpoint, no
-  schema changes.
+  cross-check the SQL log against the on-disk Merkle tile store.
+  Tile writes only fire on odd-indexed appends (when a sibling pair
+  completes a parent), so `tiles_max_leaf_coverage = 2 * MAX(first_node
+  + node_count)` over level-1 rows in `mtc_merkle_tiles`, and a lag
+  of 1 (unpaired right-edge leaf) is the normal steady-state.
+  `show-tpm --verify` flags `[TILES STALE]` only when `lag > 1` AND
+  `last_tile_update_age_sec > 3600`.  Read-only endpoint, no schema
+  changes.
 
 ## [0.1.2] — 2026-05-09
 

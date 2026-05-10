@@ -1477,12 +1477,18 @@ static void handle_log_diagnostics(client_io *io, MtcStore *store)
     }
     PQclear(r);
 
-    /* Leaves live at level=1 in this schema; level=2+ are interior
-     * tile nodes.  Coverage = max(first_node + node_count) at the
-     * leaf level, which is the count of leaves the tile-store can
-     * build proofs for. */
+    /* Leaves do NOT live in mtc_merkle_tiles at all (the comment in
+     * mtc_merkle_tiled.c::mtc_tiled_tree_append_leaf calls this out:
+     * leaf hashes go to mtc_log_entries, not the tile store).  The
+     * lowest tile level is 1 — each level-1 entry is the SHA-256 hash
+     * of two adjacent leaves.  Coverage in leaves = 2 * (max level-1
+     * node index covered).  Tile writes only fire on odd-indexed
+     * appends (when a sibling pair completes a parent), so the
+     * rightmost leaf at any moment may be unpaired and not yet
+     * reflected in the tile store; that's normal.  Last-update age
+     * tracks the most recent odd append. */
     r = PQexec(store->db,
-        "SELECT COALESCE(MAX(first_node + node_count), 0)::bigint, "
+        "SELECT COALESCE(2 * MAX(first_node + node_count), 0)::bigint, "
         "       COALESCE(EXTRACT(EPOCH FROM (NOW() - MAX(updated_at)))::bigint, -1), "
         "       COALESCE(to_char(MAX(updated_at) AT TIME ZONE 'UTC', "
         "                        'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), '') "

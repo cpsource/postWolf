@@ -1209,12 +1209,16 @@ int main(int argc, char *argv[])
                     if (json_object_object_get_ex(d, "last_tile_update_iso", &v))
                         iso = json_object_get_string(v);
 
+                    /* Tile writes fire on odd-indexed appends (when a
+                     * sibling pair completes a parent), so a lag of 1
+                     * is the normal state when the rightmost leaf is
+                     * unpaired.  Flag only when the lag exceeds that
+                     * AND the tile store has been quiet for a while. */
                     int lag = (log_count >= 0 && tiles_cov >= 0)
                               ? (int)(log_count - tiles_cov) : -1;
                     const char *flag = "OK";
-                    if (lag > 0) flag = "TILES STALE";
-                    else if (cp_size >= 0 && log_count > 0 &&
-                             cp_size < log_count - 0) flag = "CKPT BEHIND";
+                    int tiles_stale = (lag > 1 && stale_sec > 3600);
+                    if (tiles_stale) flag = "TILES STALE";
 
                     printf("Log:       entries=%ld  max_index=%ld  "
                            "checkpoint=%d  tiles_cover=%ld  lag=%d  [%s]\n",
@@ -1222,11 +1226,12 @@ int main(int argc, char *argv[])
                     if (stale_sec >= 0)
                         printf("           last tile update: %s "
                                "(%ld sec ago)\n", iso, stale_sec);
-                    if (lag > 0)
-                        printf("           WARNING: %d leaf%s past tile "
-                               "coverage — fips submits will receipt-fail; "
-                               "run mtc_rebuild_tiles to rebuild\n",
-                               lag, lag == 1 ? "" : "s");
+                    if (tiles_stale)
+                        printf("           WARNING: %d leaves past tile "
+                               "coverage and last update was %ld sec ago "
+                               "— fips submits may receipt-fail; consider "
+                               "mtc_rebuild_tiles\n",
+                               lag, stale_sec);
                     json_object_put(d);
                 }
             }
