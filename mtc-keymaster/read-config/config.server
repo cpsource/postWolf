@@ -98,3 +98,11 @@ url-local-port-disabled Yes
 # the FIRST time it sees Redis-down and lets siblings read it.
 # Default: /tmp/postWolf-mqc-redis-down (no setup needed).
 # mqc-rl-redis-state-path  /tmp/postWolf-mqc-redis-down
+
+
+[qsh]
+
+# TCP port the qshd daemon listens on, and the port the qsh client
+# dials by default.  First non-privileged port = 1024.  Both tools
+# read this key; --port=N on either CLI overrides.
+qshd-port 1024

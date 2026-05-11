@@ -1,0 +1,33 @@
+# /etc/qsh/qshd/config — qshd cert_index ACL
+#
+# Rules are evaluated top-to-bottom; first match wins.  If no rule
+# matches, the `default` policy applies.  An absent or empty config
+# file denies every connection (fail-closed: qshd will not accept
+# any caller until the operator opts at least one cert_index in).
+#
+# Syntax (one rule per line; `#` comments and blank lines OK):
+#
+#   allow N        permit a single cert_index
+#   allow N-M      permit a range, inclusive
+#   deny  N        refuse a single cert_index
+#   deny  N-M      refuse a range, inclusive
+#   default allow  fall-through allows
+#   default deny   fall-through denies (this is the built-in default)
+#
+# Example whitelist:
+#
+#   allow 72
+#   allow 100-120
+#   deny  105
+#
+# Example "everyone except 99" blacklist:
+#
+#   deny  99
+#   default allow
+
+# Out-of-the-box this file denies every connection.  Uncomment one
+# of the rules below (or write your own) before qshd will accept any
+# caller.  Find a cert_index with `show-tpm --list`.
+
+# allow 0-9999
+# default deny

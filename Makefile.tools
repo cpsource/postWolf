@@ -23,10 +23,12 @@ MTC_DIR   = mtc-keymaster/server2/c
 TOOLS_DIR = mtc-keymaster/tools/c
 TESTS_DIR = mtc-keymaster/tests/c
 FIPS_DIR  = fips-framework/tools/c
+QSH_CLIENT_DIR = qsh/qsh
+QSHD_DIR       = qsh/qshd
 
-.PHONY: all install clean slc mqc quic mtc tools tests fips install-lib
+.PHONY: all install clean slc mqc quic mtc tools tests fips qsh install-lib
 
-all: slc mqc mtc tools tests fips
+all: slc mqc mtc tools tests fips qsh
 
 # Socket-level wrapper (TLS)
 slc:
@@ -63,6 +65,12 @@ tests: mqc mtc
 # do, so the library must already be installed.
 fips:
 	$(MAKE) -C $(FIPS_DIR)
+
+# MQC shell client + daemon (qsh, qshd) — links the in-tree libmqc.a
+# plus the installed libpostWolf, like the FIPS tools.
+qsh: mqc
+	$(MAKE) -C $(QSH_CLIENT_DIR)
+	$(MAKE) -C $(QSHD_DIR)
 
 # Install postWolf library (autotools) + ldconfig
 install-lib:
@@ -148,6 +156,49 @@ install: all
 		$(DESTDIR)/usr/local/bin/sign-dir.sh
 	install -m 755 fips-framework/tools/sh/verify-dir.sh \
 		$(DESTDIR)/usr/local/bin/verify-dir.sh
+	@_QSHD_RESTART=0; \
+	install -d $(DESTDIR)/usr/local/bin; \
+	if cmp -s $(QSH_CLIENT_DIR)/qsh \
+	         $(DESTDIR)/usr/local/bin/qsh 2>/dev/null; then \
+		echo "[install] qsh unchanged"; \
+	else \
+		echo "[install] installing fresh qsh"; \
+		install -m 755 $(QSH_CLIENT_DIR)/qsh \
+			$(DESTDIR)/usr/local/bin/qsh; \
+	fi; \
+	if cmp -s $(QSHD_DIR)/qshd \
+	         $(DESTDIR)/usr/local/bin/qshd 2>/dev/null; then \
+		echo "[install] qshd unchanged"; \
+	else \
+		echo "[install] installing fresh qshd"; \
+		install -m 755 $(QSHD_DIR)/qshd \
+			$(DESTDIR)/usr/local/bin/qshd; \
+		_QSHD_RESTART=1; \
+	fi; \
+	if cmp -s $(QSHD_DIR)/qshd.service \
+	         $(DESTDIR)/etc/systemd/system/qshd.service 2>/dev/null; then \
+		echo "[install] qshd.service unchanged"; \
+	else \
+		echo "[install] installing fresh qshd.service"; \
+		install -d $(DESTDIR)/etc/systemd/system; \
+		install -m 644 $(QSHD_DIR)/qshd.service \
+			$(DESTDIR)/etc/systemd/system/qshd.service; \
+		[ -z "$(DESTDIR)" ] && systemctl daemon-reload; \
+		_QSHD_RESTART=1; \
+	fi; \
+	if [ -f $(DESTDIR)/etc/qsh/qshd/config ]; then \
+		echo "[install] /etc/qsh/qshd/config preserved (operator-edited)"; \
+	else \
+		echo "[install] installing default /etc/qsh/qshd/config (denies all)"; \
+		install -d $(DESTDIR)/etc/qsh/qshd; \
+		install -m 644 $(QSHD_DIR)/qshd-config-template \
+			$(DESTDIR)/etc/qsh/qshd/config; \
+	fi; \
+	if [ "$$_QSHD_RESTART" = "1" ] && [ -z "$(DESTDIR)" ] && \
+	   systemctl is-active --quiet qshd.service 2>/dev/null; then \
+		echo "[install] restarting qshd.service"; \
+		systemctl restart qshd.service; \
+	fi
 
 clean:
 	$(MAKE) -C $(SLC_DIR) clean
@@ -156,6 +207,8 @@ clean:
 	$(MAKE) -C $(TOOLS_DIR) clean
 	$(MAKE) -C $(TESTS_DIR) clean
 	$(MAKE) -C $(FIPS_DIR) clean
+	$(MAKE) -C $(QSH_CLIENT_DIR) clean
+	$(MAKE) -C $(QSHD_DIR) clean
 
 # -- Phase 4 system-level tests --------------------------------------
 # Aggregate regression suite (P4a).  Builds dependent test binaries

@@ -1,14 +1,18 @@
 [Unit]
-Description=QUIC Shell Daemon (qshd)
+Description=MQC Shell Daemon (qshd)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/home/ubuntu/ngtcp2/ssh/qshd/qshd --user ubuntu 2222
+User=ubuntu
+Group=ubuntu
+ExecStart=/usr/local/bin/qshd \
+    --tpm-path=/home/ubuntu/.TPM/factsorlie.com
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=5
 Environment=HOME=/home/ubuntu
-WorkingDirectory=/home/ubuntu/ngtcp2/ssh/qshd
+Environment=LD_LIBRARY_PATH=/usr/local/lib
 
 [Install]
 WantedBy=multi-user.target

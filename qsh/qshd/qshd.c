@@ -50,13 +50,157 @@
 #define FRAME_RESIZE      0x03
 #define FRAME_SHELL_EXIT  0x04
 
-#define DEFAULT_PORT      2222
+#define FALLBACK_PORT     1024              /* used only if config is silent */
 #define FALLBACK_SERVER   "localhost:8444"
 #define BUF_SZ            32768
 #define FRAME_SZ          (BUF_SZ + 8)
+#define ACL_PATH          "/etc/qsh/qshd/config"
 
 static const char *run_user = NULL;
 static volatile sig_atomic_t running = 1;
+
+/* ------------------------------------------------------------------ */
+/*  Cert-index ACL                                                     */
+/*  Rules read from /etc/qsh/qshd/config, one per line:                */
+/*    allow N        allow N-M       — permit a cert_index (or range)  */
+/*    deny  N        deny  N-M       — refuse a cert_index (or range)  */
+/*    default allow                  — flip fall-through to allow      */
+/*    default deny                   — explicit (this is the default)  */
+/*  First match wins.  If no rule matches, the default policy applies. */
+/*  File missing → DENY everyone (fail-closed; operator must opt in).  */
+/* ------------------------------------------------------------------ */
+
+typedef struct acl_rule {
+    int               allow;        /* 1 = allow, 0 = deny */
+    int               low;          /* inclusive */
+    int               high;         /* inclusive */
+    struct acl_rule  *next;
+} acl_rule_t;
+
+static acl_rule_t *acl_head          = NULL;
+static int         acl_default_allow = 0;   /* 1 if `default allow` appeared */
+
+static int parse_range(const char *s, int *low, int *high)
+{
+    char *end;
+    long  l, h;
+
+    errno = 0;
+    l = strtol(s, &end, 10);
+    if (errno || end == s || l < 0) return -1;
+    if (*end == '\0') {
+        *low = *high = (int)l;
+        return 0;
+    }
+    if (*end != '-') return -1;
+    s = end + 1;
+    errno = 0;
+    h = strtol(s, &end, 10);
+    if (errno || end == s || *end != '\0' || h < l) return -1;
+    *low  = (int)l;
+    *high = (int)h;
+    return 0;
+}
+
+static int load_acl(void)
+{
+    FILE        *f;
+    char         line[256];
+    int          lineno = 0;
+    acl_rule_t **tail   = &acl_head;
+    int          n      = 0;
+
+    f = fopen(ACL_PATH, "r");
+    if (!f) {
+        fprintf(stderr,
+                "[qshd] cannot open %s: %s — fall-through DENIES every connection\n",
+                ACL_PATH, strerror(errno));
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line, *nl, *verb, *arg, *extra;
+        int   allow_rule, low, high;
+
+        lineno++;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '\n' || *p == '#') continue;
+        if ((nl = strchr(p, '\n'))) *nl = '\0';
+
+        verb  = strtok(p, " \t");
+        arg   = strtok(NULL, " \t");
+        extra = strtok(NULL, " \t");
+        if (!verb || !arg || extra) {
+            fprintf(stderr, "[qshd] %s:%d: malformed line\n",
+                    ACL_PATH, lineno);
+            fclose(f);
+            return -1;
+        }
+
+        if (strcmp(verb, "default") == 0) {
+            if (strcmp(arg, "allow") == 0)      acl_default_allow = 1;
+            else if (strcmp(arg, "deny") == 0)  acl_default_allow = 0;
+            else {
+                fprintf(stderr, "[qshd] %s:%d: bad default '%s' "
+                        "(expected allow|deny)\n", ACL_PATH, lineno, arg);
+                fclose(f);
+                return -1;
+            }
+            continue;       /* not a range rule — keep parsing */
+        }
+
+        if (strcmp(verb, "allow") == 0)      allow_rule = 1;
+        else if (strcmp(verb, "deny") == 0)  allow_rule = 0;
+        else {
+            fprintf(stderr, "[qshd] %s:%d: unknown verb '%s' "
+                    "(expected allow|deny|default)\n",
+                    ACL_PATH, lineno, verb);
+            fclose(f);
+            return -1;
+        }
+
+        if (parse_range(arg, &low, &high) != 0) {
+            fprintf(stderr, "[qshd] %s:%d: bad index/range '%s'\n",
+                    ACL_PATH, lineno, arg);
+            fclose(f);
+            return -1;
+        }
+
+        {
+            acl_rule_t *r = calloc(1, sizeof(*r));
+            if (!r) { fclose(f); return -1; }
+            r->allow = allow_rule;
+            r->low   = low;
+            r->high  = high;
+            *tail = r;
+            tail  = &r->next;
+            n++;
+        }
+    }
+    fclose(f);
+
+    fprintf(stderr, "[qshd] loaded %d ACL rule(s) from %s "
+            "(fall-through: %s)\n",
+            n, ACL_PATH, acl_default_allow ? "allow" : "deny");
+    return 0;
+}
+
+static void free_acl(void)
+{
+    acl_rule_t *r = acl_head, *nx;
+    while (r) { nx = r->next; free(r); r = nx; }
+    acl_head = NULL;
+}
+
+/* Returns 1 if cert_index may connect, 0 otherwise. */
+static int acl_check(int idx)
+{
+    const acl_rule_t *r;
+    for (r = acl_head; r; r = r->next)
+        if (idx >= r->low && idx <= r->high)
+            return r->allow;
+    return acl_default_allow;       /* fall-through */
+}
 
 static void sig_handler(int sig) { (void)sig; running = 0; }
 static void sigchld_handler(int sig)
@@ -268,10 +412,12 @@ static void usage(const char *prog)
         "Usage: %s --tpm-path=PATH [options]\n\n"
         "Options:\n"
         "  --tpm-path=PATH    Server's MTC identity dir (required)\n"
-        "  --port=N           TCP port to listen on (default: %d)\n"
+        "  --port=N           TCP port to listen on\n"
+        "                     (default: /etc/postWolf/config qsh/qshd-port,\n"
+        "                      else %d)\n"
         "  --user=NAME        Drop privileges to this unix account after fork\n"
         "  --mtc-server=URL   Override /etc/postWolf/config global/url-server\n",
-        prog, DEFAULT_PORT);
+        prog, FALLBACK_PORT);
     exit(1);
 }
 
@@ -279,7 +425,7 @@ int main(int argc, char *argv[])
 {
     const char *tpm_path = NULL;
     const char *mtc_server_override = NULL;
-    int port = DEFAULT_PORT;
+    int port = (int)read_config_long("qsh/qshd-port", FALLBACK_PORT);
     int i, listen_fd;
     char *mtc_url;
     unsigned char ca_pubkey[DILITHIUM_LEVEL5_PUB_KEY_SIZE];
@@ -300,10 +446,21 @@ int main(int argc, char *argv[])
     }
     if (!tpm_path) usage(argv[0]);
 
-    signal(SIGINT,  sig_handler);
-    signal(SIGTERM, sig_handler);
-    signal(SIGCHLD, sigchld_handler);
-    signal(SIGPIPE, SIG_IGN);
+    /* Install SIGINT / SIGTERM without SA_RESTART so the blocking
+     * accept() in mqc_accept_auto returns -1/EINTR on shutdown — the
+     * main loop then sees `running == 0` and exits cleanly.  SIGCHLD
+     * keeps SA_RESTART so reaping doesn't disturb other syscalls. */
+    {
+        struct sigaction sa_exit  = {0};
+        struct sigaction sa_chld  = {0};
+        sa_exit.sa_handler = sig_handler;       /* no SA_RESTART */
+        sigaction(SIGINT,  &sa_exit, NULL);
+        sigaction(SIGTERM, &sa_exit, NULL);
+        sa_chld.sa_handler = sigchld_handler;
+        sa_chld.sa_flags   = SA_RESTART | SA_NOCLDSTOP;
+        sigaction(SIGCHLD, &sa_chld, NULL);
+        signal(SIGPIPE, SIG_IGN);
+    }
 
     mtc_url = mtc_server_override ? strdup(mtc_server_override)
                                   : resolve_mtc_server();
@@ -328,9 +485,17 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    if (load_acl() != 0) {
+        fprintf(stderr, "[qshd] ACL parse failed — refusing to start\n");
+        mqc_ctx_free(ctx);
+        free(mtc_url);
+        return 1;
+    }
+
     listen_fd = mqc_listen(NULL, port);
     if (listen_fd < 0) {
         fprintf(stderr, "[qshd] mqc_listen failed on port %d\n", port);
+        free_acl();
         mqc_ctx_free(ctx);
         free(mtc_url);
         return 1;
@@ -360,6 +525,17 @@ int main(int argc, char *argv[])
                 peer_ip,
                 mqc_get_peer_index(conn));
 
+        if (!acl_check(mqc_get_peer_index(conn))) {
+            fprintf(stderr, "[qshd] DENIED by ACL: peer_index=%d "
+                    "subject='%s' from %s\n",
+                    mqc_get_peer_index(conn),
+                    mqc_get_peer_subject(conn)
+                      ? mqc_get_peer_subject(conn) : "?",
+                    peer_ip);
+            mqc_close(conn);
+            continue;
+        }
+
         pid = fork();
         if (pid < 0) {
             perror("[qshd] fork");
@@ -376,6 +552,7 @@ int main(int argc, char *argv[])
     }
 
     close(listen_fd);
+    free_acl();
     mqc_ctx_free(ctx);
     free(mtc_url);
     fprintf(stderr, "[qshd] shutdown\n");

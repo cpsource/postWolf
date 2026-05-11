@@ -40,7 +40,7 @@
 #define FRAME_RESIZE      0x03
 #define FRAME_SHELL_EXIT  0x04
 
-#define DEFAULT_PORT      2222
+#define FALLBACK_PORT     1024              /* used only if config is silent */
 #define FALLBACK_SERVER   "localhost:8444"
 #define BUF_SZ            32768
 #define FRAME_SZ          (BUF_SZ + 8)
@@ -211,13 +211,14 @@ static void usage(const char *prog)
         "Usage: %s --host=HOST [options]\n\n"
         "Options:\n"
         "  --host=HOST              Server hostname or IP\n"
-        "  --port=N                 TCP port (default: %d)\n"
+        "  --port=N                 TCP port (default: /etc/postWolf/config\n"
+        "                           qsh/qshd-port, else %d)\n"
         "  --tpm-path=PATH          Client's MTC identity dir\n"
         "                           (default: ~/.TPM/default)\n"
         "  --user=NAME              Shortcut: --tpm-path=~/.TPM/NAME\n"
         "  --mtc-server=URL         Override /etc/postWolf/config global/url-server\n"
         "  --expected-name=NAME     Expected server subject (default: --host)\n",
-        prog, DEFAULT_PORT);
+        prog, FALLBACK_PORT);
     exit(1);
 }
 
@@ -228,7 +229,7 @@ int main(int argc, char *argv[])
     const char *mtc_server_override = NULL;
     const char *expected_name = NULL;
     char tpm_buf[512];
-    int port = DEFAULT_PORT;
+    int port = (int)read_config_long("qsh/qshd-port", FALLBACK_PORT);
     int i, retries;
     char *mtc_url;
     unsigned char ca_pubkey[DILITHIUM_LEVEL5_PUB_KEY_SIZE];

@@ -25,15 +25,9 @@ keys derived from an ML-KEM-768 exchange.
 
 ```
 qsh/
-  qsh/                  Client source + Makefile
-  qshd/                 Server source + Makefile + systemd unit
-  certs/, crl/, tools/, docs/   Historical (QUIC-era) — not used by the MQC build
-  README-QUIC.md        Historical README from the QUIC version
+  qsh/      Client source + Makefile
+  qshd/     Server source + Makefile
 ```
-
-The old `certs/`, `crl/`, `make-certs.sh`, `client-ext.cnf`, `tools/`,
-and `docs/` trees describe the QUIC/TLS flow and play no part in the
-MQC build.  They're left in place for archaeology; ignore them.
 
 ## Prerequisites
 
@@ -115,6 +109,55 @@ cosignature mismatch, revoked cert, expected-name mismatch, etc.) the
 client prints a diagnostic to stderr (look for `[MQC-SECURITY ...]`)
 and reconnects up to five times before giving up.
 
+## Access control
+
+`qshd` consults `/etc/qsh/qshd/config` after every successful MQC
+handshake.  The verified peer `cert_index` is matched against the
+rule list; if the connection is not explicitly allowed, the daemon
+calls `mqc_close` and waits for the next caller — no shell is
+forked.  The Makefile.tools `install` step writes a deny-everyone
+template the first time it runs and **never** overwrites a config
+the operator has edited.
+
+Rules are evaluated top-to-bottom, **first match wins**:
+
+```
+allow N            # permit a single cert_index
+allow N-M          # permit a range, inclusive
+deny  N            # refuse a single cert_index
+deny  N-M          # refuse a range, inclusive
+default allow      # fall-through allows
+default deny       # fall-through denies (this is the built-in default)
+```
+
+`#` comments and blank lines are ignored.  An absent or empty file
+denies every connection.
+
+Examples:
+
+```ini
+# Whitelist (only Alice and the 100-119 cohort, but not 105):
+allow 72
+allow 100-119
+deny  105
+```
+
+```ini
+# Blacklist (everyone except 99):
+deny  99
+default allow
+```
+
+Log lines you'll see when a caller is refused:
+
+```
+[qshd] accepted 'factsorlie.com-Alice' from 1.2.3.4 (peer_index=74)
+[qshd] DENIED by ACL: peer_index=74 subject='factsorlie.com-Alice' from 1.2.3.4
+```
+
+The ACL is loaded once at startup; edit the file, then
+`systemctl restart qshd` to pick up changes.
+
 ## Revocation
 
 There is no `crl/` directory and no per-cert revocation file to manage.
@@ -150,7 +193,6 @@ key does not decrypt past sessions.
 
 ## History
 
-This started life as a QUIC/ngtcp2 + TLS 1.3 + X.509 client/server pair
-(see `README-QUIC.md`).  Phase-36 (2026-05-11) replaced the transport
-with MQC, dropping ~700 lines of QUIC plumbing and the entire X.509 +
-CRL identity layer.
+This started life as a QUIC/ngtcp2 + TLS 1.3 + X.509 client/server pair.
+Phase-36 (2026-05-11) replaced the transport with MQC, dropping ~700
+lines of QUIC plumbing and the entire X.509 + CRL identity layer.

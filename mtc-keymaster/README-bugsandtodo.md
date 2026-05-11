@@ -5306,6 +5306,94 @@ that you should investigate.  Either way you want to know.
 
 ---
 
+### 81. Move server-only AbuseIPDB code out of `libmqc.a` so MQC clients don't pull in `-lcurl`
+
+Filed 2026-05-11.  Surfaced while wiring the new `qsh`/`qshd` tools
+into `Makefile.tools` — the client-only `qsh` binary had to link
+`-lcurl` (plus `-lhiredis -lunbound`) even though nothing in `qsh.c`
+references any of them.
+
+**Why.**  `socket-level-wrapper-MQC/mqc_common.c` defines four
+AbuseIPDB-related symbols in the same translation unit as the core
+I/O surface (`mqc_read`, `mqc_write`, `mqc_close`, `mqc_listen`, …):
+
+```
+abuse_write_cb                (static, line 1372)
+get_abuseipdb_token           (static, line 1386)
+abuseipdb_check               (static, line 1430)
+mqc_abuse_check               (exported,  line 1487 — called from
+                               mqc_accept_prologue at line 669)
+```
+
+`abuseipdb_check` invokes `curl_easy_*`.  Because `mqc_common.o` is
+one big translation unit, any consumer of `libmqc.a` that pulls in
+*any* `mqc_common.o` symbol drags the whole .o — and therefore the
+unresolved `curl_easy_*` references — into the final link.  Every
+caller of `libmqc.a` then needs `-lcurl`, whether it's a server
+(legitimately runs `mqc_accept_prologue`) or a pure client (qsh,
+fetch-publisher-key, fips-manifest-{submit,verify,list}, ...).
+
+The same logic applies to the Redis-backed rate-limit and Unbound
+DNSSEC code paths that also live in `mqc_common.c` — that's why
+the FIPS tools' link line, `qsh`/`qshd`, and the MQC examples all
+carry `-lcurl -lhiredis -lunbound`.
+
+**What to do.**  Split `mqc_common.c` along the
+client-vs-server-only axis:
+
+| New TU | Contents | Pulls in |
+|---|---|---|
+| `mqc_common.c` (slim) | `mqc_read`, `mqc_write`, `mqc_close`, `mqc_listen`, key schedule, JSON helpers — everything a *client* needs. | only what's already in there minus curl/hiredis/unbound |
+| `mqc_abuseipdb.c` | the four AbuseIPDB symbols above. | libcurl, json-c (already linked) |
+| `mqc_ratelimit.c` | `mqc_ratelimit_check`, `mqc_ratelimit_fail_*`, `mqc_ratelimit_cert_check`. | libhiredis |
+| `mqc_dnssec.c` (or fold into existing `mqc_dnssec_pin.c`) | any libunbound paths called from the prologue. | libunbound |
+
+After the split, only consumers that reference a server-side
+symbol pull the corresponding .o (and its external library)
+into the link.  Update `socket-level-wrapper-MQC/Makefile`'s
+`$(OBJS)` list and the dependency-recipes accordingly.
+
+**Then prune link lines:**
+
+- `qsh/qsh/Makefile`, `qsh/qshd/Makefile` — drop `-lcurl
+  -lhiredis -lunbound`.  (`qshd` calls `mqc_accept_auto`, which
+  calls `mqc_accept_prologue`, which calls `mqc_abuse_check`
+  and the rate-limit gates — so qshd actually does need them at
+  runtime; but only as long as those symbols come from the same
+  .o.  Once split, qshd legitimately keeps them; `qsh` drops them.)
+- `fips-framework/tools/c/Makefile` — fips-manifest-{verify,
+  list,submit} and fetch-publisher-key are all pure MQC clients,
+  so drop `-lcurl -lhiredis -lunbound` from their link lines.
+- `socket-level-wrapper-MQC/Makefile` — keep `-lcurl -lhiredis
+  -lunbound` on the example-server / echo target; drop them
+  from echo_client.
+- The internal `libmqc.a` build line itself doesn't need link
+  flags (it's just `ar rcs`), but the comment block at the top
+  of `socket-level-wrapper-MQC/Makefile` should be updated to
+  document which TUs need which externals.
+
+**Verification.**  After the split:
+
+```
+nm socket-level-wrapper-MQC/libmqc.a | grep 'curl_easy\|redisCommand\|ub_resolve'
+```
+should show those symbols only in `mqc_abuseipdb.o` / `mqc_ratelimit.o`
+/ `mqc_dnssec.o`, not in `mqc_common.o`.  Then the qsh client should
+link with just `-lpostWolf -ljson-c -laugeas -lpthread -lcrypto`.
+
+**Not in scope.**  `src/ssl_mtc.c` (TLS MTC client in `libpostWolf`)
+and `mtc-keymaster/server2/c/mtc_checkendpoint.c` (`mtc_server`'s
+own AbuseIPDB caller) are separate curl consumers — they're not
+in `libmqc.a` and don't affect MQC-only clients.  This TODO is
+strictly about pruning `libmqc.a`'s transitive deps.
+
+Severity: **Low** — cosmetic.  Today's link works; the extra `-l`
+flags are mildly annoying for MQC-client packaging on minimal
+distros where libcurl/libhiredis/libunbound aren't installed by
+default, but functionally a no-op.
+
+---
+
 ## Appendix: Server-Issued Nonce Plan for CA Enrollment
 
 ### Problem
