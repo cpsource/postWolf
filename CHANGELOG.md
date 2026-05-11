@@ -27,7 +27,75 @@ the open issue list.
 
 ## [Unreleased]
 
-(no changes since 0.1.4)
+(no changes since 0.2.0)
+
+## [0.2.0] — 2026-05-11
+
+New post-quantum interactive-shell tool family (`qsh` / `qshd`) on top
+of MQC, plus a small additive accessor (`mqc_get_peer_subject`) for
+identifying the verified peer of any MQC connection.
+
+### Added
+
+- **`qsh` / `qshd` — interactive shell over MQC.**  Port of an
+  earlier QUIC/ngtcp2 + X.509/CRL ssh-like tool onto the post-quantum
+  MQC transport.  Authentication is a verified MTC `cert_index` plus
+  Merkle inclusion proof + cosignature + revocation check (all
+  handled inside `mqc_peer_verify` — no separate CRL).  Four-frame
+  protocol on the bytestream: `OPEN_SHELL` / `DATA` / `RESIZE` /
+  `SHELL_EXIT`.  Server forkpty()s a real `bash --login` per session.
+  Source lives in `qsh/`; binaries install to `/usr/local/bin/qsh`
+  and `/usr/local/bin/qshd`.
+- **`qshd` cert_index ACL** at `/etc/qsh/qshd/config`.  Rules
+  `allow N`, `allow N-M`, `deny N`, `deny N-M`, `default allow|deny`.
+  Top-to-bottom, first match wins; fall-through default is `deny`;
+  an absent or empty file denies every connection (fail-closed).
+  Refused callers log `[qshd] DENIED by ACL: peer_index=N` before
+  the daemon closes the conn.  Revocation continues to be handled
+  by MQC itself; the ACL layers on top.
+- **`qshd.service` systemd unit.**  Installed to
+  `/etc/systemd/system/qshd.service` by `Makefile.tools install`;
+  `User=ubuntu`, `LD_LIBRARY_PATH=/usr/local/lib`,
+  `TimeoutStopSec=5`.  Disabled by default — operator runs
+  `systemctl enable --now qshd` when ready.
+- **`[qsh]` section in `/etc/postWolf/config`.**  New key
+  `qshd-port` (default `1024`, the first non-privileged TCP port).
+  Both `qsh` and `qshd` call `read_config_long("qsh/qshd-port",
+  FALLBACK_PORT)`; `--port=N` on either CLI overrides.
+- **`mqc_get_peer_subject(mqc_conn_t *)` accessor** in
+  `libmqc.a`.  Returns the verified MTC subject string of the
+  remote peer (e.g. `"factsorlie.com-ca"`) for any successful MQC
+  connection.  Populated at handshake completion in all four sites
+  (clear / encrypted × client / server); freed in `mqc_close`.
+  `mtc_server`'s per-accept log line now reads
+  `MQC connection from <ip> (peer_index=N, subject=<subject>)`.
+- **`Makefile.tools qsh` target.**  Depends on `mqc`, added to
+  `all` and `clean`.  `install` cmp-then-installs the binaries
+  and the service unit (auto-restart-if-running, same pattern as
+  `mtc-ca.service`) and ships the deny-all ACL template to
+  `/etc/qsh/qshd/config` only if the file is absent — operator
+  edits are preserved.
+- **TODO #81** filed in `mtc-keymaster/README-bugsandtodo.md`:
+  split `mqc_common.c` along the client-vs-server axis so
+  client-only consumers of `libmqc.a` (qsh, fips-manifest-*,
+  fetch-publisher-key) can drop the transitive `-lcurl`,
+  `-lhiredis`, and `-lunbound` flags.  Severity: Low (cosmetic).
+
+### Changed
+
+- **qshd shutdown hardened.**  Signals installed via `sigaction()`
+  without `SA_RESTART` so `SIGINT` / `SIGTERM` interrupt the
+  blocking `accept()` inside `mqc_accept_auto`.  Previously
+  `systemctl stop qshd` hung in `deactivating` until forcibly
+  killed.
+
+### Removed
+
+- **QUIC-era archaeology from `qsh/`** (the directory carried over
+  from `~/ngtcp2/ssh/` when the tool was tar-copied in).  Deleted:
+  `README-QUIC.md`, `client-ext.cnf`, `make-certs.sh`, `rfc9000.txt`,
+  `docs/`, `tools/`, plus the gitignored `certs/` and `crl/` trees.
+  The new `qsh/README.md` describes only the MQC flow.
 
 ## [0.1.4] — 2026-05-11
 
