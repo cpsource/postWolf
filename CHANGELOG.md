@@ -27,7 +27,23 @@ the open issue list.
 
 ## [Unreleased]
 
-(no changes since 0.1.3)
+(no changes since 0.1.4)
+
+## [0.1.4] — 2026-05-11
+
+### Changed
+
+- **`mtc-ca` server log prefix `[wolfSSL]` → `[postWolf]`.**  The
+  `wolfSSL_SetLoggingCb()` bridge in `mtc_server.c` previously stamped
+  every forwarded library log line with `[wolfSSL]` in journalctl,
+  which reads wrong now that the packaging layer is `libpostWolf`.
+  The prefix is now `[postWolf]` and the postWolf-owned bridge
+  function was renamed `wolfssl_log_bridge` → `postwolf_log_bridge`
+  for internal consistency.  Upstream wolfSSL symbols (`wolfSSL_Init`,
+  `wolfSSL_SetLoggingCb`, `ERROR_LOG`/`INFO_LOG`/`ENTER_LOG`/
+  `LEAVE_LOG`) are untouched per the CLAUDE.md "do not rename wolfSSL
+  upstream identifiers" guardrail.  Operator-only impact; no
+  wire-format or API change.
 
 ## [0.1.3] — 2026-05-10
 
