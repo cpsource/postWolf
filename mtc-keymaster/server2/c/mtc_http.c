@@ -2988,8 +2988,12 @@ static void *mqc_listener_thread(void *arg)
                 inet_ntop(AF_INET, &peer.sin_addr, cio.ip_str, sizeof(cio.ip_str));
         }
 
-        LOG_INFO("MQC connection from %s (peer_index=%d)",
-                 cio.ip_str, mqc_get_peer_index(cio.mqc));
+        {
+            const char *peer_subject = mqc_get_peer_subject(cio.mqc);
+            LOG_INFO("MQC connection from %s (peer_index=%d, subject=%s)",
+                     cio.ip_str, mqc_get_peer_index(cio.mqc),
+                     peer_subject ? peer_subject : "<unknown>");
+        }
 
         /* Ensure DB connection */
         if (store->use_db) {

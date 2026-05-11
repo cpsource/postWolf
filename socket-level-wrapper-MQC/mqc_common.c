@@ -1955,6 +1955,7 @@ void mqc_close(mqc_conn_t *conn)
     if (conn->fd >= 0) close(conn->fd);
     mqc_secure_zero(conn->send_key, MQC_AES_KEY_SZ);
     mqc_secure_zero(conn->recv_key, MQC_AES_KEY_SZ);
+    free(conn->peer_subject);
     free(conn);
 }
 
@@ -1966,4 +1967,9 @@ int mqc_get_fd(mqc_conn_t *conn)
 int mqc_get_peer_index(mqc_conn_t *conn)
 {
     return conn ? conn->peer_index : -1;
+}
+
+const char *mqc_get_peer_subject(mqc_conn_t *conn)
+{
+    return conn ? conn->peer_subject : NULL;
 }

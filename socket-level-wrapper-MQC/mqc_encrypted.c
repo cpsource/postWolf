@@ -378,6 +378,12 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
         memcpy(conn->recv_finished_key, s2c_finished, MQC_FINISHED_MAC_SZ);
         memcpy(conn->transcript_hash_full, th_kdf, WC_SHA256_DIGEST_SIZE);
         conn->peer_index = peer_index;
+        {
+            char subj[256];
+            if (mqc_peer_get_cached_subject(peer_index, subj,
+                                            sizeof(subj)) == 0)
+                conn->peer_subject = strdup(subj);
+        }
         conn->is_client = 1;
         conn->send_seq = 0;
         conn->recv_seq = 0;
@@ -427,7 +433,7 @@ fail:
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
     if (dil_ok) wc_dilithium_free(&dil);
     if (rng_ok) wc_FreeRng(&rng);
-    if (conn) { free(conn); conn = NULL; }
+    if (conn) { free(conn->peer_subject); free(conn); conn = NULL; }
     if (fd >= 0) close(fd);
     return NULL;
 }
@@ -706,6 +712,12 @@ mqc_conn_t *mqc_accept_encrypted_continue(mqc_ctx_t *ctx, int fd,
     memcpy(conn->recv_finished_key, c2s_finished, MQC_FINISHED_MAC_SZ);
     memcpy(conn->transcript_hash_full, th_kdf, WC_SHA256_DIGEST_SIZE);
     conn->peer_index = peer_index;
+    {
+        char subj[256];
+        if (mqc_peer_get_cached_subject(peer_index, subj,
+                                        sizeof(subj)) == 0)
+            conn->peer_subject = strdup(subj);
+    }
     conn->is_client = 0;
     conn->send_seq = 0;
     conn->recv_seq = 0;
@@ -758,7 +770,7 @@ fail:
     if (mlkem_ok) wc_MlKemKey_Free(&mlkem);
     if (dil_ok) wc_dilithium_free(&dil);
     if (rng_ok) wc_FreeRng(&rng);
-    if (conn) { free(conn); conn = NULL; }
+    if (conn) { free(conn->peer_subject); free(conn); conn = NULL; }
     if (fd >= 0) close(fd);
     return NULL;
 }

@@ -126,6 +126,13 @@ int mqc_get_fd(mqc_conn_t *conn);
 /* Get peer's cert_index (valid after successful connect/accept). */
 int mqc_get_peer_index(mqc_conn_t *conn);
 
+/* Get peer's verified MTC subject string (e.g. "factsorlie.com",
+ * "factsorlie.com-ca").  Valid after successful connect/accept; NULL
+ * if the cached cert.json could not be read after verification, or
+ * before the handshake completes.  The returned pointer is owned by
+ * the connection and freed in mqc_close — do not free it. */
+const char *mqc_get_peer_subject(mqc_conn_t *conn);
+
 /* Set/get log verbosity.  0 = errors only (default), 1 = trace. */
 void mqc_set_verbose(int level);
 int  mqc_get_verbose(void);

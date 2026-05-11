@@ -388,6 +388,22 @@ typedef struct {
 | `void mqc_close(mqc_conn_t *conn)` | Close connection, zero session keys, free resources. |
 | `int mqc_get_fd(mqc_conn_t *conn)` | Get raw file descriptor for select/poll. |
 | `int mqc_get_peer_index(mqc_conn_t *conn)` | Get peer's cert_index (after handshake). |
+| `const char *mqc_get_peer_subject(mqc_conn_t *conn)` | Get peer's verified MTC subject string (after handshake). |
+
+### Identifying the peer
+
+After `mqc_connect` / `mqc_accept` returns, an MQC server can read the
+peer's identity directly off the connection:
+
+```c
+int idx = mqc_get_peer_index(conn);            /* e.g. 73 */
+const char *who = mqc_get_peer_subject(conn);  /* e.g. "factsorlie.com-ca" */
+```
+
+`who` is owned by the connection (do **not** free it); it is released in
+`mqc_close`.  Returns `NULL` if the cached `cert.json` could not be read
+after verification — fall back to `peer_index` in that case (it's still
+the cryptographically authoritative identity).
 
 ## Configuration
 

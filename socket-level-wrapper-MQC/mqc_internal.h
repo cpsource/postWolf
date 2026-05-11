@@ -85,6 +85,11 @@ struct mqc_conn {
     uint64_t     send_seq;
     uint64_t     recv_seq;
     int          peer_index;
+    /* MTC subject of the verified peer cert (e.g. "factsorlie.com",
+     * "factsorlie.com-ca").  malloc'd at the end of the handshake from
+     * the cached cert.json populated by mqc_peer_verify().  NULL until
+     * the handshake completes; freed in mqc_close. */
+    char        *peer_subject;
     /* Phase-1 issues #4 + #5 connection-state additions. */
     uint8_t      is_client;                       /* 1 = client, 0 = server */
     uint8_t      finished_verified;               /* 0 until Finished MAC ok */
