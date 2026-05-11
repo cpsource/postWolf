@@ -76,13 +76,14 @@ static int port_from_config_url(const char *key)
 }
 
 /******************************************************************************
- * Function:    wolfssl_log_bridge
+ * Function:    postwolf_log_bridge
  *
  * Description:
- *   Callback for wolfSSL_SetLoggingCb().  Maps wolfSSL log levels to MTC
- *   log levels and forwards messages into the MTC logging subsystem.
+ *   Callback registered with wolfSSL_SetLoggingCb().  Maps postWolf crypto
+ *   log levels to MTC log levels and forwards messages into the postWolf
+ *   logging subsystem, prefixed with "[postWolf]".
  ******************************************************************************/
-static void wolfssl_log_bridge(const int logLevel, const char *const logMessage)
+static void postwolf_log_bridge(const int logLevel, const char *const logMessage)
 {
     int mtc_level;
     switch (logLevel) {
@@ -92,7 +93,7 @@ static void wolfssl_log_bridge(const int logLevel, const char *const logMessage)
         case LEAVE_LOG: mtc_level = MTC_LOG_TRACE; break;
         default:        mtc_level = MTC_LOG_TRACE; break;
     }
-    mtc_log(mtc_level, "[wolfSSL] %s", logMessage);
+    mtc_log(mtc_level, "[postWolf] %s", logMessage);
 }
 
 /******************************************************************************
@@ -255,11 +256,11 @@ int main(int argc, char *argv[])
     /* 1. Initialize logging */
     mtc_log_init(log_file, log_level);
 
-    /* 2. Initialize wolfSSL library */
+    /* 2. Initialize postWolf crypto */
     wolfSSL_Init();
 
-    /* 2a. Bridge wolfSSL debug output into MTC logging */
-    wolfSSL_SetLoggingCb(wolfssl_log_bridge);
+    /* 2a. Bridge postWolf debug output into MTC logging */
+    wolfSSL_SetLoggingCb(postwolf_log_bridge);
     if (log_level >= MTC_LOG_DEBUG)
         wolfSSL_Debugging_ON();
 
