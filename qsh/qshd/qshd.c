@@ -425,6 +425,7 @@ int main(int argc, char *argv[])
 {
     const char *tpm_path = NULL;
     const char *mtc_server_override = NULL;
+    char tpm_buf[512];
     int port = (int)read_config_long("qsh/qshd-port", FALLBACK_PORT);
     int i, listen_fd;
     char *mtc_url;
@@ -445,6 +446,12 @@ int main(int argc, char *argv[])
             usage(argv[0]);
     }
     if (!tpm_path) usage(argv[0]);
+    if (tpm_path[0] == '~' && tpm_path[1] == '/') {
+        const char *home = getenv("HOME");
+        if (!home) home = ".";
+        snprintf(tpm_buf, sizeof(tpm_buf), "%s%s", home, tpm_path + 1);
+        tpm_path = tpm_buf;
+    }
 
     /* Install SIGINT / SIGTERM without SA_RESTART so the blocking
      * accept() in mqc_accept_auto returns -1/EINTR on shutdown — the

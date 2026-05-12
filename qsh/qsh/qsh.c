@@ -265,6 +265,12 @@ int main(int argc, char *argv[])
         snprintf(tpm_buf, sizeof(tpm_buf), "%s/.TPM/default", home);
         tpm_path = tpm_buf;
     }
+    else if (tpm_path[0] == '~' && tpm_path[1] == '/') {
+        const char *home = getenv("HOME");
+        if (!home) home = ".";
+        snprintf(tpm_buf, sizeof(tpm_buf), "%s%s", home, tpm_path + 1);
+        tpm_path = tpm_buf;
+    }
 
     signal(SIGWINCH, sigwinch_handler);
     signal(SIGINT,   sig_handler);
