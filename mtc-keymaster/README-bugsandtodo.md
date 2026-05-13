@@ -5495,6 +5495,56 @@ the current AWS SG, but a known-good config that survives SG churn.
 
 ---
 
+### 83. Narrow frflashy's AWS Security Group rule for inbound TCP 1024
+
+Filed 2026-05-13.  When bringing up qshd on frflashy, an inbound
+rule for TCP 1024 was added to the EC2 Security Group attached to
+the instance.  The exact source range used isn't recorded here —
+if it was opened wide (`0.0.0.0/0` "Anywhere-IPv4"), narrow it.
+
+**What to do.**  AWS console → EC2 → Instances → frflashy → Security
+→ the SG attached → Inbound rules → find the Custom TCP / port 1024
+entry → edit Source.  Replace `0.0.0.0/0` with the `/32` set of
+hosts that legitimately dial qshd:
+
+- factsorlie's public Elastic IP / `/32`
+- AlienPC's public IP / `/32` (or the operator's home/office /32)
+
+Add a Description like `qshd MQC from <hostname>` per rule so the
+intent survives future audits.
+
+**Why this is defense-in-depth, not strictly required.**  qshd's
+trust model is already strong without the SG:
+
+1. The MQC handshake itself rejects anything that can't prove
+   ML-DSA-87 ownership of a cosigned MTC cert_index.
+2. The accept-side rate-limit gates (`mqc-rl-connect-per-min` /
+   `mqc-rl-cert-per-min` / `mqc-rl-fail-per-min`) cap brute-force
+   surface to ~ms-class CPU even from a determined attacker.
+3. The qshd ACL at `/etc/qsh/qshd/config` is the final gate.
+
+A wide-open `:1024` lets an attacker exercise the rate-limit
+counters and exhaust some Redis memory, plus shows up as noise in
+`journalctl -u qshd`.  Narrow-SG eliminates that noise and the
+trivial DoS surface.
+
+**Verification.**  After narrowing:
+
+```sh
+# from an allowed source — should succeed
+nc -zv frflashy.com 1024
+# from a non-allowed source (different machine / VPN off) — should time out
+nc -zv frflashy.com 1024
+```
+
+`qsh --host=frflashy.com --tpm-path=...` from the allowed sources
+still works end-to-end.
+
+Severity: **Low** — operational hygiene.  No security regression
+under the current setup, but tightening the blast radius is cheap.
+
+---
+
 ## Appendix: Server-Issued Nonce Plan for CA Enrollment
 
 ### Problem
