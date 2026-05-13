@@ -27,7 +27,21 @@ the open issue list.
 
 ## [Unreleased]
 
-(no changes since 0.2.3)
+(no changes since 0.2.4)
+
+## [0.2.4] — 2026-05-13
+
+Single-commit patch on top of 0.2.3 so non-publishing hosts (frflashy,
+any future client-only deploy) can run `sudo make -f Makefile.tools
+install` without hitting a kit-qsh tail failure.
+
+### Changed
+
+- **`Makefile.tools install`** no longer rebuilds `kit-qsh/` when the
+  invoking user's `~/.TPM/factsorlie.com` doesn't exist.  Prints
+  `[install] kit-qsh skipped (no factsorlie.com identity ...)` and
+  returns 0.  `SUDO_USER` drop-back is preserved so the home-dir
+  lookup still resolves to the human, not root.
 
 ## [0.2.3] — 2026-05-13
 
