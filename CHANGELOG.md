@@ -27,7 +27,51 @@ the open issue list.
 
 ## [Unreleased]
 
-(no changes since 0.2.2)
+(no changes since 0.2.3)
+
+## [0.2.3] — 2026-05-13
+
+In-band file transfer for qsh: type `/get` or `/put` at a fresh qsh
+prompt to push/pull a file without leaving the shell session.  Wire
+format is a small JSON envelope rolled into a new MQC frame type so
+the existing shell stream stays oblivious; payloads are zlib-deflated
+then hex-encoded so the wire is endian-free and JSON-safe.  Plus a
+`--version` flag on qsh and an `install` -> `kit` chain in
+`Makefile.tools` so the deploy kit never drifts from the installed
+binary.
+
+### Added
+
+- **`/get <remote-from> <local-to>`** and **`/put <local-from>
+  <remote-to>`** slash commands on the `qsh` client.  Client
+  intercepts a leading `/` at line-start, accumulates locally, and
+  emits a single `FRAME_CMD_REQ` (0x05) carrying `"/get\n<json>"` or
+  `"/put\n<json>"`.  Server replies with a single `FRAME_CMD_RESP`
+  (0x06) bearing the result (or `{"error": "..."}`).  256 KiB raw cap
+  per transfer (well under MQC's 1 MiB message limit).  No chunking,
+  no resume — single-shot atomic transfers.
+- **`qsh --version`** prints the version string (`qsh 0.2.3-dev-2`)
+  and exits before any config-file probing, so its stdout stays one
+  line even when `/etc/postWolf/config` is missing.
+- **`qsh/README-specifications.md`** — full spec of the slash-command
+  wire format, JSON envelope, client UX state machine, and limits.
+- **`make -f Makefile.tools kit`** — standalone target that rebuilds
+  `kit-qsh/deploy-qsh.tar.gz` against the currently-installed
+  `/usr/local/bin/qsh`.  Also runs at the tail of `make install`
+  automatically (de-sudo'd via `SUDO_USER` so the kit's `$HOME/.TPM`
+  lookup resolves to the invoking user).
+
+### Changed
+
+- **`qshd` chdir's to the running user's `$HOME` at startup** so
+  unqualified paths in `/get` and `/put` resolve under `~ubuntu`
+  instead of systemd's default cwd of `/` (which the `ubuntu` uid
+  can't write to anyway).  The forkpty child still re-chdir's for
+  the shell; only the parent-of-forkpty (which runs
+  `handle_cmd_frame`) is affected.
+- **qshd logs every `/get` and `/put` attempt** to stderr with the
+  verb, the resolved path, the byte count, and an OK/FAIL marker.
+  Surfaces via `journalctl -u qshd`.
 
 ## [0.2.2] — 2026-05-13
 
