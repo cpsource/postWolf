@@ -199,13 +199,19 @@ install: all
 		echo "[install] restarting qshd.service"; \
 		systemctl restart qshd.service; \
 	fi
-	@echo "[install] rebuilding kit-qsh (bundles /usr/local/bin/qsh)"
-	@if [ -n "$$SUDO_USER" ]; then \
-		sudo -u $$SUDO_USER $(MAKE) -C kit-qsh; \
+	@_INVOKING_USER=$${SUDO_USER:-$$(id -un)}; \
+	_INVOKING_HOME=$$(getent passwd $$_INVOKING_USER | cut -d: -f6); \
+	if [ -d "$$_INVOKING_HOME/.TPM/factsorlie.com" ]; then \
+		echo "[install] rebuilding kit-qsh (bundles /usr/local/bin/qsh)"; \
+		if [ -n "$$SUDO_USER" ]; then \
+			sudo -u $$SUDO_USER $(MAKE) -C kit-qsh; \
+		else \
+			$(MAKE) -C kit-qsh; \
+		fi; \
+		echo "[install] kit-qsh/deploy-qsh.tar.gz refreshed"; \
 	else \
-		$(MAKE) -C kit-qsh; \
+		echo "[install] kit-qsh skipped (no factsorlie.com identity at $$_INVOKING_HOME/.TPM)"; \
 	fi
-	@echo "[install] kit-qsh/deploy-qsh.tar.gz refreshed"
 
 # Standalone: rebuild the kit tarball without reinstalling everything.
 # Pulls /usr/local/bin/qsh, so make sure `install` has been run since
