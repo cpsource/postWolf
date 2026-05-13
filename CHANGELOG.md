@@ -27,7 +27,53 @@ the open issue list.
 
 ## [Unreleased]
 
-(no changes since 0.2.0)
+(no changes since 0.2.1)
+
+## [0.2.1] — 2026-05-13
+
+Internal cleanup release: a small ergonomic fix on the new `qsh` /
+`qshd` CLI plus an `libmqc.a` restructure that keeps server-only
+dependencies (libcurl, libhiredis) off pure MQC client link lines.
+No wire-format or API changes.
+
+### Added
+
+- **`mqc_abuseipdb.c`, `mqc_ratelimit.c`, `mqc_clear_accept.c`,
+  `mqc_encrypted_accept.c`, `mqc_accept_dispatch.c`** as separate
+  translation units inside `socket-level-wrapper-MQC/`.  Each holds
+  one well-defined server-only concern (AbuseIPDB lookup, Redis
+  rate-limit gates, accept-side handshake bodies, accept dispatcher).
+  Static-archive symbol demand now confines libcurl + libhiredis to
+  these object files; client-only consumers no longer drag them in.
+
+### Changed
+
+- **`--tpm-path=~/...` now expands `~/` to `$HOME/`** in both `qsh`
+  and `qshd`.  Shells don't expand `~` in `--flag=~/...` because the
+  `=` makes the tilde part of an assignment word, so the literal `~`
+  reached the program and `mqc_ctx_new` failed to read the TPM dir.
+- **`libmqc.a` translation-unit layout split along the client/server
+  axis** (TODO #81 in `mtc-keymaster/README-bugsandtodo.md`).
+  `mqc_common.c`, `mqc_clear.c`, `mqc_encrypted.c`, and `mqc.c` keep
+  only client-needed code; accept-side handshake bodies and the
+  rate-limit/AbuseIPDB chain moved into the new TUs listed above.
+  `nm libmqc.a` now shows `curl_easy_*` only in `mqc_abuseipdb.o`,
+  `redisCommand` only in `mqc_ratelimit.o`, and `ub_resolve*` only in
+  `mqc_dnssec_pin.o`.
+- **`qsh`, `fips-manifest-*`, `fetch-publisher-key`, `show-tpm`,
+  `issue_leaf_nonce`, `revoke-key`, `renew-cert`,
+  `check-renewal-cert`, `cancel-nonce`** drop `-lcurl -lhiredis` from
+  their link lines.  `ldd` confirms no `libhiredis` is pulled.
+  `qshd` continues to link both (it accepts connections).
+- `libunbound` stays on every client link: `mqc_load_ca_pubkey`
+  (a client API) invokes the cosigner DNSSEC pin in
+  `mqc_dnssec_pin.c`.
+
+### Removed
+
+- ~470 lines of duplicated server-side code from `mqc_common.c` /
+  `mqc_clear.c` / `mqc_encrypted.c` (moved into the new TUs above,
+  not deleted from the binary).
 
 ## [0.2.0] — 2026-05-11
 
