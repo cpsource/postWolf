@@ -283,6 +283,16 @@ static pid_t fork_shell(int *pty_master_out, uint16_t rows, uint16_t cols,
             if (initgroups(run_user, pw->pw_gid) != 0) perror("initgroups");
             if (setgid(pw->pw_gid) != 0) { perror("setgid"); _exit(1); }
             if (setuid(pw->pw_uid) != 0) { perror("setuid"); _exit(1); }
+        } else {
+            /* No --user: qshd is running as some real account already
+             * (systemd's User=); land the shell in that account's home
+             * dir.  systemd sets cwd=/ for service units, so without
+             * this fixup the user is dropped into / instead of ~. */
+            struct passwd *pw = getpwuid(getuid());
+            if (pw) {
+                setenv("HOME", pw->pw_dir, 1);
+                if (chdir(pw->pw_dir) != 0) perror("[qshd] chdir");
+            }
         }
 
         execl("/bin/bash", "bash", "--login", (char *)NULL);

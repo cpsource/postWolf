@@ -119,13 +119,21 @@ static int send_data(mqc_conn_t *conn, const void *payload, int len)
 
 /* Returns 0 on normal exit (SHELL_EXIT received or stdin EOF),
  *        -1 on connection error (caller may retry). */
-static int run_session(mqc_conn_t *conn)
+/* run_session returns:
+ *    0  -- clean exit (SHELL_EXIT from server, or stdin EOF)
+ *   -1  -- session ended in failure; *got_any_frame says whether
+ *          the server ever spoke (used by the caller to distinguish
+ *          ACL-deny / refused from a mid-session disconnect).
+ */
+static int run_session(mqc_conn_t *conn, int *got_any_frame)
 {
     uint8_t frame[FRAME_SZ];
     uint8_t in[BUF_SZ];
     int     mqc_fd = mqc_get_fd(conn);
     uint16_t rows, cols;
     int len;
+
+    *got_any_frame = 0;
 
     /* OPEN_SHELL */
     get_winsize(&rows, &cols);
@@ -166,6 +174,7 @@ static int run_session(mqc_conn_t *conn)
                 restore_terminal();
                 return -1;
             }
+            *got_any_frame = 1;
             switch (frame[0]) {
                 case FRAME_DATA:
                     if (n > 1)
@@ -328,13 +337,30 @@ int main(int argc, char *argv[])
         fprintf(stderr, "qsh: connected — server subject '%s' (peer_index=%d)\n",
                 mqc_get_peer_subject(conn) ? mqc_get_peer_subject(conn) : "?",
                 mqc_get_peer_index(conn));
-        retries = -1;   /* reset; ++ at loop head makes 0 next iter */
 
-        rc = run_session(conn);
-        mqc_close(conn);
+        {
+            int got_any = 0;
+            rc = run_session(conn, &got_any);
+            mqc_close(conn);
 
-        if (rc == 0) break;          /* SHELL_EXIT or stdin EOF — done */
-        if (!running) break;
+            if (rc == 0) break;          /* SHELL_EXIT or stdin EOF — done */
+            if (!running) break;
+            if (!got_any) {
+                /* Server hung up before sending a single frame.  Most
+                 * likely the qshd ACL refused our cert_index (check
+                 * `journalctl -u qshd` on the server).  No point
+                 * retrying — the rejection is deterministic. */
+                fprintf(stderr,
+                        "qsh: server closed connection before responding "
+                        "(qshd ACL refused cert_index=%d?)\n",
+                        mqc_get_peer_index(conn));
+                break;
+            }
+            /* Session ran for a while then dropped — could be transient.
+             * Allow retries via the existing budget. */
+            retries = -1;   /* ++ at loop head makes 0 next iter */
+        }
+
         fprintf(stderr, "qsh: connection lost\n");
     }
 
