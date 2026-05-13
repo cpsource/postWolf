@@ -19,10 +19,15 @@
  *   0x02 DATA        payload: raw shell bytes                  bidirectional
  *   0x03 RESIZE      payload: rows(u16 BE) cols(u16 BE)        C -> S
  *   0x04 SHELL_EXIT  payload: empty                            S -> C, last frame
+ *   0x05 CMD_REQ     payload: "/get\n<json>" or "/put\n<json>" C -> S
+ *   0x06 CMD_RESP    payload: <json> (result or {"error":...}) S -> C
+ *
+ * See ../README-specifications.md for the JSON shape and limits.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -31,12 +36,15 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <arpa/inet.h>
 #include <pty.h>
 #include <pwd.h>
 #include <grp.h>
 #include <termios.h>
+#include <zlib.h>
+#include <json-c/json.h>
 
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/dilithium.h>
@@ -49,12 +57,15 @@
 #define FRAME_DATA        0x02
 #define FRAME_RESIZE      0x03
 #define FRAME_SHELL_EXIT  0x04
+#define FRAME_CMD_REQ     0x05
+#define FRAME_CMD_RESP    0x06
 
 #define FALLBACK_PORT     1024              /* used only if config is silent */
 #define FALLBACK_SERVER   "localhost:8444"
 #define BUF_SZ            32768
 #define FRAME_SZ          (BUF_SZ + 8)
 #define ACL_PATH          "/etc/qsh/qshd/config"
+#define QSHD_RAW_MAX      (256 * 1024)      /* matches qsh client */
 
 static const char *run_user = NULL;
 static volatile sig_atomic_t running = 1;
@@ -239,6 +250,410 @@ static void subject_to_label(const char *subject, char *out, size_t outsz)
 }
 
 /* ------------------------------------------------------------------ */
+/*  Slash-command handlers (/get and /put)                             */
+/*  See ../README-specifications.md for the wire format.               */
+/* ------------------------------------------------------------------ */
+
+static char *hex_encode(const unsigned char *in, size_t n)
+{
+    static const char digits[] = "0123456789abcdef";
+    char *out = malloc(n * 2 + 1);
+    size_t i;
+    if (!out) return NULL;
+    for (i = 0; i < n; i++) {
+        out[2 * i]     = digits[in[i] >> 4];
+        out[2 * i + 1] = digits[in[i] & 0x0f];
+    }
+    out[n * 2] = '\0';
+    return out;
+}
+
+static int hex_digit(int c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int hex_decode(const char *in, unsigned char **out, size_t *outlen)
+{
+    size_t n = strlen(in), i;
+    unsigned char *buf;
+    if (n & 1) return -1;
+    buf = malloc(n / 2 ? n / 2 : 1);
+    if (!buf) return -1;
+    for (i = 0; i < n; i += 2) {
+        int hi = hex_digit(in[i]), lo = hex_digit(in[i + 1]);
+        if (hi < 0 || lo < 0) { free(buf); return -1; }
+        buf[i / 2] = (unsigned char)((hi << 4) | lo);
+    }
+    *out    = buf;
+    *outlen = n / 2;
+    return 0;
+}
+
+static int zlib_deflate_alloc(const unsigned char *in, size_t inlen,
+                              unsigned char **out, size_t *outlen)
+{
+    uLongf bound = compressBound((uLong)inlen);
+    unsigned char *buf = malloc(bound);
+    if (!buf) return -1;
+    if (compress2(buf, &bound, in, (uLong)inlen, Z_DEFAULT_COMPRESSION) != Z_OK) {
+        free(buf);
+        return -1;
+    }
+    *out    = buf;
+    *outlen = (size_t)bound;
+    return 0;
+}
+
+static int zlib_inflate_alloc(const unsigned char *in, size_t inlen,
+                              size_t expected, unsigned char **out)
+{
+    uLongf got = (uLongf)expected;
+    unsigned char *buf = malloc(expected ? expected : 1);
+    if (!buf) return -1;
+    if (uncompress(buf, &got, in, (uLong)inlen) != Z_OK || got != expected) {
+        free(buf);
+        return -1;
+    }
+    *out = buf;
+    return 0;
+}
+
+static void mode_to_string(mode_t m, char *out)
+{
+    if      (S_ISDIR(m))  out[0] = 'd';
+    else if (S_ISLNK(m))  out[0] = 'l';
+    else if (S_ISCHR(m))  out[0] = 'c';
+    else if (S_ISBLK(m))  out[0] = 'b';
+    else if (S_ISFIFO(m)) out[0] = 'p';
+    else if (S_ISSOCK(m)) out[0] = 's';
+    else                  out[0] = '-';
+    out[1] = (m & S_IRUSR) ? 'r' : '-';
+    out[2] = (m & S_IWUSR) ? 'w' : '-';
+    out[3] = (m & S_IXUSR) ? 'x' : '-';
+    out[4] = (m & S_IRGRP) ? 'r' : '-';
+    out[5] = (m & S_IWGRP) ? 'w' : '-';
+    out[6] = (m & S_IXGRP) ? 'x' : '-';
+    out[7] = (m & S_IROTH) ? 'r' : '-';
+    out[8] = (m & S_IWOTH) ? 'w' : '-';
+    out[9] = (m & S_IXOTH) ? 'x' : '-';
+    out[10] = '\0';
+}
+
+static int mode_from_string(const char *s, mode_t *out)
+{
+    mode_t m = 0;
+    if (!s || strlen(s) < 10) return -1;
+    s += 1;
+    if (s[0] == 'r') m |= S_IRUSR; else if (s[0] != '-') return -1;
+    if (s[1] == 'w') m |= S_IWUSR; else if (s[1] != '-') return -1;
+    if (s[2] == 'x') m |= S_IXUSR; else if (s[2] != '-') return -1;
+    if (s[3] == 'r') m |= S_IRGRP; else if (s[3] != '-') return -1;
+    if (s[4] == 'w') m |= S_IWGRP; else if (s[4] != '-') return -1;
+    if (s[5] == 'x') m |= S_IXGRP; else if (s[5] != '-') return -1;
+    if (s[6] == 'r') m |= S_IROTH; else if (s[6] != '-') return -1;
+    if (s[7] == 'w') m |= S_IWOTH; else if (s[7] != '-') return -1;
+    if (s[8] == 'x') m |= S_IXOTH; else if (s[8] != '-') return -1;
+    *out = m;
+    return 0;
+}
+
+/* Build and send a FRAME_CMD_RESP carrying a single JSON object.
+ * Takes ownership of `obj` and frees it (json_object_put). */
+static int send_cmd_resp(mqc_conn_t *conn, struct json_object *obj)
+{
+    const char    *body = json_object_to_json_string_ext(obj,
+                              JSON_C_TO_STRING_PLAIN);
+    size_t         blen = strlen(body);
+    size_t         plen = 1 + blen;
+    unsigned char *buf;
+    int            rc;
+    if (plen > 1024 * 1024) { json_object_put(obj); return -1; }
+    buf = malloc(plen);
+    if (!buf) { json_object_put(obj); return -1; }
+    buf[0] = FRAME_CMD_RESP;
+    memcpy(buf + 1, body, blen);
+    rc = mqc_write(conn, buf, (int)plen);
+    free(buf);
+    json_object_put(obj);
+    return rc;
+}
+
+static struct json_object *err_obj(const char *fmt, ...)
+{
+    struct json_object *o = json_object_new_object();
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    json_object_object_add(o, "error", json_object_new_string(buf));
+    return o;
+}
+
+/* Handle a /get request body.  Returns a freshly-built response object
+ * (success or error); caller hands it to send_cmd_resp(). */
+static struct json_object *handle_get(const char *body, const char *peer)
+{
+    struct json_tokener *tok = json_tokener_new();
+    struct json_object  *req, *jfrom, *jcomp;
+    const char *from;
+    int compressed_req;
+    struct stat st;
+    int fd;
+    unsigned char *raw = NULL, *payload = NULL;
+    size_t raw_len, payload_len;
+    char  *hex_str = NULL;
+    char   mode_str[11];
+    struct json_object *resp;
+
+    if (!tok) return err_obj("oom");
+    req = json_tokener_parse_ex(tok, body, (int)strlen(body));
+    if (!req || json_tokener_get_error(tok) != json_tokener_success) {
+        if (req) json_object_put(req);
+        json_tokener_free(tok);
+        return err_obj("malformed JSON");
+    }
+    json_tokener_free(tok);
+
+    if (!json_object_object_get_ex(req, "from", &jfrom) ||
+        !json_object_is_type(jfrom, json_type_string)) {
+        json_object_put(req);
+        return err_obj("missing 'from'");
+    }
+    from = json_object_get_string(jfrom);
+    compressed_req = 1;
+    if (json_object_object_get_ex(req, "compressed", &jcomp))
+        compressed_req = json_object_get_boolean(jcomp);
+
+    fprintf(stderr, "[qshd:%d] /get from='%s' for '%s'\n",
+            (int)getpid(), from, peer ? peer : "?");
+
+    fd = open(from, O_RDONLY);
+    if (fd < 0) {
+        resp = err_obj("open: %s", strerror(errno));
+        json_object_put(req);
+        return resp;
+    }
+    if (fstat(fd, &st) != 0) {
+        resp = err_obj("stat: %s", strerror(errno));
+        close(fd); json_object_put(req); return resp;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        close(fd); json_object_put(req);
+        return err_obj("not a regular file");
+    }
+    if (st.st_size > QSHD_RAW_MAX) {
+        close(fd); json_object_put(req);
+        return err_obj("file too large (%lld > %d)",
+                       (long long)st.st_size, QSHD_RAW_MAX);
+    }
+    raw_len = (size_t)st.st_size;
+    raw = malloc(raw_len ? raw_len : 1);
+    if (!raw) { close(fd); json_object_put(req); return err_obj("oom"); }
+    if (raw_len && (size_t)read(fd, raw, raw_len) != raw_len) {
+        resp = err_obj("read: %s", strerror(errno));
+        close(fd); free(raw); json_object_put(req); return resp;
+    }
+    close(fd);
+
+    if (compressed_req) {
+        if (zlib_deflate_alloc(raw, raw_len, &payload, &payload_len) != 0) {
+            free(raw); json_object_put(req);
+            return err_obj("deflate failed");
+        }
+        free(raw);
+        raw = NULL;
+    } else {
+        payload     = raw;
+        payload_len = raw_len;
+        raw         = NULL;
+    }
+    hex_str = hex_encode(payload, payload_len);
+    free(payload);
+    if (!hex_str) { json_object_put(req); return err_obj("hex encode failed"); }
+
+    mode_to_string(st.st_mode, mode_str);
+
+    resp = json_object_new_object();
+    json_object_object_add(resp, "from",       json_object_new_string(from));
+    json_object_object_add(resp, "compressed", json_object_new_boolean(compressed_req));
+    json_object_object_add(resp, "protection", json_object_new_string(mode_str));
+    json_object_object_add(resp, "byte_count", json_object_new_int64((int64_t)raw_len));
+    json_object_object_add(resp, "data",       json_object_new_string(hex_str));
+
+    free(hex_str);
+    json_object_put(req);
+    return resp;
+}
+
+/* Handle a /put request body. */
+static struct json_object *handle_put(const char *body, const char *peer)
+{
+    struct json_tokener *tok = json_tokener_new();
+    struct json_object  *req, *jto, *jcomp, *jproto, *jbytes, *jdata;
+    const char *to;
+    int compressed_req;
+    long byte_count;
+    mode_t mode = 0644;
+    unsigned char *hex_bytes = NULL, *raw = NULL;
+    size_t hex_len = 0, raw_len = 0;
+    int fd;
+    struct json_object *resp;
+
+    if (!tok) return err_obj("oom");
+    req = json_tokener_parse_ex(tok, body, (int)strlen(body));
+    if (!req || json_tokener_get_error(tok) != json_tokener_success) {
+        if (req) json_object_put(req);
+        json_tokener_free(tok);
+        return err_obj("malformed JSON");
+    }
+    json_tokener_free(tok);
+
+    if (!json_object_object_get_ex(req, "to",         &jto)    ||
+        !json_object_object_get_ex(req, "byte_count", &jbytes) ||
+        !json_object_object_get_ex(req, "data",       &jdata)  ||
+        !json_object_is_type(jto,    json_type_string) ||
+        !json_object_is_type(jdata,  json_type_string)) {
+        json_object_put(req);
+        return err_obj("missing/wrong-typed required field(s)");
+    }
+    to             = json_object_get_string(jto);
+    byte_count     = (long)json_object_get_int64(jbytes);
+    compressed_req = 1;
+    if (json_object_object_get_ex(req, "compressed", &jcomp))
+        compressed_req = json_object_get_boolean(jcomp);
+    if (byte_count < 0 || byte_count > QSHD_RAW_MAX) {
+        json_object_put(req);
+        return err_obj("byte_count %ld out of range", byte_count);
+    }
+    if (json_object_object_get_ex(req, "protection", &jproto)) {
+        if (mode_from_string(json_object_get_string(jproto), &mode) != 0) {
+            json_object_put(req);
+            return err_obj("bad protection string");
+        }
+    }
+
+    fprintf(stderr, "[qshd:%d] /put to='%s' byte_count=%ld for '%s'\n",
+            (int)getpid(), to, byte_count, peer ? peer : "?");
+
+    if (hex_decode(json_object_get_string(jdata),
+                   &hex_bytes, &hex_len) != 0) {
+        json_object_put(req);
+        return err_obj("bad hex in 'data'");
+    }
+    if (compressed_req) {
+        if (zlib_inflate_alloc(hex_bytes, hex_len,
+                               (size_t)byte_count, &raw) != 0) {
+            free(hex_bytes);
+            json_object_put(req);
+            return err_obj("inflate failed");
+        }
+        raw_len = (size_t)byte_count;
+    } else {
+        if (hex_len != (size_t)byte_count) {
+            free(hex_bytes);
+            json_object_put(req);
+            return err_obj("hex length != byte_count");
+        }
+        raw     = hex_bytes;
+        hex_bytes = NULL;
+        raw_len = hex_len;
+    }
+    free(hex_bytes);
+
+    fd = open(to, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) {
+        resp = err_obj("open: %s", strerror(errno));
+        free(raw); json_object_put(req); return resp;
+    }
+    if (raw_len && (size_t)write(fd, raw, raw_len) != raw_len) {
+        resp = err_obj("write: %s", strerror(errno));
+        close(fd); unlink(to);
+        free(raw); json_object_put(req); return resp;
+    }
+    fchmod(fd, mode);
+    close(fd);
+    free(raw);
+
+    resp = json_object_new_object();
+    json_object_object_add(resp, "to",         json_object_new_string(to));
+    json_object_object_add(resp, "byte_count", json_object_new_int64((int64_t)raw_len));
+    json_object_put(req);
+    return resp;
+}
+
+/* Top-level dispatcher: parse the verb line (everything before the
+ * first '\n') and route to /get or /put.  Always sends one response
+ * frame, even on error, so the client's await loop terminates. */
+static int handle_cmd_frame(mqc_conn_t *conn,
+                            const unsigned char *payload, int payload_len,
+                            const char *peer)
+{
+    const char *p   = (const char *)payload;
+    const char *nl  = memchr(payload, '\n', (size_t)payload_len);
+    const char *body;
+    char        verb[16];
+    size_t      vlen, blen;
+    struct json_object *resp;
+
+    if (!nl) return send_cmd_resp(conn, err_obj("missing verb line"));
+    vlen = (size_t)(nl - p);
+    if (vlen >= sizeof(verb))
+        return send_cmd_resp(conn, err_obj("verb too long"));
+    memcpy(verb, p, vlen);
+    verb[vlen] = '\0';
+
+    body = nl + 1;
+    blen = (size_t)payload_len - (vlen + 1);
+    if (blen == 0) return send_cmd_resp(conn, err_obj("empty body"));
+
+    {
+        /* json-c parsers want a NUL-terminated string. */
+        char *body_z = malloc(blen + 1);
+        if (!body_z) return send_cmd_resp(conn, err_obj("oom"));
+        memcpy(body_z, body, blen);
+        body_z[blen] = '\0';
+
+        if (strcmp(verb, "/get") == 0)
+            resp = handle_get(body_z, peer);
+        else if (strcmp(verb, "/put") == 0)
+            resp = handle_put(body_z, peer);
+        else
+            resp = err_obj("unknown verb '%s'", verb);
+
+        free(body_z);
+    }
+
+    /* Outcome log line — one per /get|/put attempt regardless of
+     * result.  Format mirrors the [qshd:<pid>] prefix the rest of
+     * the daemon uses so journalctl -u qshd shows transfers next to
+     * accept and shell-start events. */
+    {
+        struct json_object *jerr = NULL, *jpath = NULL, *jbytes = NULL;
+        if (json_object_object_get_ex(resp, "error", &jerr)) {
+            fprintf(stderr, "[qshd:%d] %s FAIL for '%s': %s\n",
+                    (int)getpid(), verb, peer ? peer : "?",
+                    json_object_get_string(jerr));
+        } else {
+            const char *which = strcmp(verb, "/get") == 0 ? "from" : "to";
+            json_object_object_get_ex(resp, which, &jpath);
+            json_object_object_get_ex(resp, "byte_count", &jbytes);
+            fprintf(stderr, "[qshd:%d] %s OK %s='%s' byte_count=%ld for '%s'\n",
+                    (int)getpid(), verb, which,
+                    jpath  ? json_object_get_string(jpath)   : "?",
+                    jbytes ? (long)json_object_get_int64(jbytes) : -1L,
+                    peer ? peer : "?");
+        }
+    }
+
+    return send_cmd_resp(conn, resp);
+}
+
+/* ------------------------------------------------------------------ */
 /*  PTY session                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -378,6 +793,12 @@ static void session_loop(mqc_conn_t *conn)
                         ioctl(pty_master, TIOCSWINSZ, &ws);
                     }
                     break;
+                case FRAME_CMD_REQ:
+                    if (handle_cmd_frame(conn, in_frame + 1, n - 1, peer) < 0) {
+                        fprintf(stderr, "[qshd:%d] CMD response send failed\n",
+                                (int)getpid());
+                    }
+                    break;
                 default:
                     fprintf(stderr, "[qshd:%d] unknown frame type 0x%02x\n",
                             (int)getpid(), in_frame[0]);
@@ -507,6 +928,20 @@ int main(int argc, char *argv[])
         mqc_ctx_free(ctx);
         free(mtc_url);
         return 1;
+    }
+
+    /* Land the daemon (and every per-connection fork) in the running
+     * user's $HOME, so relative paths in /get and /put resolve under
+     * ~ instead of systemd's default cwd of "/" — which the ubuntu
+     * uid can't write to anyway.  The forkpty child overrides this
+     * again for the shell, but the parent of the forkpty (where
+     * handle_cmd_frame runs) inherits this cwd. */
+    {
+        struct passwd *pw = getpwuid(getuid());
+        if (pw && pw->pw_dir && chdir(pw->pw_dir) == 0)
+            fprintf(stderr, "[qshd] cwd set to %s\n", pw->pw_dir);
+        else
+            fprintf(stderr, "[qshd] cwd left as '/' (no usable HOME)\n");
     }
 
     listen_fd = mqc_listen(NULL, port);

@@ -10,7 +10,7 @@ SRCS     = qshd.c ../../mtc-keymaster/read-config/read-config.c
 
 LDLIBS   = $(MQC_LIB) -L/usr/local/lib -lpostWolf \
            -ljson-c -laugeas -lhiredis -lpthread -lunbound -lcrypto -lcurl \
-           -lutil
+           -lutil -lz
 
 TARGET   = qshd
 

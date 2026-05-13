@@ -26,7 +26,7 @@ FIPS_DIR  = fips-framework/tools/c
 QSH_CLIENT_DIR = qsh/qsh
 QSHD_DIR       = qsh/qshd
 
-.PHONY: all install clean slc mqc quic mtc tools tests fips qsh install-lib
+.PHONY: all install clean slc mqc quic mtc tools tests fips qsh install-lib kit
 
 all: slc mqc mtc tools tests fips qsh
 
@@ -199,6 +199,21 @@ install: all
 		echo "[install] restarting qshd.service"; \
 		systemctl restart qshd.service; \
 	fi
+	@echo "[install] rebuilding kit-qsh (bundles /usr/local/bin/qsh)"
+	@if [ -n "$$SUDO_USER" ]; then \
+		sudo -u $$SUDO_USER $(MAKE) -C kit-qsh; \
+	else \
+		$(MAKE) -C kit-qsh; \
+	fi
+	@echo "[install] kit-qsh/deploy-qsh.tar.gz refreshed"
+
+# Standalone: rebuild the kit tarball without reinstalling everything.
+# Pulls /usr/local/bin/qsh, so make sure `install` has been run since
+# the last qsh change.  The kit Makefile reads $HOME/.TPM/... so this
+# target is normally run un-sudoed (the `install` chain de-sudos
+# automatically via SUDO_USER).
+kit:
+	@$(MAKE) -C kit-qsh
 
 clean:
 	$(MAKE) -C $(SLC_DIR) clean
