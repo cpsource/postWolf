@@ -5435,6 +5435,66 @@ default, but functionally a no-op.
 
 ---
 
+### 82. Tighten Redis bind / protected-mode on hosts that run qshd
+
+Filed 2026-05-13.  Surfaced while bringing up qshd on `frflashy.com`
+as part of the second-host deployment.
+
+**State.**  Ubuntu 24.04's apt `redis-server` package installed on
+frflashy starts with these in `/etc/redis/redis.conf`:
+
+```
+bind 0.0.0.0 -::1
+protected-mode no
+```
+
+That listens on **every IPv4 interface** (public EIP, VPC private IP,
+loopback) instead of the usual loopback-only.  `protected-mode no`
+disables the upstream safety net that refuses any non-loopback
+connection without auth.
+
+**Why it didn't bite.**  The AWS Security Group for frflashy does
+not open port 6379, so `nc -zv frflashy.com 6379` from the public
+internet times out — the SG drops the SYN before redis-server ever
+sees it.  qshd connects locally via `127.0.0.1:6379`, which works
+under any `bind` setting that includes loopback.
+
+**Why it's still worth fixing.**  Defense in depth.  If the SG
+config ever changes (a careless "allow all from VPC" rule, an SG
+swap during an instance type change), Redis is one TCP connect
+away from being a fully open, unauth'd KV store on the public
+internet.  qshd's rate-limit and revocation-cache keys are not
+sensitive, but the exposure surface is.
+
+**What to do.**
+
+Edit `/etc/redis/redis.conf` on every host running qshd:
+
+```
+bind 127.0.0.1 -::1
+protected-mode yes
+```
+
+Restart with `sudo systemctl restart redis-server`.  Verify:
+
+```
+ss -ltn | grep 6379            # expect 127.0.0.1:6379 + [::1]:6379 only
+```
+
+`redis-cli ping` from the host still works (PONG).  qshd keeps
+connecting via 127.0.0.1.  Nothing in the postWolf side cares
+about this — qshd never reaches out to a remote Redis.
+
+**Scope.**  Run the same audit on factsorlie too — its Redis is in a
+docker container with a `127.0.0.1:6379:6379` port binding, so the
+host-side mapping is already loopback-only, but check the container's
+own `bind`/`protected-mode` for the same reasons.
+
+Severity: **Low** — preventive hardening only.  No active risk under
+the current AWS SG, but a known-good config that survives SG churn.
+
+---
+
 ## Appendix: Server-Issued Nonce Plan for CA Enrollment
 
 ### Problem
