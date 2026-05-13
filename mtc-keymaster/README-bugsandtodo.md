@@ -5306,7 +5306,48 @@ that you should investigate.  Either way you want to know.
 
 ---
 
-### 81. Move server-only AbuseIPDB code out of `libmqc.a` so MQC clients don't pull in `-lcurl`
+### 81. Move server-only AbuseIPDB code out of `libmqc.a` so MQC clients don't pull in `-lcurl`  *[DONE 2026-05-13]*
+
+**Done.**  Resolved by splitting `mqc_common.c` (AbuseIPDB + rate-limit
+chain moved to `mqc_abuseipdb.c` and `mqc_ratelimit.c`) **and** by
+splitting each handshake-mode file along the client/server axis so
+accept-side references to `mqc_ratelimit_*` and `mqc_abuse_check`
+don't live in the same `.o` as client connect functions.  New
+translation units:
+
+```
+mqc_abuseipdb.c          libcurl  (server only)
+mqc_ratelimit.c          libhiredis (server only)
+mqc_clear_accept.c       (no extra deps; server only)
+mqc_encrypted_accept.c   (no extra deps; server only)
+mqc_accept_dispatch.c    (no extra deps; server only)  ← was in mqc.c
+```
+
+`nm libmqc.a` now shows `curl_easy_*` only in `mqc_abuseipdb.o` and
+`redisCommand` / `redisConnectWithTimeout` only in `mqc_ratelimit.o`,
+matching the verification recipe at the top of this entry.  Client
+binaries (qsh, fips-manifest-*, fetch-publisher-key,
+show-tpm/issue_leaf_nonce/revoke-key/renew-cert/check-renewal-cert/
+cancel-nonce) link without explicit `-lcurl -lhiredis`; `ldd` shows
+no `libhiredis` pull at all.  `libcurl` still appears transitively
+because `libpostWolf.so` itself uses it (`src/ssl_mtc.c`, the TLS
+MTC client) — that's outside the libmqc.a scope of this TODO and
+was already called out as "Not in scope" in the original entry.
+
+**Not addressed:** dropping `-lunbound` from pure-MQC clients.  The
+TODO suggested clients could shed it, but `mqc_peer.c`'s
+`mqc_load_ca_pubkey` (a client API qsh calls before its first
+handshake) invokes `mqc_dnssec_fetch_cosigner_kh` for the cosigner-
+key DNSSEC pin, so `mqc_dnssec_pin.o` (and libunbound) must stay
+in every MQC consumer's link.  That's correct behaviour — the
+DNSSEC pin is a client-side security gate against MitM of the
+cosigner bootstrap — not an oversight to fix.
+
+---
+
+#### Original entry below for reference
+
+
 
 Filed 2026-05-11.  Surfaced while wiring the new `qsh`/`qshd` tools
 into `Makefile.tools` — the client-only `qsh` binary had to link

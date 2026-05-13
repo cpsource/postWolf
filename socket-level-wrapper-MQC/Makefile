@@ -1,6 +1,15 @@
 # socket-level-wrapper-MQC Makefile
 #
 # Builds libmqc.a and example echo client/server.
+#
+# Translation-unit layout (TODO #81: keep server-only deps off client links):
+#   client-only:  mqc.o, mqc_common.o, mqc_clear.o, mqc_encrypted.o,
+#                 mqc_peer.o, mqc_dnssec_pin.o (uses libunbound)
+#   server-only:  mqc_accept_dispatch.o, mqc_clear_accept.o,
+#                 mqc_encrypted_accept.o, mqc_ratelimit.o (uses libhiredis),
+#                 mqc_abuseipdb.o (uses libcurl)
+# Static-archive symbol demand keeps the server .o files (and their
+# external libs) out of pure-client links.
 
 CC      ?= gcc
 CFLAGS  += -Wall -Wextra -O2
@@ -11,13 +20,18 @@ CFLAGS  += -I../mtc-keymaster/read-config
 LDFLAGS += $(shell pkg-config --libs postWolf)
 LDFLAGS += $(shell pkg-config --libs json-c)
 LDFLAGS += $(shell pkg-config --libs augeas)
-LDFLAGS += -lcurl -lhiredis -lunbound -lcrypto
+LDFLAGS += -lunbound -lcrypto
+
+# Server binaries (anything that pulls mqc_accept_*) also need these:
+LDFLAGS_SERVER = -lcurl -lhiredis
 
 AR      ?= ar
 
 LIB     = libmqc.a
 OBJS    = mqc.o mqc_common.o mqc_clear.o mqc_encrypted.o mqc_peer.o \
-          mqc_dnssec_pin.o
+          mqc_dnssec_pin.o \
+          mqc_accept_dispatch.o mqc_clear_accept.o mqc_encrypted_accept.o \
+          mqc_ratelimit.o mqc_abuseipdb.o
 TESTS   = tests/test_name_check tests/mqc_dnssec_pin
 TARGETS = $(LIB) examples/echo_server examples/echo_client $(TESTS)
 
@@ -51,8 +65,23 @@ mqc_peer.o: mqc_peer.c mqc_peer.h mqc_dnssec_pin.h
 mqc_dnssec_pin.o: mqc_dnssec_pin.c mqc_dnssec_pin.h
 	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_dnssec_pin.c
 
+mqc_accept_dispatch.o: mqc_accept_dispatch.c mqc.h mqc_internal.h mqc_peer.h
+	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_accept_dispatch.c
+
+mqc_clear_accept.o: mqc_clear_accept.c mqc.h mqc_internal.h mqc_peer.h
+	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_clear_accept.c
+
+mqc_encrypted_accept.o: mqc_encrypted_accept.c mqc.h mqc_internal.h mqc_peer.h
+	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_encrypted_accept.c
+
+mqc_ratelimit.o: mqc_ratelimit.c mqc.h mqc_internal.h
+	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_ratelimit.c
+
+mqc_abuseipdb.o: mqc_abuseipdb.c mqc.h mqc_internal.h
+	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_abuseipdb.c
+
 examples/echo_server: examples/echo_server.c $(LIB) mqc.h
-	$(call quiet,CCLD,$@)$(CC) $(CFLAGS) -I. -o $@ $< ../mtc-keymaster/read-config/read-config.c -L. -lmqc $(LDFLAGS)
+	$(call quiet,CCLD,$@)$(CC) $(CFLAGS) -I. -o $@ $< ../mtc-keymaster/read-config/read-config.c -L. -lmqc $(LDFLAGS) $(LDFLAGS_SERVER)
 
 examples/echo_client: examples/echo_client.c $(LIB) mqc.h
 	$(call quiet,CCLD,$@)$(CC) $(CFLAGS) -I. -o $@ $< ../mtc-keymaster/read-config/read-config.c -L. -lmqc $(LDFLAGS)

@@ -21,7 +21,7 @@ READ_CONFIG_SRC = $(MTC_KEYMASTER)/read-config/read-config.c
 LIST_CFLAGS = -I$(MQC_DIR) -I$(MTC_KEYMASTER)/read-config \
               $(shell pkg-config --cflags augeas)
 LIST_LIBS   = $(shell pkg-config --libs augeas) \
-              -lhiredis -lpthread -lunbound -lcrypto -lcurl
+              -lpthread -lunbound -lcrypto
 
 TARGETS = fips-manifest-submit fips-manifest-verify fips-manifest-list \
           fips-manifest-revoke fetch-publisher-key

@@ -93,36 +93,36 @@ bootstrap_leaf: bootstrap_leaf.c \
 show-tpm: show-tpm.c $(READ_CONFIG_SRC) $(MQC_LIB)
 	$(CC) $(CFLAGS) -o $@ show-tpm.c $(READ_CONFIG_SRC) $(MQC_LIB) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
-		-lcurl -lhiredis -lpthread -lm -lunbound -lcrypto
+		-lpthread -lm -lunbound -lcrypto
 
 issue_leaf_nonce: issue_leaf_nonce.c $(SERVER_DIR)/mtc_domain.c \
                   $(SERVER_DIR)/mtc_domain.h $(READ_CONFIG_SRC) $(MQC_LIB)
 	$(CC) $(CFLAGS) -o $@ issue_leaf_nonce.c \
 		$(SERVER_DIR)/mtc_domain.c $(READ_CONFIG_SRC) $(MQC_LIB) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
-		-lcurl -lhiredis -lpthread -lm -lunbound -lcrypto
+		-lpthread -lm -lunbound -lcrypto
 
 revoke-key: revoke-key.c $(READ_CONFIG_SRC) $(MQC_LIB)
 	$(CC) $(CFLAGS) -o $@ revoke-key.c $(READ_CONFIG_SRC) $(MQC_LIB) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
-		-lcurl -lhiredis -lpthread -lm -lunbound -lcrypto
+		-lpthread -lm -lunbound -lcrypto
 
 renew-cert: renew-cert.c $(READ_CONFIG_SRC) $(MQC_LIB)
 	$(CC) $(CFLAGS) -o $@ renew-cert.c $(READ_CONFIG_SRC) $(MQC_LIB) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
-		-lcurl -lhiredis -lpthread -lm -lunbound -lcrypto
+		-lpthread -lm -lunbound -lcrypto
 
 check-renewal-cert: check-renewal-cert.c $(READ_CONFIG_SRC) $(MQC_LIB)
 	$(CC) $(CFLAGS) -o $@ check-renewal-cert.c $(READ_CONFIG_SRC) $(MQC_LIB) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
-		-lcurl -lhiredis -lpthread -lm -lunbound -lcrypto
+		-lpthread -lm -lunbound -lcrypto
 
 cancel-nonce: cancel-nonce.c $(SERVER_DIR)/mtc_domain.c \
               $(SERVER_DIR)/mtc_domain.h $(READ_CONFIG_SRC) $(MQC_LIB)
 	$(CC) $(CFLAGS) -o $@ cancel-nonce.c \
 		$(SERVER_DIR)/mtc_domain.c $(READ_CONFIG_SRC) $(MQC_LIB) \
 		$(POSTWOLF_LIBS) $(JSON_LIBS) $(AUGEAS_LIBS) \
-		-lcurl -lhiredis -lpthread -lm -lunbound -lcrypto
+		-lpthread -lm -lunbound -lcrypto
 
 # Standalone symmetric-crypto pipe tool.  No MQC link needed — pure
 # wolfCrypt + json-c.

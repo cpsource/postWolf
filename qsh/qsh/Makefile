@@ -9,7 +9,7 @@ MQC_LIB  = ../../socket-level-wrapper-MQC/libmqc.a
 SRCS     = qsh.c ../../mtc-keymaster/read-config/read-config.c
 
 LDLIBS   = $(MQC_LIB) -L/usr/local/lib -lpostWolf \
-           -ljson-c -laugeas -lhiredis -lpthread -lunbound -lcrypto -lcurl
+           -ljson-c -laugeas -lpthread -lunbound -lcrypto
 
 TARGET   = qsh
 
