@@ -27,7 +27,53 @@ the open issue list.
 
 ## [Unreleased]
 
-(no changes since 0.2.1)
+(no changes since 0.2.2)
+
+## [0.2.2] — 2026-05-13
+
+Small qsh / qshd quality-of-life pass: failure-handling fix on the
+client, `$HOME` landing on the server, and a new top-level deployment
+kit for shipping the qsh client to other hosts.
+
+### Added
+
+- **`kit-qsh/`** — top-level directory that builds a self-contained
+  `deploy-qsh.tar.gz` for running `qsh` on a fresh host without
+  checking out the postWolf tree.  Bundles the `qsh` binary, the
+  `check-qsh-deps.py` runtime-library audit, an Augeas `Myconf` lens
+  + minimal `postWolf.config` template, a `TPM/factsorlie.com/`
+  identity dir, and a recipient-side `Makefile` with `check` /
+  `install` / `install-bin` / `install-config` / `install-tpm` /
+  `uninstall` / `run` targets.  See `kit-qsh/README.md` for build
+  knobs and `deploy-qsh/README.md` (in the tarball) for recipient
+  usage.
+- **`qsh/check-qsh-deps.py`** — standalone Python script that reads
+  a qsh binary's `DT_NEEDED` entries (or uses a baked-in list when
+  no binary is on hand) and reports which runtime libraries are
+  installed on the local box.  Suggests an `apt install` line for
+  the gaps.
+- **TODO #82** in `mtc-keymaster/README-bugsandtodo.md` — preventive
+  hardening: tighten Redis `bind 0.0.0.0` -> `bind 127.0.0.1 -::1`
+  and `protected-mode no` -> `protected-mode yes` on every host
+  running `qshd`.  Severity Low (AWS SG already blocks `:6379`
+  externally); defense in depth against SG-config churn.
+
+### Changed
+
+- **`qsh` no longer tight-loops when `qshd` refuses by ACL.**  The
+  old retry budget reset the instant `mqc_connect` returned, before
+  `qshd` had a chance to evaluate its `cert_index` ACL — so an
+  ACL-denied caller looped forever until Ctrl-C.  `run_session` now
+  reports whether the server ever sent a frame; if not, the client
+  treats the disconnect as a hard refusal, prints `qsh: server
+  closed connection before responding (qshd ACL refused
+  cert_index=N?)`, and exits.  Mid-session disconnects (after at
+  least one frame from the server) still retry up to 5x as before.
+- **`qshd` lands the shell in the running user's `$HOME`.**  systemd
+  starts the service with `cwd=/`, so a shell forked by `forkpty()`
+  inherited `/` unless `--user` was set.  When `--user` is absent,
+  `qshd` now looks up `getpwuid(getuid())->pw_dir` and chdirs there
+  before `execl("bash")`.  The `--user` path is unchanged.
 
 ## [0.2.1] — 2026-05-13
 
