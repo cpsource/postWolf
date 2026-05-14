@@ -5545,6 +5545,91 @@ under the current setup, but tightening the blast radius is cheap.
 
 ---
 
+### 84. `qsh` /get and /put must reject `~/` (or require absolute paths)
+
+Filed 2026-05-14.  The /get and /put slash commands added in v0.2.3
+pass the user-supplied path straight to `open(2)` on both sides — no
+shell is involved, so `~/` is treated as a literal two-character
+directory name rather than `$HOME`.  Typing what looks like a
+perfectly sensible
+
+```
+/put ~/notes.txt ~/notes.txt
+```
+
+confusingly fails: the client side errors with `open(~/notes.txt):
+No such file or directory` (it looked for a literal `~` directory
+under cwd), and even if the local side were absolute, the qshd side
+would do the same on the remote path.
+
+**Affected code:**
+
+- Client: `qsh/qsh/qsh.c` — `do_get` (line ~406, `open(local, ...)`)
+  and `do_put` (line ~441, `open(local, ...)`); also the `remote`
+  argument goes into the JSON body unmodified at lines ~348 / ~487.
+- Server: `qsh/qshd/qshd.c` — `handle_get` (line ~435, `open(from,
+  ...)`) and `handle_put` (the symmetric `open(to, ...)` write).
+- Dispatcher: `qsh/qsh/qsh.c::dispatch_slash_command` (line ~528) —
+  the natural place to do the early rejection / validation before
+  the args ever leave the client.
+
+**What to do.**  Pick one of two options and apply it consistently
+to all four path slots (client-local, client-remote, server-local,
+server-remote).  In rough order of preference:
+
+1. **Reject `~/` with a clear error.**  In
+   `dispatch_slash_command`, if either argument starts with `~`,
+   print
+
+   ```
+   /get: '~/foo' is not expanded by qsh — use an absolute path like /home/<user>/foo
+   ```
+
+   and return without sending anything.  Symmetric message for
+   /put.  Same check belongs in qshd as defense-in-depth so a
+   future non-qsh client can't bypass it (qshd already has all the
+   ingredients in `handle_get` / `handle_put` — add the check right
+   after `json_object_get_string(jfrom)` / `(jto)`).
+
+2. **Require absolute paths.**  Stricter: reject anything whose
+   first byte is not `/`.  This also closes the relative-path
+   surprise (`/get foo.txt out.txt` writing to qshd's cwd, which
+   is `$HOME` since v0.2.3 — but that's an implementation detail
+   the user shouldn't have to know).  Same two enforcement
+   points.
+
+Both options are wire-compatible — they're pure client+server
+input validation, no protocol change, no version bump.  Option 2
+strictly subsumes option 1, since absolute paths don't start with
+`~`.
+
+**Stretch (not required):** if we ever want `~/` to "just work",
+the right place is the client dispatcher, expanding to
+`getenv("HOME")` for the *local* side only.  The remote side
+can't be expanded client-side (the client doesn't know the
+qshd-side `$HOME`), so a remote `~/` would still need server-side
+expansion — and at that point we're inventing a path-expansion
+contract that qshd doesn't currently have.  Reject-with-clear-
+error is the cheaper and less-surprising fix.
+
+**Verification.**
+
+```sh
+# expected: clear error, no bytes on the wire
+qsh --host=... --tpm-path=... <<< '/put ~/foo /tmp/foo'
+qsh --host=... --tpm-path=... <<< '/get ~/foo /tmp/foo'
+
+# expected: still works
+qsh --host=... --tpm-path=... <<< '/put /etc/hostname /tmp/h'
+```
+
+Severity: **Low** — UX papercut, not a security issue.  No data
+loss risk (the `open()` just fails), but it's the kind of thing
+that wastes ten minutes of a new user's time the first time they
+hit it.
+
+---
+
 ## Appendix: Server-Issued Nonce Plan for CA Enrollment
 
 ### Problem
