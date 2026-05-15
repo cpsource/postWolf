@@ -3976,7 +3976,8 @@ static int EchCalcAcceptance(WOLFSSL* ssl, byte* label, word16 labelSz,
      * read.  Reject malformed inputs here so the helper defends its
      * own arithmetic regardless of caller-side validation. */
     if (ssl == NULL || input == NULL || label == NULL ||
-            acceptExpanded == NULL || acceptOffset < 0 || helloSz < 0)
+            acceptExpanded == NULL || acceptOffset < 0 || helloSz < 0 ||
+            ssl->hsHashes == NULL || ssl->hsHashesEch == NULL)
         return BAD_FUNC_ARG;
 
 #ifdef WOLFSSL_DTLS13
@@ -5218,6 +5219,19 @@ static int EchCheckAcceptance(WOLFSSL* ssl, byte* label, word16 labelSz,
     HS_Hashes* tmpHashes;
     byte acceptConfirmation[ECH_ACCEPT_CONFIRMATION_SZ];
 
+    /* Defense-in-depth (review issue 7 — ECH transcript-swap guards):
+     * the body below swaps ssl->hsHashes <-> ssl->hsHashesEch and
+     * frees one of them.  If either pointer is NULL when the swap
+     * runs, subsequent HashRaw/FreeHandshakeHashes calls deref NULL.
+     * Validate every pointer we will touch up front.  helloSz /
+     * acceptOffset are also bounded here even though EchCalcAcceptance
+     * checks them again -- consistent with the reviewer's
+     * "guards before every swap" recommendation. */
+    if (ssl == NULL || ssl->hsHashes == NULL || ssl->hsHashesEch == NULL ||
+            input == NULL || label == NULL ||
+            acceptOffset < 0 || helloSz < 0)
+        return BAD_FUNC_ARG;
+
     XMEMSET(acceptConfirmation, 0, sizeof(acceptConfirmation));
 
 #ifdef WOLFSSL_DTLS13
@@ -5226,6 +5240,12 @@ static int EchCheckAcceptance(WOLFSSL* ssl, byte* label, word16 labelSz,
 #else
     headerSz = HANDSHAKE_HEADER_SZ;
 #endif
+
+    if ((word32)acceptOffset + ECH_ACCEPT_CONFIRMATION_SZ >
+            (word32)helloSz + (word32)headerSz) {
+        WOLFSSL_MSG("EchCheckAcceptance: acceptOffset out of bounds");
+        return BUFFER_ERROR;
+    }
 
     ret = EchCalcAcceptance(ssl, label, labelSz, input, acceptOffset, helloSz,
             msgType == hello_retry_request, acceptConfirmation);
@@ -7185,7 +7205,8 @@ static int EchWriteAcceptance(WOLFSSL* ssl, byte* label, word16 labelSz,
      * but the reviewer correctly flagged that this wrapper should
      * also defend its arithmetic locally. */
     if (ssl == NULL || output == NULL || label == NULL ||
-            acceptOffset < 0 || helloSz < 0)
+            acceptOffset < 0 || helloSz < 0 ||
+            ssl->hsHashes == NULL || ssl->hsHashesEch == NULL)
         return BAD_FUNC_ARG;
 
 #ifdef WOLFSSL_DTLS13
