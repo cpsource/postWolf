@@ -966,6 +966,15 @@ int Tls13_Exporter(WOLFSSL* ssl, unsigned char *out, size_t outLen,
     const byte*         protocol = tls13ProtocolLabel;
     word32              protocolLen = TLS13_PROTOCOL_LABEL_SZ;
 
+    /* Defense-in-depth: the only caller today
+     * (wolfSSL_export_keying_material in src/ssl.c) already NULL-checks
+     * ssl, but the function below still derefs ssl->options /
+     * ssl->version / ssl->specs / ssl->arrays without verifying ssl.
+     * Future callers should be able to assume this guard exists. */
+    if (ssl == NULL || out == NULL || label == NULL ||
+            (contextLen != 0 && context == NULL))
+        return BAD_FUNC_ARG;
+
     if (ssl->options.dtls && ssl->version.minor != DTLSv1_3_MINOR)
         return VERSION_ERROR;
 
