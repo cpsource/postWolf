@@ -295,6 +295,22 @@ static int DeriveKeyMsg(WOLFSSL* ssl, byte* output, int outputLen,
     int         digestAlg = -1;
     int         ret = WC_NO_ERR_TRACE(BAD_FUNC_ARG);
 
+    /* Defense-in-depth (review issue 6): msgLen and outputLen are
+     * signed ints that get cast to word32 below
+     * (wc_*_Update(msg, (word32)msgLen) and Tls13HKDFExpandLabel(...,
+     * (word32)outputLen, ...)).  A negative value would widen to a
+     * huge unsigned size and drive an OOB read/write.  outputLen ==
+     * -1 is the documented sentinel ("use the digest size", handled
+     * below at line 380); otherwise outputLen must be >= 0.  Also
+     * defend the obvious related pointer/length pairings so a future
+     * caller can't slip a NULL msg / label past the cast. */
+    if (ssl == NULL || output == NULL || secret == NULL ||
+            msgLen < 0 ||
+            (outputLen != -1 && outputLen < 0) ||
+            (msg == NULL && msgLen > 0) ||
+            (label == NULL && labelLen > 0))
+        return BAD_FUNC_ARG;
+
     switch (hashAlgo) {
 #ifndef NO_SHA256
         case sha256_mac:
