@@ -5553,6 +5553,24 @@ slash-command interceptor added in v0.2.3.  Same codepaths
 `dispatch_slash_command`, mirrored by `qsh/qshd/qshd.c::handle_cmd_frame`);
 group as one fix.
 
+**Two invariants the interceptor must obey** (Parts B and C are
+both deviations from these — write the fix against the invariants,
+not against the symptoms):
+
+1. **Verb gate.**  The slash-command codepath fires *only* when
+   the verb is positively `/get` or `/put`.  Anything else
+   (`/foo`, `/exit`, `/help`, `/`, `/g`, …) stays on the mainline
+   and is forwarded to the remote PTY byte-for-byte.  No
+   "unknown command" error path — that's already a violation of
+   this invariant, since a non-`/get`/`/put` slash should never
+   have been intercepted in the first place.
+2. **Column-0 gate.**  The trigger requires `/` at character
+   position 0 of a fresh line on stdin (i.e. immediately after
+   the previous `\r` / `\n` the user typed, or at session start).
+   Quoted, escaped, or otherwise embedded `/` — `echo '/get foo
+   bar'`, `printf '%s' /get`, etc. — does NOT trigger, because
+   the `/` is not at column 0.
+
 ---
 
 **Part A — `~/` is not expanded.**
@@ -5640,23 +5658,28 @@ hit it.
 
 ---
 
-**Part B — non-`/get`/`/put` slashes (e.g. `/exit`) are intercepted instead of passed through.**
+**Part B — non-`/get`/`/put` slashes (e.g. `/foo`, `/exit`) are intercepted instead of passed through.**
 
-The interceptor enters cmd-buffer mode the moment it sees `/` at
-line start (`qsh/qsh/qsh.c` line ~705) and consumes the entire
-line locally without ever forwarding any byte to the remote PTY.
+Violates **invariant 1** (verb gate).  The interceptor enters
+cmd-buffer mode the moment it sees `/` at line start
+(`qsh/qsh/qsh.c` line ~705) and consumes the entire line locally
+without ever forwarding any byte to the remote PTY.
 `dispatch_slash_command` then matches the buffered line against
 exactly two verbs (`/get`, `/put`) and prints `qsh: unknown command
-'…' (expected /get or /put)` for everything else.
+'…' (expected /get or /put)` for everything else.  That error
+itself is the smoking gun: the user typed `/foo` and the slash-cmd
+codepath thinks it has a problem to report.  Per invariant 1, it
+shouldn't have been involved at all — `/foo` should have flowed
+straight through to the remote shell, which would tell the user
+`bash: /foo: No such file or directory` (or whatever) on its own.
 
-That makes it impossible to type any *other* slash command from
-inside a qsh session.  In particular, when the remote shell is
-running Claude Code (or any tool that owns its own slash UX
-— `/help`, `/exit`, `/compact`, `/clear`, …) the user can no
-longer reach those commands.  `/exit` to Claude is the canonical
-case: the user types `/exit`, qsh swallows it, dispatch fails,
-the local shell sees nothing, and Claude on the remote end is
-none the wiser.
+Concrete consequence: when the remote shell is running Claude
+Code (or any tool that owns its own slash UX — `/help`, `/exit`,
+`/compact`, `/clear`, …) the user cannot reach those commands.
+`/exit` to Claude is the canonical case: user types `/exit`, qsh
+swallows it, dispatch fails locally, the local TTY sees only the
+"unknown command" line, and Claude on the remote end never sees
+a thing.
 
 The scope of the v0.2.3 interceptor was always meant to be the
 two FRAME_CMD_REQ verbs and *only* those two — see
@@ -5714,56 +5737,71 @@ silent: the user has no clue qsh ate their keystrokes.
 
 ---
 
-**Part C — non-slash content can still trip the interceptor.**
+**Part C — embedded `/` (inside quotes / mid-line) trips the interceptor.**
 
-User report (2026-05-14): typing `echo 'something'` at the remote
-shell prompt causes the qsh client to try to parse the echoed
-content as a `/get` / `/put` command.  This shouldn't happen —
-neither the input (`echo 'something'`) nor the remote PTY output
-(`something\n`) contains a leading `/` at a real `at_line_start`
-boundary on stdin.
-
-Repro is not yet pinned down; candidate root causes worth
-checking before coding a fix:
-
-- **Output-vs-input boundary confusion.**  The `at_line_start`
-  state at `qsh/qsh/qsh.c:585,714` is tracked on stdin only.
-  If anything is leaking that state across the
-  remote-PTY-output → local-stdout path (e.g. a stray `\n`
-  arriving from the server resets a flag it shouldn't, or a
-  shared variable name), a `/` typed *after* echo's output
-  could get treated as a fresh-line slash.  Audit
-  `at_line_start` writes — there should be exactly one, on
-  the stdin loop.
-- **Quote-sensitive pass-through.**  If the user types `'` and
-  the local terminal isn't in raw mode at that instant, readline-
-  ish behavior could buffer differently than expected and fool
-  the at_line_start gate.  `set_raw_mode` should be active for
-  the entire `run_session`; confirm it isn't being disturbed.
-- **Multi-byte / escape-sequence interaction.**  Cursor keys
-  and other ANSI escapes start with `\x1b` then `[` etc.  None
-  of those bytes are `/` or `\n`, so they shouldn't trip the
-  state machine — but worth instrumenting once before assuming.
-- **Interaction with Part B.**  Once the Part B fix lands
-  (don't enter cmd-mode for non-`/get`/`/put` lines), this
-  symptom may simply disappear: even if the interceptor *did*
-  engage on echo'd output, the verb mismatch would route the
-  bytes harmlessly back to pass-through.  Fix Part B first, then
-  retest Part C; only invest in a deeper repro if the symptom
-  persists.
-
-**Verification (same as Part B once a clean repro is in hand).**
+Violates **invariant 2** (column-0 gate).  User report
+(2026-05-14): typing
 
 ```sh
-# Inside a qsh session, at the remote shell prompt:
-echo 'something'                    # should produce "something\n", no qsh involvement
-echo '/something'                   # should print "/something", not be parsed as slash cmd
-printf '/get /etc/hostname /tmp/h'  # similarly: not a fresh-line `/`, must pass through
-# (None of the above should ever produce a "qsh: unknown command" line.)
+echo '/get blabla'
+```
+
+at the remote shell prompt causes the qsh client to engage the
+slash-command codepath on the embedded `/get` and try to execute
+it.  The `/` is at column 6, not column 0, so per invariant 2 it
+should be a no-op for the interceptor — the entire line should
+flow byte-for-byte to the remote shell, which echoes the literal
+string `/get blabla`.
+
+That the symptom occurs at all means the `at_line_start` gate at
+`qsh/qsh/qsh.c:705` is being bypassed in some path.  Candidate
+root causes worth auditing before coding a fix:
+
+- **`at_line_start` write set.**  There should be exactly one
+  write to `at_line_start` inside the stdin loop
+  (`qsh/qsh/qsh.c:714`, `at_line_start = (c == '\r' || c ==
+  '\n') ? 1 : 0;`).  If any other path writes it — e.g. the
+  cmd-mode exit branches at lines 684, 695 force it back to 1,
+  which is fine *during* cmd-mode but should not bleed into
+  later passes — confirm the lifetime is correct.
+- **Output-vs-input crosstalk.**  `at_line_start` is on stdin
+  only.  If anything leaks state across the
+  remote-PTY-output → local-stdout path (a stray flag share,
+  a `\n` arriving from the server flipping the wrong variable,
+  etc.), a `/` typed mid-line could be misread as fresh-line.
+  There should be no such crosstalk — verify.
+- **Multi-byte read.**  `read(STDIN_FILENO, in, BUF_SZ)` returns
+  multiple bytes at a time when the user pastes or types fast.
+  The byte-loop must update `at_line_start` between every byte
+  — confirm there's no early-return or `break` that skips the
+  update for the current byte.
+- **Interaction with Part B.**  Once Part B lands (verb gate),
+  even an over-eager column-0 trigger would mis-fire harmlessly:
+  the verb wouldn't match `/get`/`/put` so the bytes would
+  flush to the remote.  Fix Part B first, then retest the
+  `echo '/get blabla'` repro — if it still trips, Part C is a
+  real second bug; if it doesn't, Part C was a downstream
+  symptom of Part B and is closed.
+
+**Verification.**
+
+```sh
+# Inside a qsh session, at the remote shell prompt.  None of
+# these should ever produce a "qsh: unknown command" line, and
+# none should ever short-circuit the remote shell — the bytes
+# must reach bash:
+echo '/get blabla'                  # bash echoes "/get blabla"
+echo '/put foo bar'                 # bash echoes "/put foo bar"
+echo '/something'                   # bash echoes "/something"
+printf '/get /etc/hostname /tmp/h'  # bash prints the literal arg
+
+# These must continue to work (column-0 trigger, valid verb):
+/get /etc/hostname /tmp/h           # transfers the file
+/put /etc/hostname /tmp/h           # symmetric
 ```
 
 Severity: **Low** — annoying and confusing, but no data loss.
-Likely overlaps with Part B in root cause; bundle the fix.
+Likely shares a root cause with Part B; bundle the fix.
 
 ---
 
