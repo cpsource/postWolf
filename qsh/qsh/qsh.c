@@ -55,7 +55,7 @@
 
 /* Printed by --version.  Bumped in lockstep with CHANGELOG.md by
  * /cut-release; the dev branch carries the *next* release's number. */
-#define QSH_VERSION       "0.2.3-dev-2"
+#define QSH_VERSION       "0.2.5-dev"
 
 #define FALLBACK_PORT     1024              /* used only if config is silent */
 #define FALLBACK_SERVER   "localhost:8444"
@@ -542,12 +542,22 @@ static int dispatch_slash_command(mqc_conn_t *conn, const char *line)
             local_msg("/get: usage: /get <remote-from> <local-to>");
             return 0;
         }
+        if (arg1[0] == '~' || arg2[0] == '~') {
+            local_msg("/get: '~' is not expanded by qsh — use an "
+                      "absolute path like /home/<user>/foo");
+            return 0;
+        }
         do_get(conn, arg1, arg2);
         return 0;
     }
     if (strcmp(verb, "/put") == 0) {
         if (!arg1 || !arg2 || extra) {
             local_msg("/put: usage: /put <local-from> <remote-to>");
+            return 0;
+        }
+        if (arg1[0] == '~' || arg2[0] == '~') {
+            local_msg("/put: '~' is not expanded by qsh — use an "
+                      "absolute path like /home/<user>/foo");
             return 0;
         }
         do_put(conn, arg1, arg2);
@@ -577,13 +587,27 @@ static int run_session(mqc_conn_t *conn, int *got_any_frame)
     int len;
 
     /* Slash-command line-buffering state.  See README-specifications.md
-     * §5 "Client UX".  We only intercept '/' when it is the first byte
-     * of a fresh user line — that is, since the last '\r' or '\n' the
-     * user typed locally.  When buffering, keystrokes are NOT forwarded
-     * to the remote PTY; Enter dispatches the command, Backspace edits,
-     * Ctrl-C cancels. */
+     * §5 "Client UX" and TODO #84 (parts a-c) in
+     * mtc-keymaster/README-bugsandtodo.md for the two invariants:
+     *
+     *   1. Verb gate.  The slash-command codepath fires *only* on
+     *      "/get" or "/put".  Any other slash-prefixed input (/foo,
+     *      /exit, /help, ...) flows untouched to the remote PTY.
+     *   2. Column-0 gate.  Trigger requires '/' at the first byte of
+     *      a fresh stdin line (right after the last '\r'/'\n' the
+     *      user typed, or at session start).  Embedded '/' inside
+     *      `echo '/get foo'` etc. does NOT trigger.
+     *
+     * State machine: PASSTHROUGH (CM_PASS) -> TENTATIVE (CM_TENT,
+     * we saw '/' at column 0 and are silently buffering up to 4 more
+     * bytes to disambiguate) -> COMMITTED (CM_CMD, the verb is
+     * positively /get or /put and we're now line-editing the rest).
+     * On divergence in TENTATIVE we flush the buffered prefix to the
+     * remote PTY and return to PASSTHROUGH so the user's keystrokes
+     * still reach the shell. */
+    enum { CM_PASS = 0, CM_TENT = 1, CM_CMD = 2 };
     int  at_line_start = 1;
-    int  in_cmd_mode   = 0;
+    int  cmd_mode      = CM_PASS;
     char cmd_buf[QSH_CMD_MAX + 1];
     int  cmd_len = 0;
 
@@ -651,11 +675,10 @@ static int run_session(mqc_conn_t *conn, int *got_any_frame)
             }
         }
 
-        /* stdin -> MQC (with slash-command interception).  When
-         * `in_cmd_mode` is on, bytes accumulate in cmd_buf and are NOT
-         * forwarded; Enter dispatches.  When off, bytes pass through
-         * via a batched mqc_write — but we still scan them for the
-         * "fresh-line + '/'" trigger and for line-end transitions. */
+        /* stdin -> MQC (with slash-command interception).  See the
+         * cmd_mode state machine declared above for the verb-gate /
+         * column-0-gate invariants; the inline comments at each branch
+         * explain the per-state byte handling. */
         if (pfds[1].revents & POLLIN) {
             ssize_t r = read(STDIN_FILENO, in, sizeof(in));
             uint8_t pass_buf[BUF_SZ];
@@ -668,19 +691,24 @@ static int run_session(mqc_conn_t *conn, int *got_any_frame)
             for (ii = 0; ii < r; ii++) {
                 unsigned char c = in[ii];
 
-                if (in_cmd_mode) {
+                if (cmd_mode == CM_CMD) {
                     if (c == '\r' || c == '\n') {
                         cmd_buf[cmd_len] = '\0';
                         /* Newline before dispatch so output sits on a
                          * fresh line.  The shell never saw any of this. */
                         (void)!write(STDOUT_FILENO, "\r\n", 2);
                         if (cmd_len > 0) {
+                            /* Verb gate (invariant 1) means the
+                             * tentative phase already accepted only
+                             * /get or /put, so dispatch should always
+                             * return 0 here.  Defense in depth: still
+                             * log a fall-through if it ever doesn't. */
                             if (dispatch_slash_command(conn, cmd_buf) != 0)
-                                local_msg("qsh: unknown command '%s' "
-                                          "(expected /get or /put)", cmd_buf);
+                                local_msg("qsh: internal: dispatch "
+                                          "rejected '%s'", cmd_buf);
                         }
                         cmd_len = 0;
-                        in_cmd_mode = 0;
+                        cmd_mode = CM_PASS;
                         at_line_start = 1;
                     } else if (c == 0x7f || c == 0x08) {
                         if (cmd_len > 0) {
@@ -691,7 +719,7 @@ static int run_session(mqc_conn_t *conn, int *got_any_frame)
                         /* Ctrl-C cancels the buffered command. */
                         (void)!write(STDOUT_FILENO, "^C\r\n", 4);
                         cmd_len = 0;
-                        in_cmd_mode = 0;
+                        cmd_mode = CM_PASS;
                         at_line_start = 1;
                     } else if (cmd_len < QSH_CMD_MAX) {
                         cmd_buf[cmd_len++] = (char)c;
@@ -702,11 +730,124 @@ static int run_session(mqc_conn_t *conn, int *got_any_frame)
                     continue;
                 }
 
+                if (cmd_mode == CM_TENT) {
+                    /* Edits during tentative buffering.  We have NOT
+                     * echoed any of cmd_buf yet (we only echo on
+                     * commit), so backspace just pops the buffer
+                     * silently. */
+                    if (c == 0x7f || c == 0x08) {
+                        if (cmd_len > 0) cmd_len--;
+                        if (cmd_len == 0) cmd_mode = CM_PASS;
+                        continue;
+                    }
+                    if (c == 0x03) {
+                        cmd_len = 0;
+                        cmd_mode = CM_PASS;
+                        continue;
+                    }
+
+                    /* Decide stay / commit / abort based on what c
+                     * does to the buffered prefix.  Valid prefixes
+                     * of "/get" and "/put" by length:
+                     *   1: "/"
+                     *   2: "/g" or "/p"
+                     *   3: "/ge" or "/pu"
+                     *   4: "/get" or "/put"
+                     * Length 5 is the commit boundary: byte 5 must
+                     * be whitespace (space, tab, \r, \n).  Anything
+                     * else, at any length, aborts. */
+                    {
+                        int extends_prefix = 0;
+                        int commits        = 0;
+
+                        if (cmd_len == 1) {
+                            extends_prefix = (c == 'g' || c == 'p');
+                        } else if (cmd_len == 2) {
+                            extends_prefix =
+                                (cmd_buf[1] == 'g' && c == 'e') ||
+                                (cmd_buf[1] == 'p' && c == 'u');
+                        } else if (cmd_len == 3) {
+                            extends_prefix =
+                                (cmd_buf[1] == 'g' && cmd_buf[2] == 'e' && c == 't') ||
+                                (cmd_buf[1] == 'p' && cmd_buf[2] == 'u' && c == 't');
+                        } else if (cmd_len == 4) {
+                            commits = (c == ' ' || c == '\t' ||
+                                       c == '\r' || c == '\n');
+                        }
+
+                        if (extends_prefix) {
+                            if (cmd_len < QSH_CMD_MAX)
+                                cmd_buf[cmd_len++] = (char)c;
+                            continue;
+                        }
+
+                        if (commits) {
+                            /* /get or /put + whitespace.  Echo the
+                             * verb so the user can see what they
+                             * typed, then transition. */
+                            (void)!write(STDOUT_FILENO, cmd_buf, (size_t)cmd_len);
+                            if (c == '\r' || c == '\n') {
+                                /* Verb-only command (no args).  Dispatch
+                                 * immediately; usage error will fire. */
+                                cmd_buf[cmd_len] = '\0';
+                                (void)!write(STDOUT_FILENO, "\r\n", 2);
+                                if (dispatch_slash_command(conn, cmd_buf) != 0)
+                                    local_msg("qsh: internal: dispatch "
+                                              "rejected '%s'", cmd_buf);
+                                cmd_len = 0;
+                                cmd_mode = CM_PASS;
+                                at_line_start = 1;
+                            } else {
+                                /* Whitespace separator — keep it in
+                                 * cmd_buf so dispatch's tokenizer
+                                 * sees it, and echo it so the user
+                                 * sees their cursor advance. */
+                                cmd_buf[cmd_len++] = (char)c;
+                                (void)!write(STDOUT_FILENO, &c, 1);
+                                cmd_mode = CM_CMD;
+                            }
+                            continue;
+                        }
+
+                        /* Diverged.  Append c to the buffered prefix
+                         * and flush the whole thing to the remote
+                         * PTY via pass_buf.  Recompute at_line_start
+                         * from the last flushed byte (it will be c). */
+                        if (cmd_len < QSH_CMD_MAX)
+                            cmd_buf[cmd_len++] = (char)c;
+                        if (pass_len + cmd_len <= (int)sizeof(pass_buf)) {
+                            memcpy(pass_buf + pass_len, cmd_buf, (size_t)cmd_len);
+                            pass_len += cmd_len;
+                        } else {
+                            /* Defensive: pass_buf shouldn't be near
+                             * full given pass_len <= ii <= r <= BUF_SZ
+                             * and cmd_len <= 5, but flush in two
+                             * writes if it ever is. */
+                            if (pass_len > 0 &&
+                                send_data(conn, pass_buf, pass_len) < 0) {
+                                restore_terminal();
+                                return -1;
+                            }
+                            pass_len = 0;
+                            memcpy(pass_buf, cmd_buf, (size_t)cmd_len);
+                            pass_len = cmd_len;
+                        }
+                        at_line_start = (c == '\r' || c == '\n') ? 1 : 0;
+                        cmd_len = 0;
+                        cmd_mode = CM_PASS;
+                        continue;
+                    }
+                }
+
+                /* CM_PASS: column-0 trigger for the slash interceptor. */
                 if (at_line_start && c == '/') {
-                    in_cmd_mode = 1;
+                    cmd_mode    = CM_TENT;
                     cmd_buf[0]  = '/';
                     cmd_len     = 1;
-                    (void)!write(STDOUT_FILENO, "/", 1);
+                    /* No echo yet — we don't know if this will become
+                     * /get / /put or some other slash that needs to
+                     * pass through.  Echo on commit (or let bash
+                     * echo it back on abort). */
                     continue;
                 }
 

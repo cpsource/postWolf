@@ -27,7 +27,30 @@ the open issue list.
 
 ## [Unreleased]
 
-(no changes since 0.2.4)
+### Fixed
+
+- **TODO #84 — `qsh` slash-command input papercuts (parts a–c).**  Two
+  invariants now enforced by the qsh client + qshd server:
+  - **Verb gate (part b).**  The slash-command codepath in
+    `qsh/qsh/qsh.c::run_session` only fires for `/get` and `/put`.
+    Any other slash-prefixed input (`/foo`, `/exit`, `/help`, ...)
+    is forwarded byte-for-byte to the remote PTY so slash-driven
+    REPLs (e.g. Claude Code) work inside a qsh session.
+    Implemented as a 3-state machine: PASSTHROUGH -> TENTATIVE
+    (silent buffering of up to 4 bytes) -> COMMITTED (existing
+    line-edit behavior).  On divergence the buffered prefix is
+    flushed to the remote, no `qsh: unknown command` errors.
+  - **Column-0 gate (part c).**  Already enforced by the existing
+    `at_line_start` tracking; the verb gate (above) closes any
+    residual concern.  `echo '/get foo bar'` and similar embedded
+    slashes now provably pass through unmolested.
+- **TODO #84a — `~/` rejection.**  `dispatch_slash_command` (qsh)
+  and `handle_get`/`handle_put` (qshd) reject any path argument
+  starting with `~` and print `'~' is not expanded by qsh — use an
+  absolute path like /home/<user>/foo` instead of the previous
+  confusing `open(~/foo): No such file or directory`.
+- **`qsh --version`** rolls back to plain `0.2.5-dev` from the
+  leftover kit-debug `0.2.3-dev-2`.
 
 ## [0.2.4] — 2026-05-13
 

@@ -425,6 +425,10 @@ static struct json_object *handle_get(const char *body, const char *peer)
         return err_obj("missing 'from'");
     }
     from = json_object_get_string(jfrom);
+    if (from && from[0] == '~') {
+        json_object_put(req);
+        return err_obj("'~' is not expanded — use an absolute path");
+    }
     compressed_req = 1;
     if (json_object_object_get_ex(req, "compressed", &jcomp))
         compressed_req = json_object_get_boolean(jcomp);
@@ -522,6 +526,10 @@ static struct json_object *handle_put(const char *body, const char *peer)
         return err_obj("missing/wrong-typed required field(s)");
     }
     to             = json_object_get_string(jto);
+    if (to && to[0] == '~') {
+        json_object_put(req);
+        return err_obj("'~' is not expanded — use an absolute path");
+    }
     byte_count     = (long)json_object_get_int64(jbytes);
     compressed_req = 1;
     if (json_object_object_get_ex(req, "compressed", &jcomp))
