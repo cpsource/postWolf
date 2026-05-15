@@ -27,6 +27,17 @@ the open issue list.
 
 ## [Unreleased]
 
+(no changes since 0.2.5)
+
+## [0.2.5] — 2026-05-15
+
+Two workstreams: a UX-papercut fix in qsh (TODO #84) and seven
+defense-in-depth hardening sites in `src/tls13.c` driven by an
+external review.  No wire-format change, no API change for
+compliant callers; a future `wolfssl-merge-to-postWolf src/tls13.c`
+will see ~140 lines of divergence at the hardening sites (see
+auto-memory `project_wolfssl_upstream_divergence`).
+
 ### Fixed
 
 - **TODO #84 — `qsh` slash-command input papercuts (parts a–c).**  Two
@@ -49,8 +60,54 @@ the open issue list.
   starting with `~` and print `'~' is not expanded by qsh — use an
   absolute path like /home/<user>/foo` instead of the previous
   confusing `open(~/foo): No such file or directory`.
-- **`qsh --version`** rolls back to plain `0.2.5-dev` from the
-  leftover kit-debug `0.2.3-dev-2`.
+- **`qsh --version`** rolled forward from the leftover kit-debug
+  `0.2.3-dev-2` to plain `0.2.5-dev` (now bumped to `0.2.5` by this
+  release).
+
+### Security (defense-in-depth, src/tls13.c)
+
+Seven hardening sites driven by an external review of `src/tls13.c`
+(archived as `README-chatgpt5.5-review-tls13.c.md`).  None of these
+are exploitable today via the public wolfSSL/postWolf API surface
+(callers pre-validate ssl/out/label, etc.), but the TLS 1.3
+internal helpers no longer rely on caller-side discipline.
+
+- **`Tls13_Exporter`**: NULL-checks ssl/out/label/context (conditional
+  on the matching length being > 0); rejects calls before
+  `ssl->options.handShakeDone` (otherwise the exporter would derive
+  keys from a zeroed `exporterSecret` — a public seed).  Closes a
+  gap that the public wrapper `wolfSSL_export_keying_material` does
+  not enforce either.
+- **`DoTls13ServerHello` (ServerHello + HRR paths)**: bounds
+  `args->acceptOffset + ECH_ACCEPT_CONFIRMATION_SZ <= helloSz +
+  headerSz` immediately after acceptOffset is computed.
+- **`SendTls13ServerHello` (HRR path)**: server-side mirror of the
+  HRR client-side bound, including a check that
+  `acceptOffset >= RECORD_HEADER_SZ` so the downstream
+  `acceptOffset - RECORD_HEADER_SZ` subtraction stays non-negative.
+- **`EchCalcAcceptance`**: NULL-checks ssl/input/label/acceptExpanded/
+  hsHashes/hsHashesEch; rejects acceptOffset/helloSz < 0; bounds
+  `acceptOffset + 8 <= helloSz + headerSz`.  Defends its own
+  `helloSz + headerSz - (acceptOffset + 8)` subtraction from
+  signed-int -> word32 underflow that would otherwise drive a
+  catastrophic OOB read in `wc_*_Update`.
+- **`EchCheckAcceptance`**: NULL-checks
+  ssl/hsHashes/hsHashesEch/input/label; bounds acceptOffset before
+  the transcript-swap (`ssl->hsHashes = ssl->hsHashesEch`) so a
+  NULL `hsHashesEch` cannot propagate into `ssl->hsHashes` and
+  crash subsequent `HashRaw` / `FreeHandshakeHashes` calls.
+- **`EchWriteAcceptance`**: NULL-checks ssl/output/label/hsHashes/
+  hsHashesEch; bounds `acceptOffset + 8 <= helloSz` *before* the
+  UB pointer expression `output + acceptOffset` is even formed.
+- **`DeriveKeyMsg`**: NULL-checks ssl/output/secret; rejects
+  `msgLen < 0`; rejects `outputLen < 0` unless == -1 (the
+  documented sentinel for "use the digest size"); rejects null
+  msg when msgLen > 0 and null label when labelLen > 0.
+
+### Documentation
+
+- **`README-chatgpt5.5-review-tls13.c.md`** archives the external
+  review that drove the hardening above.
 
 ## [0.2.4] — 2026-05-13
 
