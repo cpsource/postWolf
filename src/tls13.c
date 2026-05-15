@@ -966,13 +966,27 @@ int Tls13_Exporter(WOLFSSL* ssl, unsigned char *out, size_t outLen,
     const byte*         protocol = tls13ProtocolLabel;
     word32              protocolLen = TLS13_PROTOCOL_LABEL_SZ;
 
-    /* Defense-in-depth: the only caller today
+    /* Defense-in-depth (review issues 1 + 5): the only caller today
      * (wolfSSL_export_keying_material in src/ssl.c) already NULL-checks
-     * ssl, but the function below still derefs ssl->options /
-     * ssl->version / ssl->specs / ssl->arrays without verifying ssl.
-     * Future callers should be able to assume this guard exists. */
-    if (ssl == NULL || out == NULL || label == NULL ||
-            (contextLen != 0 && context == NULL))
+     * ssl/out/label, but the function below still derefs ssl->options
+     * / ssl->version / ssl->specs / ssl->arrays without verifying
+     * ssl.  Future callers should be able to assume this guard
+     * exists.  Per the review's nuance, only require the buffer
+     * pointer to be non-NULL when the corresponding length is > 0
+     * (HKDF-Expand-Label permits zero-length labels/contexts/output
+     * in principle, even though the wrapper rejects them). */
+    if (ssl == NULL ||
+            (outLen > 0 && out == NULL) ||
+            (labelLen > 0 && label == NULL) ||
+            (contextLen > 0 && context == NULL))
+        return BAD_FUNC_ARG;
+
+    /* Exporter secret is derived during DeriveMasterSecret (only when
+     * saveArrays == 1) and is meaningful only after the handshake has
+     * completed.  Calling the exporter on a fresh ssl would otherwise
+     * derive keys from a zeroed exporterSecret -- a known public seed
+     * -- producing predictable output.  Fail closed. */
+    if (!ssl->options.handShakeDone)
         return BAD_FUNC_ARG;
 
     if (ssl->options.dtls && ssl->version.minor != DTLSv1_3_MINOR)
