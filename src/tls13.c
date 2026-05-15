@@ -3932,6 +3932,36 @@ static int EchCalcAcceptance(WOLFSSL* ssl, byte* label, word16 labelSz,
     byte expandLabelPrk[WC_MAX_DIGEST_SIZE];
     byte messageHashHeader[HRR_MAX_HS_HEADER_SZ];
 
+    /* Defense-in-depth (review issue 3): EchCalcAcceptance hashes
+     *   input[0 .. acceptOffset)                              (HashRaw line 1)
+     * + zeros[0 .. ECH_ACCEPT_CONFIRMATION_SZ)                (HashRaw line 2)
+     * + input[acceptOffset+ECH_ACCEPT_CONFIRMATION_SZ ..
+     *         helloSz + headerSz)                             (HashRaw line 3)
+     * Multiple callers (DoTls13ServerHello + the server-side
+     * EchWriteAcceptance path) compute acceptOffset via pointer
+     * arithmetic on caller-supplied buffers, and acceptOffset/helloSz
+     * are signed ints.  A negative or oversize acceptOffset would
+     * underflow the third HashRaw length, which then travels through
+     * wc_*_Update where it is widened to size_t -> catastrophic OOB
+     * read.  Reject malformed inputs here so the helper defends its
+     * own arithmetic regardless of caller-side validation. */
+    if (ssl == NULL || input == NULL || label == NULL ||
+            acceptExpanded == NULL || acceptOffset < 0 || helloSz < 0)
+        return BAD_FUNC_ARG;
+
+#ifdef WOLFSSL_DTLS13
+    headerSz = ssl->options.dtls ? DTLS13_HANDSHAKE_HEADER_SZ :
+                                   HANDSHAKE_HEADER_SZ;
+#else
+    headerSz = HANDSHAKE_HEADER_SZ;
+#endif
+
+    if ((word32)acceptOffset + ECH_ACCEPT_CONFIRMATION_SZ >
+            (word32)helloSz + (word32)headerSz) {
+        WOLFSSL_MSG("EchCalcAcceptance: acceptOffset out of bounds");
+        return BUFFER_ERROR;
+    }
+
     XMEMSET(zeros, 0, sizeof(zeros));
     XMEMSET(transcriptEchConf, 0, sizeof(transcriptEchConf));
     XMEMSET(clientHelloInnerHash, 0, sizeof(clientHelloInnerHash));
@@ -3943,13 +3973,6 @@ static int EchCalcAcceptance(WOLFSSL* ssl, byte* label, word16 labelSz,
 
     tmpHashes = ssl->hsHashes;
     ssl->hsHashes = ssl->hsHashesEch;
-
-#ifdef WOLFSSL_DTLS13
-    headerSz = ssl->options.dtls ? DTLS13_HANDSHAKE_HEADER_SZ :
-                                   HANDSHAKE_HEADER_SZ;
-#else
-    headerSz = HANDSHAKE_HEADER_SZ;
-#endif
 
     if (isHrr) {
         /* the transcript hash of ClientHelloInner1 */
@@ -5402,6 +5425,26 @@ int DoTls13ServerHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
 #if defined(HAVE_ECH)
     /* last 8 bytes of server random */
     args->acceptOffset = args->idx + RAN_LEN - ECH_ACCEPT_CONFIRMATION_SZ;
+    /* Defense-in-depth: the line 5374 bounds check already proves
+     * args->idx + RAN_LEN <= args->begin + helloSz, so this assertion
+     * holds under the args->begin == headerSz caller invariant.
+     * EchCalcAcceptance hashes helloSz + headerSz total bytes from
+     * input, so verify acceptOffset + 8 stays within that window
+     * before EchCheckAcceptance is invoked. */
+    {
+        word32 hdrSz;
+#ifdef WOLFSSL_DTLS13
+        hdrSz = ssl->options.dtls ? DTLS13_HANDSHAKE_HEADER_SZ
+                                  : HANDSHAKE_HEADER_SZ;
+#else
+        hdrSz = HANDSHAKE_HEADER_SZ;
+#endif
+        if (args->acceptOffset + ECH_ACCEPT_CONFIRMATION_SZ >
+                helloSz + hdrSz) {
+            WOLFSSL_MSG("ECH acceptOffset out of bounds (ServerHello)");
+            return BUFFER_ERROR;
+        }
+    }
 #endif
     args->idx += RAN_LEN;
 
@@ -5767,9 +5810,27 @@ int DoTls13ServerHello(WOLFSSL* ssl, const byte* input, word32* inOutIdx,
         /* account for hrr extension instead of server random */
         if (args->extMsgType == hello_retry_request) {
             byte *confBuf = ((WOLFSSL_ECH*)args->echX->data)->confBuf;
+            word32 hrrHdrSz;
             if (confBuf == NULL || confBuf < input)
                 return WOLFSSL_FATAL_ERROR;
             args->acceptOffset = (word32)(confBuf - input);
+            /* Defense-in-depth: confBuf was set during ECH-extension
+             * parsing of the same buffer (size already enforced ==
+             * ECH_ACCEPT_CONFIRMATION_SZ in tls.c::TLSX_ECH_Parse),
+             * but the lower-bound check above does not prove the
+             * 8 confirmation bytes lie within input + helloSz +
+             * headerSz.  Fail closed if invariants ever break. */
+#ifdef WOLFSSL_DTLS13
+            hrrHdrSz = ssl->options.dtls ? DTLS13_HANDSHAKE_HEADER_SZ
+                                         : HANDSHAKE_HEADER_SZ;
+#else
+            hrrHdrSz = HANDSHAKE_HEADER_SZ;
+#endif
+            if (args->acceptOffset + ECH_ACCEPT_CONFIRMATION_SZ >
+                    helloSz + hrrHdrSz) {
+                WOLFSSL_MSG("ECH acceptOffset out of bounds (HRR)");
+                return BUFFER_ERROR;
+            }
             args->acceptLabel = (byte*)echHrrAcceptConfirmationLabel;
             args->acceptLabelSz = ECH_HRR_ACCEPT_CONFIRMATION_LABEL_SZ;
         }
@@ -7085,12 +7146,34 @@ static int EchWriteAcceptance(WOLFSSL* ssl, byte* label, word16 labelSz,
     int headerSz;
     HS_Hashes* tmpHashes;
 
+    /* Defense-in-depth (review issue 4): EchWriteAcceptance writes
+     * 8 bytes at output + acceptOffset (via the acceptExpanded
+     * parameter to EchCalcAcceptance) and re-hashes the entire
+     * helloSz-byte buffer.  Forming output + acceptOffset is itself
+     * UB if acceptOffset is negative or out of range, even before
+     * the write.  EchCalcAcceptance applies its own deeper bound,
+     * but the reviewer correctly flagged that this wrapper should
+     * also defend its arithmetic locally. */
+    if (ssl == NULL || output == NULL || label == NULL ||
+            acceptOffset < 0 || helloSz < 0)
+        return BAD_FUNC_ARG;
+
 #ifdef WOLFSSL_DTLS13
     headerSz = ssl->options.dtls ? DTLS13_HANDSHAKE_HEADER_SZ :
                                    HANDSHAKE_HEADER_SZ;
 #else
     headerSz = HANDSHAKE_HEADER_SZ;
 #endif
+
+    /* The 8-byte confirmation write at output + acceptOffset must
+     * fit within the helloSz-byte buffer.  Also ensure the
+     * helloSz - headerSz subtraction below stays non-negative. */
+    if (helloSz < headerSz ||
+            (word32)acceptOffset + ECH_ACCEPT_CONFIRMATION_SZ >
+                (word32)helloSz) {
+        WOLFSSL_MSG("EchWriteAcceptance: acceptOffset/helloSz out of bounds");
+        return BUFFER_ERROR;
+    }
 
     ret = EchCalcAcceptance(ssl, label, labelSz, output, acceptOffset,
             helloSz - headerSz, msgType == hello_retry_request,
@@ -8048,6 +8131,22 @@ int SendTls13ServerHello(WOLFSSL* ssl, byte extMsgType)
                     if (confBuf == NULL || confBuf < output)
                         return WOLFSSL_FATAL_ERROR;
                     acceptOffset = (word32)(confBuf - output);
+                    /* Defense-in-depth (mirror of the client-side fix
+                     * at the matching DoTls13ServerHello HRR site).
+                     * confBuf was set during ECH-extension parsing of
+                     * an earlier message; verify the 8 confirmation
+                     * bytes lie within the sendSz-byte output buffer
+                     * AND that acceptOffset >= RECORD_HEADER_SZ so the
+                     * EchWriteAcceptance call's
+                     *   acceptOffset - RECORD_HEADER_SZ
+                     * subtraction stays non-negative. */
+                    if (sendSz < 0 ||
+                            acceptOffset < RECORD_HEADER_SZ ||
+                            acceptOffset + ECH_ACCEPT_CONFIRMATION_SZ >
+                                (word32)sendSz) {
+                        WOLFSSL_MSG("ECH HRR acceptOffset out of bounds (server)");
+                        return BUFFER_ERROR;
+                    }
                     acceptLabel = (byte*)echHrrAcceptConfirmationLabel;
                     acceptLabelSz = ECH_HRR_ACCEPT_CONFIRMATION_LABEL_SZ;
                 }
