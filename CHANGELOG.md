@@ -27,6 +27,10 @@ the open issue list.
 
 ## [Unreleased]
 
+(no changes since 0.2.6)
+
+## [0.2.6] — 2026-05-24
+
 ### Added
 - **MQC per-IP daily handshake-failure cap.**  Third Redis bucket
   `mqc:<ip>:fail:d` (TTL 86400s) alongside the existing per-minute and
