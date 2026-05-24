@@ -534,6 +534,7 @@ unavailable; default is closed-after:8s.
 | Connections per hour | 1000 | 3600s | `mqc-rl-connect-per-hour` | `mqc:<ip>:conn:h` |
 | Failed handshakes per minute | 10 | 60s | `mqc-rl-fail-per-min` | `mqc:<ip>:fail:m` |
 | Failed handshakes per hour | 100 | 3600s | `mqc-rl-fail-per-hour` | `mqc:<ip>:fail:h` |
+| Failed handshakes per day | 300 | 86400s | `mqc-rl-fail-per-day` | `mqc:<ip>:fail:d` |
 | Distinct `cert_index` per minute | 10 | 60s | `mqc-rl-cert-per-min` | `mqc:<ip>:cert:m` (Redis SET) |
 | Distinct `cert_index` per hour | 100 | 3600s | `mqc-rl-cert-per-hour` | `mqc:<ip>:cert:h` (Redis SET) |
 

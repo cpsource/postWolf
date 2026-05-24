@@ -290,6 +290,9 @@ int  mqc_ratelimit_fail_check(const char *ip);
 void mqc_ratelimit_fail_record(const char *ip);
 int  mqc_ratelimit_cert_check(const char *ip, int cert_index);
 
+int  mqc_abuse_cache_get(const char *ip, int *out_score);
+void mqc_abuse_cache_put(const char *ip, int score, int ttl_secs);
+
 /* ----------------------------------------------------------------------
  * AbuseIPDB integration (issue #6a)
  * -------------------------------------------------------------------- */

@@ -27,7 +27,28 @@ the open issue list.
 
 ## [Unreleased]
 
-(no changes since 0.2.5)
+### Added
+- **MQC per-IP daily handshake-failure cap.**  Third Redis bucket
+  `mqc:<ip>:fail:d` (TTL 86400s) alongside the existing per-minute and
+  per-hour buckets.  Default 300 fails/day; tunable via
+  `global/mqc-rl-fail-per-day` in `/etc/postWolf/config`.  Checked
+  alongside the others in `mqc_ratelimit_fail_check`; incremented
+  alongside in `mqc_ratelimit_fail_record`.  Catches slow-drip scanners
+  whose per-minute and per-hour budgets they're careful to stay under.
+- **MQC AbuseIPDB score cache.**  Per-IP Redis cache
+  `mqc:<ip>:abuse` (default TTL 86400s, tunable via
+  `global/mqc-abuse-cache-ttl-sec`) memoises the
+  abuseConfidenceScore so the accept-prologue skips the outbound
+  HTTPS call to api.abuseipdb.com on cache hit.  Negative results
+  (no API token, network error) are NOT cached so transient failures
+  don't get locked in.
+
+### Changed
+- **MQC accept-prologue ordering.**  Cheap in-process Redis gates
+  (`mqc_ratelimit_check`, `mqc_ratelimit_fail_check`) now run BEFORE
+  the AbuseIPDB lookup in `mqc_accept_prologue`.  An IP already over
+  its rate-limit cap (connect or fail) no longer causes a 5s-ceiling
+  outbound HTTPS call to api.abuseipdb.com.
 
 ## [0.2.5] — 2026-05-15
 

@@ -230,7 +230,7 @@ int mqc_ratelimit_fail_check(const char *ip)
 {
     char key[128];
     redisReply *reply;
-    int count_m = 0, count_h = 0;
+    int count_m = 0, count_h = 0, count_d = 0;
 
     if (!s_redis) {
         time_t dt;
@@ -254,10 +254,15 @@ int mqc_ratelimit_fail_check(const char *ip)
     reply = redisCommand(s_redis, "GET %s", key);
     if (reply) { if (reply->str) count_h = atoi(reply->str); freeReplyObject(reply); }
 
+    snprintf(key, sizeof(key), "mqc:%s:fail:d", ip);
+    reply = redisCommand(s_redis, "GET %s", key);
+    if (reply) { if (reply->str) count_d = atoi(reply->str); freeReplyObject(reply); }
+
     if (count_m >= mqc_rt_cfg()->rl_fail_per_min ||
-        count_h >= mqc_rt_cfg()->rl_fail_per_hour) {
-        MQC_SECURITY("FAIL_RATE_LIMITED: %s failures %d/min %d/hr",
-                     ip, count_m, count_h);
+        count_h >= mqc_rt_cfg()->rl_fail_per_hour ||
+        count_d >= mqc_rt_cfg()->rl_fail_per_day) {
+        MQC_SECURITY("FAIL_RATE_LIMITED: %s failures %d/min %d/hr %d/day",
+                     ip, count_m, count_h, count_d);
         return -1;
     }
     return 0;
@@ -285,7 +290,48 @@ void mqc_ratelimit_fail_record(const char *ip)
     snprintf(key, sizeof(key), "mqc:%s:fail:h", ip);
     mqc_redis_incr(key, 3600);
 
+    snprintf(key, sizeof(key), "mqc:%s:fail:d", ip);
+    mqc_redis_incr(key, 86400);
+
     MQC_SECURITY("handshake failure recorded for %s", ip);
+}
+
+/* --- AbuseIPDB score cache --------------------------------------------
+ * Stores the last-seen abuseConfidenceScore for an IP under
+ * mqc:<ip>:abuse so mqc_abuse_check can skip the outbound HTTPS call
+ * (5s curl ceiling) on cache hit.  Keyed on IP only, not on score band,
+ * so tuning MQC_ABUSE_THRESHOLD does not require a cache flush.
+ * Caller (mqc_abuseipdb.c) controls TTL via rt_cfg->abuse_cache_ttl_sec. */
+int mqc_abuse_cache_get(const char *ip, int *out_score)
+{
+    char key[128];
+    redisReply *reply;
+    int found = 0;
+
+    if (!s_redis || !ip || !out_score) return 0;
+
+    snprintf(key, sizeof(key), "mqc:%s:abuse", ip);
+    reply = redisCommand(s_redis, "GET %s", key);
+    if (reply) {
+        if (reply->str) {
+            *out_score = atoi(reply->str);
+            found = 1;
+        }
+        freeReplyObject(reply);
+    }
+    return found;
+}
+
+void mqc_abuse_cache_put(const char *ip, int score, int ttl_secs)
+{
+    char key[128];
+    redisReply *reply;
+
+    if (!s_redis || !ip || ttl_secs <= 0) return;
+
+    snprintf(key, sizeof(key), "mqc:%s:abuse", ip);
+    reply = redisCommand(s_redis, "SETEX %s %d %d", key, ttl_secs, score);
+    if (reply) freeReplyObject(reply);
 }
 
 /* --- Per-IP distinct-cert_index rate limit (issue #12) ----------------
@@ -382,9 +428,10 @@ int mqc_accept_prologue(int fd, const char *client_ip)
 {
     long _t_total = mqc_now_ms();
 
-    MQC_TIME_BEGIN(abuse);
-    if (mqc_abuse_check(client_ip) != 0) return -1;
-    MQC_TIME_END(abuse);
+    /* Cheap in-process Redis gates run BEFORE the AbuseIPDB HTTPS lookup
+     * so an IP already over its rate-limit cap (connect or fail) never
+     * triggers an outbound api.abuseipdb.com call.  Reorder matters: the
+     * abuse check has no local cache and a 5s curl ceiling per accept. */
 
     MQC_TIME_BEGIN(rl_check);
     if (mqc_ratelimit_check(client_ip) != 0) return -1;
@@ -393,6 +440,10 @@ int mqc_accept_prologue(int fd, const char *client_ip)
     MQC_TIME_BEGIN(rl_fail);
     if (mqc_ratelimit_fail_check(client_ip) != 0) return -1;
     MQC_TIME_END(rl_fail);
+
+    MQC_TIME_BEGIN(abuse);
+    if (mqc_abuse_check(client_ip) != 0) return -1;
+    MQC_TIME_END(abuse);
 
     mqc_set_socket_timeout(fd, mqc_rt_cfg()->handshake_stall_sec);
 

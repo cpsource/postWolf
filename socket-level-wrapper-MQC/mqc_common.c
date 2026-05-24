@@ -125,6 +125,7 @@ long mqc_now_ms(void)
 #define MQC_RL_CONNECT_HOUR  1000  /* max connections per hour per IP */
 #define MQC_RL_FAIL_MIN       10   /* max failed handshakes per minute per IP */
 #define MQC_RL_FAIL_HOUR     100   /* max failed handshakes per hour per IP */
+#define MQC_RL_FAIL_DAY      300   /* max failed handshakes per day per IP */
 
 /* --- Runtime configuration cache (issue 6a) ----------------------------
  * struct mqc_runtime_cfg is defined in mqc.h so mqc_peer.c can also read
@@ -163,6 +164,9 @@ static void mqc_rt_cfg_init_once(void)
     s_rt_cfg.rl_fail_per_hour =
         read_config_long("global/mqc-rl-fail-per-hour",
                          MQC_RL_FAIL_HOUR);
+    s_rt_cfg.rl_fail_per_day =
+        read_config_long("global/mqc-rl-fail-per-day",
+                         MQC_RL_FAIL_DAY);
     s_rt_cfg.rl_cert_per_min =
         read_config_long("global/mqc-rl-cert-per-min",
                          MQC_RL_CERT_MIN);
@@ -172,6 +176,9 @@ static void mqc_rt_cfg_init_once(void)
     s_rt_cfg.revoked_cache_ttl_sec =
         read_config_long("global/mqc-revoked-cache-ttl-sec",
                          MQC_REVOKED_CACHE_TTL_SEC);
+    s_rt_cfg.abuse_cache_ttl_sec =
+        read_config_long("global/mqc-abuse-cache-ttl-sec",
+                         MQC_ABUSE_CACHE_TTL_SEC);
     s_rt_cfg.sig_freshness_sec =
         read_config_long("global/mqc-sig-freshness-sec",
                          MQC_SIG_FRESHNESS_SEC);

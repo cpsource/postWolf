@@ -194,9 +194,11 @@ struct mqc_runtime_cfg {
     long rl_connect_per_hour;
     long rl_fail_per_min;
     long rl_fail_per_hour;
+    long rl_fail_per_day;
     long rl_cert_per_min;         /* per-(IP, cert_index) per minute (#12) */
     long rl_cert_per_hour;        /* per-(IP, cert_index) per hour   (#12) */
     long revoked_cache_ttl_sec;
+    long abuse_cache_ttl_sec;     /* per-IP AbuseIPDB score cache (Redis) */
     long sig_freshness_sec;
     int  revocation_policy;       /* MQC_REVOCATION_POLICY_* (issue #7) */
     int  redis_fail_policy;       /* MQC_REDIS_FAIL_POLICY_* */

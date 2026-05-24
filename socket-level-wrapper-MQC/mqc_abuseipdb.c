@@ -140,16 +140,34 @@ static int abuseipdb_check(const char *ip)
     return score;
 }
 
-/* Check IP and reject if abuse score >= threshold. Returns 0 = OK, -1 = reject. */
+/* Check IP and reject if abuse score >= threshold. Returns 0 = OK, -1 = reject.
+ *
+ * Cache flow: consult Redis (mqc:<ip>:abuse) first; on hit, decide from
+ * the cached score and skip the HTTPS call.  On miss, query AbuseIPDB
+ * and store the resulting score (0..100) with TTL = abuse_cache_ttl_sec.
+ * Network errors / missing API token (score < 0) are NOT cached. */
 int mqc_abuse_check(const char *ip)
 {
-    int score = abuseipdb_check(ip);
+    int score = -1;
+    int from_cache = 0;
+
+    if (mqc_abuse_cache_get(ip, &score))
+        from_cache = 1;
+    else
+        score = abuseipdb_check(ip);
+
     if (score < 0) return 0;  /* no token or error = allow (fail-open) */
+
+    if (!from_cache)
+        mqc_abuse_cache_put(ip, score, (int)mqc_rt_cfg()->abuse_cache_ttl_sec);
+
     if (score >= MQC_ABUSE_THRESHOLD) {
-        MQC_SECURITY("ABUSEIPDB_REJECTED: %s score=%d (threshold=%d)",
-                     ip, score, MQC_ABUSE_THRESHOLD);
+        MQC_SECURITY("ABUSEIPDB_REJECTED: %s score=%d (threshold=%d, %s)",
+                     ip, score, MQC_ABUSE_THRESHOLD,
+                     from_cache ? "cached" : "fresh");
         return -1;
     }
-    MQC_LOG("AbuseIPDB: %s score=%d (OK)", ip, score);
+    MQC_LOG("AbuseIPDB: %s score=%d (OK, %s)",
+            ip, score, from_cache ? "cached" : "fresh");
     return 0;
 }

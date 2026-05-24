@@ -1097,10 +1097,12 @@ interoperability, the *transport* is not.
 | `mqc-rl-connect-per-hour` | 1000 | 11.2 | Per-IP connection-attempt cap (per hour) |
 | `mqc-rl-fail-per-min` | 10 | 11.2 | Per-IP handshake-failure cap (per minute) |
 | `mqc-rl-fail-per-hour` | 100 | 11.2 | Per-IP handshake-failure cap (per hour) |
+| `mqc-rl-fail-per-day` | 300 | 11.2 | Per-IP handshake-failure cap (per day) |
 | `mqc-rl-cert-per-min` | 10 | 11.2 | Per-IP distinct-cert_index cap (per minute) |
 | `mqc-rl-cert-per-hour` | 100 | 11.2 | Per-IP distinct-cert_index cap (per hour) |
 | `mqc-max-children` | 20 | 11.6 | Per-listener fork backpressure cap |
 | `mqc-revoked-cache-ttl-sec` | 86400 | 10.5 | Revocation-cache TTL |
+| `mqc-abuse-cache-ttl-sec` | 86400 | 11.2 | AbuseIPDB score cache TTL |
 | `mqc-sig-freshness-sec` | 300 | 10.6 | Cert-validity skew tolerance |
 | `mqc-revocation-policy` | `mandatory` | 11.5 | One of `mandatory` / `cache-only` / `disabled` |
 

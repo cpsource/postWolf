@@ -57,6 +57,15 @@
 #define MQC_REVOKED_CACHE_TTL_SEC   (24 * 60 * 60)   /* 24 h */
 #endif
 
+/* -- AbuseIPDB score cache TTL (server-side accept-prologue) ----------- */
+/* Lifetime of the Redis-backed per-IP abuseConfidenceScore cache.  A
+ * cache hit lets the accept-prologue skip the outbound HTTPS call to
+ * api.abuseipdb.com (5s curl ceiling).  Default 24h matches the
+ * revocation-cache cadence. */
+#ifndef MQC_ABUSE_CACHE_TTL_SEC
+#define MQC_ABUSE_CACHE_TTL_SEC     (24 * 60 * 60)   /* 24 h */
+#endif
+
 /* -- Signature freshness window (server-side: /revoke, /enrollment ...) */
 /* Max allowed skew between a signed-payload timestamp and the server
  * clock.  Matches handle_revoke's ±5 min enforcement. */

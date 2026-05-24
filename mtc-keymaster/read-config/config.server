@@ -38,6 +38,7 @@ url-local-port-disabled Yes
 # mqc-rl-connect-per-hour       1000
 # mqc-rl-fail-per-min           10
 # mqc-rl-fail-per-hour          100
+# mqc-rl-fail-per-day           300
 
 # Per-IP distinct-cert_index throttle (issue #12).  Caps how many
 # distinct cert_index values a single source IP can present per
@@ -61,6 +62,7 @@ url-local-port-disabled Yes
 
 # Cache + skew windows (seconds).
 # mqc-revoked-cache-ttl-sec     86400
+# mqc-abuse-cache-ttl-sec       86400
 # mqc-sig-freshness-sec         300
 
 # Revocation enforcement policy (issue #7).  Default: mandatory.
