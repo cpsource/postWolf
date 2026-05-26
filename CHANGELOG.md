@@ -27,7 +27,33 @@ the open issue list.
 
 ## [Unreleased]
 
-(no changes since 0.2.6)
+(no changes since 0.2.7)
+
+## [0.2.7] — 2026-05-26
+
+### Added
+- **AbuseIPDB single retry.**  On curl failure, `abuseipdb_check`
+  retries once immediately (same 5s timeout) before returning -1.
+  Handles transient DNS/TCP glitches.  Retry is logged via
+  `MQC_SECURITY` (`ABUSEIPDB_RETRY`).
+- **Docker Redis status section in `redis-info.sh`.**  Shows
+  container state, Redis version, uptime, memory, keyspace, and
+  ping.  Falls back to querying `redis-cli` directly on hosts
+  without Docker (e.g. frflashy with apt-installed `redis-server`).
+- **`redis/README.md` Docker Redis deployment docs.**  Documents
+  the container setup on factsorlie, the apt setup on frflashy,
+  and common operations.
+
+### Changed
+- **AbuseIPDB log lines promoted to `MQC_SECURITY`.**  All three
+  outcomes — `ABUSEIPDB_REJECTED`, `ABUSEIPDB_OK`,
+  `ABUSEIPDB_FAIL_OPEN` — now print unconditionally (were gated on
+  verbose mode via `MQC_LOG`).
+
+### Fixed
+- **`redis-info.sh` empty-key guard.**  Added `grep .` before `sort`
+  in both the `rl:` and `mqc:` key loops to prevent `bad array
+  subscript` errors when `redis-cli keys` returns no matches.
 
 ## [0.2.6] — 2026-05-24
 
