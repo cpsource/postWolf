@@ -16,7 +16,7 @@ declare -A RL_MAX_M=( [0]=60 [1]=10 [2]=3 [3]=3 [4]=5 [5]=3 [6]=120 )
 declare -A RL_MAX_H=( [0]=600 [1]=100 [2]=10 [3]=10 [4]=100 [5]=30 [6]=1200 )
 
 rl_found=0
-redis-cli keys 'rl:*' 2>/dev/null | sort | while read -r key; do
+redis-cli keys 'rl:*' 2>/dev/null | grep . | sort | while read -r key; do
     ip=$(echo "$key" | cut -d: -f2)
     cat=$(echo "$key" | cut -d: -f3)
     win=$(echo "$key" | cut -d: -f4)
@@ -49,7 +49,7 @@ declare -A MQC_MAX_FAIL=( [m]=10 [h]=100 [d]=300 )
 declare -A MQC_MAX_CERT=( [m]=10 [h]=100 )
 declare -A WIN_LABEL=( [m]="min" [h]="hour" [d]="day" )
 
-redis-cli keys 'mqc:*' 2>/dev/null | sort | while read -r key; do
+redis-cli keys 'mqc:*' 2>/dev/null | grep . | sort | while read -r key; do
     ip=$(echo "$key" | cut -d: -f2)
     typ=$(echo "$key" | cut -d: -f3)
     win=$(echo "$key" | cut -d: -f4)
@@ -95,6 +95,60 @@ if [[ -n "$abuse_keys" ]]; then
         [[ "$ttl" -le 0 ]] && ttl="expired"
         printf "$ABUSE_FMT" "$ip" "$score" "${ttl}s"
     done
+fi
+
+# ── Docker Redis status ──────────────────────────────────────────────
+
+printf "\n=== Docker Redis Status ===\n\n"
+if docker inspect redis >/dev/null 2>&1; then
+    state=$(docker inspect -f '{{.State.Status}}' redis 2>/dev/null)
+    uptime=$(docker inspect -f '{{.State.StartedAt}}' redis 2>/dev/null)
+    printf "Container:  redis\n"
+    printf "State:      %s\n" "$state"
+    printf "Started:    %s\n" "$uptime"
+
+    if [[ "$state" == "running" ]]; then
+        info=$(docker exec redis redis-cli info server 2>/dev/null)
+        version=$(echo "$info" | grep '^redis_version:' | cut -d: -f2 | tr -d '\r')
+        uptime_s=$(echo "$info" | grep '^uptime_in_seconds:' | cut -d: -f2 | tr -d '\r')
+        uptime_d=$(echo "$info" | grep '^uptime_in_days:' | cut -d: -f2 | tr -d '\r')
+        printf "Version:    %s\n" "$version"
+        printf "Uptime:     %s days (%ss)\n" "$uptime_d" "$uptime_s"
+
+        mem=$(docker exec redis redis-cli info memory 2>/dev/null)
+        used=$(echo "$mem" | grep '^used_memory_human:' | cut -d: -f2 | tr -d '\r')
+        peak=$(echo "$mem" | grep '^used_memory_peak_human:' | cut -d: -f2 | tr -d '\r')
+        printf "Memory:     %s (peak %s)\n" "$used" "$peak"
+
+        stats=$(docker exec redis redis-cli info keyspace 2>/dev/null)
+        db0=$(echo "$stats" | grep '^db0:' | tr -d '\r')
+        printf "Keyspace:   %s\n" "${db0:-empty}"
+
+        pong=$(docker exec redis redis-cli ping 2>/dev/null)
+        printf "Ping:       %s\n" "$pong"
+    fi
+else
+    if command -v redis-cli >/dev/null 2>&1; then
+        pong=$(redis-cli ping 2>/dev/null)
+        if [[ "$pong" == "PONG" ]]; then
+            info=$(redis-cli info server 2>/dev/null)
+            version=$(echo "$info" | grep '^redis_version:' | cut -d: -f2 | tr -d '\r')
+            uptime_d=$(echo "$info" | grep '^uptime_in_days:' | cut -d: -f2 | tr -d '\r')
+            mem=$(redis-cli info memory 2>/dev/null)
+            used=$(echo "$mem" | grep '^used_memory_human:' | cut -d: -f2 | tr -d '\r')
+            db0=$(redis-cli info keyspace 2>/dev/null | grep '^db0:' | tr -d '\r')
+            printf "Source:     apt (no docker container)\n"
+            printf "Version:    %s\n" "$version"
+            printf "Uptime:     %s days\n" "$uptime_d"
+            printf "Memory:     %s\n" "$used"
+            printf "Keyspace:   %s\n" "${db0:-empty}"
+            printf "Ping:       PONG\n"
+        else
+            printf "Redis not reachable (no docker container, redis-cli ping failed)\n"
+        fi
+    else
+        printf "No docker 'redis' container found and redis-cli not available\n"
+    fi
 fi
 
 # ── Global hits ──────────────────────────────────────────────────────

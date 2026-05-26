@@ -20,9 +20,14 @@ socket layer.
 3. **AbuseIPDB score cache** (`mqc:<ip>:abuse`)
    — cached abuse-confidence scores (shown when present).
 
-4. **Global hit counter** (`hits`).
+4. **Docker Redis status** — container state, Redis version, uptime,
+   memory usage, keyspace summary, and ping check.  On hosts without a
+   Docker container (e.g. frflashy with apt-installed `redis-server`),
+   falls back to querying `redis-cli` directly.
 
-5. **Journal activity (last 24h)** — per-IP summary of handshake
+5. **Global hit counter** (`hits`).
+
+6. **Journal activity (last 24h)** — per-IP summary of handshake
    failures, ACL denials, and successful accepts from `journalctl -u qshd`,
    so IPs whose Redis counters have already expired are still visible.
 
@@ -77,6 +82,35 @@ TTL controlled by `mqc-abuse-cache-ttl-sec` (default 86400s).
 | Key | Type | Description |
 |-----|------|-------------|
 | `hits` | string (integer) | Global request counter, no TTL |
+
+### Docker Redis deployment
+
+On factsorlie, Redis runs as a Docker container named `redis`, bound
+to `127.0.0.1:6379`:
+
+```
+docker run -d --name redis --restart unless-stopped \
+    -p 127.0.0.1:6379:6379 redis:7
+```
+
+On frflashy, Redis is installed via `apt` (`redis-server` package)
+and managed by systemd (`redis-server.service`).
+
+Both hosts bind Redis to localhost only — no network exposure.
+The MQC rate-limit code connects to `127.0.0.1:6379` unconditionally
+(see `mqc_redis_init()` in `mqc_ratelimit.c`).
+
+Common operations:
+
+| Task | Command |
+|------|---------|
+| Check container health | `docker exec redis redis-cli ping` |
+| Flush all rate-limit counters | `docker exec redis redis-cli FLUSHALL` |
+| Inspect a specific key | `docker exec redis redis-cli GET "mqc:<ip>:abuse"` |
+| View all MQC keys | `docker exec redis redis-cli KEYS "mqc:*"` |
+| Container logs | `docker logs redis --tail 20` |
+
+On frflashy (apt), substitute `redis-cli` directly for `docker exec redis redis-cli`.
 
 ### Other MQC operational tunables
 
