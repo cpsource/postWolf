@@ -39,7 +39,21 @@ static size_t abuse_write_cb(void *ptr, size_t size, size_t nmemb, void *ud)
     return total;
 }
 
-/* Read ABUSEIPDB_TOKEN from environment or ~/.env. Returns NULL if not found. */
+/* Strip matching quotes (single or double) from a value in-place. */
+static char *strip_quotes(char *val)
+{
+    size_t len = strlen(val);
+    if (len >= 2 &&
+        ((val[0] == '"'  && val[len-1] == '"') ||
+         (val[0] == '\'' && val[len-1] == '\''))) {
+        val[len-1] = '\0';
+        val++;
+    }
+    return val;
+}
+
+/* Read the AbuseIPDB API token from environment or ~/.env.
+ * Accepts both ABUSEIPDB_TOKEN and ABUSEIPDB_KEY. */
 static const char *get_abuseipdb_token(void)
 {
     static char token[512] = {0};
@@ -52,6 +66,8 @@ static const char *get_abuseipdb_token(void)
     if (token[0]) return token;
 
     env = getenv("ABUSEIPDB_TOKEN");
+    if (!env || !*env)
+        env = getenv("ABUSEIPDB_KEY");
     if (env && *env) {
         snprintf(token, sizeof(token), "%s", env);
         return token;
@@ -65,14 +81,15 @@ static const char *get_abuseipdb_token(void)
     if (!f) return NULL;
 
     while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, "ABUSEIPDB_TOKEN=", 16) == 0) {
-            char *val = line + 16;
+        char *val = NULL;
+        if (strncmp(line, "ABUSEIPDB_TOKEN=", 16) == 0)
+            val = line + 16;
+        else if (strncmp(line, "ABUSEIPDB_KEY=", 14) == 0)
+            val = line + 14;
+        if (val) {
             char *nl = strchr(val, '\n');
             if (nl) *nl = '\0';
-            if (strlen(val) >= 2 && val[0] == '"' && val[strlen(val)-1] == '"') {
-                val[strlen(val)-1] = '\0';
-                val++;
-            }
+            val = strip_quotes(val);
             snprintf(token, sizeof(token), "%s", val);
             fclose(f);
             return token;
@@ -87,56 +104,61 @@ static const char *get_abuseipdb_token(void)
 static int abuseipdb_check(const char *ip)
 {
     const char *api_token = get_abuseipdb_token();
-    CURL *curl;
-    CURLcode cres;
     char url[512];
     char auth_header[600];
-    struct curl_slist *headers = NULL;
-    struct abuse_buf buf = {NULL, 0};
-    int score = -1;
+    int attempt, score = -1;
 
     if (!api_token || !ip || !*ip)
-        return -1;  /* no token = skip check */
-
-    curl = curl_easy_init();
-    if (!curl) return -1;
+        return -1;
 
     snprintf(url, sizeof(url),
         "https://api.abuseipdb.com/api/v2/check?ipAddress=%s&maxAgeInDays=90",
         ip);
     snprintf(auth_header, sizeof(auth_header), "Key: %s", api_token);
 
-    headers = curl_slist_append(headers, auth_header);
-    headers = curl_slist_append(headers, "Accept: application/json");
+    for (attempt = 0; attempt < 2; attempt++) {
+        CURL *curl;
+        CURLcode cres;
+        struct curl_slist *headers = NULL;
+        struct abuse_buf buf = {NULL, 0};
 
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, abuse_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+        curl = curl_easy_init();
+        if (!curl) return -1;
 
-    cres = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
-    curl_slist_free_all(headers);
+        headers = curl_slist_append(headers, auth_header);
+        headers = curl_slist_append(headers, "Accept: application/json");
 
-    if (cres != CURLE_OK || !buf.data) {
-        free(buf.data);
-        return -1;
-    }
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, abuse_write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
 
-    /* Parse: {"data":{"abuseConfidenceScore":N}} */
-    {
-        struct json_object *obj = json_tokener_parse(buf.data);
-        struct json_object *data_obj, *score_obj;
-        if (obj &&
-            json_object_object_get_ex(obj, "data", &data_obj) &&
-            json_object_object_get_ex(data_obj, "abuseConfidenceScore", &score_obj)) {
-            score = json_object_get_int(score_obj);
+        cres = curl_easy_perform(curl);
+        curl_easy_cleanup(curl);
+        curl_slist_free_all(headers);
+
+        if (cres != CURLE_OK || !buf.data) {
+            free(buf.data);
+            if (attempt == 0)
+                MQC_SECURITY("ABUSEIPDB_RETRY: %s attempt 1 failed (%s), retrying",
+                             ip, curl_easy_strerror(cres));
+            continue;
         }
-        if (obj) json_object_put(obj);
-    }
 
-    free(buf.data);
+        {
+            struct json_object *obj = json_tokener_parse(buf.data);
+            struct json_object *data_obj, *score_obj;
+            if (obj &&
+                json_object_object_get_ex(obj, "data", &data_obj) &&
+                json_object_object_get_ex(data_obj, "abuseConfidenceScore", &score_obj)) {
+                score = json_object_get_int(score_obj);
+            }
+            if (obj) json_object_put(obj);
+        }
+        free(buf.data);
+        break;
+    }
     return score;
 }
 
@@ -156,7 +178,10 @@ int mqc_abuse_check(const char *ip)
     else
         score = abuseipdb_check(ip);
 
-    if (score < 0) return 0;  /* no token or error = allow (fail-open) */
+    if (score < 0) {
+        MQC_SECURITY("ABUSEIPDB_FAIL_OPEN: %s lookup failed", ip);
+        return 0;
+    }
 
     if (!from_cache)
         mqc_abuse_cache_put(ip, score, (int)mqc_rt_cfg()->abuse_cache_ttl_sec);
@@ -167,7 +192,8 @@ int mqc_abuse_check(const char *ip)
                      from_cache ? "cached" : "fresh");
         return -1;
     }
-    MQC_LOG("AbuseIPDB: %s score=%d (OK, %s)",
-            ip, score, from_cache ? "cached" : "fresh");
+    MQC_SECURITY("ABUSEIPDB_OK: %s score=%d (threshold=%d, %s)",
+                 ip, score, MQC_ABUSE_THRESHOLD,
+                 from_cache ? "cached" : "fresh");
     return 0;
 }
