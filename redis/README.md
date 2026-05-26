@@ -34,24 +34,66 @@ socket layer.
 
 Requires `redis-cli` and read access to the qshd journal.
 
-### Rate-limit defaults
+### Redis key reference
 
-MTC CA (`mtc_ratelimit.c`):
+Every key listed below is written by the MQC or MTC rate-limit code
+and read by `redis-info.sh`.  Keys expire automatically via Redis TTL.
 
-| Category  | Per-minute | Per-hour |
-|-----------|-----------|---------|
-| read      | 60        | 600     |
-| nonce-lf  | 10        | 100     |
-| nonce-ca  | 3         | 10      |
-| enroll    | 3         | 10      |
-| revoke    | 5         | 100     |
-| bootstrap | 3         | 30      |
-| global    | 120       | 1200    |
+#### MTC CA/Log counters (`rl:<ip>:<category>:<window>`)
 
-MQC socket (`mqc_common.c`, tunable via `/etc/postWolf/config`):
+Source: `mtc_ratelimit.c`.  Hardcoded; not tunable via config.
 
-| Type | Per-minute | Per-hour | Per-day |
-|------|-----------|---------|---------|
-| conn | 100       | 1000    | —       |
-| fail | 10        | 100     | 300     |
-| cert | 10        | 100     | —       |
+| Key suffix | Category  | Per-minute (`:m`, 60s TTL) | Per-hour (`:h`, 3600s TTL) |
+|-----------|-----------|-----------|---------|
+| `0`       | read      | 60        | 600     |
+| `1`       | nonce-lf  | 10        | 100     |
+| `2`       | nonce-ca  | 3         | 10      |
+| `3`       | enroll    | 3         | 10      |
+| `4`       | revoke    | 5         | 100     |
+| `5`       | bootstrap | 3         | 30      |
+| `6`       | global    | 120       | 1200    |
+
+#### MQC socket counters (`mqc:<ip>:<type>:<window>`)
+
+Source: `mqc_ratelimit.c` / `mqc_common.c`.  All defaults are tunable
+in `/etc/postWolf/config` under `[global]`:
+
+| Key pattern | Config key | Per-minute (`:m`, 60s TTL) | Per-hour (`:h`, 3600s TTL) | Per-day (`:d`, 86400s TTL) |
+|------------|-----------|-----------|---------|---------|
+| `mqc:<ip>:conn:<w>` | `mqc-rl-connect-per-{min,hour}` | 100 | 1000 | — |
+| `mqc:<ip>:fail:<w>` | `mqc-rl-fail-per-{min,hour,day}` | 10 | 100 | 300 |
+| `mqc:<ip>:cert:<w>` | `mqc-rl-cert-per-{min,hour}` | 10 | 100 | — |
+
+The `cert` counter is a Redis SET (distinct `cert_index` values), not
+a simple increment — `SCARD` gives the count.
+
+#### AbuseIPDB score cache (`mqc:<ip>:abuse`)
+
+A single integer (the `abuseConfidenceScore` from the AbuseIPDB API).
+TTL controlled by `mqc-abuse-cache-ttl-sec` (default 86400s).
+
+#### Other counters
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `hits` | string (integer) | Global request counter, no TTL |
+
+### Other MQC operational tunables
+
+These are not Redis counters but affect rate-limit behavior.  All are
+set in `/etc/postWolf/config` under `[global]`; commented-out lines
+show the compiled-in default.
+
+| Config key | Default | Description |
+|-----------|---------|-------------|
+| `mqc-max-children` | 20 | Max concurrent forked children; gates `accept()` as backpressure |
+| `mqc-handshake-stall-sec` | 3 | Per-read stall timeout during handshake |
+| `mqc-handshake-total-sec` | 5 | Total wall-clock ceiling for the full handshake |
+| `mqc-max-handshake-bytes` | 131072 | Max single handshake frame size |
+| `mqc-max-msg-bytes` | 1048576 | Max single post-handshake message size |
+| `mqc-revoked-cache-ttl-sec` | 86400 | Revocation-query result cache TTL |
+| `mqc-abuse-cache-ttl-sec` | 86400 | AbuseIPDB score cache TTL |
+| `mqc-sig-freshness-sec` | 300 | Cert `not_before`/`not_after` skew tolerance |
+| `mqc-revocation-policy` | `mandatory` | `mandatory` / `cache-only` / `disabled` |
+| `mqc-rl-redis-fail-policy` | `closed-after` | What rate-limit gates do when Redis is down: `open` / `closed` / `closed-after` |
+| `mqc-rl-redis-fail-closed-after-sec` | 8 | Grace period before `closed-after` flips to fail-closed |
