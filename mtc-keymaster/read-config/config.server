@@ -71,6 +71,7 @@ url-local-port-disabled Yes
 # exit pools, staff bastion hosts, or any IP that AbuseIPDB has
 # false-flagged.  Per-IP rate limits and ACLs still apply.
 # mqc-abuse-allowlist           1.2.3.4,5.6.7.0/24
+mqc-abuse-allowlist 81.199.26.0/24,85.203.15.0/24
 
 # MQCBYPASS identity allow-list.  When set, a valid MQCBYPASS token
 # may only complete a handshake whose verified peer cert_index lands
