@@ -27,7 +27,49 @@ the open issue list.
 
 ## [Unreleased]
 
-(no changes since 0.2.7)
+(no changes since 0.3.0)
+
+## [0.3.0] — 2026-06-03
+
+Adds an operator-controlled, AbuseIPDB-lockout recovery path:
+static IP allowlist + signed per-connection MQCBYPASS token with a
+post-handshake identity gate.  No default-behavior changes — the
+bypass stays inert until `/etc/postWolf/config-secret` (server) and
+`~/.mqc-master-password` (client) are explicitly installed.
+
+### Added
+- **MQCBYPASS pre-handshake bypass token.**  Operator-controlled
+  recovery mechanism for AbuseIPDB / per-IP rate-limit lockouts on
+  shared VPN exits.  99-byte ASCII line prepended before the MQC
+  handshake; HMAC-SHA256 over (`timestamp || mask || src_ip`) keyed
+  by a master password at `/etc/postWolf/config-secret` (0600).
+  ±300s freshness window, IP-bound HMAC, 100ms server-side peek
+  ceiling so baseline traffic pays ~nothing.  Bitmask selects which
+  checks to skip: `0x01` AbuseIPDB, `0x02`/`0x04`/`0x08` per-IP RL
+  gates.
+- **Static `mqc-abuse-allowlist` config knob** in `/etc/postWolf/config`.
+  Comma-separated IPv4 / CIDR; match short-circuits the AbuseIPDB
+  gate without consulting cache or AbuseIPDB HTTPS.  Per-IP rate
+  limits still apply.
+- **`mqc-bypass-allow-idx` post-handshake identity gate.**  Range
+  syntax (`n,m,lo-hi`) restricts which peer `cert_index` values may
+  complete a bypass handshake even with a valid token.  Defense-in-
+  depth on top of the master password.
+- **`qsh --bypass-src-ip=IP [--bypass-bits=N]` flags.**  Build a
+  fresh bypass token per call from `~/.mqc-master-password` (0600)
+  and emit it as the first 99 bytes of the TCP socket.
+- **`mqc-gen-bypass-token` CLI** for offline / scripted token
+  generation: `--src-ip=IP [--bits=N] [--master=FILE] [--line]`.
+- **kit-qsh: `make install-bypass`.**  Optional kit-build-time
+  bundling of the master password via `mqc(1)` AES-256-GCM (reuses
+  the shared symmetric password cached at
+  `~/.TPM/<domain>/mqc-password.pw` on both kit-build host and
+  recipient).  Decoded on the recipient into `~/.mqc-master-password`
+  (0600).  Build-time bundling silently skipped if
+  `/etc/postWolf/config-secret` is unreadable or `mqc(1)` is absent.
+- **`mtc-keymaster/read-config/config-secret.example`** documentation
+  template.  Checked in as docs only — NOT auto-installed so a
+  default master password can never ship.
 
 ## [0.2.7] — 2026-05-26
 
