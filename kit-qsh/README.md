@@ -14,6 +14,7 @@ It contains:
 | `postWolf.config` | Minimal `/etc/postWolf/config` template (points qsh at the MTC log server) |
 | `myconf.aug` | Augeas lens that parses `postWolf.config` (qsh can't read it without this) |
 | `TPM/factsorlie.com/` | MTC identity (PEM keys + cosignature-verified cert) |
+| `mqc-master-password.enc` | (optional) MQCBYPASS master password, `mqc(1)`-sealed against the shared symmetric password cached at `~/.TPM/<domain>/mqc-password.pw`.  Decoded into `~/.mqc-master-password` by `make install-bypass`. |
 | `README.md` | This file |
 
 > **Trust note.**  `TPM/factsorlie.com/private_key.pem` is real ML-DSA-87
@@ -56,6 +57,7 @@ make install        # check + sudo install qsh + sudo install config + per-user 
 make install-bin    # just the qsh binary (sudo)
 make install-config # just /etc/postWolf/config (sudo, refuses to overwrite)
 make install-tpm    # just the TPM identity (refuses to overwrite)
+make install-bypass # decode mqc-master-password.enc -> ~/.mqc-master-password
 make uninstall      # remove qsh + config + ~/.TPM/factsorlie.com
 make run            # quick smoke: qsh --host=$HOST --tpm-path=~/.TPM/...
 ```
@@ -87,6 +89,7 @@ different URL.
 ```
 qsh --host=HOST [--port=N] [--tpm-path=PATH] [--user=NAME]
     [--mtc-server=URL] [--expected-name=NAME]
+    [--bypass-src-ip=IP [--bypass-bits=N]]
 ```
 
 - `--host` — qshd server hostname or IP (required).
@@ -100,6 +103,13 @@ qsh --host=HOST [--port=N] [--tpm-path=PATH] [--user=NAME]
   `https://factsorlie.com:8446`).
 - `--expected-name=NAME` — override the subject-string check
   (default: derived from `--host`).
+- `--bypass-src-ip=IP` — emit a one-shot MQCBYPASS token (signed by
+  `~/.mqc-master-password`, mode 0600) bound to the public source IP
+  the server will see.  Use to recover from an AbuseIPDB lockout on
+  a shared VPN exit.  See "AbuseIPDB lockout" below.
+- `--bypass-bits=N` — bypass bitmask (default `0x01` = AbuseIPDB
+  only).  `0x02` = per-IP conn RL, `0x04` = per-IP fail RL, `0x08` =
+  per-IP cert-rotation RL.  OR-combine as needed.
 
 ## Troubleshooting
 
@@ -123,6 +133,36 @@ add an `allow N` line.
 — your qsh side aborted before sending the first handshake frame.
 Most often a DNSSEC pin failure or a missing `libunbound.so.8` /
 `libcrypto.so.3` on the client side.  Re-run `check-qsh-deps.py`.
+
+**AbuseIPDB lockout** — qsh exits with `reconnecting in 2s...`
+forever and the server log shows
+`ABUSEIPDB_REJECTED: <your-ip> score=N (threshold=25, ...)`.  Common
+when dialling from a shared VPN exit or a residential ISP whose
+range has been flagged.  Recovery:
+
+1. **One-time, while still unblocked:** install the bundled master
+   password:
+
+   ```bash
+   make install-bypass    # decodes mqc-master-password.enc -> ~/.mqc-master-password
+   ```
+
+   Requires `mqc(1)` installed locally with the same shared symmetric
+   password cached at `~/.TPM/<domain>/mqc-password.pw` as the
+   kit-build host used.  Do this before travelling — the kit
+   recipient can't fetch the password once already locked out.
+
+2. While locked out, dial with a one-shot bypass token bound to the
+   public IP the server will see:
+
+   ```bash
+   qsh --host=factsorlie.com --bypass-src-ip=$(curl -s ifconfig.me)
+   ```
+
+The server log will then show `BYPASS_HIT: <ip> mask=0x00000001`
+followed by a normal accepted handshake.  Tokens are bound to the
+source IP, have a ±300s freshness window, and authorise only the
+bits requested (`--bypass-bits`, default `0x01` = AbuseIPDB only).
 
 ## What qsh is
 

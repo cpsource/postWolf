@@ -144,6 +144,18 @@ mqc_conn_t *mqc_accept_clear_continue(mqc_ctx_t *ctx, int fd,
         if (mqc_ratelimit_cert_check(client_ip, peer_index) != 0)
             goto fail;
 
+        /* MQCBYPASS identity gate: when the operator set
+         * mqc-bypass-allow-idx, a bypass token may only land on the
+         * listed cert_index values.  Tear down silently otherwise so
+         * a leaked master password alone isn't enough to abuse the
+         * mechanism. */
+        if (mqc_current_bypass_mask() != 0 &&
+            !mqc_bypass_allows_idx(peer_index)) {
+            MQC_SECURITY("BYPASS_IDX_REJECTED: %s peer_index=%d "
+                         "not in mqc-bypass-allow-idx", client_ip, peer_index);
+            goto fail;
+        }
+
         MQC_TIME_BEGIN(peer_verify);
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
                               peer_index, mqc_rt_cfg()->revocation_policy,

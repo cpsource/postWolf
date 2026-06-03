@@ -24,10 +24,12 @@
 #   TARBALL    — output tarball filename          (default: deploy-qsh.tar.gz)
 
 QSH_BIN  ?= /usr/local/bin/qsh
+MQC_BIN  ?= /usr/local/bin/mqc
 TPM_DIR  ?= $(HOME)/.TPM/factsorlie.com
 IDENTITY ?= factsorlie.com
 DEPS_PY  ?= ../qsh/check-qsh-deps.py
 LENS_SRC ?= ../mtc-keymaster/read-config/myconf.aug
+CONFIG_SECRET ?= /etc/postWolf/config-secret
 STAGING  ?= deploy-qsh
 TARBALL  ?= deploy-qsh.tar.gz
 
@@ -64,6 +66,24 @@ $(TARBALL): check-inputs
 	@chmod 700 $(STAGING)/TPM/$(IDENTITY)
 	@chmod 600 $(STAGING)/TPM/$(IDENTITY)/private_key.pem
 	@chmod 755 $(STAGING)/qsh $(STAGING)/check-qsh-deps.py
+	@# Optional: bundle the MQCBYPASS master password, mqc(1)-encoded
+	@# against the shared password cached at ~/.TPM/<domain>/mqc-password.pw
+	@# on the build host AND on the recipient.  Skipped silently if the
+	@# server's /etc/postWolf/config-secret isn't readable here or mqc(1)
+	@# isn't installed — the kit is still useful without it; the
+	@# recipient just can't use --bypass-src-ip out of the box.
+	@if [ -r $(CONFIG_SECRET) ] && [ -x $(MQC_BIN) ]; then \
+	    HEX=$$(awk '/^mqc-master-password/ { print $$2 }' $(CONFIG_SECRET)); \
+	    if [ -n "$$HEX" ]; then \
+	        printf '%s\n' "$$HEX" | $(MQC_BIN) --encode --out $(STAGING)/mqc-master-password.enc >/dev/null; \
+	        chmod 644 $(STAGING)/mqc-master-password.enc; \
+	        echo "[kit] bundled mqc-master-password.enc (mqc(1) AES-256-GCM)"; \
+	    else \
+	        echo "[kit] $(CONFIG_SECRET) has no mqc-master-password line — skipping bundle"; \
+	    fi; \
+	else \
+	    echo "[kit] $(CONFIG_SECRET) unreadable or $(MQC_BIN) missing — skipping bypass-secret bundle"; \
+	fi
 	@tar -czf $(TARBALL) $(STAGING)
 	@rm -rf $(STAGING)
 	@printf "\nBuilt %s (%s) — bundled identity: %s\n" \

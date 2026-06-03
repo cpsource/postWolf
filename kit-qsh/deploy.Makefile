@@ -32,10 +32,12 @@ BIN_DIR  ?= $(PREFIX)/bin
 LENS_DIR ?= $(PREFIX)/share/augeas/lenses
 ETC_DIR  ?= /etc/postWolf
 TPM_HOME ?= $(HOME)/.TPM
+MQC_BIN  ?= /usr/local/bin/mqc
+BYPASS_PW ?= $(HOME)/.mqc-master-password
 INSTALL  ?= install
 SUDO     ?= sudo
 
-.PHONY: help check install install-bin install-config install-tpm uninstall run
+.PHONY: help check install install-bin install-config install-tpm install-bypass uninstall run
 
 help:
 	@echo "deploy-qsh — qsh client install kit"
@@ -46,6 +48,7 @@ help:
 	@echo "  make install-bin     $(SUDO) install qsh into $(BIN_DIR)"
 	@echo "  make install-config  $(SUDO) install postWolf.config + myconf.aug"
 	@echo "  make install-tpm     copy TPM/$(IDENTITY) -> $(TPM_HOME)/$(IDENTITY)"
+	@echo "  make install-bypass  decode mqc-master-password.enc -> $(BYPASS_PW) (0600)"
 	@echo "  make uninstall       remove qsh + $(ETC_DIR)/config + $(TPM_HOME)/$(IDENTITY)"
 	@echo "  make run             qsh --host=$(HOST) --tpm-path=$(TPM_HOME)/$(IDENTITY)"
 	@echo
@@ -105,11 +108,31 @@ install-tpm:
 	@chmod 600 $(TPM_HOME)/$(IDENTITY)/private_key.pem
 	@echo "installed $(TPM_HOME)/$(IDENTITY)/"
 
+# Decode the bundled mqc(1) envelope into ~/.mqc-master-password so
+# qsh --bypass-src-ip can build MQCBYPASS tokens locally.  Optional;
+# requires the same shared mqc(1) password cached on this host as on
+# the kit-build host.  Refuses to overwrite an existing password file.
+install-bypass:
+	@test -f ./mqc-master-password.enc || { \
+	    echo "missing ./mqc-master-password.enc — the kit was built without it"; \
+	    echo "(server's /etc/postWolf/config-secret unreadable at build time, or mqc(1) absent)"; \
+	    exit 1; \
+	}
+	@test -x $(MQC_BIN) || { echo "ERROR: mqc(1) not installed at $(MQC_BIN)"; exit 1; }
+	@if [ -f $(BYPASS_PW) ]; then \
+	    echo "REFUSING: $(BYPASS_PW) already exists.  Inspect / back up first."; \
+	    exit 1; \
+	fi
+	@$(MQC_BIN) --decode --file ./mqc-master-password.enc --out $(BYPASS_PW)
+	@chmod 600 $(BYPASS_PW)
+	@echo "installed $(BYPASS_PW) (mode 0600)"
+
 uninstall:
 	-$(SUDO) rm -f $(BIN_DIR)/qsh $(ETC_DIR)/config $(LENS_DIR)/myconf.aug
 	-$(SUDO) rmdir --ignore-fail-on-non-empty $(ETC_DIR) 2>/dev/null || true
 	-rm -rf $(TPM_HOME)/$(IDENTITY)
 	@echo "removed $(BIN_DIR)/qsh, $(ETC_DIR)/config, $(LENS_DIR)/myconf.aug, and $(TPM_HOME)/$(IDENTITY)/"
+	@echo "(install-bypass artefact $(BYPASS_PW) is NOT removed; rm by hand if desired)"
 
 run:
 	qsh --host=$(HOST) --tpm-path=$(TPM_HOME)/$(IDENTITY)

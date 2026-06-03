@@ -93,6 +93,11 @@ mqc_conn_t *mqc_connect_clear(mqc_ctx_t *ctx, const char *host, int port)
 
     MQC_TRACE("[mqc] connected to %s:%d\n", host, port);
 
+    /* Optional MQCBYPASS pre-handshake line.  No-op unless
+     * MQC_BYPASS_TOKEN env is set; see mqc_client_send_bypass_prefix
+     * in mqc_common.c.  Must run before any handshake bytes go out. */
+    if (mqc_client_send_bypass_prefix(fd) != 0) goto fail;
+
     if (wc_InitRng(&rng) != 0) goto fail;
     rng_ok = 1;
 

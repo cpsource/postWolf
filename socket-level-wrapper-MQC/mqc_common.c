@@ -31,6 +31,8 @@
 #include <errno.h>
 #include <limits.h>     /* INT_MAX (issue #11 strict-int range) */
 #include <sys/socket.h>
+#include <sys/stat.h>   /* fstat() — mqc-master-password 0600 check */
+#include <sys/types.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -997,6 +999,288 @@ void mqc_clear_socket_timeout(int fd)
  * been moved to mqc_ratelimit.c and mqc_abuseipdb.c so MQC client
  * binaries don’t drag libcurl and libhiredis into their link.  The
  * prototypes still live in mqc_internal.h. */
+
+/* --- AbuseIPDB static allowlist + master-password loader -------------
+ *
+ *   1. mqc-abuse-allowlist (/etc/postWolf/config, [global], optional)
+ *      Comma-separated IPv4 addresses or CIDR ranges that bypass the
+ *      AbuseIPDB check unconditionally.
+ *   2. /etc/postWolf/config-secret (optional, 0600, single line
+ *      `mqc-master-password <hex>`) gates the per-connection
+ *      MQCBYPASS token mechanism (mqc_bypass.c).
+ *
+ * Both are file-static rather than fields on mqc_runtime_cfg — they're
+ * server-side operator secrets, not part of any cross-binary ABI. */
+
+#define MQC_CONFIG_SECRET_PATH "/etc/postWolf/config-secret"
+
+static char            *s_master_password = NULL;
+static pthread_once_t   s_master_password_once = PTHREAD_ONCE_INIT;
+
+struct mqc_allow_entry { uint32_t net; uint32_t mask; };
+static struct mqc_allow_entry *s_allow = NULL;
+static int                     s_allow_n = 0;
+static pthread_once_t          s_allow_once = PTHREAD_ONCE_INIT;
+
+/* Parse "IP" or "IP/N" into (net, mask) (both host-byte-order).  Bare
+ * addresses get /32.  Returns 0 on success, -1 on syntax error. */
+static int mqc_parse_cidr(const char *tok, uint32_t *out_net, uint32_t *out_mask)
+{
+    char buf[64];
+    char *slash;
+    struct in_addr ina;
+    int bits;
+    size_t len = strlen(tok);
+
+    if (len == 0 || len >= sizeof(buf)) return -1;
+    memcpy(buf, tok, len + 1);
+
+    slash = strchr(buf, '/');
+    if (slash) {
+        char *endp;
+        long v;
+        *slash = '\0';
+        errno = 0;
+        v = strtol(slash + 1, &endp, 10);
+        if (errno || *endp || v < 0 || v > 32) return -1;
+        bits = (int)v;
+    } else {
+        bits = 32;
+    }
+
+    if (inet_pton(AF_INET, buf, &ina) != 1) return -1;
+    *out_net  = ntohl(ina.s_addr);
+    *out_mask = (bits == 0) ? 0u : (uint32_t)(0xFFFFFFFFu << (32 - bits));
+    *out_net &= *out_mask;
+    return 0;
+}
+
+static void mqc_allow_init_once(void)
+{
+    char *raw = read_config_str("global/mqc-abuse-allowlist", "");
+    char *p, *save = NULL;
+    int cap = 0;
+
+    if (!raw || !*raw) { free(raw); return; }
+
+    for (p = strtok_r(raw, ", \t", &save); p; p = strtok_r(NULL, ", \t", &save)) {
+        uint32_t net, mask;
+        if (mqc_parse_cidr(p, &net, &mask) != 0) {
+            MQC_SECURITY("ALLOWLIST_INVALID: '%s' is not a valid IPv4 "
+                         "address or CIDR — skipped", p);
+            continue;
+        }
+        if (s_allow_n == cap) {
+            int new_cap = cap ? cap * 2 : 4;
+            struct mqc_allow_entry *grow =
+                realloc(s_allow, (size_t)new_cap * sizeof(*grow));
+            if (!grow) break;
+            s_allow = grow;
+            cap = new_cap;
+        }
+        s_allow[s_allow_n].net  = net;
+        s_allow[s_allow_n].mask = mask;
+        s_allow_n++;
+    }
+    free(raw);
+    if (s_allow_n > 0)
+        fprintf(stderr,
+                "[MQC] abuse allowlist loaded: %d entries\n", s_allow_n);
+}
+
+int mqc_abuse_allowlist_match(const char *ip)
+{
+    struct in_addr ina;
+    uint32_t v;
+    int i;
+
+    pthread_once(&s_allow_once, mqc_allow_init_once);
+    if (s_allow_n == 0 || !ip) return 0;
+    if (inet_pton(AF_INET, ip, &ina) != 1) return 0;
+    v = ntohl(ina.s_addr);
+    for (i = 0; i < s_allow_n; i++)
+        if ((v & s_allow[i].mask) == s_allow[i].net) return 1;
+    return 0;
+}
+
+static void mqc_master_password_init_once(void)
+{
+    FILE *f;
+    struct stat st;
+    char line[1024];
+
+    if (stat(MQC_CONFIG_SECRET_PATH, &st) != 0) return;
+
+    if ((st.st_mode & (S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH)) != 0) {
+        MQC_SECURITY("CONFIG_SECRET_INSECURE: %s mode 0%o has group/"
+                     "world permissions — refusing to load master "
+                     "password (chmod 600 to enable bypass)",
+                     MQC_CONFIG_SECRET_PATH,
+                     (unsigned)(st.st_mode & 0777));
+        return;
+    }
+    if (st.st_uid != 0 && st.st_uid != geteuid()) {
+        MQC_SECURITY("CONFIG_SECRET_INSECURE: %s owner uid=%u (expected "
+                     "0 or %u) — refusing to load master password",
+                     MQC_CONFIG_SECRET_PATH,
+                     (unsigned)st.st_uid, (unsigned)geteuid());
+        return;
+    }
+
+    f = fopen(MQC_CONFIG_SECRET_PATH, "r");
+    if (!f) return;
+    while (fgets(line, sizeof(line), f)) {
+        char *p, *end;
+        if (line[0] == '#') continue;
+        p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (strncmp(p, "mqc-master-password", 19) != 0) continue;
+        p += 19;
+        while (*p == ' ' || *p == '\t') p++;
+        end = p + strlen(p);
+        while (end > p && (end[-1] == '\n' || end[-1] == '\r' ||
+                           end[-1] == ' '  || end[-1] == '\t'))
+            *--end = '\0';
+        if (*p == '\0') continue;
+        s_master_password = strdup(p);
+        break;
+    }
+    fclose(f);
+
+    if (s_master_password)
+        fprintf(stderr,
+                "[MQC] master password loaded from %s (bypass enabled)\n",
+                MQC_CONFIG_SECRET_PATH);
+}
+
+const char *mqc_master_password(void)
+{
+    pthread_once(&s_master_password_once, mqc_master_password_init_once);
+    return s_master_password;
+}
+
+/* --- mqc-bypass-allow-idx (post-handshake bypass identity gate) -----
+ *
+ * Operator-controlled allow-list of peer cert_index values permitted
+ * to use the MQCBYPASS mechanism.  Format in /etc/postWolf/config:
+ *
+ *   mqc-bypass-allow-idx  72,79,100-110
+ *
+ * (commas, whitespace, and "lo-hi" range syntax all accepted).
+ *
+ * Defense-in-depth on top of the master password: a leaked password
+ * lets an attacker generate valid tokens, but they still cannot use
+ * those tokens unless they ALSO hold the private key of an identity
+ * whose cert_index appears here.  Empty / unset = no restriction
+ * (any verified identity may bypass), which preserves the behavior
+ * for deployments that haven't opted in to the extra check. */
+
+struct mqc_idx_range { int lo; int hi; };
+static struct mqc_idx_range *s_bypass_idx = NULL;
+static int                   s_bypass_idx_n = 0;
+static pthread_once_t        s_bypass_idx_once = PTHREAD_ONCE_INIT;
+
+static void mqc_bypass_idx_init_once(void)
+{
+    char *raw = read_config_str("global/mqc-bypass-allow-idx", "");
+    char *p, *save = NULL;
+    int cap = 0;
+
+    if (!raw || !*raw) { free(raw); return; }
+
+    for (p = strtok_r(raw, ", \t", &save); p; p = strtok_r(NULL, ", \t", &save)) {
+        char *dash = strchr(p, '-');
+        char *endp;
+        long lo, hi;
+        errno = 0;
+        if (dash) {
+            *dash = '\0';
+            lo = strtol(p, &endp, 10);
+            if (errno || *endp || lo < 0 || lo > INT_MAX) continue;
+            hi = strtol(dash + 1, &endp, 10);
+            if (errno || *endp || hi < lo || hi > INT_MAX) continue;
+        } else {
+            lo = strtol(p, &endp, 10);
+            if (errno || *endp || lo < 0 || lo > INT_MAX) continue;
+            hi = lo;
+        }
+        if (s_bypass_idx_n == cap) {
+            int new_cap = cap ? cap * 2 : 4;
+            struct mqc_idx_range *grow =
+                realloc(s_bypass_idx, (size_t)new_cap * sizeof(*grow));
+            if (!grow) break;
+            s_bypass_idx = grow;
+            cap = new_cap;
+        }
+        s_bypass_idx[s_bypass_idx_n].lo = (int)lo;
+        s_bypass_idx[s_bypass_idx_n].hi = (int)hi;
+        s_bypass_idx_n++;
+    }
+    free(raw);
+    if (s_bypass_idx_n > 0)
+        fprintf(stderr,
+                "[MQC] bypass allow-idx list loaded: %d range(s)\n",
+                s_bypass_idx_n);
+}
+
+int mqc_bypass_allows_idx(int peer_index)
+{
+    int i;
+    pthread_once(&s_bypass_idx_once, mqc_bypass_idx_init_once);
+    if (s_bypass_idx_n == 0) return 1;   /* unset → no restriction */
+    if (peer_index < 0)      return 0;
+    for (i = 0; i < s_bypass_idx_n; i++)
+        if (peer_index >= s_bypass_idx[i].lo &&
+            peer_index <= s_bypass_idx[i].hi) return 1;
+    return 0;
+}
+
+/* --- Client-side MQCBYPASS prepend ---------------------------------
+ *
+ * Reads MQC_BYPASS_TOKEN from the environment (the qsh CLI sets it
+ * after building a fresh token from the laptop's ~/.mqc-master-password).
+ * The env value is the 88-char hex blob ONLY — this helper wraps it
+ * in the wire prefix + newline and writes the full 99-byte line as
+ * the very first bytes on the TCP stream.
+ *
+ * Caller (mqc_connect_clear / mqc_connect_encrypted) invokes this
+ * right after connect() succeeds and before any handshake bytes are
+ * sent.  Bad env values are silently no-op (with a stderr warning)
+ * so a typo in $MQC_BYPASS_TOKEN doesn't break baseline connects. */
+int mqc_client_send_bypass_prefix(int fd)
+{
+    const char *tok = getenv("MQC_BYPASS_TOKEN");
+    unsigned char line[MQC_BYPASS_LINE_LEN];
+    size_t tlen, i;
+
+    if (!tok || !*tok) return 0;
+    tlen = strlen(tok);
+    if (tlen != MQC_BYPASS_HEX_LEN) {
+        fprintf(stderr,
+                "[mqc] MQC_BYPASS_TOKEN length %zu != %d — ignoring\n",
+                tlen, MQC_BYPASS_HEX_LEN);
+        return 0;
+    }
+    for (i = 0; i < tlen; i++) {
+        char c = tok[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) {
+            fprintf(stderr,
+                    "[mqc] MQC_BYPASS_TOKEN contains non-hex char "
+                    "at position %zu — ignoring\n", i);
+            return 0;
+        }
+    }
+
+    memcpy(line, MQC_BYPASS_PREFIX, MQC_BYPASS_PREFIX_LEN);
+    memcpy(line + MQC_BYPASS_PREFIX_LEN, tok, MQC_BYPASS_HEX_LEN);
+    line[MQC_BYPASS_LINE_LEN - 1] = '\n';
+    if (mqc_write_all(fd, line, MQC_BYPASS_LINE_LEN) != 0) {
+        fprintf(stderr, "[mqc] failed to send MQCBYPASS prefix\n");
+        return -1;
+    }
+    return 0;
+}
 
 /* --- Context --- */
 

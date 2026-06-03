@@ -167,11 +167,26 @@ static int abuseipdb_check(const char *ip)
  * Cache flow: consult Redis (mqc:<ip>:abuse) first; on hit, decide from
  * the cached score and skip the HTTPS call.  On miss, query AbuseIPDB
  * and store the resulting score (0..100) with TTL = abuse_cache_ttl_sec.
- * Network errors / missing API token (score < 0) are NOT cached. */
+ * Network errors / missing API token (score < 0) are NOT cached.
+ *
+ * Two short-circuits run before any cache or API work:
+ *   1. bypass_mask & MQC_BYPASS_ABUSE — a validated MQCBYPASS token
+ *      authorised skipping the gate for this connection.  No logging
+ *      here (the prologue already emitted BYPASS_HIT).
+ *   2. mqc_abuse_allowlist_match(ip) — the operator pre-approved this
+ *      IP/CIDR via mqc-abuse-allowlist in /etc/postWolf/config. */
 int mqc_abuse_check(const char *ip)
 {
     int score = -1;
     int from_cache = 0;
+
+    if (mqc_current_bypass_mask() & MQC_BYPASS_ABUSE)
+        return 0;
+    if (mqc_abuse_allowlist_match(ip)) {
+        MQC_SECURITY("ABUSEIPDB_ALLOWLIST_HIT: %s — bypassing AbuseIPDB "
+                     "(mqc-abuse-allowlist)", ip);
+        return 0;
+    }
 
     if (mqc_abuse_cache_get(ip, &score))
         from_cache = 1;

@@ -120,6 +120,10 @@ mqc_conn_t *mqc_connect_encrypted(mqc_ctx_t *ctx, const char *host, int port)
     }
     MQC_TRACE("[mqc-enc] connected to %s:%d\n", host, port);
 
+    /* Optional MQCBYPASS pre-handshake line.  See mqc_clear.c for
+     * the rationale; identical placement just after connect(). */
+    if (mqc_client_send_bypass_prefix(fd) != 0) goto fail;
+
     if (wc_InitRng(&rng) != 0) goto fail;
     rng_ok = 1;
 

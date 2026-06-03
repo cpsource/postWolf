@@ -29,11 +29,12 @@ AR      ?= ar
 
 LIB     = libmqc.a
 OBJS    = mqc.o mqc_common.o mqc_clear.o mqc_encrypted.o mqc_peer.o \
-          mqc_dnssec_pin.o \
+          mqc_dnssec_pin.o mqc_bypass.o \
           mqc_accept_dispatch.o mqc_clear_accept.o mqc_encrypted_accept.o \
           mqc_ratelimit.o mqc_abuseipdb.o
 TESTS   = tests/test_name_check tests/mqc_dnssec_pin
-TARGETS = $(LIB) examples/echo_server examples/echo_client $(TESTS)
+TARGETS = $(LIB) examples/echo_server examples/echo_client $(TESTS) \
+          mqc-gen-bypass-token
 
 V ?= 0
 ifeq ($(V),0)
@@ -80,6 +81,9 @@ mqc_ratelimit.o: mqc_ratelimit.c mqc.h mqc_internal.h
 mqc_abuseipdb.o: mqc_abuseipdb.c mqc.h mqc_internal.h
 	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_abuseipdb.c
 
+mqc_bypass.o: mqc_bypass.c mqc.h mqc_internal.h
+	$(call quiet,CC,$@)$(CC) $(CFLAGS) -c -o $@ mqc_bypass.c
+
 examples/echo_server: examples/echo_server.c $(LIB) mqc.h
 	$(call quiet,CCLD,$@)$(CC) $(CFLAGS) -I. -o $@ $< ../mtc-keymaster/read-config/read-config.c -L. -lmqc $(LDFLAGS) $(LDFLAGS_SERVER)
 
@@ -87,6 +91,11 @@ examples/echo_client: examples/echo_client.c $(LIB) mqc.h
 	$(call quiet,CCLD,$@)$(CC) $(CFLAGS) -I. -o $@ $< ../mtc-keymaster/read-config/read-config.c -L. -lmqc $(LDFLAGS)
 
 tests/test_name_check: tests/test_name_check.c $(LIB) mqc.h mqc_peer.h
+	$(call quiet,CCLD,$@)$(CC) $(CFLAGS) -I. -o $@ $< ../mtc-keymaster/read-config/read-config.c -L. -lmqc $(LDFLAGS)
+
+# Offline bypass-token generator.  Pure client of libmqc (HMAC + I/O),
+# no curl / hiredis needed.
+mqc-gen-bypass-token: mqc-gen-bypass-token.c $(LIB) mqc.h mqc_internal.h
 	$(call quiet,CCLD,$@)$(CC) $(CFLAGS) -I. -o $@ $< ../mtc-keymaster/read-config/read-config.c -L. -lmqc $(LDFLAGS)
 
 # DNSSEC TXT lookup + CA pubkey hash pinning probe (mqc-3 staging).
@@ -106,6 +115,7 @@ test: tests/test_name_check
 	@./tests/test_name_check
 
 clean:
-	@rm -f $(OBJS) $(LIB) examples/echo_server examples/echo_client $(TESTS)
+	@rm -f $(OBJS) $(LIB) examples/echo_server examples/echo_client $(TESTS) \
+	    mqc-gen-bypass-token
 
 .PHONY: all clean test

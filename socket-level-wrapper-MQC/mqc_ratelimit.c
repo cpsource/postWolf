@@ -24,10 +24,22 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <errno.h>
+#include <poll.h>
+#include <sys/socket.h>
 
 #include <hiredis/hiredis.h>
 
 static redisContext *s_redis = NULL;
+
+/* Per-fork bypass mask granted by a validated MQCBYPASS token.  Set
+ * by mqc_accept_prologue once per accept; consulted by the gate
+ * functions below to short-circuit selected pre-handshake checks.
+ * Process-local (the server forks per accept) so concurrent
+ * connections can't collide on it. */
+static uint32_t s_bypass_mask = 0;
+
+uint32_t mqc_current_bypass_mask(void) { return s_bypass_mask; }
 
 /* Cross-fork "Redis-down since when" state.
  *
@@ -159,6 +171,8 @@ int mqc_ratelimit_check(const char *ip)
     char key[128];
     int count_m, count_h;
 
+    if (s_bypass_mask & MQC_BYPASS_RL_CONN) return 0;
+
     {
         long _t = mqc_now_ms();
         mqc_redis_init();
@@ -231,6 +245,8 @@ int mqc_ratelimit_fail_check(const char *ip)
     char key[128];
     redisReply *reply;
     int count_m = 0, count_h = 0, count_d = 0;
+
+    if (s_bypass_mask & MQC_BYPASS_RL_FAIL) return 0;
 
     if (!s_redis) {
         time_t dt;
@@ -373,6 +389,8 @@ int mqc_ratelimit_cert_check(const char *ip, int cert_index)
     char key[160];
     int count_m, count_h;
 
+    if (s_bypass_mask & MQC_BYPASS_RL_CERT) return 0;
+
     if (!s_redis) {
         time_t dt;
         if (mqc_redis_down_decide(&dt) == MQC_REDIS_DECISION_CLOSED) {
@@ -410,6 +428,129 @@ int mqc_ratelimit_cert_check(const char *ip, int cert_index)
     return 0;
 }
 
+/* --- MQCBYPASS pre-handshake peek -----------------------------------
+ *
+ * The bypass token is a 99-byte ASCII line — "MQCBYPASS:<88 hex>\n" —
+ * that a client may prepend to its TCP stream before the actual MQC
+ * handshake bytes.  See mqc_bypass.c for the format.
+ *
+ * Server-side flow (called from mqc_accept_prologue, before any
+ * gate runs):
+ *
+ *   1. Peek byte 0 with MSG_DONTWAIT.  If it isn't 'M' (0x4D), the
+ *      caller is a baseline client — return 0 with mask=0 and bear
+ *      zero overhead.  (Encrypted-mode handshakes start with a
+ *      uniformly random byte — 1 in 256 happens to be 'M'; the next
+ *      step's prefix-mismatch covers that case without consuming
+ *      bytes.)
+ *
+ *   2. Peek MQC_BYPASS_LINE_LEN bytes with a 100ms ceiling via
+ *      poll().  If the buffer doesn't fill or the prefix doesn't
+ *      match, fall through with mask=0.
+ *
+ *   3. recv() exactly MQC_BYPASS_LINE_LEN bytes (consume them off
+ *      the socket so they don't enter the MQC handshake stream),
+ *      hand to mqc_bypass_verify for HMAC + freshness + IP-bind
+ *      validation.
+ *
+ *   4. On valid: set s_bypass_mask, log BYPASS_HIT.
+ *      On invalid (prefix matched but token bad): log BYPASS_REJECTED
+ *      and return -1 so the prologue drops the connection.  A
+ *      tampered or replayed token is treated as hostile, not as
+ *      "fall back to normal gates" — the alternative would let an
+ *      attacker probe the freshness window cheaply.
+ *
+ * Master password absent on server (no /etc/postWolf/config-secret
+ * or mode != 0600) → tokens always fail with "no-master-password";
+ * BYPASS_REJECTED log makes the misconfig visible. */
+/* Peek bytes from fd up to want_len, blocking up to deadline_ms for
+ * more data to arrive.  Returns the number of bytes available (may
+ * be less than want_len if the deadline fires), 0 on EOF, -1 on
+ * unrecoverable error.  Does NOT consume any bytes from the socket. */
+static ssize_t mqc_peek_with_deadline(int fd, char *buf, int want_len,
+                                      int deadline_ms)
+{
+    long start_ms = mqc_now_ms();
+    struct pollfd pfd;
+    ssize_t n = 0;
+
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+
+    for (;;) {
+        long elapsed = mqc_now_ms() - start_ms;
+        int remaining = deadline_ms - (int)elapsed;
+        int pr;
+
+        n = recv(fd, buf, want_len, MSG_PEEK | MSG_DONTWAIT);
+        if (n > 0 && (int)n >= want_len) return n;
+        if (n == 0) return 0;
+        if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+
+        if (remaining <= 0) return (n > 0) ? n : 0;
+        pr = poll(&pfd, 1, remaining);
+        if (pr <= 0) return (n > 0) ? n : 0;
+        /* Loop and re-peek; another revolution shows the new total. */
+    }
+}
+
+static int mqc_try_consume_bypass(int fd, const char *client_ip)
+{
+    char buf[MQC_BYPASS_LINE_LEN];
+    ssize_t n;
+    const int peek_ceiling_ms = 100;
+    uint32_t mask = 0;
+    const char *reason = "n/a";
+    const char *master = mqc_master_password();
+
+    /* Wait up to 100ms for the prefix bytes to land in the kernel
+     * buffer.  Baseline clients send their handshake bytes immediately
+     * so the prefix-mismatch path below short-circuits in well under
+     * 1ms; legitimate MQCBYPASS clients always lead with the line so
+     * the full 99 bytes are usually buffered by the time we peek. */
+    n = mqc_peek_with_deadline(fd, buf, MQC_BYPASS_PREFIX_LEN,
+                               peek_ceiling_ms);
+    if (n < MQC_BYPASS_PREFIX_LEN) return 0;
+    if (memcmp(buf, MQC_BYPASS_PREFIX, MQC_BYPASS_PREFIX_LEN) != 0)
+        return 0;
+
+    /* Prefix matched — wait for the full 99-byte line. */
+    n = mqc_peek_with_deadline(fd, buf, MQC_BYPASS_LINE_LEN,
+                               peek_ceiling_ms);
+    if (n < MQC_BYPASS_LINE_LEN) {
+        MQC_SECURITY("BYPASS_REJECTED: %s prefix matched but only "
+                     "%zd/%d bytes arrived within %dms",
+                     client_ip, n, MQC_BYPASS_LINE_LEN, peek_ceiling_ms);
+        return -1;
+    }
+
+    /* Consume exactly the 99 bytes off the socket. */
+    {
+        ssize_t got = 0;
+        while (got < MQC_BYPASS_LINE_LEN) {
+            ssize_t k = recv(fd, buf + got, MQC_BYPASS_LINE_LEN - got, 0);
+            if (k <= 0) {
+                MQC_SECURITY("BYPASS_REJECTED: %s recv failed after "
+                             "prefix match (%s)",
+                             client_ip, strerror(errno));
+                return -1;
+            }
+            got += k;
+        }
+    }
+
+    if (mqc_bypass_verify(master, buf, MQC_BYPASS_LINE_LEN,
+                          client_ip, (uint64_t)time(NULL),
+                          &mask, &reason) != 0) {
+        MQC_SECURITY("BYPASS_REJECTED: %s %s", client_ip, reason);
+        return -1;
+    }
+
+    s_bypass_mask = mask;
+    MQC_SECURITY("BYPASS_HIT: %s mask=0x%08x", client_ip, (unsigned)mask);
+    return 0;
+}
+
 /* --- Accept-side prologue --------------------------------------------------
  * Runs the cheap server-side gates (AbuseIPDB + rate limits) on a freshly
  * accept()'d fd before any post-quantum work.  Lives here so that the
@@ -427,6 +568,19 @@ int mqc_ratelimit_cert_check(const char *ip, int cert_index)
 int mqc_accept_prologue(int fd, const char *client_ip)
 {
     long _t_total = mqc_now_ms();
+
+    /* Reset to a known state in case this fork was somehow reused
+     * (defence-in-depth — server forks per-accept today, so this is
+     * always 0 already on entry). */
+    s_bypass_mask = 0;
+
+    /* If the client prepended a MQCBYPASS line, validate it and
+     * stash the granted mask before any gate runs.  Bad token
+     * (matching prefix but failed HMAC/freshness/IP) is hostile —
+     * drop the connection. */
+    MQC_TIME_BEGIN(bypass);
+    if (mqc_try_consume_bypass(fd, client_ip) != 0) return -1;
+    MQC_TIME_END(bypass);
 
     /* Cheap in-process Redis gates run BEFORE the AbuseIPDB HTTPS lookup
      * so an IP already over its rate-limit cap (connect or fail) never

@@ -297,7 +297,89 @@ void mqc_abuse_cache_put(const char *ip, int score, int ttl_secs);
  * AbuseIPDB integration (issue #6a)
  * -------------------------------------------------------------------- */
 
+/* Honors the file-static bypass mask set by mqc_accept_prologue_masked
+ * (MQC_BYPASS_ABUSE bit → skip AbuseIPDB entirely) and the static
+ * allowlist from /etc/postWolf/config (mqc-abuse-allowlist). */
 int mqc_abuse_check(const char *ip);
+
+/* ----------------------------------------------------------------------
+ * AbuseIPDB static allowlist (mqc-abuse-allowlist config key)
+ *
+ * Comma-separated IPv4 addresses or CIDR ranges parsed once from
+ * /etc/postWolf/config at startup.  When mqc_abuse_check sees a hit,
+ * it short-circuits to OK without consulting cache or AbuseIPDB.
+ * Returns 1 on match, 0 otherwise. */
+int mqc_abuse_allowlist_match(const char *ip);
+
+/* ----------------------------------------------------------------------
+ * Master password + bypass tokens
+ *
+ * The bypass token is a 99-byte ASCII line — "MQCBYPASS:<88 hex>\n" —
+ * that a client may prepend to its TCP stream before the MQC handshake.
+ * The 88 hex chars decode to:
+ *   8B  ts_be   — uint64 unix seconds, big-endian
+ *   4B  mask_be — uint32 bypass bitmask, big-endian (MQC_BYPASS_*)
+ *  32B  hmac    — HMAC-SHA256(master_password,
+ *                             "mqc-bypass:" || ts_be || mask_be || src_ip_str)
+ *
+ * Server peeks the prefix, validates freshness (±300s), HMAC, and
+ * IP-binding, then applies the bitmask to skip selected pre-handshake
+ * gates for that one connection only.
+ *
+ * The master password lives in /etc/postWolf/config-secret (root-owned,
+ * 0600) — mqc_master_password() returns NULL if the file is absent or
+ * world/group readable.  Clients holding the same password in their
+ * own ~/.mqc-master-password (0600) generate fresh tokens per call.
+ * -------------------------------------------------------------------- */
+
+/* Server-side master password (NULL = bypass disabled on this server). */
+const char *mqc_master_password(void);
+
+/* Client-side: if the MQC_BYPASS_TOKEN env var holds an 88-char hex
+ * token, write a properly framed "MQCBYPASS:<hex>\n" prefix to fd
+ * before any handshake bytes go out.  No-op if the env var is unset
+ * or malformed.  Returns 0 on success (including no-op) and -1 only
+ * on write failure to fd. */
+int mqc_client_send_bypass_prefix(int fd);
+
+/* Bypass bits — load-bearing wire-format constants (see spec). */
+#define MQC_BYPASS_ABUSE     0x00000001u  /* skip AbuseIPDB check */
+#define MQC_BYPASS_RL_CONN   0x00000002u  /* skip per-IP connect rate */
+#define MQC_BYPASS_RL_FAIL   0x00000004u  /* skip per-IP fail rate */
+#define MQC_BYPASS_RL_CERT   0x00000008u  /* skip per-IP distinct-cert rate */
+/* bits 0x10..0xFFFFFFFF reserved (must be zero in v0 tokens). */
+#define MQC_BYPASS_VALID_MASK \
+    (MQC_BYPASS_ABUSE | MQC_BYPASS_RL_CONN | \
+     MQC_BYPASS_RL_FAIL | MQC_BYPASS_RL_CERT)
+
+/* Wire format. */
+#define MQC_BYPASS_PREFIX        "MQCBYPASS:"
+#define MQC_BYPASS_PREFIX_LEN    10
+#define MQC_BYPASS_PAYLOAD_BYTES 44   /* 8 + 4 + 32 */
+#define MQC_BYPASS_HEX_LEN       (MQC_BYPASS_PAYLOAD_BYTES * 2) /* 88 */
+#define MQC_BYPASS_LINE_LEN      (MQC_BYPASS_PREFIX_LEN + MQC_BYPASS_HEX_LEN + 1) /* 99 */
+#define MQC_BYPASS_FRESHNESS_SEC 300
+
+/* Encode a bypass token line into out_line[MQC_BYPASS_LINE_LEN].
+ * out_line is NOT NUL-terminated; the trailing byte is '\n'.
+ * Returns 0 on success. */
+int mqc_bypass_make(const char *master_password,
+                    uint64_t timestamp_sec,
+                    uint32_t bypass_mask,
+                    const char *src_ip,
+                    char out_line[MQC_BYPASS_LINE_LEN]);
+
+/* Validate a peeked MQCBYPASS line.  src_ip must match the byte string
+ * that was hashed into the HMAC.  Writes the granted (mask & VALID_MASK)
+ * to *out_mask on success.  Returns 0 on success, -1 on any mismatch
+ * (out_reason filled with a short label suitable for the SECURITY log
+ * line — caller-owned static strings, do NOT free). */
+int mqc_bypass_verify(const char *master_password,
+                      const char *line, int line_len,
+                      const char *src_ip,
+                      uint64_t now_sec,
+                      uint32_t *out_mask,
+                      const char **out_reason);
 
 /* ----------------------------------------------------------------------
  * Mode-specific handshake bodies (the actual Phase 7 split)
@@ -330,6 +412,22 @@ mqc_conn_t *mqc_accept_clear (mqc_ctx_t *ctx, int listen_fd);
  * mqc_accept_clear / mqc_accept_encrypted in their respective .c
  * files which now drive prologue + first-read themselves. */
 int mqc_accept_prologue(int fd, const char *client_ip);
+
+/* Returns the bypass mask granted to the most recent accept by
+ * mqc_accept_prologue (0 if no MQCBYPASS token was presented or
+ * validation failed).  Process-local — safe because the MQC server
+ * forks per accept(), so each child has its own copy. */
+uint32_t mqc_current_bypass_mask(void);
+
+/* Post-handshake gate: when a bypass token was honored
+ * (mqc_current_bypass_mask() != 0), verify the peer identity is on
+ * the operator's mqc-bypass-allow-idx list.  Returns 1 if the
+ * connection may proceed (no bypass in use, or peer_index is on the
+ * list, or the list is unset).  Returns 0 if it must be torn down.
+ *
+ * The list comes from /etc/postWolf/config (e.g.
+ * "mqc-bypass-allow-idx  72,79,100-110") parsed once per process. */
+int mqc_bypass_allows_idx(int peer_index);
 mqc_conn_t *mqc_accept_clear_continue    (mqc_ctx_t *ctx, int fd,
                                           const char *client_ip,
                                           const char *first_frame,

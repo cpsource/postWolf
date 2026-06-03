@@ -3,3 +3,4 @@
 libmqc.a
 examples/echo_server
 examples/echo_client
+mqc-gen-bypass-token

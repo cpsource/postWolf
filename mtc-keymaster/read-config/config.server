@@ -65,6 +65,23 @@ url-local-port-disabled Yes
 # mqc-abuse-cache-ttl-sec       86400
 # mqc-sig-freshness-sec         300
 
+# Static AbuseIPDB allowlist.  Comma-separated IPv4 addresses or CIDR
+# ranges.  Each match short-circuits the AbuseIPDB gate to OK without
+# consulting the cache or making the HTTPS call.  Use for office VPN
+# exit pools, staff bastion hosts, or any IP that AbuseIPDB has
+# false-flagged.  Per-IP rate limits and ACLs still apply.
+# mqc-abuse-allowlist           1.2.3.4,5.6.7.0/24
+
+# MQCBYPASS identity allow-list.  When set, a valid MQCBYPASS token
+# may only complete a handshake whose verified peer cert_index lands
+# on this list.  Defense-in-depth on top of the master password
+# (/etc/postWolf/config-secret): even with a leaked master password,
+# an attacker still needs the private key of one of the listed
+# identities to use it.  Unset / empty = no restriction (any verified
+# identity may bypass).  Range syntax "lo-hi" is supported.
+# mqc-bypass-allow-idx          72,79,100-110
+mqc-bypass-allow-idx 70-80
+
 # Revocation enforcement policy (issue #7).  Default: mandatory.
 #   mandatory   = both peers query log on cache miss; abort handshake
 #                 on query failure (fail-closed).

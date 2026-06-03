@@ -44,6 +44,7 @@
 
 #include "mqc.h"
 #include "mqc_peer.h"
+#include "mqc_internal.h"   /* MQC_BYPASS_* + mqc_bypass_make (in-tree libmqc) */
 #include "read-config.h"
 
 #define FRAME_OPEN_SHELL  0x01
@@ -884,9 +885,87 @@ static void usage(const char *prog)
         "                           (default: ~/.TPM/default)\n"
         "  --user=NAME              Shortcut: --tpm-path=~/.TPM/NAME\n"
         "  --mtc-server=URL         Override /etc/postWolf/config global/url-server\n"
-        "  --expected-name=NAME     Expected server subject (default: --host)\n",
+        "  --expected-name=NAME     Expected server subject (default: --host)\n"
+        "\n"
+        "Bypass token (skip pre-handshake gates on the server):\n"
+        "  --bypass-src-ip=IP       Public source IP the server will see\n"
+        "                           (look up with: curl -s ifconfig.me)\n"
+        "  --bypass-bits=N          Bypass bitmask (default 0x01 = AbuseIPDB\n"
+        "                           only).  0x02=conn-RL, 0x04=fail-RL,\n"
+        "                           0x08=cert-RL.  Accepts hex (0xNN) or decimal.\n"
+        "  Master password read from ~/.mqc-master-password (0600).\n",
         prog, FALLBACK_PORT);
     exit(1);
+}
+
+/* Build a fresh MQCBYPASS token from ~/.mqc-master-password and stash
+ * it in MQC_BYPASS_TOKEN so mqc_client_send_bypass_prefix can pick it
+ * up at connect time.  Returns 0 on success, -1 on any failure (caller
+ * decides whether to proceed without bypass or abort). */
+static int qsh_setup_bypass_token(const char *src_ip, uint32_t bits)
+{
+    char path[512];
+    struct stat st;
+    FILE *f;
+    char master[1024];
+    char line[MQC_BYPASS_LINE_LEN];
+    char env[MQC_BYPASS_HEX_LEN + 1];
+    const char *home;
+    size_t mlen = 0;
+
+    if (!src_ip || !*src_ip) {
+        fprintf(stderr, "qsh: --bypass-bits requires --bypass-src-ip\n");
+        return -1;
+    }
+
+    home = getenv("HOME");
+    if (!home) { fprintf(stderr, "qsh: $HOME unset\n"); return -1; }
+    snprintf(path, sizeof(path), "%s/.mqc-master-password", home);
+
+    if (stat(path, &st) != 0) {
+        fprintf(stderr, "qsh: %s missing (write your master password "
+                "there, chmod 600)\n", path);
+        return -1;
+    }
+    if ((st.st_mode & (S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH)) != 0) {
+        fprintf(stderr, "qsh: %s mode 0%o — refusing to read "
+                "(chmod 600)\n", path, (unsigned)(st.st_mode & 0777));
+        return -1;
+    }
+
+    f = fopen(path, "r");
+    if (!f) { fprintf(stderr, "qsh: cannot open %s\n", path); return -1; }
+    if (!fgets(master, sizeof(master), f)) {
+        fclose(f);
+        fprintf(stderr, "qsh: %s is empty\n", path);
+        return -1;
+    }
+    fclose(f);
+
+    mlen = strlen(master);
+    while (mlen && (master[mlen-1] == '\n' || master[mlen-1] == '\r' ||
+                    master[mlen-1] == ' '  || master[mlen-1] == '\t'))
+        master[--mlen] = '\0';
+    if (mlen == 0) {
+        fprintf(stderr, "qsh: %s has no password\n", path);
+        return -1;
+    }
+
+    if (mqc_bypass_make(master, (uint64_t)time(NULL), bits, src_ip, line) != 0) {
+        fprintf(stderr, "qsh: bypass token build failed\n");
+        return -1;
+    }
+
+    /* MQC_BYPASS_TOKEN carries the 88 hex chars only; the wire prefix
+     * and trailing newline are added by mqc_client_send_bypass_prefix
+     * inside libmqc. */
+    memcpy(env, line + MQC_BYPASS_PREFIX_LEN, MQC_BYPASS_HEX_LEN);
+    env[MQC_BYPASS_HEX_LEN] = '\0';
+    setenv("MQC_BYPASS_TOKEN", env, 1);
+    fprintf(stderr,
+            "qsh: bypass token generated (bits=0x%02x src=%s)\n",
+            (unsigned)bits, src_ip);
+    return 0;
 }
 
 int main(int argc, char *argv[])
@@ -895,6 +974,8 @@ int main(int argc, char *argv[])
     const char *tpm_path = NULL;
     const char *mtc_server_override = NULL;
     const char *expected_name = NULL;
+    const char *bypass_src_ip = NULL;
+    uint32_t    bypass_bits   = 0;
     char tpm_buf[512];
     int port;
     int i, retries;
@@ -934,10 +1015,34 @@ int main(int argc, char *argv[])
             mtc_server_override = argv[i] + 13;
         else if (strncmp(argv[i], "--expected-name=", 16) == 0)
             expected_name = argv[i] + 16;
+        else if (strncmp(argv[i], "--bypass-src-ip=", 16) == 0)
+            bypass_src_ip = argv[i] + 16;
+        else if (strncmp(argv[i], "--bypass-bits=", 14) == 0) {
+            const char *v = argv[i] + 14;
+            char *endp;
+            unsigned long n = strtoul(v, &endp, 0);  /* 0 → strtoul auto-detect base */
+            if (*v == '\0' || *endp != '\0' || n == 0 || n > MQC_BYPASS_VALID_MASK) {
+                fprintf(stderr, "qsh: invalid --bypass-bits=%s "
+                        "(valid mask: 0x%x)\n", v, MQC_BYPASS_VALID_MASK);
+                exit(1);
+            }
+            bypass_bits = (uint32_t)n;
+        }
         else
             usage(argv[0]);
     }
     if (!host) usage(argv[0]);
+
+    /* If the user gave --bypass-src-ip without --bypass-bits, default
+     * to the most common case: AbuseIPDB-only bypass.  If they passed
+     * --bypass-bits without --bypass-src-ip, the qsh_setup_bypass_token
+     * helper below will fail loudly. */
+    if (bypass_src_ip && bypass_bits == 0)
+        bypass_bits = MQC_BYPASS_ABUSE;
+    if (bypass_bits != 0) {
+        if (qsh_setup_bypass_token(bypass_src_ip, bypass_bits) != 0)
+            exit(1);
+    }
 
     if (!tpm_path) {
         const char *home = getenv("HOME");

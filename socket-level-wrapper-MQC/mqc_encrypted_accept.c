@@ -205,6 +205,14 @@ mqc_conn_t *mqc_accept_encrypted_continue(mqc_ctx_t *ctx, int fd,
         /* Per-IP distinct-cert_index throttle (same as clear). */
         if (mqc_ratelimit_cert_check(client_ip, peer_index) != 0) goto fail;
 
+        /* MQCBYPASS identity gate: see mqc_clear_accept.c for rationale. */
+        if (mqc_current_bypass_mask() != 0 &&
+            !mqc_bypass_allows_idx(peer_index)) {
+            MQC_SECURITY("BYPASS_IDX_REJECTED: %s peer_index=%d "
+                         "not in mqc-bypass-allow-idx", client_ip, peer_index);
+            goto fail;
+        }
+
         ret = mqc_peer_verify(ctx->mtc_server, ctx->ca_pubkey, ctx->ca_pubkey_sz,
                               peer_index, mqc_rt_cfg()->revocation_policy,
                               &peer_pubkey, &peer_pubkey_sz);

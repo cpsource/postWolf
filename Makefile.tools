@@ -156,6 +156,15 @@ install: all
 		$(DESTDIR)/usr/local/bin/sign-dir.sh
 	install -m 755 fips-framework/tools/sh/verify-dir.sh \
 		$(DESTDIR)/usr/local/bin/verify-dir.sh
+	@if cmp -s $(MQC_DIR)/mqc-gen-bypass-token \
+	         $(DESTDIR)/usr/local/bin/mqc-gen-bypass-token 2>/dev/null; then \
+		echo "[install] mqc-gen-bypass-token unchanged"; \
+	else \
+		echo "[install] installing fresh mqc-gen-bypass-token"; \
+		install -d $(DESTDIR)/usr/local/bin; \
+		install -m 755 $(MQC_DIR)/mqc-gen-bypass-token \
+			$(DESTDIR)/usr/local/bin/mqc-gen-bypass-token; \
+	fi
 	@_QSHD_RESTART=0; \
 	install -d $(DESTDIR)/usr/local/bin; \
 	if cmp -s $(QSH_CLIENT_DIR)/qsh \
