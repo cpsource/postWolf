@@ -66,6 +66,25 @@ python3 scripts/fetch_press.py --search "تنگه هرمز" --outlets all
 
 The script writes raw Farsi text and (optionally) machine translations to a timestamped output directory. It does NOT do analysis — that's the user's next step.
 
+### Step 3.5: Check loaded terminology (do not let translation bury the story)
+
+Some Farsi political terms do not survive machine translation — and the distinction the
+translator collapses is often *the actual finding*. The canonical case: a Western source says
+the sides reached a **"deal,"** but Iranian sources say **تفاهم‌نامه** (a non-binding
+*memorandum of understanding*). Google Translate renders both as "agreement," and the gap —
+binding vs non-binding — disappears. Same for rhetorically loaded terms like **فضاسازی**
+("atmosphere-building" = spin / manufactured hype), which the translator flattens into
+something neutral.
+
+**Rule: when a Western claim uses a strong word (deal, agreement, ceasefire, lift sanctions)
+and the Iranian source uses a weaker or differently-loaded Farsi word, that gap is a finding.
+Report it explicitly — do not let it dissolve into a translation.**
+
+The fetch script scans fetched text against `references/loaded_terms_glossary.md` and emits a
+**"Loaded terminology detected"** section plus a **"Terminology gap check"** against the claim
+in the handoff. Read those sections before packaging, and surface any real gap to the user.
+See `references/loaded_terms_glossary.md` for the full term tables and the report format.
+
 ### Step 4: Package the results
 
 After fetching, summarize for the user what was found:
@@ -78,6 +97,7 @@ After fetching, summarize for the user what was found:
 Then output a single `claude-ai-handoff.md` file containing:
 - The original claim being checked
 - The headlines and excerpts from each outlet, with Farsi original AND machine translation
+- The loaded-terminology scan and any terminology gap against the claim (see Step 3.5)
 - A note pointing to the directory with the full articles for deeper analysis
 
 Tell the user explicitly: "Paste this handoff file (or the specific articles you want analyzed) into Claude.ai for the analysis step."
@@ -136,11 +156,21 @@ Always produce a `claude-ai-handoff.md` file in the output directory, structured
 **Article excerpt (machine translation):**
 [...]
 
+**Loaded terminology detected:**
+[Glossary hits for this outlet — e.g. تفاهم‌نامه (non-binding MOU), فضاسازی (spin). Auto-generated.]
+
 ---
 
 ## [Outlet 2 name] — ...
 
 [same structure]
+
+---
+
+## Terminology gap check
+
+[Auto-generated. Where a Western strong word (deal/ceasefire/lift sanctions) maps to a weaker
+or differently-loaded Farsi word, it's flagged here as a finding. See loaded_terms_glossary.md.]
 
 ---
 
@@ -153,5 +183,7 @@ The user takes this file to Claude.ai. That's the handoff.
 
 ## See also
 
+- `README.md` — Design notes and the MOU-vs-"deal" / 36-hour-lead case study
 - `references/iranian_press_landscape.md` — Full outlet directory by faction
+- `references/loaded_terms_glossary.md` — Farsi terms that don't survive machine translation
 - `scripts/fetch_press.py` — The actual fetch implementation

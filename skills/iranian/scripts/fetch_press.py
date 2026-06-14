@@ -75,6 +75,144 @@ OUTLETS = {
     ],
 }
 
+# ---------------------------------------------------------------------------
+# Loaded-terms glossary — keep in sync with references/loaded_terms_glossary.md
+#
+# These Farsi terms do not survive machine translation; the distinction the
+# translator collapses is often the actual finding (e.g. تفاهم‌نامه = non-binding
+# MOU vs توافق = agreement, both rendered "agreement" by Google Translate).
+# Each entry: (farsi_variants, translit, neutral_gloss, what_it_signals)
+# ---------------------------------------------------------------------------
+
+GLOSSARY = [
+    # --- Agreement strength (the most important axis) ---
+    (["تفاهم‌نامه", "تفاهم نامه"], "tafāhom-nāmeh", "memorandum of understanding (MOU)",
+     "Non-binding. Deliberately weaker than a treaty — signals nothing binding was conceded."),
+    (["تفاهم"], "tafāhom", "understanding",
+     "Mutual understanding. Non-binding; no obligations created."),
+    (["توافق‌نامه", "توافق نامه"], "tavāfoq-nāmeh", "agreement document",
+     "Written agreement on terms — stronger than تفاهم."),
+    (["توافق"], "tavāfoq", "agreement / accord",
+     "The sides actually agreed on terms. Stronger than تفاهم (merely 'understood')."),
+    (["قرارداد"], "qarārdād", "contract",
+     "Binding contract with obligations."),
+    (["معاهده"], "moʿāhede", "treaty",
+     "Formal, binding, usually ratified — the strongest commitment word."),
+    # --- Cessation of hostilities ---
+    (["آتش‌بس", "آتش بس"], "ātash-bas", "ceasefire",
+     "A ceasefire proper (mutual, negotiated)."),
+    (["ترک مخاصمه"], "tark-e mokhāseme", "cessation of hostilities",
+     "Legalistic cessation; broader than آتش‌بس."),
+    (["توقف"], "tavaqof", "halt / stoppage",
+     "A halt — can be unilateral, temporary, conditional. Weaker than a ceasefire."),
+    (["وقفه"], "vaqfe", "pause / interlude",
+     "A pause; implies hostilities may resume."),
+    # --- Sanctions ---
+    (["لغو تحریم"], "laghv-e tahrim", "lifting of sanctions",
+     "PERMANENT removal — the maximal Iranian demand."),
+    (["تعلیق تحریم"], "taʿliq-e tahrim", "suspension of sanctions",
+     "TEMPORARY, reversible suspension — a much smaller concession than لغو."),
+    (["رفع تحریم"], "rafʿ-e tahrim", "removal of sanctions",
+     "Removal of sanctions' effect."),
+    # --- Nuclear ---
+    (["حق مسلم"], "haqq-e mosallam", "inalienable right",
+     "'Our inalienable right [to enrich]' — non-negotiable framing."),
+    (["تعلیق غنی‌سازی", "تعلیق غنی سازی"], "taʿliq-e ghani-sāzi", "suspension of enrichment",
+     "A major concession term — significant if an Iranian source uses it approvingly."),
+    (["غنی‌سازی", "غنی سازی"], "ghani-sāzi", "enrichment",
+     "Uranium enrichment."),
+    # --- Rhetorically loaded / pejorative register ---
+    (["فضاسازی", "فضا سازی"], "fazā-sāzi", "'atmosphere-building'",
+     "SPIN / manufactured hype. Pejorative — a tell that the outlet is dismissing a claim as propaganda."),
+    (["جنگ روانی"], "jang-e ravāni", "psychological war",
+     "Frames the other side's messaging as an attack. Dismissive."),
+    (["بزرگ‌نمایی", "بزرگ نمایی"], "bozorg-namāyi", "'magnification'",
+     "Exaggeration / blowing out of proportion. Dismissive."),
+    (["تجاوز"], "tajāvoz", "aggression / assault",
+     "Casts the other side as the aggressor (vs neutral حمله 'attack'). Editorial."),
+    (["استکبار"], "estekbār", "'arrogance'",
+     "'Global arrogance' = the US-led West. Ideological in-group framing."),
+    (["شیطان بزرگ"], "sheytān-e bozorg", "'Great Satan'",
+     "= the US. Maximal-hostility register."),
+    (["مقاومت"], "moqāvemat", "'the Resistance'",
+     "The Axis of Resistance. Approving in-group framing."),
+    (["پاسخ کوبنده"], "pāsokh-e koubande", "'crushing response'",
+     "Threat-rhetoric register."),
+    (["نفوذ"], "nofuz", "'infiltration'",
+     "Used to smear negotiators/reformists as foreign agents — a hardline attack term."),
+    (["بصیرت"], "basirat", "'insight / discernment'",
+     "Loyalty-signalling buzzword."),
+    (["خط قرمز"], "khatt-e qermez", "red line",
+     "Non-negotiable limit."),
+    # --- Negotiation framing ---
+    (["مذاکره غیرمستقیم", "مذاکره غیر مستقیم"], "mozākere-ye gheyr-e mostaqim", "indirect negotiation",
+     "Indirect talks (via mediator) — Iran often insists on this framing to avoid the optics of direct US talks. Politically load-bearing."),
+    (["مذاکره مستقیم"], "mozākere-ye mostaqim", "direct negotiation",
+     "Direct talks — often refused by Iran for domestic reasons."),
+]
+
+# English trigger words in a Western claim, mapped to the Farsi commitment spectrum the
+# analyst should verify. Used by the "Terminology gap check" section.
+CLAIM_TRIGGERS = [
+    (["deal", "agreement", "accord", "pact"],
+     "Western 'deal/agreement' — check whether the Iranian source uses توافق/قرارداد (a real "
+     "agreement) or only تفاهم/تفاهم‌نامه (a non-binding understanding/MOU). That gap is a finding."),
+    (["ceasefire", "truce", "armistice"],
+     "Western 'ceasefire' — check whether the Iranian source uses آتش‌بس (true ceasefire) or only "
+     "توقف/وقفه (a halt/pause). A weaker word signals they decline to call it a mutual ceasefire."),
+    (["lift sanctions", "lifting sanctions", "sanctions relief", "remove sanctions", "ease sanctions"],
+     "Western 'lift/relief sanctions' — check whether the Iranian source uses لغو (PERMANENT removal) "
+     "or تعلیق (TEMPORARY suspension). These are very different concessions."),
+    (["surrender", "capitulate", "capitulation", "concede", "concession"],
+     "Western 'surrender/concede' — Iranian sources rarely use such terms; check what word they "
+     "actually use and whether the framing is being inverted for the domestic audience."),
+    (["halt enrichment", "stop enrichment", "suspend enrichment", "end enrichment"],
+     "Western 'halt enrichment' — check for تعلیق غنی‌سازی (a major concession) vs reaffirmation of "
+     "حق مسلم ('inalienable right'), which signals refusal."),
+]
+
+
+def scan_loaded_terms(text: str) -> list[dict]:
+    """Scan Farsi text for glossary terms. Returns matched entries with counts, most-specific
+    first (longer terms checked before their substrings so تفاهم‌نامه wins over تفاهم)."""
+    if not text:
+        return []
+    hits = {}
+    for variants, translit, gloss, signal in GLOSSARY:
+        count = sum(text.count(v) for v in variants)
+        if count:
+            key = translit
+            if key not in hits:
+                hits[key] = {
+                    "fa": variants[0],
+                    "translit": translit,
+                    "gloss": gloss,
+                    "signal": signal,
+                    "count": count,
+                }
+    # Suppress a shorter term's count that is wholly contained in a longer matched term,
+    # to avoid double-reporting تفاهم inside every تفاهم‌نامه.
+    matched_fa = {h["fa"] for h in hits.values()}
+    for h in list(hits.values()):
+        for other in matched_fa:
+            if other != h["fa"] and h["fa"] in other:
+                # shorter term subsumed by a longer matched term; keep but note overlap
+                h["subsumed_by"] = other
+    return sorted(hits.values(), key=lambda h: -h["count"])
+
+
+def claim_gap_checks(claim: str) -> list[str]:
+    """Return terminology-gap prompts triggered by English words in the Western claim."""
+    if not claim:
+        return []
+    low = claim.lower()
+    out = []
+    for triggers, note in CLAIM_TRIGGERS:
+        if any(t in low for t in triggers):
+            out.append(note)
+    return out
+
+
 DEFAULT_SPREAD = [
     ("IRNA", "https://www.irna.ir", "https://www.irna.ir/rss"),
     ("Shargh", "https://www.sharghdaily.com", None),
@@ -301,6 +439,10 @@ def main():
                 continue
             article_text = extract_article_text(body)
             translated = translate(article_text) if not args.no_translate else ""
+            loaded = scan_loaded_terms(article_text)
+            if loaded:
+                print(f"    [terms] {len(loaded)} loaded term(s): "
+                      f"{', '.join(h['translit'] for h in loaded[:5])}")
             results.append({
                 "outlet": urllib.parse.urlparse(url).netloc,
                 "faction": "unknown",
@@ -310,6 +452,7 @@ def main():
                 "headline_en": "",
                 "article_fa": article_text,
                 "article_en": translated,
+                "loaded_terms": loaded,
             })
             # Save raw HTML
             (outdir / f"{sanitize(urllib.parse.urlparse(url).netloc)}.html").write_text(body, encoding="utf-8")
@@ -355,6 +498,12 @@ def main():
                     "headline_en": en,
                     "url": h["url"],
                 })
+            # Scan all headline text (homepage crawl has no article body) for loaded terms.
+            loaded = scan_loaded_terms(" ".join(h["headline"] for h in headlines))
+            if loaded:
+                print(f"    [terms] {len(loaded)} loaded term(s): "
+                      f"{', '.join(h['translit'] for h in loaded[:5])}")
+            outlet_result["loaded_terms"] = loaded
             results.append(outlet_result)
             time.sleep(SLEEP_BETWEEN)
 
@@ -427,12 +576,59 @@ def write_handoff(path: Path, claim: str, results: list[dict], timestamp: str) -
                 lines.append("")
                 lines.append(r["article_en"])
                 lines.append("")
+
+        loaded = r.get("loaded_terms") or []
+        if loaded:
+            lines.append("**Loaded terminology detected** (don't trust the machine translation on these):")
+            lines.append("")
+            for h in loaded:
+                note = f" — _also matched inside {h['subsumed_by']}_" if h.get("subsumed_by") else ""
+                lines.append(
+                    f"- **{h['fa']}** ({h['translit']}, ×{h['count']}) — "
+                    f"\"{h['gloss']}\". {h['signal']}{note}"
+                )
+            lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    # Terminology gap check — surface as a finding, not buried in translation.
+    gap_notes = claim_gap_checks(claim)
+    all_terms = {}
+    for r in reached:
+        for h in (r.get("loaded_terms") or []):
+            if h.get("subsumed_by"):
+                continue
+            entry = all_terms.setdefault(h["translit"], {"fa": h["fa"], "gloss": h["gloss"],
+                                                          "signal": h["signal"], "outlets": set()})
+            entry["outlets"].add(r["outlet"])
+    if gap_notes or all_terms:
+        lines.append("## Terminology gap check")
+        lines.append("")
+        lines.append("Machine translation collapses Farsi distinctions that are often the actual "
+                     "story (e.g. تفاهم‌نامه = non-binding MOU vs توافق = agreement). Treat any "
+                     "gap below as a **finding**, not a translation artifact.")
+        lines.append("")
+        if gap_notes:
+            lines.append("**Triggered by the Western claim — verify against the Farsi above:**")
+            lines.append("")
+            for n in gap_notes:
+                lines.append(f"- {n}")
+            lines.append("")
+        if all_terms:
+            lines.append("**Loaded terms found across outlets:**")
+            lines.append("")
+            for translit, e in sorted(all_terms.items(), key=lambda kv: -len(kv[1]["outlets"])):
+                outlets = ", ".join(sorted(e["outlets"]))
+                lines.append(f"- **{e['fa']}** ({translit}) — \"{e['gloss']}\". {e['signal']} "
+                             f"_[{outlets}]_")
+            lines.append("")
         lines.append("---")
         lines.append("")
 
     lines.append("## Notes for Claude.ai analysis")
     lines.append("")
     lines.append("- Machine translation above is rough. For dense political/religious essays, send the Farsi original to Claude.ai for a careful read.")
+    lines.append("- **Terminology:** if a Western 'deal/ceasefire/lift sanctions' maps to a weaker Farsi word (تفاهم‌نامه / توقف / تعلیق), say so explicitly — that gap is a finding. See the Terminology gap check above and `references/loaded_terms_glossary.md`.")
     lines.append("- Compare factional spread: does establishment, reformist, IRGC, hardline all agree, or do they diverge?")
     lines.append("- Note what's *missing*: a story prominent in Western press that's silent in Iranian press (or vice versa) is itself informative.")
     lines.append("- Check whether any outlets failed to respond — Iranian sites are sometimes intermittent.")
