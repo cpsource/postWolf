@@ -234,28 +234,63 @@ HEADERS = {
 TIMEOUT = 20  # seconds
 SLEEP_BETWEEN = 1.5  # be polite
 
+# Hard cap on how much of any single page we pull into memory. This box has very
+# little RAM, and an unbounded download (a bloated homepage, an inline data blob,
+# or a misbehaving response) plus the decode + several full-size regex copies in
+# extract_*() is enough to trigger the OOM killer. Streaming to this cap bounds the
+# peak. 5 MB is far more HTML than any real article/homepage needs — the excess is
+# scripts and tracking junk we strip anyway. Tunable via --max-html-mb.
+MAX_HTML_BYTES = 5 * 1024 * 1024
+
 
 # ---------------------------------------------------------------------------
 # Fetching
 # ---------------------------------------------------------------------------
 
 def fetch(url: str) -> tuple[bool, str, str]:
-    """Fetch a URL. Returns (success, text_or_error, final_url)."""
+    """Fetch a URL, capping how much is read into memory. Returns (success, text_or_error, final_url)."""
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT, allow_redirects=True)
+        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT,
+                            allow_redirects=True, stream=True)
     except requests.exceptions.RequestException as e:
         return False, f"Request failed: {e}", url
 
-    if resp.status_code != 200:
-        return False, f"HTTP {resp.status_code}", resp.url
+    with resp:  # ensure the connection is released even if we stop reading early
+        if resp.status_code != 200:
+            return False, f"HTTP {resp.status_code}", resp.url
 
-    # Encoding detection — Iranian sites are mostly UTF-8 but not all.
-    if chardet is not None and (not resp.encoding or resp.encoding.lower() == "iso-8859-1"):
-        detected = chardet.detect(resp.content)
-        if detected and detected.get("encoding"):
-            resp.encoding = detected["encoding"]
+        # Read at most MAX_HTML_BYTES so a giant or runaway response can't exhaust RAM.
+        chunks = []
+        total = 0
+        truncated = False
+        try:
+            for chunk in resp.iter_content(chunk_size=65536):
+                if not chunk:
+                    continue
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= MAX_HTML_BYTES:
+                    truncated = True
+                    break
+        except requests.exceptions.RequestException as e:
+            return False, f"Request failed mid-stream: {e}", resp.url
+        raw = b"".join(chunks)
 
-    return True, resp.text, resp.url
+        if truncated:
+            print(f"    [warn] page exceeded {MAX_HTML_BYTES // (1024 * 1024)} MB cap; "
+                  f"truncated to first {len(raw)} bytes", file=sys.stderr)
+
+        # Encoding detection — Iranian sites are mostly UTF-8 but not all. Detect over
+        # the (already capped) bytes so this stays bounded too.
+        encoding = resp.encoding
+        if chardet is not None and (not encoding or encoding.lower() == "iso-8859-1"):
+            detected = chardet.detect(raw)
+            if detected and detected.get("encoding"):
+                encoding = detected["encoding"]
+        if not encoding:
+            encoding = "utf-8"
+
+        return True, raw.decode(encoding, errors="replace"), resp.url
 
 
 def extract_headlines_and_excerpts(html: str, base_url: str, max_items: int = 8) -> list[dict]:
@@ -406,7 +441,14 @@ def main():
     parser.add_argument("--output-dir", help="Where to write outputs", default=None)
     parser.add_argument("--no-translate", action="store_true", help="Skip machine translation")
     parser.add_argument("--max-per-outlet", type=int, default=6, help="Max headlines per outlet")
+    parser.add_argument("--max-html-mb", type=float, default=None,
+                        help="Per-page download cap in MB (memory guard; default 5). "
+                             "Lower it on very small machines.")
     args = parser.parse_args()
+
+    if args.max_html_mb is not None:
+        global MAX_HTML_BYTES
+        MAX_HTML_BYTES = int(args.max_html_mb * 1024 * 1024)
 
     timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     if args.output_dir:
