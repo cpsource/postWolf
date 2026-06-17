@@ -178,6 +178,7 @@ Always produce a `claude-ai-handoff.md` file in the output directory, structured
 
 **Claim being checked:** [the original claim]
 **Date:** [timestamp]
+**Run timing:** [fetch time in the user's zone + Tehran equivalent, e.g. "2026-06-17 11:20 EDT ≈ 18:50 Tehran (Wed)"; note where it falls in the Tehran cycle — work-day/evening/weekend, before/after the night print deadline. See "Timing your run".]
 **Outlets queried:** [list]
 **Outlets reached:** [list of successful fetches]
 **Outlets that failed:** [list]
