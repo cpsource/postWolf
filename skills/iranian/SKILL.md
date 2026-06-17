@@ -108,6 +108,44 @@ This is the key architectural choice. Claude Code is good at the fetch-and-store
 
 Exception: if the user explicitly insists on analyzing in Claude Code, do it, but note that the conversational rhythm will be less fluid.
 
+## Timing your run (time zones + publication cutoffs)
+
+*Applicable as of 2026-06-17. The facts below can drift — re-verify if Iran reinstates DST (it
+dropped it in 2022), if the user relocates from US Eastern, or if the Iranian working week
+changes. Convert any clock advice to the user's actual time zone before giving it.*
+
+The high-signal content (front-page framing, named editorials like Shariatmadari's Kayhan
+notes, reformist op-eds) is set by the **morning-paper print cycle**, not posted continuously —
+so *when* you fetch materially changes what you catch.
+
+**Time-zone facts:**
+- Iran (IRST) = **UTC+3:30, no DST** (fixed offset year-round).
+- US Eastern: **EDT = UTC−4** (summer) → Iran is **7.5 h ahead**; **EST = UTC−5** (winter) →
+  Iran is **8.5 h ahead**. Iran does not shift with US DST, so the ideal Eastern clock time
+  moves by an hour at each US changeover.
+
+**Iranian publication rhythm:**
+- Dailies are **morning papers**. Editorial/front-page content locks at the **night print
+  deadline (~11 PM–1 AM Tehran)** and is fully online by **early morning Tehran (~6–7 AM)**.
+- Wires (Fars, Tasnim, IRNA) run all day, peaking through the Tehran work day (~8 AM–8 PM);
+  official statements cluster in the afternoon.
+- **Weekend is Thursday–Friday.** Friday is the true holiday (thin news, and **most dailies
+  print no Friday edition** — so there's no Thursday-night print cycle). Thursday is a de facto
+  half/closed day (offices shut, official wire output drops). **Work week is Saturday–Wednesday;
+  Wednesday is the last full work day.**
+
+**Recommended run window (default — most complete daily snapshot):**
+- **~11:00 AM–12:00 PM EDT** (≈ 6:30–7:30 PM Tehran) → that morning's print editions + a full
+  work-day of wire/official copy + afternoon reactions, before the night deadline starts a new
+  cycle. In winter, shift to **~10:00 AM EST** for the same Tehran moment.
+- **Days: Saturday–Wednesday Eastern.** **Avoid Thursday and (especially) Friday** — those map
+  to the Iranian weekend: stale content, quiet officials, no fresh paper.
+
+**Variant — chasing the freshest editorial framing** (next morning's front pages/op-eds hot off
+the deadline): run **~4:00–6:00 PM EDT** (≈ midnight Tehran). Trade-off: you gain tomorrow's
+framing but lose that day's late-afternoon wire reactions. For fast-moving wire stories
+(contested-interpretation fights playing out hour to hour), prefer the default 11 AM window.
+
 ## Practical fetch notes
 
 Iranian sites can be tricky to fetch. The script handles common cases but be aware:
