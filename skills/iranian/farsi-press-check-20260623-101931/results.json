@@ -1,0 +1,374 @@
+[
+  {
+    "outlet": "Iran Newspaper",
+    "faction": "establishment",
+    "url": "https://irannewspaper.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "تمام شماره ها",
+        "headline_en": "All numbers",
+        "url": "https://irannewspaper.ir/archive/main"
+      },
+      {
+        "headline_fa": "تمام ویژه نامه ها",
+        "headline_en": "All special letters",
+        "url": "https://irannewspaper.ir/archive/specials"
+      },
+      {
+        "headline_fa": "سازمان آگهی‌ها",
+        "headline_en": "Ads organization",
+        "url": "https://irannewspaper.ir/ads"
+      },
+      {
+        "headline_fa": "دستیار هوش مصنوعی",
+        "headline_en": "Artificial intelligence assistant",
+        "url": "https://chat.irannewspaper.ir"
+      },
+      {
+        "headline_fa": "عاشورای پیروز و بلاهت و بطالت نتانیاهو",
+        "headline_en": "The victorious Ashura and Netanyahu's stupidity and vanity",
+        "url": "https://irannewspaper.ir/9056/1/157213"
+      },
+      {
+        "headline_fa": "چرا ایرانیان در کربلا نبودند؟",
+        "headline_en": "Why were Iranians not in Karbala?",
+        "url": "https://irannewspaper.ir/9056/1/157214"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "IRNA",
+    "faction": "establishment",
+    "url": "https://www.irna.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "Transferring to the website...",
+        "headline_en": "Transferring to the website...",
+        "url": ""
+      },
+      {
+        "headline_fa": "در ﺣﺎل اﻧﺘﻘﺎل ﺑﻪ ﺳﺎﯾﺖ ﻣﻮرد ﻧﻈﺮ ﻫﺴﺘﯿﺪ...",
+        "headline_en": "You are moving to the site in question...",
+        "url": ""
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "IRNA English",
+    "faction": "establishment",
+    "url": "https://en.irna.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "Transferring to the website...",
+        "headline_en": "Transferring to the website...",
+        "url": ""
+      },
+      {
+        "headline_fa": "در ﺣﺎل اﻧﺘﻘﺎل ﺑﻪ ﺳﺎﯾﺖ ﻣﻮرد ﻧﻈﺮ ﻫﺴﺘﯿﺪ...",
+        "headline_en": "You are moving to the site in question...",
+        "url": ""
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Shargh",
+    "faction": "reformist",
+    "url": "https://www.sharghdaily.com/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "ادعای نتانیاهو : عملیات علیه ایران تمام نشده است",
+        "headline_en": "Netanyahu's claim: The operation against Iran is not over",
+        "url": "https://www.sharghdaily.com/بخش-%D8%AC%D9%87%D8%A7%D9%86-219/1111673-%D8%A7%D8%AF%D8%B9%D8%A7%DB%8C-%D9%86%D8%AA%D8%A7%D9%86%DB%8C%D8%A7%D9%87%D9%88-%D8%B9%D9%85%D9%84%DB%8C%D8%A7%D8%AA-%D8%B9%D9%84%DB%8C%D9%87-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%AA%D9%85%D8%A7%D9%85-%D9%86%D8%B4%D8%AF%D9%87-%D8%A7%D8%B3%D8%AA"
+      },
+      {
+        "headline_fa": "امروز سه شنبه ۲ تیر بورس صعودی شد",
+        "headline_en": "Today, Tuesday, July 2, the stock market went up",
+        "url": "https://www.sharghdaily.com/بخش-%D8%A7%D9%82%D8%AA%D8%B5%D8%A7%D8%AF%DB%8C-12/1111672-%D8%A7%D9%85%D8%B1%D9%88%D8%B2-%D8%B3%D9%87-%D8%B4%D9%86%D8%A8%D9%87-%D8%AA%DB%8C%D8%B1-%D8%A8%D9%88%D8%B1%D8%B3-%D8%B5%D8%B9%D9%88%D8%AF%DB%8C-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "قیمت دلار و یورو امروز سه‌شنبه ۲ تیر ۱۴۰۵ / دلار در بازار آزاد چند شد؟ + جدول",
+        "headline_en": "What was the price of dollar and euro today, Tuesday, July 2, 1405 / dollar in the open market? + table",
+        "url": "https://www.sharghdaily.com/بخش-%D8%A7%D9%82%D8%AA%D8%B5%D8%A7%D8%AF%DB%8C-12/1111624-%D9%82%DB%8C%D9%85%D8%AA-%D8%AF%D9%84%D8%A7%D8%B1-%DB%8C%D9%88%D8%B1%D9%88-%D8%A7%D9%85%D8%B1%D9%88%D8%B2-%D8%B3%D9%87-%D8%B4%D9%86%D8%A8%D9%87-%D8%AA%DB%8C%D8%B1-%D8%AF%D9%84%D8%A7%D8%B1-%D8%AF%D8%B1-%D8%A8%D8%A7%D8%B2%D8%A7%D8%B1-%D8%A2%D8%B2%D8%A7%D8%AF-%DA%86%D9%86%D8%AF-%D8%B4%D8%AF-%D8%AC%D8%AF%D9%88%D9%84"
+      },
+      {
+        "headline_fa": "حکم اعدام آقاجری نقض شد",
+        "headline_en": "Aghajari's death sentence was overturned",
+        "url": "https://www.sharghdaily.com/بخش-%D8%B3%DB%8C%D8%A7%D8%B3%D8%AA-6/1111617-%D8%AD%DA%A9%D9%85-%D8%A7%D8%B9%D8%AF%D8%A7%D9%85-%D8%A2%D9%82%D8%A7%D8%AC%D8%B1%DB%8C-%D9%86%D9%82%D8%B6-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "خداحافظ استارمر",
+        "headline_en": "Goodbye Starmer",
+        "url": "https://www.sharghdaily.com/بخش-%D8%B1%D9%88%D8%B2%D9%86%D8%A7%D9%85%D9%87-100/1111584-%D8%AE%D8%AF%D8%A7%D8%AD%D8%A7%D9%81%D8%B8-%D8%A7%D8%B3%D8%AA%D8%A7%D8%B1%D9%85%D8%B1"
+      },
+      {
+        "headline_fa": "بازگشت اینترنت هنوز کامل نشده",
+        "headline_en": "The return of the Internet is not yet complete",
+        "url": "https://www.sharghdaily.com/بخش-%D8%B1%D9%88%D8%B2%D9%86%D8%A7%D9%85%D9%87-100/1111569-%D8%A8%D8%A7%D8%B2%DA%AF%D8%B4%D8%AA-%D8%A7%DB%8C%D9%86%D8%AA%D8%B1%D9%86%D8%AA-%D9%87%D9%86%D9%88%D8%B2-%DA%A9%D8%A7%D9%85%D9%84-%D9%86%D8%B4%D8%AF%D9%87"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Etemad",
+    "faction": "reformist",
+    "url": "https://www.etemadnewspaper.ir",
+    "status": "failed",
+    "error": "Request failed: HTTPSConnectionPool(host='www.etemadnewspaper.ir', port=443): Max retries exceeded with url: / (Caused by ConnectTimeoutError(<HTTPSConnection(host='www.etemadnewspaper.ir', port=443) at 0x7a794679f860>, 'Connection to www.etemadnewspaper.ir timed out. (connect timeout=60)'))"
+  },
+  {
+    "outlet": "Jamaran",
+    "faction": "reformist",
+    "url": "https://www.jamaran.news/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "سخنگوی وزارت خارجه در پاسخ به جماران: در مورد صندوق ۳۰۰ میلیارد دلاری برای بازسازی ایران گفت‌وگوها انجام شد",
+        "headline_en": "Spokesperson of the Ministry of Foreign Affairs in response to Jamaran: Discussions were held regarding the 300 billion dollar fund for the reconstruction of Iran",
+        "url": "https://www.jamaran.news/بخش-%D8%AF%DB%8C%D9%BE%D9%84%D9%85%D8%A7%D8%B3%DB%8C-457/1714768-%D8%B3%D8%AE%D9%86%DA%AF%D9%88%DB%8C-%D9%88%D8%B2%D8%A7%D8%B1%D8%AA-%D8%AE%D8%A7%D8%B1%D8%AC%D9%87-%D8%AF%D8%B1-%D9%BE%D8%A7%D8%B3%D8%AE-%D8%A8%D9%87-%D8%AC%D9%85%D8%A7%D8%B1%D8%A7%D9%86-%D8%AF%D8%B1-%D9%85%D9%88%D8%B1%D8%AF-%D8%B5%D9%86%D8%AF%D9%88%D9%82-%D9%85%DB%8C%D9%84%DB%8C%D8%A7%D8%B1%D8%AF-%D8%AF%D9%84%D8%A7%D8%B1%DB%8C-%D8%A8%D8%B1%D8%A7%DB%8C-%D8%A8%D8%A7%D8%B2%D8%B3%D8%A7%D8%B2%DB%8C-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%DA%AF%D9%81%D8%AA-%D9%88%DA%AF%D9%88%D9%87%D8%A7-%D8%A7%D9%86%D8%AC%D8%A7%D9%85-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "حاشیه مراسم تجدید میثاق مسئولان عالی قضایی با آرمان های حضرت امام خمینی (س)",
+        "headline_en": "On the sidelines of the ceremony of renewing the covenant of high judicial officials with the ideals of Imam Khomeini (PBUH).",
+        "url": "https://www.jamaran.news/بخش-%DA%86%D9%86%D8%AF-%D8%B1%D8%B3%D8%A7%D9%86%D9%87-%D8%A7%DB%8C-16/1714771-%D8%AD%D8%A7%D8%B4%DB%8C%D9%87-%D9%85%D8%B1%D8%A7%D8%B3%D9%85-%D8%AA%D8%AC%D8%AF%DB%8C%D8%AF-%D9%85%DB%8C%D8%AB%D8%A7%D9%82-%D9%85%D8%B3%D8%A6%D9%88%D9%84%D8%A7%D9%86-%D8%B9%D8%A7%D9%84%DB%8C-%D9%82%D8%B6%D8%A7%DB%8C%DB%8C-%D8%A8%D8%A7-%D8%A2%D8%B1%D9%85%D8%A7%D9%86-%D9%87%D8%A7%DB%8C-%D8%AD%D8%B6%D8%B1%D8%AA-%D8%A7%D9%85%D8%A7%D9%85-%D8%AE%D9%85%DB%8C%D9%86%DB%8C"
+      },
+      {
+        "headline_fa": "آیت‌الله سید حسن خمینی: بزرگترین سرمایه امام به تعبیر رهبر بزرگوار شهیدمان، «خوش‌بینی به…",
+        "headline_en": "Ayatollah Seyyed Hassan Khomeini: Imam's greatest asset, according to the honorable leader of our martyrs, is \"optimism towards...",
+        "url": "https://www.jamaran.news/بخش-%D8%B3%DB%8C%D8%A7%D8%B3%D8%AA-12/1714727-%D8%A2%DB%8C%D8%AA-%D8%A7%D9%84%D9%84%D9%87-%D8%B3%DB%8C%D8%AF-%D8%AD%D8%B3%D9%86-%D8%AE%D9%85%DB%8C%D9%86%DB%8C-%D8%A8%D8%B2%D8%B1%DA%AF%D8%AA%D8%B1%DB%8C%D9%86-%D8%B3%D8%B1%D9%85%D8%A7%DB%8C%D9%87-%D8%A7%D9%85%D8%A7%D9%85-%D8%A8%D9%87-%D8%AA%D8%B9%D8%A8%DB%8C%D8%B1-%D8%B1%D9%87%D8%A8%D8%B1-%D8%A8%D8%B2%D8%B1%DA%AF%D9%88%D8%A7%D8%B1-%D8%B4%D9%87%DB%8C%D8%AF%D9%85%D8%A7%D9%86-%D8%AE%D9%88%D8%B4-%D8%A8%DB%8C%D9%86%DB%8C-%D8%A8%D9%87-%D8%AE%D8%AF%D8%A7-%D8%A8%D9%88%D8%AF-%D8%B1%D9%88%D8%B2%D9%87%D8%A7%DB%8C-%D9%86%D9%87%D9%85-%D8%AF%D9%87%D9%85-%D8%A7%D8%B3%D9%81%D9%86%D8%AF-%D8%AF%D8%B1%D9%87%D8%A7%DB%8C-%D9%85%D8%B5%DB%8C%D8%A8%D8%AA-%D8%A7%D8%B2-%D9%87%D9%85%D9%87-%D8%AC%D9%87%D8%AA-%DA%AF%D8%B4%D9%88%D8%AF%D9%87-%D8%B4%D8%AF-%D8%A7%D9%85%D8%A7-%D8%AE%D9%88%D8%B4-%D8%A8%DB%8C%D9%86%DB%8C-%D8%A8%D9%87-%D8%AE%D8%AF%D8%A7-%D8%AF%D8%B1-%D8%AF%D9%84-%D9%87%D8%A7%DB%8C-%D9%85%D8%B1%D8%AF%D9%85-%D8%B1%DB%8C%D8%B4%D9%87-%D8%A7%DB%8C%D9%86-%D8%AB%D9%85%D8%B1%D9%87-%D8%A8%D8%B2%D8%B1%DA%AF-%D8%B1%D8%A7-%D8%BA%D8%B1%D8%B3-%DA%A9%D8%B1%D8%AF"
+      },
+      {
+        "headline_fa": "محسنی اژه‌ای: امام خمینی(س) از برجسته‌ترین درس‌آموختگان مکتب امام حسین(ع) بودند",
+        "headline_en": "Mohseni Ajaei: Imam Khomeini (pbuh) was one of the most prominent students of the school of Imam Hussein (pbuh).",
+        "url": "https://www.jamaran.news/بخش-%D8%B3%DB%8C%D8%A7%D8%B3%D8%AA-12/1714770-%D9%85%D8%AD%D8%B3%D9%86%DB%8C-%D8%A7%DA%98%D9%87-%D8%A7%DB%8C-%D8%A7%D9%85%D8%A7%D9%85-%D8%AE%D9%85%DB%8C%D9%86%DB%8C-%D8%A7%D8%B2-%D8%A8%D8%B1%D8%AC%D8%B3%D8%AA%D9%87-%D8%AA%D8%B1%DB%8C%D9%86-%D8%AF%D8%B1%D8%B3-%D8%A2%D9%85%D9%88%D8%AE%D8%AA%DA%AF%D8%A7%D9%86-%D9%85%DA%A9%D8%AA%D8%A8-%D8%A7%D9%85%D8%A7%D9%85-%D8%AD%D8%B3%DB%8C%D9%86-%D8%A8%D9%88%D8%AF%D9%86%D8%AF"
+      },
+      {
+        "headline_fa": "نکته‌ای درباره تشییع پیکر رهبر شهید",
+        "headline_en": "A note about the burial of the body of the martyred leader",
+        "url": "https://www.jamaran.news/بخش-%D8%B3%DB%8C%D8%A7%D8%B3%D8%AA-12/1714762-%D9%86%DA%A9%D8%AA%D9%87-%D8%A7%DB%8C-%D8%AF%D8%B1%D8%A8%D8%A7%D8%B1%D9%87-%D8%AA%D8%B4%DB%8C%DB%8C%D8%B9-%D9%BE%DB%8C%DA%A9%D8%B1-%D8%B1%D9%87%D8%A8%D8%B1-%D8%B4%D9%87%DB%8C%D8%AF"
+      },
+      {
+        "headline_fa": "اگر «پادشاه شمال» بازگردد، آیا همه چیز را در انگلیس تغییر می دهد؟",
+        "headline_en": "If the \"King in the North\" returns, will it change everything in England?",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%DB%8C%D9%86-%D8%A7%D9%84%D9%85%D9%84%D9%84-15/1714772-%D8%A7%DA%AF%D8%B1-%D9%BE%D8%A7%D8%AF%D8%B4%D8%A7%D9%87-%D8%B4%D9%85%D8%A7%D9%84-%D8%A8%D8%A7%D8%B2%DA%AF%D8%B1%D8%AF%D8%AF-%D8%A2%DB%8C%D8%A7-%D9%87%D9%85%D9%87-%DA%86%DB%8C%D8%B2-%D8%B1%D8%A7-%D8%AF%D8%B1-%D8%A7%D9%86%DA%AF%D9%84%DB%8C%D8%B3-%D8%AA%D8%BA%DB%8C%DB%8C%D8%B1-%D9%85%DB%8C-%D8%AF%D9%87%D8%AF"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Tasnim",
+    "faction": "irgc",
+    "url": "https://www.tasnimnews.com",
+    "status": "failed",
+    "error": "Request failed: HTTPSConnectionPool(host='www.tasnimnews.com', port=443): Max retries exceeded with url: / (Caused by NameResolutionError(\"HTTPSConnection(host='www.tasnimnews.com', port=443): Failed to resolve 'www.tasnimnews.com' ([Errno -2] Name or service not known)\"))"
+  },
+  {
+    "outlet": "Fars News",
+    "faction": "irgc",
+    "url": "https://farsnews.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "عضوی از فارس هستید؟",
+        "headline_en": "Are you a member of Fars?",
+        "url": ""
+      },
+      {
+        "headline_fa": "دیگر رسانه ها",
+        "headline_en": "Other media",
+        "url": ""
+      },
+      {
+        "headline_fa": "بقائی: برنامه‌ای برای بازرسی آژانس از تأسیسات آسیب‌دیده نداریم",
+        "headline_en": "Beqaei: We do not have a plan for the agency to inspect the damaged facilities",
+        "url": ""
+      },
+      {
+        "headline_fa": "جام جهانی ۲۰۲۶",
+        "headline_en": "World Cup 2026",
+        "url": ""
+      },
+      {
+        "headline_fa": "قدرت «نه گفتن» در فضای مجازی",
+        "headline_en": "The power of \"saying no\" in cyberspace",
+        "url": ""
+      },
+      {
+        "headline_fa": "وقتی همسرتان در کنار شماست، اما در دایرکت‌ها پرسه می‌زند!",
+        "headline_en": "When your wife is with you, but she wanders in the directs!",
+        "url": ""
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Javan",
+    "faction": "irgc",
+    "url": "https://www.javanonline.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "اموال مسدودشده ایران برای استفاده آزادانه در دسترس است",
+        "headline_en": "Iran's blocked properties are freely available for use",
+        "url": "https://www.javanonline.ir/fa/news/1365202/اموال-مسدودشده-ایران-برای-استفاده-آزادانه-در-دسترس-است"
+      },
+      {
+        "headline_fa": "اثربخشی مذاکرات به میزان پایبندی به تعهدات بستگی دارد",
+        "headline_en": "The effectiveness of negotiations depends on the degree of adherence to commitments",
+        "url": "https://www.javanonline.ir/fa/news/1365152/اثربخشی-مذاکرات-به-میزان-پایبندی-به-تعهدات-بستگی-دارد"
+      },
+      {
+        "headline_fa": "قرائت سوره فتح در شبی که پایانش با شهادت همراه بود",
+        "headline_en": "Recitation of Surah Fatah in the night that ended with martyrdom",
+        "url": "https://www.javanonline.ir/fa/news/1364833/قرائت-سوره-فتح-در-شبی-که-پایانش-با-شهادت-همراه-بود"
+      },
+      {
+        "headline_fa": "من در میناب روضه عطش دیدم دانش‌آموزی که با دهان روزه شهید شد",
+        "headline_en": "I saw a student who was martyred by fasting in the minab of Roza Atash",
+        "url": "https://www.javanonline.ir/fa/news/1364870/من-در-میناب-روضه-عطش-دیدم-دانش‌آموزی-که-با-دهان-روزه-شهید-شد"
+      },
+      {
+        "headline_fa": "تنگه هرمز؛ تجلی بازدارندگی و دارایی‌های راهبردی ایران",
+        "headline_en": "Strait of Hormuz; The manifestation of Iran's deterrence and strategic assets",
+        "url": "https://www.javanonline.ir/fa/news/1364867/تنگه-هرمز-تجلی-بازدارندگی-و-دارایی‌های-راهبردی-ایران"
+      },
+      {
+        "headline_fa": "سینما رفتن با پاپ‌کورن ممنوعه!",
+        "headline_en": "It is forbidden to go to the cinema with popcorn!",
+        "url": "https://www.javanonline.ir/fa/news/1364688/سینما-رفتن-با-پاپ‌کورن-ممنوعه"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Mashregh",
+    "faction": "irgc",
+    "url": "https://www.mashreghnews.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "قالیباف با سلطان عمان دیدار کرد",
+        "headline_en": "Qalibaf met with the Sultan of Oman",
+        "url": "https://www.mashreghnews.ir/news/1820638/%D9%82%D8%A7%D9%84%DB%8C%D8%A8%D8%A7%D9%81-%D8%A8%D8%A7-%D8%B3%D9%84%D8%B7%D8%A7%D9%86-%D8%B9%D9%85%D8%A7%D9%86-%D8%AF%DB%8C%D8%AF%D8%A7%D8%B1-%DA%A9%D8%B1%D8%AF"
+      },
+      {
+        "headline_fa": "اعلام تمهیدات شهری مراسم تشییع رهبر شهید انقلاب",
+        "headline_en": "Announcement of urban arrangements for the funeral of the leader of the revolutionary martyr",
+        "url": "https://www.mashreghnews.ir/news/1820605/%D8%AA%D9%85%D9%87%DB%8C%D8%AF%D8%A7%D8%AA-%D8%B4%D9%87%D8%B1%DB%8C-%D9%85%D8%B1%D8%A7%D8%B3%D9%85-%D8%AA%D8%B4%DB%8C%DB%8C%D8%B9-%D8%B1%D9%87%D8%A8%D8%B1-%D8%B4%D9%87%DB%8C%D8%AF-%D8%A7%D9%86%D9%82%D9%84%D8%A7%D8%A8-%D8%A7%D8%B9%D9%84%D8%A7%D9%85-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "اژه‌ای: هیمنه آمریکا در برابر اراده ملت ایران شکسته شد",
+        "headline_en": "Aegean: America's hegemony was broken against the will of the Iranian nation",
+        "url": "https://www.mashreghnews.ir/news/1820629/%D8%A7%DA%98%D9%87-%D8%A7%DB%8C-%D9%87%DB%8C%D9%85%D9%86%D9%87-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%AF%D8%B1-%D8%A8%D8%B1%D8%A7%D8%A8%D8%B1-%D8%A7%D8%B1%D8%A7%D8%AF%D9%87-%D9%85%D9%84%D8%AA-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%B4%DA%A9%D8%B3%D8%AA%D9%87-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "جامانده از &quot;علی‌الاصول&quot;",
+        "headline_en": "A remnant of \"Ali al-Asoul\"",
+        "url": "https://www.mashreghnews.ir/news/1820599/%D8%AC%D8%A7%D9%85%D8%A7%D9%86%D8%AF%D9%87-%D8%A7%D8%B2-%D8%B9%D9%84%DB%8C-%D8%A7%D9%84%D8%A7%D8%B5%D9%88%D9%84"
+      },
+      {
+        "headline_fa": "پزشکیان عازم پاکستان شد",
+        "headline_en": "Doctors left for Pakistan",
+        "url": "https://www.mashreghnews.ir/news/1820602/%D8%B1%D8%A6%DB%8C%D8%B3-%D8%AC%D9%85%D9%87%D9%88%D8%B1-%D8%B9%D8%A7%D8%B2%D9%85-%D9%BE%D8%A7%DA%A9%D8%B3%D8%AA%D8%A7%D9%86-%D8%B4%D8%AF-%D9%BE%D8%B2%D8%B4%DA%A9%DB%8C%D8%A7%D9%86-%D8%A8%D9%86%D8%A7%DB%8C-%D9%85%D8%A7-%D9%BE%DB%8C%DA%AF%DB%8C%D8%B1%DB%8C-%D8%AD%D9%82%D9%88%D9%82-%D9%85%D9%84%D8%AA"
+      },
+      {
+        "headline_fa": "از کربلای ۶۱ تا جنگ ۱۲ روزه و رمضان",
+        "headline_en": "From Karbala 61 to the 12-day war and Ramadan",
+        "url": "https://www.mashreghnews.ir/news/1820536/%D8%A7%D8%B2-%DA%A9%D8%B1%D8%A8%D9%84%D8%A7%DB%8C-%DB%B6%DB%B1-%D8%AA%D8%A7-%D8%AC%D9%86%DA%AF-%DB%B1%DB%B2-%D8%B1%D9%88%D8%B2%D9%87-%D9%88-%D8%B1%D9%85%D8%B6%D8%A7%D9%86"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Kayhan",
+    "faction": "hardline",
+    "url": "https://kayhan.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "دستاوردهای «نقد» میدان را با وعده‌های «نسیه» بر باد ندهید!",
+        "headline_en": "Don't blow away the achievements of Maidan's \"criticism\" with promises of \"credit\"!",
+        "url": "https://kayhan.ir/fa/news/333293/دستاوردهای-نقد-میدان-را-با-وعده‌های-نسیه-بر-باد-ندهید"
+      },
+      {
+        "headline_fa": "از کربلای ۶۱ تا جنگ 12 روزه و رمضان(یادداشت روز)",
+        "headline_en": "From Karbala 61 to the 12-day war and Ramadan (note of the day)",
+        "url": "https://kayhan.ir/fa/news/333289/از-کربلای-۶۱-تا-جنگ-12-روزه-و-رمضانیادداشت-روز"
+      },
+      {
+        "headline_fa": "خشم ترامپ از گزارش‌ افشاگرانه نیویورک‌تایمز درباره جنگ ایران",
+        "headline_en": "Trump's anger over the revealing New York Times report about the Iran war",
+        "url": "https://kayhan.ir/fa/news/333284/خشم-ترامپ-از-گزارش‌-افشاگرانه-نیویورک‌تایمز-درباره-جنگ-ایران"
+      },
+      {
+        "headline_fa": "غیرت تماشاگران و بازیکنان ایرانی در قلب آمریکا امیدواری به صعود در جام‌جهانی بیشتر از قبل شد",
+        "headline_en": "The zeal of Iranian spectators and players in the heart of America became more hopeful of advancing in the World Cup",
+        "url": "https://kayhan.ir/fa/news/333263/غیرت-تماشاگران-و-بازیکنان-ایرانی-در-قلب-آمریکا-امیدواری-به-صعود-در-جام‌جهانی-بیشتر-از-قبل-شد"
+      },
+      {
+        "headline_fa": "آمریکا در جنگی احمقانه به وحشتناک‌ترین شکل ممکن تسلیم ایران شد",
+        "headline_en": "America surrendered to Iran in the most horrible way possible in a stupid war",
+        "url": "https://kayhan.ir/fa/news/333299/آمریکا-در-جنگی-احمقانه-به-وحشتناک‌ترین-شکل-ممکن-تسلیم-ایران-شد"
+      },
+      {
+        "headline_fa": "ایران بزرگ‌ترین سکوی نفتی خلیج‌فارس را نصب کرد",
+        "headline_en": "Iran installed the largest oil platform in the Persian Gulf",
+        "url": "https://kayhan.ir/fa/news/333256/ایران-بزرگ‌ترین-سکوی-نفتی-خلیج‌فارس-را-نصب-کرد"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Vatan-e Emrooz",
+    "faction": "hardline",
+    "url": "https://vatanemrooz.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "تمهیدات شهرداری تهران برای مراسم تشییع رهبر شهید انقلاب اعلام شد",
+        "headline_en": "The preparations of Tehran municipality for the funeral ceremony of the martyred leader of the revolution were announced",
+        "url": "https://vatanemrooz.ir/fa/news/419249/تمهیدات-شهرداری-تهران-برای-مراسم-تشییع-رهبر-شهید-انقلاب-اعلام-شد"
+      },
+      {
+        "headline_fa": "بقائی: برنامه‌ای برای بازرسی آژانس از تاسیسات هسته‌ای آسیب دیده نداریم",
+        "headline_en": "Beqaei: We do not have a plan to inspect the damaged nuclear facilities",
+        "url": "https://vatanemrooz.ir/fa/news/419248/بقائی-برنامه-ای-برای-بازرسی-آژانس-از-تاسیسات-هسته-ای-آسیب-دیده-نداریم"
+      },
+      {
+        "headline_fa": "قالیباف: تصور تضاد میان میدان نظامی و دیپلماسی اشتباه است",
+        "headline_en": "Ghalibaf: It is wrong to imagine the conflict between the military field and diplomacy",
+        "url": "https://vatanemrooz.ir/fa/news/419247/قالیباف-تصور-تضاد-میان-میدان-نظامی-و-دیپلماسی-اشتباه-است"
+      },
+      {
+        "headline_fa": "همتی: هیچ الزامی برای خرید نهاده‌های کشاورزی از آمریکا نداریم",
+        "headline_en": "Hemmati: We have no requirement to buy agricultural inputs from America",
+        "url": "https://vatanemrooz.ir/fa/news/419246/همتی-هیچ-الزامی-برای-خرید-نهاده-های-کشاورزی-از-آمریکا-نداریم"
+      },
+      {
+        "headline_fa": "غریب آبادی از توافق درخصوص ترتیبات مذاکرات آتی خبر داد",
+        "headline_en": "Gharib Abadi announced the agreement regarding the arrangements for future negotiations",
+        "url": "https://vatanemrooz.ir/fa/news/419245/غریب-آبادی-از-توافق-درخصوص-ترتیبات-مذاکرات-آتی-خبر-داد"
+      },
+      {
+        "headline_fa": "اژه‌ای: 6.5 میلیارد دلار با ورود قوه قضائیه به کشور بازگشت",
+        "headline_en": "Aegean: 6.5 billion dollars returned to the country with the arrival of the judiciary",
+        "url": "https://vatanemrooz.ir/fa/news/419244/اژه-ای-6-5-میلیارد-دلار-با-ورود-قوه-قضائیه-به-کشور-بازگشت"
+      }
+    ],
+    "loaded_terms": [
+      {
+        "fa": "توافق",
+        "translit": "tavāfoq",
+        "gloss": "agreement / accord",
+        "signal": "The sides actually agreed on terms. Stronger than تفاهم (merely 'understood').",
+        "count": 1
+      }
+    ]
+  }
+]
