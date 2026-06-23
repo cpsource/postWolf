@@ -156,6 +156,8 @@ Iranian sites can be tricky to fetch. The script handles common cases but be awa
 
 **Reachability is intermittent.** Sometimes a site is up; sometimes it isn't. Iran has had network disruptions (the 88-day blackout that ended late May 2026). Don't assume failure means the site is down forever — try again later, try a different outlet, or fall back to the English edition.
 
+**Connect timeouts get one retry.** A *connection* timeout to an Iranian site is often just transient slowness, not a dead host. The fetch script automatically retries a connect-timeout **once**, with the connect timeout raised to **60 seconds**, before reporting the outlet as failed (read/HTTP errors are not retried). So a "failed" outlet has already been given the longer-patience second attempt.
+
 **RSS where possible.** Some outlets (Tasnim is good for this) publish RSS feeds. The script checks for these first since they're more stable than scraping HTML.
 
 **English editions as fallback.** Most major outlets have English editions (en.irna.ir, en.farsnews.ir, en.tasnimnews.com, presstv.ir). These are *curated for foreign audiences* and miss content that's only in Farsi — but they're better than nothing when the Farsi site won't load.

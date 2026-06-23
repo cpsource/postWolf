@@ -231,7 +231,11 @@ HEADERS = {
     "Accept-Language": "fa,en-US;q=0.7,en;q=0.3",
 }
 
-TIMEOUT = 20  # seconds
+TIMEOUT = 20  # seconds (default connect+read timeout)
+# Iranian sites are intermittently slow to *accept* a connection (network
+# disruptions, overloaded servers). On a connect timeout we don't give up
+# immediately — we retry the connection once with a longer connect timeout.
+CONNECT_RETRY_TIMEOUT = 60  # seconds; connect timeout for the single retry
 SLEEP_BETWEEN = 1.5  # be polite
 
 # Hard cap on how much of any single page we pull into memory. This box has very
@@ -249,11 +253,24 @@ MAX_HTML_BYTES = 5 * 1024 * 1024
 
 def fetch(url: str) -> tuple[bool, str, str]:
     """Fetch a URL, capping how much is read into memory. Returns (success, text_or_error, final_url)."""
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT,
-                            allow_redirects=True, stream=True)
-    except requests.exceptions.RequestException as e:
-        return False, f"Request failed: {e}", url
+    # First attempt uses the normal timeout. If the *connection* times out (not a
+    # read/HTTP error), Iranian sites often just need more patience — retry once
+    # with a 60 s connect timeout before declaring failure.
+    attempts = (TIMEOUT, (CONNECT_RETRY_TIMEOUT, TIMEOUT))
+    resp = None
+    for i, to in enumerate(attempts):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=to,
+                                allow_redirects=True, stream=True)
+            break
+        except requests.exceptions.ConnectTimeout as e:
+            if i + 1 < len(attempts):
+                print(f"    [warn] connect timed out; retrying once with "
+                      f"{CONNECT_RETRY_TIMEOUT}s connect timeout", file=sys.stderr)
+                continue
+            return False, f"Request failed: {e}", url
+        except requests.exceptions.RequestException as e:
+            return False, f"Request failed: {e}", url
 
     with resp:  # ensure the connection is released even if we stop reading early
         if resp.status_code != 200:
