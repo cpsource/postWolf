@@ -1,0 +1,173 @@
+[
+  {
+    "outlet": "Tasnim",
+    "faction": "irgc",
+    "url": "https://www.tasnimnews.com",
+    "status": "failed",
+    "error": "Request failed: HTTPSConnectionPool(host='www.tasnimnews.com', port=443): Max retries exceeded with url: / (Caused by NameResolutionError(\"HTTPSConnection(host='www.tasnimnews.com', port=443): Failed to resolve 'www.tasnimnews.com' ([Errno -2] Name or service not known)\"))"
+  },
+  {
+    "outlet": "Fars News",
+    "faction": "irgc",
+    "url": "https://farsnews.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "عضوی از فارس هستید؟",
+        "headline_en": "Are you a member of Fars?",
+        "url": ""
+      },
+      {
+        "headline_fa": "اخبار برگزیده",
+        "headline_en": "selected news",
+        "url": ""
+      },
+      {
+        "headline_fa": "دیگر رسانه ها",
+        "headline_en": "Other media",
+        "url": ""
+      },
+      {
+        "headline_fa": "رسانه رسمی «بدرقه آقای شهید ایران» آغاز به کار کرد",
+        "headline_en": "The official media of \"Badarqah Mr. Martyr of Iran\" started working",
+        "url": ""
+      },
+      {
+        "headline_fa": "جام جهانی ۲۰۲۶",
+        "headline_en": "World Cup 2026",
+        "url": ""
+      },
+      {
+        "headline_fa": "واکسنِ ضدِ خشم در ترافیک",
+        "headline_en": "Vaccine against anger in traffic",
+        "url": ""
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Javan",
+    "faction": "irgc",
+    "url": "https://www.javanonline.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "سوگواری یک «ایران» در تاسوعای حسینی؛ از حرم امام رضا (ع) تا حسینیه اعظم",
+        "headline_en": "The mourning of an \"Iran\" in Tasuai Hosseini; From the shrine of Imam Reza (AS) to Hosseinieh Azam",
+        "url": "https://www.javanonline.ir/fa/news/1365355/سوگواری-یک-ایران-در-تاسوعای-حسینی-از-حرم-امام-رضا-ع-تا-حسینیه-اعظم"
+      },
+      {
+        "headline_fa": "ملت ایران نشان داد دوران تحمیل اراده بر ملت‌های مستقل پایان یافته است",
+        "headline_en": "The nation of Iran showed that the era of imposing will on independent nations is over",
+        "url": "https://www.javanonline.ir/fa/news/1365336/ملت-ایران-نشان-داد-دوران-تحمیل-اراده-بر-ملت‌های-مستقل-پایان-یافته-است"
+      },
+      {
+        "headline_fa": "سیدالشهدا (ع) در اکثر احوال در حال سکوت، فکر و عبودیت بوده‌اند",
+        "headline_en": "Seyyed al-Shohda (AS) was silent, thinking and worshiping in most situations",
+        "url": "https://www.javanonline.ir/fa/news/1364131/سیدالشهدا-ع-در-اکثر-احوال-در-حال-سکوت-فکر-و-عبودیت-بوده‌اند"
+      },
+      {
+        "headline_fa": "نگاهی به سوژه زندان در سینمای امریکا/ زندان در فیلم‌های امریکایی استعاره‌ای از امریکای کوچک",
+        "headline_en": "A look at the subject of prison in American cinema / Prison in American films is a metaphor for little America",
+        "url": "https://www.javanonline.ir/fa/news/1365047/زندان-در-فیلم‌های-امریکایی-استعاره‌ای-از-امریکای-کوچک"
+      },
+      {
+        "headline_fa": "گفت‌وگو با همسر یکی از شهدای ناو دنا/ می‌گفت شهادت فرماندهان وظیفه ما را ده‌چندان می‌کند",
+        "headline_en": "A conversation with the wife of one of the martyrs of the Dana ship/ He said that the martyrdom of the commanders makes our duty tenfold.",
+        "url": "https://www.javanonline.ir/fa/news/1365046/می‌گفت-شهادت-فرماندهان-وظیفه-ما-را-ده‌چندان-می‌کند"
+      },
+      {
+        "headline_fa": "قرائت سوره فتح در شبی که پایانش با شهادت همراه بود",
+        "headline_en": "Recitation of Surah Fatah in the night that ended with martyrdom",
+        "url": "https://www.javanonline.ir/fa/news/1364833/قرائت-سوره-فتح-در-شبی-که-پایانش-با-شهادت-همراه-بود"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Mashregh",
+    "faction": "irgc",
+    "url": "https://www.mashreghnews.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "دیدار قالیباف با علی اف +عکس",
+        "headline_en": "Ghalibaf's meeting with Ali F + photo",
+        "url": "https://www.mashreghnews.ir/news/1820867/%D8%AF%DB%8C%D8%AF%D8%A7%D8%B1-%D9%82%D8%A7%D9%84%DB%8C%D8%A8%D8%A7%D9%81-%D8%A8%D8%A7-%D8%B9%D9%84%DB%8C-%D8%A7%D9%81-%D8%B9%DA%A9%D8%B3"
+      },
+      {
+        "headline_fa": "انتقاد غریب آبادی از جوسازی گروسی",
+        "headline_en": "Gharibabadi's criticism of Grossi's Josazi",
+        "url": "https://www.mashreghnews.ir/news/1820858/%D8%BA%D8%B1%DB%8C%D8%A8-%D8%A2%D8%A8%D8%A7%D8%AF%DB%8C-%D8%A8%D8%B1%D9%86%D8%A7%D9%85%D9%87-%D8%A7%DB%8C-%D8%A8%D8%B1%D8%A7%DB%8C-%D8%AF%D8%B3%D8%AA%D8%B1%D8%B3%DB%8C-%D8%A8%D9%87-%D8%AA%D8%A7%D8%B3%DB%8C%D8%B3%D8%A7%D8%AA-%D9%85%D9%88%D8%B1%D8%AF-%D8%AD%D9%85%D9%84%D9%87-%D9%82%D8%B1%D8%A7%D8%B1-%DA%AF%D8%B1%D9%81%D8%AA%D9%87"
+      },
+      {
+        "headline_fa": "از دم‌های تاسوعا تا حافظه جمعی هیئت‌ها",
+        "headline_en": "From the tails of Tasua to the collective memory of the delegations",
+        "url": "https://www.mashreghnews.ir/news/1820851/%D8%A7%DB%8C-%D8%A7%D9%87%D9%84-%D8%AD%D8%B1%D9%85-%D9%85%DB%8C%D8%B1-%D9%88-%D8%B9%D9%84%D9%85%D8%AF%D8%A7%D8%B1-%D9%86%DB%8C%D8%A7%D9%85%D8%AF-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%AF%D8%B1-%D8%B3%D9%88%DA%AF-%D8%B9%D9%84%D9%85%D8%AF%D8%A7%D8%B1%D8%A7%D9%86%D8%B4-%DA%86%D8%B4%D9%85-%D8%A8%D9%87-%D8%B1%D8%A7%D9%87"
+      },
+      {
+        "headline_fa": "اعلام دلیل قطع خدمات مبتنی بر کارت بانک‌ها",
+        "headline_en": "Announcing the reason for discontinuing bank card-based services",
+        "url": "https://www.mashreghnews.ir/news/1820792/%D9%81%D8%B1%D9%85%D8%A7%D9%86%D8%AF%D9%87%DB%8C-%D8%B3%D8%A7%DB%8C%D8%A8%D8%B1%DB%8C-%D8%A7%D8%AE%D8%AA%D9%84%D8%A7%D9%84-%D8%A8%D8%B1%D8%AE%DB%8C-%D8%A8%D8%A7%D9%86%DA%A9-%D9%87%D8%A7-%D9%86%D8%A7%D8%B4%DB%8C-%D8%A7%D8%B2-%D8%AD%D9%85%D9%84%D9%87-%D9%87%D8%AF%D9%81%D9%85%D9%86%D8%AF-%D8%A8%D9%88%D8%AF"
+      },
+      {
+        "headline_fa": "نارضایتی تل‌آویو از مذاکرات ایران و آمریکا بر سر لبنان",
+        "headline_en": "Dissatisfaction of Tel Aviv with the negotiations between Iran and America on Lebanon",
+        "url": "https://www.mashreghnews.ir/photo/1820635/%D8%B5%D9%81%D8%AD%D9%87-%D9%86%D8%AE%D8%B3%D8%AA-%D8%B1%D9%88%D8%B2%D9%86%D8%A7%D9%85%D9%87-%D9%87%D8%A7%DB%8C-%D8%B9%D8%A8%D8%B1%DB%8C-%D8%B2%D8%A8%D8%A7%D9%86-%D9%86%D8%A7%D8%B1%D8%B6%D8%A7%DB%8C%D8%AA%DB%8C-%D8%B5%D9%87%DB%8C%D9%88%D9%86%DB%8C%D8%B3%D8%AA-%D9%87%D8%A7-%D8%A7%D8%B2-%D9%85%D8%B0%D8%A7%DA%A9%D8%B1%D8%A7%D8%AA"
+      },
+      {
+        "headline_fa": "عزاداری شب تاسوعا در جوار قتلگاه رهبر شهید انقلاب +فیلم",
+        "headline_en": "Mourning on the night of Tasu'a near the killing ground of the martyred leader of the revolution + film",
+        "url": "https://www.mashreghnews.ir/news/1820779/%D8%B9%D8%B2%D8%A7%D8%AF%D8%A7%D8%B1%DB%8C-%D8%B4%D8%A8-%D8%AA%D8%A7%D8%B3%D9%88%D8%B9%D8%A7-%D8%AF%D8%B1-%D8%AC%D9%88%D8%A7%D8%B1-%D9%82%D8%AA%D9%84%DA%AF%D8%A7%D9%87-%D8%B1%D9%87%D8%A8%D8%B1-%D8%B4%D9%87%DB%8C%D8%AF-%D8%A7%D9%86%D9%82%D9%84%D8%A7%D8%A8-%D9%81%DB%8C%D9%84%D9%85"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Donya-ye Eqtesad",
+    "faction": "economic",
+    "url": "https://donya-e-eqtesad.com/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "نسخه کامل شماره امروز روزنامه «دنیای‌ اقتصاد» را اینجا بخوانید",
+        "headline_en": "Read the full version of today's edition of \"Duniya Ekhtaz\" newspaper here",
+        "url": "https://donya-e-eqtesad.com/بخش-%D8%A7%D8%AE%D8%A8%D8%A7%D8%B1-2/4278277-%D9%86%D8%B3%D8%AE%D9%87-%DA%A9%D8%A7%D9%85%D9%84-%D8%B4%D9%85%D8%A7%D8%B1%D9%87-%D8%A7%D9%85%D8%B1%D9%88%D8%B2-%D8%B1%D9%88%D8%B2%D9%86%D8%A7%D9%85%D9%87-%D8%AF%D9%86%DB%8C%D8%A7%DB%8C-%D8%A7%D9%82%D8%AA%D8%B5%D8%A7%D8%AF-%D8%B1%D8%A7-%D8%A7%DB%8C%D9%86%D8%AC%D8%A7-%D8%A8%D8%AE%D9%88%D8%A7%D9%86%DB%8C%D8%AF"
+      },
+      {
+        "headline_fa": "ادعای ترامپ درباره تصمیم ایران درخصوص تنگه هرمز",
+        "headline_en": "Trump's claim about Iran's decision regarding the Strait of Hormuz",
+        "url": "https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4278499-%D8%A7%D8%AF%D8%B9%D8%A7%DB%8C-%D8%AA%D8%B1%D8%A7%D9%85%D9%BE-%D8%AF%D8%B1%D8%A8%D8%A7%D8%B1%D9%87-%D8%AA%D8%B5%D9%85%DB%8C%D9%85-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%AF%D8%B1%D8%AE%D8%B5%D9%88%D8%B5-%D8%AA%D9%86%DA%AF%D9%87-%D9%87%D8%B1%D9%85%D8%B2"
+      },
+      {
+        "headline_fa": "ادعاهای جدید وزیر خزانه‌داری آمریکا درباره دارایی‌های آزاد شده ایران/ قسمت زیادی از پول‌ها خرج غذا و داروی آمریکایی می‌شود",
+        "headline_en": "The new claims of the US Treasury Secretary about the released assets of Iran/ a large part of the money is spent on American food and medicine",
+        "url": "https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4278501-%D8%A7%D8%AF%D8%B9%D8%A7%D9%87%D8%A7%DB%8C-%D8%AC%D8%AF%DB%8C%D8%AF-%D9%88%D8%B2%DB%8C%D8%B1-%D8%AE%D8%B2%D8%A7%D9%86%D9%87-%D8%AF%D8%A7%D8%B1%DB%8C-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%AF%D8%B1%D8%A8%D8%A7%D8%B1%D9%87-%D8%AF%D8%A7%D8%B1%D8%A7%DB%8C%DB%8C-%D9%87%D8%A7%DB%8C-%D8%A2%D8%B2%D8%A7%D8%AF-%D8%B4%D8%AF%D9%87-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D9%82%D8%B3%D9%85%D8%AA-%D8%B2%DB%8C%D8%A7%D8%AF%DB%8C-%D8%A7%D8%B2-%D9%BE%D9%88%D9%84-%D9%87%D8%A7-%D8%AE%D8%B1%D8%AC-%D8%BA%D8%B0%D8%A7-%D8%AF%D8%A7%D8%B1%D9%88%DB%8C-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7%DB%8C%DB%8C-%D9%85%DB%8C-%D8%B4%D9%88%D8%AF"
+      },
+      {
+        "headline_fa": "خبر مهم همتی درباره تامین ارز واردات",
+        "headline_en": "Hemmati's important news about the supply of import currency",
+        "url": "https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4278495-%D8%AE%D8%A8%D8%B1-%D9%85%D9%87%D9%85-%D9%87%D9%85%D8%AA%DB%8C-%D8%AF%D8%B1%D8%A8%D8%A7%D8%B1%D9%87-%D8%AA%D8%A7%D9%85%DB%8C%D9%86-%D8%A7%D8%B1%D8%B2-%D9%88%D8%A7%D8%B1%D8%AF%D8%A7%D8%AA"
+      },
+      {
+        "headline_fa": "موضع‌گیری جدید روسیه درباره مذاکرات ایران و آمریکا",
+        "headline_en": "Russia's new stance on Iran-US negotiations",
+        "url": "https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4278494-%D9%85%D9%88%D8%B6%D8%B9-%DA%AF%DB%8C%D8%B1%DB%8C-%D8%AC%D8%AF%DB%8C%D8%AF-%D8%B1%D9%88%D8%B3%DB%8C%D9%87-%D8%AF%D8%B1%D8%A8%D8%A7%D8%B1%D9%87-%D9%85%D8%B0%D8%A7%DA%A9%D8%B1%D8%A7%D8%AA-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7"
+      },
+      {
+        "headline_fa": "هشدار اردوغان درباره فتنه‌انگیزی اسرائیل/ توافق ایران و آمریکا برای منطقه مهم است",
+        "headline_en": "Erdogan's warning about Israel's sedition/Iran-US agreement is important for the region",
+        "url": "https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4278490-%D9%87%D8%B4%D8%AF%D8%A7%D8%B1-%D8%A7%D8%B1%D8%AF%D9%88%D8%BA%D8%A7%D9%86-%D8%AF%D8%B1%D8%A8%D8%A7%D8%B1%D9%87-%D9%81%D8%AA%D9%86%D9%87-%D8%A7%D9%86%DA%AF%DB%8C%D8%B2%DB%8C-%D8%A7%D8%B3%D8%B1%D8%A7%D8%A6%DB%8C%D9%84-%D8%AA%D9%88%D8%A7%D9%81%D9%82-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%A8%D8%B1%D8%A7%DB%8C-%D9%85%D9%86%D8%B7%D9%82%D9%87-%D9%85%D9%87%D9%85-%D8%A7%D8%B3%D8%AA"
+      }
+    ],
+    "loaded_terms": [
+      {
+        "fa": "توافق",
+        "translit": "tavāfoq",
+        "gloss": "agreement / accord",
+        "signal": "The sides actually agreed on terms. Stronger than تفاهم (merely 'understood').",
+        "count": 1
+      }
+    ]
+  }
+]
