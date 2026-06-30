@@ -43,7 +43,7 @@ See `references/iranian_press_landscape.md` for the full landscape and which out
 A good default spread:
 - One establishment voice (e.g., `irannewspaper.ir` or `en.irna.ir`)
 - One reformist voice (e.g., `sharghdaily.com` or `etemadnewspaper.ir`)
-- One IRGC-aligned voice (e.g., `tasnimnews.com` or `farsnews.ir`)
+- One IRGC-aligned voice (e.g., `tasnimnews.ir` — use `.ir`, the `.com` DNS is dead — or `farsnews.ir`)
 - Optionally one hardline voice (e.g., `kayhan.ir`)
 
 ### Step 3: Run the fetch script
@@ -55,7 +55,7 @@ python3 scripts/fetch_press.py --claim "the claim text" --outlets establishment,
 Or with explicit URLs if the user has specific articles in mind:
 
 ```bash
-python3 scripts/fetch_press.py --urls https://www.tasnimnews.com/fa/news/... https://sharghdaily.com/...
+python3 scripts/fetch_press.py --urls https://www.tasnimnews.ir/fa/news/... https://sharghdaily.com/...
 ```
 
 Or search-based:
@@ -158,9 +158,9 @@ Iranian sites can be tricky to fetch. The script handles common cases but be awa
 
 **Connect timeouts get one retry.** A *connection* timeout to an Iranian site is often just transient slowness, not a dead host. The fetch script automatically retries a connect-timeout **once**, with the connect timeout raised to **60 seconds**, before reporting the outlet as failed (read/HTTP errors are not retried). So a "failed" outlet has already been given the longer-patience second attempt.
 
-**RSS where possible.** Some outlets (Tasnim is good for this) publish RSS feeds. The script checks for these first since they're more stable than scraping HTML.
+**RSS where possible.** Some outlets (Fars publishes a working feed) have RSS, which the script checks first since it's more stable than scraping HTML. Note: Tasnim's RSS died with its `.com` domain — the `.ir` site has no working feed as of 2026-06-30, so it falls back to homepage scraping.
 
-**English editions as fallback.** Most major outlets have English editions (en.irna.ir, en.farsnews.ir, en.tasnimnews.com, presstv.ir). These are *curated for foreign audiences* and miss content that's only in Farsi — but they're better than nothing when the Farsi site won't load.
+**English editions as fallback.** Most major outlets have English editions (en.irna.ir, en.farsnews.ir, presstv.ir). These are *curated for foreign audiences* and miss content that's only in Farsi — but they're better than nothing when the Farsi site won't load. (Tasnim's English edition `en.tasnimnews.com` is gone — its whole `.com` domain went NXDOMAIN; the `.ir` site is Farsi-only.)
 
 **Be polite.** Don't hammer the sites. The script sleeps between requests. Iranian outlets are news organizations, not data sources.
 
