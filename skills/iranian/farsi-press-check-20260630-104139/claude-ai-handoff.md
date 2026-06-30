@@ -5,7 +5,7 @@
 **Run timing:** 2026-06-30 ~06:45 EDT ≈ 14:15 Tehran (Tuesday) — Iranian work-day afternoon, after that morning's print editions and into a full day of wire/official reaction. Good window; officials had already responded to Trump's Monday-night Truth Social post.
 **Outlets queried:** IRNA, Shargh, Tasnim, Kayhan + targeted search (Mehr, Jam-e Jam, Tabnak, Donya-e Eqtesad, Fararu, Khabar Online)
 **Outlets reached:** IRNA, Shargh, Kayhan, Fars, Javan, Mashregh + search-surfaced wires
-**Outlets that failed:** Tasnim (DNS / name resolution — site unreachable this run)
+**Outlets that failed:** Tasnim `.com` (DNS dead — see below; **recovered via `.ir` mirror**, section added)
 
 ---
 
@@ -32,6 +32,22 @@ The Iranian government does **not** deny sending a delegation to Doha — but fl
 **Tabnak headline (conservative) captures the split precisely:**
 «توافق ایران و آمریکا بر سر توقف حملات / دور جدید مذاکرات در دوحه **تکذیب شد** / ترامپ: فردا نمایندگان این کشور با ایران دیدار می‌کنند»
 — *"Iran–US agreement on halting attacks / a new round of negotiations in Doha is **denied** / Trump: tomorrow our country's representatives will meet with Iran."* The Iranian outlet literally prints the denial and Trump's claim side by side.
+
+---
+
+## Tasnim (IRGC wire) — *recovered via `.ir` mirror*
+
+`tasnimnews.com` DNS is dead (apex NODATA, `www`/`en` NXDOMAIN, authoritatively on Cloudflare/foundationdns). The live Farsi site is **`https://www.tasnimnews.ir/`** (IP 5.172.177.212, Iran). Front page pulled 2026-06-30 ~14:20 Tehran.
+
+**The tell — Doha is absent.** On Tasnim's front page: **دوحه (Doha) = 0 mentions, هیئت (delegation) = 0**, قطر only in a *defense-cooperation* item. The IRGC wire is **not amplifying the "negotiations in Doha" story at all** — fully consistent with the official line that this is not a negotiation. What the security faction foregrounds instead:
+
+- «اختلاف بر سر مدیریت تنگه هرمز پس از **تفاهم‌نامه** تازه بالا گرفته است؛ اداره آن برای ایران اهمیت بالاتری دارد» — *"The dispute over managing the Strait of Hormuz has flared since the new **MOU**; its administration matters more to Iran."* → Hormuz, framed as a post-MOU contest.
+- «**توافق واشنگتن** نقض کامل **تفاهم** با ایران است» — *"The Washington **agreement** is a complete violation of the **MOU** with Iran."* Note Tasnim's own word choice: توافق (agreement) for Washington's Lebanon deal, **تفاهم** (MOU) for the Iran instrument — the same binding/non-binding distinction, kept deliberately.
+- «نگاه رمانتیک به تنگه هرمز خسارت‌بار است» — *"A romantic view of the Strait of Hormuz is damaging."*
+- Military readiness front and center: rapid-reaction/special forces deployed to the borders; acting Defense Minister "**our hands are on the trigger**" — said in a call with **Qatar's** defense minister (so Qatar appears as a *defense* partner, not a negotiation venue).
+- Domestic register: coverage of the «**امام شهید / قائد شهید**» (martyred Leader) funeral — Tasnim treats the Supreme Leader's death as fact.
+
+**Read:** the IRGC outlet's silence on Doha + emphasis on Hormuz-as-contest and "hands on the trigger" is the maximal-hostility register the earlier runs kept missing. It doesn't contradict the establishment denial — it reinforces it from the hawkish side: *no negotiation, the MOU is being violated, and we're militarily ready.*
 
 ---
 
