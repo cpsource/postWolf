@@ -34,7 +34,7 @@ These outlets reflect the Islamic Revolutionary Guard Corps and security service
 
 | Outlet | URL (Farsi) | URL (English) | Notes |
 |--------|-------------|---------------|-------|
-| Tasnim | `www.tasnimnews.com` | `www.tasnimnews.com/en` | IRGC-aligned wire, founded 2012 |
+| Tasnim | `www.tasnimnews.ir` | — | IRGC-aligned wire, founded 2012. **Use `.ir`** — `tasnimnews.com` DNS went dead (apex NODATA, `www`/`en` NXDOMAIN on Cloudflare/foundationdns), verified 2026-06-30. The `.com/en` English edition is gone with it; no working English mirror found. |
 | Fars News | `www.farsnews.ir` | `en.farsnews.ir` | IRGC-aligned wire, also has RSS |
 | Javan | `www.javanonline.ir` | — | IRGC daily newspaper, editorial voice |
 | Sepah News | `www.sepahnews.com` | — | IRGC's own direct news site |
@@ -83,7 +83,7 @@ When the user says `--outlets reformist`:
 - `etemadnewspaper.ir`
 
 When the user says `--outlets irgc`:
-- `tasnimnews.com`
+- `tasnimnews.ir`  (NOT `.com` — that domain's DNS is dead; see the IRGC table note)
 - `farsnews.ir`
 - `javanonline.ir`
 
@@ -100,13 +100,13 @@ When the user says `--outlets opposition`:
 
 When the user says `--outlets all` or omits the flag:
 - One outlet from each of: establishment, reformist, IRGC, hardline.
-  Default: `irna.ir`, `sharghdaily.com`, `tasnimnews.com`, `kayhan.ir`.
+  Default: `irna.ir`, `sharghdaily.com`, `tasnimnews.ir`, `kayhan.ir`.
 
 ## RSS feeds (where available)
 
 These are more stable than scraping HTML:
 
-- Tasnim: `www.tasnimnews.com/fa/rss/feed/0/8/0/`
+- Tasnim: ~~`www.tasnimnews.com/fa/rss/feed/0/8/0/`~~ — dead with the `.com` domain; the same path on `.ir` 404s, so no working Tasnim RSS as of 2026-06-30. Scrape the `.ir` homepage instead.
 - Fars: `www.farsnews.ir/rss`
 - IRNA: `www.irna.ir/rss`
 - Mehr: `www.mehrnews.com/rss`
