@@ -6,7 +6,7 @@ a Western claim. Outputs a handoff file for analysis in Claude.ai.
 Usage:
     python3 fetch_press.py --claim "Trump threatened to bomb Oman" --outlets all
     python3 fetch_press.py --search "تنگه هرمز" --outlets irgc
-    python3 fetch_press.py --urls https://www.tasnimnews.com/fa/news/... https://sharghdaily.com/...
+    python3 fetch_press.py --urls https://www.tasnimnews.ir/fa/news/... https://sharghdaily.com/...
 
 This script does NOT analyze. It fetches and packages.
 """
@@ -57,7 +57,11 @@ OUTLETS = {
         ("Jamaran", "https://www.jamaran.news", None),
     ],
     "irgc": [
-        ("Tasnim", "https://www.tasnimnews.com", "https://www.tasnimnews.com/fa/rss/feed/0/8/0/"),
+        # tasnimnews.com DNS is dead (apex NODATA, www/en NXDOMAIN on Cloudflare/
+        # foundationdns). The live Farsi site is the .ir domain (5.172.177.212).
+        # Verified 2026-06-30. The .ir RSS path 404s, but crawl mode hits the
+        # homepage (base_url) directly and never uses rss_url, so RSS is None here.
+        ("Tasnim", "https://www.tasnimnews.ir", None),
         ("Fars News", "https://www.farsnews.ir", "https://www.farsnews.ir/rss"),
         ("Javan", "https://www.javanonline.ir", None),
         ("Mashregh", "https://www.mashreghnews.ir", None),
@@ -216,7 +220,7 @@ def claim_gap_checks(claim: str) -> list[str]:
 DEFAULT_SPREAD = [
     ("IRNA", "https://www.irna.ir", "https://www.irna.ir/rss"),
     ("Shargh", "https://www.sharghdaily.com", None),
-    ("Tasnim", "https://www.tasnimnews.com", "https://www.tasnimnews.com/fa/rss/feed/0/8/0/"),
+    ("Tasnim", "https://www.tasnimnews.ir", None),  # .com DNS dead — see OUTLETS["irgc"]
     ("Kayhan", "https://www.kayhan.ir", None),
 ]
 
