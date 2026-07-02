@@ -85,6 +85,28 @@ The fetch script scans fetched text against `references/loaded_terms_glossary.md
 in the handoff. Read those sections before packaging, and surface any real gap to the user.
 See `references/loaded_terms_glossary.md` for the full term tables and the report format.
 
+### Step 3.6: Quantitative strait-traffic questions need the tracker supplement
+
+The Iranian press publishes **no ship-transit counts** — questions like "how many ships
+went through the strait in the last 24 hours?" cannot be answered from the Farsi outlets,
+no matter how many you fetch (verified in the 2026-07-02 run: zero transit numbers across
+11 outlets). For those questions, supplement the press fetch with maritime-tracking data:
+
+```bash
+python3 scripts/fetch_strait_traffic.py --output-dir <press-run-dir>
+cat <press-run-dir>/strait-traffic.md >> <press-run-dir>/claude-ai-handoff.md
+```
+
+The script pulls daily tanker/cargo/total transit counts from the IMF PortWatch open API
+(no key needed) plus a pre-disruption baseline for context. Two caveats travel with any
+number: PortWatch **lags ~3–5 days** (for a true last-24-hours figure, WebSearch the live
+trackers in `references/strait_traffic_sources.md` and name the one you used), and all
+trackers count **AIS-broadcasting ships only** — dark transits are missed, so counts are
+floors. Keep the layers labeled in the handoff: press excerpts show what Iran *says* about
+the strait; tracker data shows what ships *do*. If the two diverge (press says "open under
+Iranian control," counts sit 80% below baseline), that gap is a finding — surface it like
+a terminology gap, don't resolve it.
+
 ### Step 4: Package the results
 
 After fetching, summarize for the user what was found:
@@ -170,6 +192,7 @@ Iranian sites can be tricky to fetch. The script handles common cases but be awa
 - It does not translate dense political-religious essays reliably — machine translation will mangle Mohajerani-style philosophical writing. Use machine translation for the gist; bring the Farsi original to Claude.ai for the real reading.
 - It does not replace Iran-watching experts (Amwaj.media, BBC Monitoring, the Stimson Center analysts). For high-stakes work, consult them. This skill is a personal-research-grade tool.
 - It does not do anything autonomously beyond fetching. The user remains in the loop.
+- It does not answer quantitative shipping questions from the press — Iranian outlets publish no transit counts. Use `scripts/fetch_strait_traffic.py` and `references/strait_traffic_sources.md` for those (see Step 3.6).
 
 ## Output format
 
@@ -227,4 +250,6 @@ The user takes this file to Claude.ai. That's the handoff.
 - `README.md` — Design notes and the MOU-vs-"deal" / 36-hour-lead case study
 - `references/iranian_press_landscape.md` — Full outlet directory by faction
 - `references/loaded_terms_glossary.md` — Farsi terms that don't survive machine translation
+- `references/strait_traffic_sources.md` — Maritime-tracking sources for ship-transit counts (the press has none)
 - `scripts/fetch_press.py` — The actual fetch implementation
+- `scripts/fetch_strait_traffic.py` — Ship-transit counts from IMF PortWatch (Step 3.6 supplement)
