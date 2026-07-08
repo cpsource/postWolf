@@ -1,0 +1,412 @@
+[
+  {
+    "outlet": "Iran Newspaper",
+    "faction": "establishment",
+    "url": "https://irannewspaper.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "تمام شماره ها",
+        "headline_en": "All numbers",
+        "url": "https://irannewspaper.ir/archive/main"
+      },
+      {
+        "headline_fa": "تمام ویژه نامه ها",
+        "headline_en": "All special letters",
+        "url": "https://irannewspaper.ir/archive/specials"
+      },
+      {
+        "headline_fa": "سازمان آگهی‌ها",
+        "headline_en": "Ads organization",
+        "url": "https://irannewspaper.ir/ads"
+      },
+      {
+        "headline_fa": "دستیار هوش مصنوعی",
+        "headline_en": "Artificial intelligence assistant",
+        "url": "https://chat.irannewspaper.ir"
+      },
+      {
+        "headline_fa": "ازجمکران تا بی‌کران",
+        "headline_en": "From Jamkaran to Bikaran",
+        "url": "https://irannewspaper.ir/9067/1/158074"
+      },
+      {
+        "headline_fa": "ایران آنلاین",
+        "headline_en": "Iran online",
+        "url": "https://ion.ir/"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "IRNA",
+    "faction": "establishment",
+    "url": "https://www.irna.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "Transferring to the website...",
+        "headline_en": "Transferring to the website...",
+        "url": ""
+      },
+      {
+        "headline_fa": "در ﺣﺎل اﻧﺘﻘﺎل ﺑﻪ ﺳﺎﯾﺖ ﻣﻮرد ﻧﻈﺮ ﻫﺴﺘﯿﺪ...",
+        "headline_en": "You are moving to the site in question...",
+        "url": ""
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "IRNA English",
+    "faction": "establishment",
+    "url": "https://en.irna.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "Transferring to the website...",
+        "headline_en": "Transferring to the website...",
+        "url": ""
+      },
+      {
+        "headline_fa": "در ﺣﺎل اﻧﺘﻘﺎل ﺑﻪ ﺳﺎﯾﺖ ﻣﻮرد ﻧﻈﺮ ﻫﺴﺘﯿﺪ...",
+        "headline_en": "You are moving to the site in question...",
+        "url": ""
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Shargh",
+    "faction": "reformist",
+    "url": "https://www.sharghdaily.com/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "فیمت محصولات سایپا امروز چهارشنبه ۱۷ تیر ۱۴۰۵ / چانگان C55 چند ؟ + جدول",
+        "headline_en": "What is the price of Saipa products today, Wednesday, July 17, 1405 / Changan C55? + table",
+        "url": "https://www.sharghdaily.com/بخش-%D8%A7%D9%82%D8%AA%D8%B5%D8%A7%D8%AF%DB%8C-12/1113955-%D9%81%DB%8C%D9%85%D8%AA-%D9%85%D8%AD%D8%B5%D9%88%D9%84%D8%A7%D8%AA-%D8%B3%D8%A7%DB%8C%D9%BE%D8%A7-%D8%A7%D9%85%D8%B1%D9%88%D8%B2-%DA%86%D9%87%D8%A7%D8%B1%D8%B4%D9%86%D8%A8%D9%87-%D8%AA%DB%8C%D8%B1-%DA%86%D8%A7%D9%86%DA%AF%D8%A7%D9%86-%DA%86%D9%86%D8%AF-%D8%AC%D8%AF%D9%88%D9%84"
+      },
+      {
+        "headline_fa": "قیمت محصولات ایران خودرو امروز چهارشنبه ۱۷ تیر ۱۴۰۵ / وانت آریسان چند ؟ + جدول",
+        "headline_en": "What is the price of Iran Khodro products today, Wednesday, July 17, 1405 / Arisan van? + table",
+        "url": "https://www.sharghdaily.com/بخش-%D8%A7%D9%82%D8%AA%D8%B5%D8%A7%D8%AF%DB%8C-12/1113954-%D9%82%DB%8C%D9%85%D8%AA-%D9%85%D8%AD%D8%B5%D9%88%D9%84%D8%A7%D8%AA-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%AE%D9%88%D8%AF%D8%B1%D9%88-%D8%A7%D9%85%D8%B1%D9%88%D8%B2-%DA%86%D9%87%D8%A7%D8%B1%D8%B4%D9%86%D8%A8%D9%87-%D8%AA%DB%8C%D8%B1-%D9%88%D8%A7%D9%86%D8%AA-%D8%A2%D8%B1%DB%8C%D8%B3%D8%A7%D9%86-%DA%86%D9%86%D8%AF-%D8%AC%D8%AF%D9%88%D9%84"
+      },
+      {
+        "headline_fa": "قیمت دلارو یورو امروز چهارشنبه ۱۷ تیر ۱۴۰۵ / دلار از ۱۷۶ هزار تومان گذشت + جدول",
+        "headline_en": "Today, Wednesday, July 17, the price of the dollar and the euro exceeded 176 thousand tomans at 1405 / dollar + table",
+        "url": "https://www.sharghdaily.com/بخش-%D8%A7%D9%82%D8%AA%D8%B5%D8%A7%D8%AF%DB%8C-12/1113952-%D9%82%DB%8C%D9%85%D8%AA-%D8%AF%D9%84%D8%A7%D8%B1%D9%88-%DB%8C%D9%88%D8%B1%D9%88-%D8%A7%D9%85%D8%B1%D9%88%D8%B2-%DA%86%D9%87%D8%A7%D8%B1%D8%B4%D9%86%D8%A8%D9%87-%D8%AA%DB%8C%D8%B1-%D8%AF%D9%84%D8%A7%D8%B1-%D8%A7%D8%B2-%D9%87%D8%B2%D8%A7%D8%B1-%D8%AA%D9%88%D9%85%D8%A7%D9%86-%DA%AF%D8%B0%D8%B4%D8%AA-%D8%AC%D8%AF%D9%88%D9%84"
+      },
+      {
+        "headline_fa": "قیمت بیت کوین ،اتریوم و تتر امروز چهارشنبه ۱۷ تیر ۱۴۰۵ / قیمت دوج کوین چند ؟ + جدول",
+        "headline_en": "What is the price of Bitcoin, Ethereum and Tether today, Wednesday, July 17, 1405 / What is the price of Dogecoin? + table",
+        "url": "https://www.sharghdaily.com/بخش-%D8%A7%D9%82%D8%AA%D8%B5%D8%A7%D8%AF%DB%8C-12/1113951-%D9%82%DB%8C%D9%85%D8%AA-%D8%A8%DB%8C%D8%AA-%DA%A9%D9%88%DB%8C%D9%86-%D8%A7%D8%AA%D8%B1%DB%8C%D9%88%D9%85-%D8%AA%D8%AA%D8%B1-%D8%A7%D9%85%D8%B1%D9%88%D8%B2-%DA%86%D9%87%D8%A7%D8%B1%D8%B4%D9%86%D8%A8%D9%87-%D8%AA%DB%8C%D8%B1-%D9%82%DB%8C%D9%85%D8%AA-%D8%AF%D9%88%D8%AC-%DA%A9%D9%88%DB%8C%D9%86-%DA%86%D9%86%D8%AF-%D8%AC%D8%AF%D9%88%D9%84"
+      },
+      {
+        "headline_fa": "قیمت سکه پارسیان امروز چهارشنبه ۱۷ تیر ۱۴۰۵ / سکه ۵۰۰ سوتی چند ؟ + جدول",
+        "headline_en": "What is the price of Persian coins today, Wednesday, July 17, 1405 / 500 Souti coins? + table",
+        "url": "https://www.sharghdaily.com/بخش-%D8%A7%D9%82%D8%AA%D8%B5%D8%A7%D8%AF%DB%8C-12/1113931-%D9%82%DB%8C%D9%85%D8%AA-%D8%B3%DA%A9%D9%87-%D9%BE%D8%A7%D8%B1%D8%B3%DB%8C%D8%A7%D9%86-%D8%A7%D9%85%D8%B1%D9%88%D8%B2-%DA%86%D9%87%D8%A7%D8%B1%D8%B4%D9%86%D8%A8%D9%87-%D8%AA%DB%8C%D8%B1-%D8%B3%DA%A9%D9%87-%D8%B3%D9%88%D8%AA%DB%8C-%DA%86%D9%86%D8%AF-%D8%AC%D8%AF%D9%88%D9%84"
+      },
+      {
+        "headline_fa": "تعطیلی سفارت افغانستان در پاکستان",
+        "headline_en": "The closure of the Afghan embassy in Pakistan",
+        "url": "https://www.sharghdaily.com/بخش-%D8%B3%DB%8C%D8%A7%D8%B3%D8%AA-6/1113941-%D8%AA%D8%B9%D8%B7%DB%8C%D9%84%DB%8C-%D8%B3%D9%81%D8%A7%D8%B1%D8%AA-%D8%A7%D9%81%D8%BA%D8%A7%D9%86%D8%B3%D8%AA%D8%A7%D9%86-%D8%AF%D8%B1-%D9%BE%D8%A7%DA%A9%D8%B3%D8%AA%D8%A7%D9%86"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Etemad",
+    "faction": "reformist",
+    "url": "https://www.etemadnewspaper.ir",
+    "status": "failed",
+    "error": "Request failed: HTTPSConnectionPool(host='www.etemadnewspaper.ir', port=443): Max retries exceeded with url: / (Caused by ConnectTimeoutError(<HTTPSConnection(host='www.etemadnewspaper.ir', port=443) at 0x789bb1a7b980>, 'Connection to www.etemadnewspaper.ir timed out. (connect timeout=60)'))"
+  },
+  {
+    "outlet": "Jamaran",
+    "faction": "reformist",
+    "url": "https://www.jamaran.news/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "سپاه: ۸۵ هدف نظامی آمریکا در بحرین و کویت را هدف قرار دادیم/ نیروهای دریایی و هوافضا یک پهپاد MQ۹ دشمن را که قصد دخالت در عملیات را داشت، سرنگون کردند",
+        "headline_en": "IRGC: We targeted 85 American military targets in Bahrain and Kuwait/ the naval and aerospace forces shot down an enemy MQ9 drone that was trying to interfere in the operation",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%D8%A7%D8%B2%D9%86%D8%B4%D8%B1-59/1717029-%D8%B3%D9%BE%D8%A7%D9%87-%D9%87%D8%AF%D9%81-%D9%86%D8%B8%D8%A7%D9%85%DB%8C-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%AF%D8%B1-%D8%A8%D8%AD%D8%B1%DB%8C%D9%86-%DA%A9%D9%88%DB%8C%D8%AA-%D8%B1%D8%A7-%D9%87%D8%AF%D9%81-%D9%82%D8%B1%D8%A7%D8%B1-%D8%AF%D8%A7%D8%AF%DB%8C%D9%85-%D9%86%DB%8C%D8%B1%D9%88%D9%87%D8%A7%DB%8C-%D8%AF%D8%B1%DB%8C%D8%A7%DB%8C%DB%8C-%D9%87%D9%88%D8%A7%D9%81%D8%B6%D8%A7-%DB%8C%DA%A9-%D9%BE%D9%87%D9%BE%D8%A7%D8%AF-mq-%D8%AF%D8%B4%D9%85%D9%86-%D8%B1%D8%A7-%DA%A9%D9%87-%D9%82%D8%B5%D8%AF-%D8%AF%D8%AE%D8%A7%D9%84%D8%AA-%D8%AF%D8%B1-%D8%B9%D9%85%D9%84%DB%8C%D8%A7%D8%AA-%D8%B1%D8%A7-%D8%AF%D8%A7%D8%B4%D8%AA-%D8%B3%D8%B1%D9%86%DA%AF%D9%88%D9%86-%DA%A9%D8%B1%D8%AF%D9%86%D8%AF"
+      },
+      {
+        "headline_fa": "ترامپ: تفاهم‌نامه با ایران تمام شد!",
+        "headline_en": "Trump: The agreement with Iran is over!",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%D8%A7%D8%B2%D9%86%D8%B4%D8%B1-59/1717043-%D8%AA%D8%B1%D8%A7%D9%85%D9%BE-%D8%AA%D9%81%D8%A7%D9%87%D9%85-%D9%86%D8%A7%D9%85%D9%87-%D8%A8%D8%A7-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%AA%D9%85%D8%A7%D9%85-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "سپاه خبر داد: شهادت یک پاسدار در پی تجاوز آمریکا به ماهشهر",
+        "headline_en": "The IRGC reported: The martyrdom of a security guard following the US invasion of Mahshahr",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%D8%A7%D8%B2%D9%86%D8%B4%D8%B1-59/1717041-%D8%B3%D9%BE%D8%A7%D9%87-%D8%AE%D8%A8%D8%B1-%D8%AF%D8%A7%D8%AF-%D8%B4%D9%87%D8%A7%D8%AF%D8%AA-%DB%8C%DA%A9-%D9%BE%D8%A7%D8%B3%D8%AF%D8%A7%D8%B1-%D8%AF%D8%B1-%D9%BE%DB%8C-%D8%AA%D8%AC%D8%A7%D9%88%D8%B2-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%A8%D9%87-%D9%85%D8%A7%D9%87%D8%B4%D9%87%D8%B1"
+      },
+      {
+        "headline_fa": "واکنش قالیباف به موارد نقض تفاهم‌نامه توسط آمریکا: دوره قلدری به پایان رسیده است",
+        "headline_en": "Qalibaf's reaction to the violations of the memorandum by the US: the period of bullying is over",
+        "url": "https://www.jamaran.news/بخش-%D9%BE%D8%B1%D9%88%D9%81%D8%A7%DB%8C%D9%84-182/1717039-%D9%88%D8%A7%DA%A9%D9%86%D8%B4-%D9%82%D8%A7%D9%84%DB%8C%D8%A8%D8%A7%D9%81-%D8%A8%D9%87-%D9%85%D9%88%D8%A7%D8%B1%D8%AF-%D9%86%D9%82%D8%B6-%D8%AA%D9%81%D8%A7%D9%87%D9%85-%D9%86%D8%A7%D9%85%D9%87-%D8%AA%D9%88%D8%B3%D8%B7-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%AF%D9%88%D8%B1%D9%87-%D9%82%D9%84%D8%AF%D8%B1%DB%8C-%D8%A8%D9%87-%D9%BE%D8%A7%DB%8C%D8%A7%D9%86-%D8%B1%D8%B3%DB%8C%D8%AF%D9%87-%D8%A7%D8%B3%D8%AA"
+      },
+      {
+        "headline_fa": "حسن روحانی: نظر نمایندگان این بود که آیت‌الله خامنه‌ای رئیس مجلس شود؛ رهبر شهید آقای…",
+        "headline_en": "Hassan Rouhani: The opinion of the representatives was that Ayatollah Khamenei should become the speaker of the parliament. Martyr leader Mr.",
+        "url": "https://www.jamaran.news/بخش-%D8%B3%DB%8C%D8%A7%D8%B3%D8%AA-12/1717037-%D8%AD%D8%B3%D9%86-%D8%B1%D9%88%D8%AD%D8%A7%D9%86%DB%8C-%D9%86%D8%B8%D8%B1-%D9%86%D9%85%D8%A7%DB%8C%D9%86%D8%AF%DA%AF%D8%A7%D9%86-%D8%A7%DB%8C%D9%86-%D8%A8%D9%88%D8%AF-%DA%A9%D9%87-%D8%A2%DB%8C%D8%AA-%D8%A7%D9%84%D9%84%D9%87-%D8%AE%D8%A7%D9%85%D9%86%D9%87-%D8%A7%DB%8C-%D8%B1%D8%A6%DB%8C%D8%B3-%D9%85%D8%AC%D9%84%D8%B3-%D8%B4%D9%88%D8%AF-%D8%B1%D9%87%D8%A8%D8%B1-%D8%B4%D9%87%DB%8C%D8%AF-%D8%A2%D9%82%D8%A7%DB%8C-%D9%87%D8%A7%D8%B4%D9%85%DB%8C-%D8%B1%D8%A7-%D8%A8%D8%B1%D8%A7%DB%8C-%D8%B1%DB%8C%D8%A7%D8%B3%D8%AA-%D9%85%D8%AC%D9%84%D8%B3-%D9%85%D9%86%D8%A7%D8%B3%D8%A8-%D8%AA%D8%B1-%D8%AF%D8%A7%D9%86%D8%B3%D8%AA%D9%86%D8%AF-%D8%A2%DB%8C%D8%AA-%D8%A7%D9%84%D9%84%D9%87-%D8%AE%D8%A7%D9%85%D9%86%D9%87-%D8%A7%DB%8C-%D8%A8%D8%A7-%D8%AF%D8%B3%D8%AA%D9%88%D8%B1-%D8%A7%D9%85%D8%A7%D9%85-%D8%AF%D8%B1-%D9%87%D8%B1-%D8%AF%D9%88-%D8%AF%D9%88%D8%B1%D9%87-%D8%B1%DB%8C%D8%A7%D8%B3%D8%AA-%D8%AC%D9%85%D9%87%D9%88%D8%B1%DB%8C-%DA%A9%D8%A7%D9%86%D8%AF%DB%8C%D8%AF%D8%A7-%D8%B4%D8%AF%D9%86%D8%AF-%D8%B1%D9%87%D8%A8%D8%B1-%D8%B4%D9%87%DB%8C%D8%AF-%D8%AF%D9%86%D8%A8%D8%A7%D9%84-%D9%85%D9%82%D8%A7%D9%85-%D8%B1%DB%8C%D8%A7%D8%B3%D8%AA-%D9%86%D8%A8%D9%88%D8%AF%D9%86%D8%AF"
+      },
+      {
+        "headline_fa": "روسیه: حضور بازرسان آژانس در ایران در آینده نزدیک ممکن نیست",
+        "headline_en": "Russia: The presence of IAEA inspectors in Iran is not possible in the near future",
+        "url": "https://www.jamaran.news/بخش-%D9%BE%D8%B1%D9%88%D9%81%D8%A7%DB%8C%D9%84-182/1717031-%D8%B1%D9%88%D8%B3%DB%8C%D9%87-%D8%AD%D8%B6%D9%88%D8%B1-%D8%A8%D8%A7%D8%B2%D8%B1%D8%B3%D8%A7%D9%86-%D8%A2%DA%98%D8%A7%D9%86%D8%B3-%D8%AF%D8%B1-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%AF%D8%B1-%D8%A2%DB%8C%D9%86%D8%AF%D9%87-%D9%86%D8%B2%D8%AF%DB%8C%DA%A9-%D9%85%D9%85%DA%A9%D9%86-%D9%86%DB%8C%D8%B3%D8%AA"
+      }
+    ],
+    "loaded_terms": [
+      {
+        "fa": "تفاهم‌نامه",
+        "translit": "tafāhom-nāmeh",
+        "gloss": "memorandum of understanding (MOU)",
+        "signal": "Non-binding. Deliberately weaker than a treaty — signals nothing binding was conceded.",
+        "count": 2
+      },
+      {
+        "fa": "تفاهم",
+        "translit": "tafāhom",
+        "gloss": "understanding",
+        "signal": "Mutual understanding. Non-binding; no obligations created.",
+        "count": 2,
+        "subsumed_by": "تفاهم‌نامه"
+      },
+      {
+        "fa": "تجاوز",
+        "translit": "tajāvoz",
+        "gloss": "aggression / assault",
+        "signal": "Casts the other side as the aggressor (vs neutral حمله 'attack'). Editorial.",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "outlet": "Tasnim",
+    "faction": "irgc",
+    "url": "https://www.tasnimnews.ir",
+    "status": "failed",
+    "error": "HTTP 502"
+  },
+  {
+    "outlet": "Fars News",
+    "faction": "irgc",
+    "url": "https://farsnews.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "عضوی از فارس هستید؟",
+        "headline_en": "Are you a member of Fars?",
+        "url": ""
+      },
+      {
+        "headline_fa": "تلویزیون اینترنتی فارس",
+        "headline_en": "Fars Internet TV",
+        "url": ""
+      },
+      {
+        "headline_fa": "مراسم تشییع رهبر شهید در عراق",
+        "headline_en": "The funeral ceremony of the martyred leader in Iraq",
+        "url": ""
+      },
+      {
+        "headline_fa": "اخبار برگزیده",
+        "headline_en": "selected news",
+        "url": ""
+      },
+      {
+        "headline_fa": "دیگر رسانه ها",
+        "headline_en": "Other media",
+        "url": ""
+      },
+      {
+        "headline_fa": "ترامپ: ایرانی‌ها آشغال هستند؛ تفاهم پایان یافت!",
+        "headline_en": "Trump: Iranians are trash; The understanding is over!",
+        "url": ""
+      }
+    ],
+    "loaded_terms": [
+      {
+        "fa": "تفاهم",
+        "translit": "tafāhom",
+        "gloss": "understanding",
+        "signal": "Mutual understanding. Non-binding; no obligations created.",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "outlet": "Javan",
+    "faction": "irgc",
+    "url": "https://www.javanonline.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "عراق به پا خاست/ تشییع پیکر امام شهید در نجف اشرف",
+        "headline_en": "Iraq rose to its feet/ Burial of the body of Imam Shahid in Najaf Ashraf",
+        "url": "https://www.javanonline.ir/fa/news/1367604/عراق-به-پا-خاست-تشییع-پیکر-امام-شهید-در-نجف-اشرف"
+      },
+      {
+        "headline_fa": "قرارگاه مرکزی خاتم‌الانبیا: هرگز اجازه دخالت در امور تنگه هرمز را نخواهیم داد",
+        "headline_en": "Khatam al-Anbiya Central Headquarters: We will never allow interference in the affairs of the Strait of Hormuz",
+        "url": "https://www.javanonline.ir/fa/news/1367603/قرارگاه-مرکزی-خاتم‌الانبیا-هرگز-اجازه-دخالت-در-امور-تنگه-هرمز-را-نخواهیم-داد"
+      },
+      {
+        "headline_fa": "داستان فرصتی که در جام‌جهانی از دست رفت",
+        "headline_en": "The story of the missed opportunity in the World Cup",
+        "url": "https://www.javanonline.ir/fa/news/1367507/داستان-فرصتی-که-در-جام‌جهانی-از-دست-رفت"
+      },
+      {
+        "headline_fa": "فیلم خوب در منظومه فکری رهبر شهید چه ویژگی‌هایی داشت؟",
+        "headline_en": "What were the characteristics of a good film in the intellectual system of the martyred leader?",
+        "url": "https://www.javanonline.ir/fa/news/1367579/فیلم-خوب-در-منظومه-فکری-رهبر-شهید چه-ویژگی‌هایی-داشت"
+      },
+      {
+        "headline_fa": "تلگرام عرفات را نوشتم: «دریایی از خون و ۲۰ هزارکشته و زخمی...»",
+        "headline_en": "I wrote Arafat's telegram: \"A sea of ​​blood and 20 thousand dead and wounded...\"",
+        "url": "https://www.javanonline.ir/fa/news/1367497/تلگرام-عرفات-را-نوشتم-دریایی-از-خون-و-۲۰-هزارکشته-و-زخمی"
+      },
+      {
+        "headline_fa": "«موج بعثت مردمی» خوداتکا، پویا و پیش رونده",
+        "headline_en": "\"Popular mission wave\" is self-reliant, dynamic and progressive",
+        "url": "https://www.javanonline.ir/fa/news/1367495/موج-بعثت-مردمی-خوداتکا-پویا-و-پیش-رونده"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Mashregh",
+    "faction": "irgc",
+    "url": "https://www.mashreghnews.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "‏پزشکیان: با قاطعیت بر حقوق خود ایستاده‌ایم",
+        "headline_en": "Doctors: We firmly stand by our rights",
+        "url": "https://www.mashreghnews.ir/news/1824253/%D9%BE%D8%B2%D8%B4%DA%A9%DB%8C%D8%A7%D9%86-%D8%A8%D8%A7-%D9%82%D8%A7%D8%B7%D8%B9%DB%8C%D8%AA-%D8%A8%D8%B1-%D8%AD%D9%82%D9%88%D9%82-%D8%AE%D9%88%D8%AF-%D8%A7%DB%8C%D8%B3%D8%AA%D8%A7%D8%AF%D9%87-%D8%A7%DB%8C%D9%85"
+      },
+      {
+        "headline_fa": "دونالد ترامپ: نمی‌خواهم با ایران تعامل کنم",
+        "headline_en": "Donald Trump: I don't want to interact with Iran",
+        "url": "https://www.mashreghnews.ir/news/1824238/%D8%AF%D9%88%D9%86%D8%A7%D9%84%D8%AF-%D8%AA%D8%B1%D8%A7%D9%85%D9%BE-%D9%86%D9%85%DB%8C-%D8%AE%D9%88%D8%A7%D9%87%D9%85-%D8%A8%D8%A7-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%AA%D8%B9%D8%A7%D9%85%D9%84-%DA%A9%D9%86%D9%85"
+      },
+      {
+        "headline_fa": "ازدحام جمعیت در اطراف ماشین حمل پیکر رهبر شهید انقلاب",
+        "headline_en": "The crowd around the car carrying the body of the Martyr of the Revolution",
+        "url": "https://www.mashreghnews.ir/photo/1824236/%D8%A7%D8%B2%D8%AF%D8%AD%D8%A7%D9%85-%D8%AC%D9%85%D8%B9%DB%8C%D8%AA-%D8%AF%D8%B1-%D8%A7%D8%B7%D8%B1%D8%A7%D9%81-%D9%85%D8%A7%D8%B4%DB%8C%D9%86-%D8%AD%D9%85%D9%84-%D9%BE%DB%8C%DA%A9%D8%B1-%D8%B1%D9%87%D8%A8%D8%B1-%D8%B4%D9%87%DB%8C%D8%AF-%D8%A7%D9%86%D9%82%D9%84%D8%A7%D8%A8"
+      },
+      {
+        "headline_fa": "توصیه رهبر انقلاب درباره مرقد رهبر شهید در حرم رضوی",
+        "headline_en": "The advice of the leader of the revolution about the mausoleum of the martyred leader in the Razavi shrine",
+        "url": "https://www.mashreghnews.ir/news/1824235/%D9%85%D8%B1%D9%82%D8%AF-%D8%B1%D9%87%D8%A8%D8%B1-%D8%B4%D9%87%DB%8C%D8%AF-%D8%A8%D8%A7-%D9%86%D8%B8%D8%B1-%D8%B1%D9%87%D8%A8%D8%B1%DB%8C-%D9%85%D8%B9%D8%B8%D9%85-%D8%AF%D8%B1-%D9%85%D8%B3%DB%8C%D8%B1-%D8%B2%DB%8C%D8%A7%D8%B1%D8%AA-%D8%B2%D8%A7%D8%A6%D8%B1%D8%A7%D9%86-%D8%AE%D9%88%D8%A7%D9%87%D8%AF-%D8%A8%D9%88%D8%AF"
+      },
+      {
+        "headline_fa": "همکاری امارات در تجاوز شب گذشته آمریکا به ایران",
+        "headline_en": "The UAE's cooperation in last night's aggression against Iran by the United States",
+        "url": "https://www.mashreghnews.ir/news/1824224/%D9%87%D9%85%DA%A9%D8%A7%D8%B1%DB%8C-%D8%A7%D9%85%D8%A7%D8%B1%D8%A7%D8%AA-%D8%AF%D8%B1-%D8%AA%D8%AC%D8%A7%D9%88%D8%B2-%D8%B4%D8%A8-%DA%AF%D8%B0%D8%B4%D8%AA%D9%87-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%A8%D9%87-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86"
+      },
+      {
+        "headline_fa": "بیانیه وزارت امور خارجه درباره نقض یادداشت تفاهم",
+        "headline_en": "Statement of the Ministry of Foreign Affairs regarding the violation of the memorandum of understanding",
+        "url": "https://www.mashreghnews.ir/news/1824211/%D8%A8%DB%8C%D8%A7%D9%86%DB%8C%D9%87-%D9%88%D8%B2%D8%A7%D8%B1%D8%AA-%D8%A7%D9%85%D9%88%D8%B1-%D8%AE%D8%A7%D8%B1%D8%AC%D9%87-%D8%AF%D8%B1%D8%A8%D8%A7%D8%B1%D9%87-%D9%86%D9%82%D8%B6-%DB%8C%D8%A7%D8%AF%D8%AF%D8%A7%D8%B4%D8%AA-%D8%AA%D9%81%D8%A7%D9%87%D9%85"
+      }
+    ],
+    "loaded_terms": [
+      {
+        "fa": "تفاهم",
+        "translit": "tafāhom",
+        "gloss": "understanding",
+        "signal": "Mutual understanding. Non-binding; no obligations created.",
+        "count": 1
+      },
+      {
+        "fa": "تجاوز",
+        "translit": "tajāvoz",
+        "gloss": "aggression / assault",
+        "signal": "Casts the other side as the aggressor (vs neutral حمله 'attack'). Editorial.",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "outlet": "Kayhan",
+    "faction": "hardline",
+    "url": "https://kayhan.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "فریاد خونخواهی امام شهید در بزرگ‌ترین و بی‌نظیرترین تشییع تاریخ",
+        "headline_en": "The cry for blood of Imam Shahid in the biggest and most unique funeral in history",
+        "url": "https://kayhan.ir/fa/news/333802/فریاد-خونخواهی-امام-شهید-در-بزرگ‌ترین-و-بی‌نظیرترین-تشییع-تاریخ"
+      },
+      {
+        "headline_fa": "تظاهرات مردم ترکیه در حاشیه نشست ناتو با شعار «ناتوی جنایتکار از کشورم خارج شو»",
+        "headline_en": "Demonstrations of the Turkish people on the sidelines of the NATO meeting with the slogan \"Criminal NATO, get out of my country\"",
+        "url": "https://kayhan.ir/fa/news/333792/تظاهرات-مردم-ترکیه-در-حاشیه-نشست-ناتو-با-شعار-ناتوی-جنایتکار-از-کشورم-خارج-شو"
+      },
+      {
+        "headline_fa": "اتحاد مردم برای قتل ترامپ در تشییع تاریخی امام شهید",
+        "headline_en": "The unity of the people for the murder of Trump in the historical funeral of the martyred imam",
+        "url": "https://kayhan.ir/fa/news/333788/اتحاد-مردم-برای-قتل-ترامپ-در-تشییع-تاریخی-امام-شهید"
+      },
+      {
+        "headline_fa": "سر ترامپ را می‌خواهیم!(یادداشت روز)",
+        "headline_en": "We want Trump's head! (note of the day)",
+        "url": "https://kayhan.ir/fa/news/333812/سر-ترامپ-را-می‌خواهیمیادداشت-روز"
+      },
+      {
+        "headline_fa": "پرونده‌های انتقام باز است",
+        "headline_en": "Revenge cases are open",
+        "url": "https://kayhan.ir/fa/news/333804/پرونده‌های-انتقام-باز-است"
+      },
+      {
+        "headline_fa": "تخمین 30 میلیونی «گاردین» از وداع، تشییع و تدفین رهبر شهید",
+        "headline_en": "\"Guardian's\" estimate of 30 million for the farewell, funeral and burial of the martyred leader",
+        "url": "https://kayhan.ir/fa/news/333819/تخمین-30-میلیونی-گاردین-از-وداع-تشییع-و-تدفین-رهبر-شهید"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Vatan-e Emrooz",
+    "faction": "hardline",
+    "url": "https://vatanemrooz.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "بحران هرمز، رقابت کریدورها را داغ کرد/ 4 مسیر برای دور زدن تنگه",
+        "headline_en": "The Hormuz crisis heated up the competition for corridors/ 4 routes to bypass the strait",
+        "url": "https://vatanemrooz.ir/fa/news/419514/بحران-هرمز-رقابت-کریدورها-را-داغ-کرد-4-مسیر-برای-دور-زدن-تنگه"
+      },
+      {
+        "headline_fa": "هلاکت فرمانده اسکادران بالگردی نیروی دریایی آمریکا",
+        "headline_en": "The death of the commander of the helicopter squadron of the US Navy",
+        "url": "https://vatanemrooz.ir/fa/news/419512/هلاکت-فرمانده-اسکادران-بالگردی-نیروی-دریایی-آمریکا"
+      },
+      {
+        "headline_fa": "وداع تاریخی در نجف اشرف؛ سیل خروشان جمعیت در تشییع قائد شهید امت",
+        "headline_en": "Historical farewell in Najaf Ashraf; The roaring flood of the crowd at the funeral of the martyred leader of the nation",
+        "url": "https://vatanemrooz.ir/fa/news/419511/وداع-تاریخی-در-نجف-اشرف-سیل-خروشان-جمعیت-در-تشییع-قائد-شهید-امت"
+      },
+      {
+        "headline_fa": "سپاه: 85 هدف نظامی آمریکا در بحرین و کویت را هدف قرار دادیم",
+        "headline_en": "IRGC: We targeted 85 US military targets in Bahrain and Kuwait",
+        "url": "https://vatanemrooz.ir/fa/news/419510/سپاه-85-هدف-نظامی-آمریکا-در-بحرین-و-کویت-را-هدف-قرار-دادیم"
+      },
+      {
+        "headline_fa": "قرارگاه خاتم‌الانبیا: اجازه دخالت در امور تنگه هرمز را نخواهیم داد",
+        "headline_en": "Khatam al-Anbiya headquarters: We will not allow interference in the affairs of the Strait of Hormuz",
+        "url": "https://vatanemrooz.ir/fa/news/419509/قرارگاه-خاتم-الانبیا-اجازه-دخالت-در-امور-تنگه-هرمز-را-نخواهیم-داد"
+      },
+      {
+        "headline_fa": "سردار محبی: یک فروند پهپاد MQ9 در آسمان خورموج ساقط شد",
+        "headline_en": "Sardar Mohebi: An MQ9 drone crashed in the sky of Khormouj",
+        "url": "https://vatanemrooz.ir/fa/news/419508/سردار-محبی-یک-فروند-پهپاد-mq9-در-آسمان-خورموج-ساقط-شد"
+      }
+    ],
+    "loaded_terms": []
+  }
+]
