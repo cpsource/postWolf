@@ -1,0 +1,398 @@
+[
+  {
+    "outlet": "Iran Newspaper",
+    "faction": "establishment",
+    "url": "https://irannewspaper.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "تمام شماره ها",
+        "headline_en": "All numbers",
+        "url": "https://irannewspaper.ir/archive/main"
+      },
+      {
+        "headline_fa": "تمام ویژه نامه ها",
+        "headline_en": "All special letters",
+        "url": "https://irannewspaper.ir/archive/specials"
+      },
+      {
+        "headline_fa": "سازمان آگهی‌ها",
+        "headline_en": "Ads organization",
+        "url": "https://irannewspaper.ir/ads"
+      },
+      {
+        "headline_fa": "دستیار هوش مصنوعی",
+        "headline_en": "Artificial intelligence assistant",
+        "url": "https://chat.irannewspaper.ir"
+      },
+      {
+        "headline_fa": "حفظ انسجام ملی مسئولیت همگانی",
+        "headline_en": "Maintaining the national cohesion of public responsibility",
+        "url": "https://irannewspaper.ir/9075/1/158722"
+      },
+      {
+        "headline_fa": "مذاکره منافاتی با خونخواهی رهبر شهید ندارد",
+        "headline_en": "Negotiation does not conflict with the blood lust of the martyred leader",
+        "url": "https://irannewspaper.ir/9075/1/158723"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "IRNA",
+    "faction": "establishment",
+    "url": "https://www.irna.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "Transferring to the website...",
+        "headline_en": "Transferring to the website...",
+        "url": ""
+      },
+      {
+        "headline_fa": "در ﺣﺎل اﻧﺘﻘﺎل ﺑﻪ ﺳﺎﯾﺖ ﻣﻮرد ﻧﻈﺮ ﻫﺴﺘﯿﺪ...",
+        "headline_en": "You are moving to the site in question...",
+        "url": ""
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "IRNA English",
+    "faction": "establishment",
+    "url": "https://en.irna.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "Transferring to the website...",
+        "headline_en": "Transferring to the website...",
+        "url": ""
+      },
+      {
+        "headline_fa": "در ﺣﺎل اﻧﺘﻘﺎل ﺑﻪ ﺳﺎﯾﺖ ﻣﻮرد ﻧﻈﺮ ﻫﺴﺘﯿﺪ...",
+        "headline_en": "You are moving to the site in question...",
+        "url": ""
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Shargh",
+    "faction": "reformist",
+    "url": "https://www.sharghdaily.com/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "والیبال نشسته ایران برای نهمین بار قهرمان جهان شد",
+        "headline_en": "Iranian sitting volleyball won the world championship for the ninth time",
+        "url": "https://www.sharghdaily.com/بخش-%D9%88%D8%B1%D8%B2%D8%B4-14/1115581-%D9%88%D8%A7%D9%84%DB%8C%D8%A8%D8%A7%D9%84-%D9%86%D8%B4%D8%B3%D8%AA%D9%87-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%A8%D8%B1%D8%A7%DB%8C-%D9%86%D9%87%D9%85%DB%8C%D9%86-%D8%A8%D8%A7%D8%B1-%D9%82%D9%87%D8%B1%D9%85%D8%A7%D9%86-%D8%AC%D9%87%D8%A7%D9%86-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "شرکت گازی اقلیم کردستان مورد هدف قرار گرفت",
+        "headline_en": "Kurdistan Regional Gas Company was targeted",
+        "url": "https://www.sharghdaily.com/بخش-%D8%AC%D9%87%D8%A7%D9%86-219/1115580-%D8%B4%D8%B1%DA%A9%D8%AA-%DA%AF%D8%A7%D8%B2%DB%8C-%D8%A7%D9%82%D9%84%DB%8C%D9%85-%DA%A9%D8%B1%D8%AF%D8%B3%D8%AA%D8%A7%D9%86-%D9%85%D9%88%D8%B1%D8%AF-%D9%87%D8%AF%D9%81-%D9%82%D8%B1%D8%A7%D8%B1-%DA%AF%D8%B1%D9%81%D8%AA"
+      },
+      {
+        "headline_fa": "این ماسکهای صورت ممنوع شد",
+        "headline_en": "These face masks were banned",
+        "url": "https://www.sharghdaily.com/بخش-%D8%AC%D8%A7%D9%85%D8%B9%D9%87-220/1115579-%D8%A7%DB%8C%D9%86-%D9%85%D8%A7%D8%B3%DA%A9%D9%87%D8%A7%DB%8C-%D8%B5%D9%88%D8%B1%D8%AA-%D9%85%D9%85%D9%86%D9%88%D8%B9-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "یمن وارد جنگ شد ؟ یک نفتکش درسواحل عدن توقیف شد",
+        "headline_en": "Yemen entered the war? An oil tanker was seized on the coast of Aden",
+        "url": "https://www.sharghdaily.com/بخش-%D8%AC%D9%87%D8%A7%D9%86-219/1115578-%DB%8C%D9%85%D9%86-%D9%88%D8%A7%D8%B1%D8%AF-%D8%AC%D9%86%DA%AF-%D8%B4%D8%AF-%DB%8C%DA%A9-%D9%86%D9%81%D8%AA%DA%A9%D8%B4-%D8%AF%D8%B1%D8%B3%D9%88%D8%A7%D8%AD%D9%84-%D8%B9%D8%AF%D9%86-%D8%AA%D9%88%D9%82%DB%8C%D9%81-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "اردوی ترکیه پرسپولیس لغو شد",
+        "headline_en": "The Persepolis Turkish camp was cancelled",
+        "url": "https://www.sharghdaily.com/بخش-%D9%88%D8%B1%D8%B2%D8%B4-14/1115574-%D8%A7%D8%B1%D8%AF%D9%88%DB%8C-%D8%AA%D8%B1%DA%A9%DB%8C%D9%87-%D9%BE%D8%B1%D8%B3%D9%BE%D9%88%D9%84%DB%8C%D8%B3-%D9%84%D8%BA%D9%88-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "دوم خردادی‌ها به دنبال محاکمه مرتضوی",
+        "headline_en": "Second Khordadis following Mortazavi's trial",
+        "url": "https://www.sharghdaily.com/بخش-%D8%B3%DB%8C%D8%A7%D8%B3%D8%AA-6/1115532-%D8%AF%D9%88%D9%85-%D8%AE%D8%B1%D8%AF%D8%A7%D8%AF%DB%8C-%D9%87%D8%A7-%D8%A8%D9%87-%D8%AF%D9%86%D8%A8%D8%A7%D9%84-%D9%85%D8%AD%D8%A7%DA%A9%D9%85%D9%87-%D9%85%D8%B1%D8%AA%D8%B6%D9%88%DB%8C"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Etemad",
+    "faction": "reformist",
+    "url": "https://www.etemadnewspaper.ir",
+    "status": "failed",
+    "error": "Request failed: HTTPSConnectionPool(host='www.etemadnewspaper.ir', port=443): Max retries exceeded with url: / (Caused by ConnectTimeoutError(<HTTPSConnection(host='www.etemadnewspaper.ir', port=443) at 0x79163a7c3710>, 'Connection to www.etemadnewspaper.ir timed out. (connect timeout=60)'))"
+  },
+  {
+    "outlet": "Jamaran",
+    "faction": "reformist",
+    "url": "https://www.jamaran.news/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "انصاری، معاون رئیس جمهور: دیپلمات‌ها خون‌خواهی را با استفاده از ابزار حقوقی پیگیری کنند/ راجع به جنگ ۱۲روزه، پرونده علیه شخص ترامپ به جریان افتاده است/ در آستانه تنظیم دادخواست دوم در خصوص جنگ رمضان هستیم/ باید محکومیت دشمنان را بگیریم و آنها را تحت تعقیب قرار دهیم/ در برابر «دشمن مشترک» همه اختلاف‌سلیقه‌ها رنگ می‌بازد/ پشت نیروهای دیپلمات نباید خالی شود",
+        "headline_en": "Ansari, Vice President: Diplomats should pursue bloodlust using legal means / Regarding the 12-day war, the case against Trump has been launched / We are on the verge of filing a second petition regarding the Ramadan war / We must condemn the enemies and prosecute them / All differences of taste fade away in front of the \"common enemy\" / Diplomatic forces should not be left behind",
+        "url": "https://www.jamaran.news/بخش-%D8%B3%DB%8C%D8%A7%D8%B3%D8%AA-12/1718521-%D8%A7%D9%86%D8%B5%D8%A7%D8%B1%DB%8C-%D9%85%D8%B9%D8%A7%D9%88%D9%86-%D8%B1%D8%A6%DB%8C%D8%B3-%D8%AC%D9%85%D9%87%D9%88%D8%B1-%D8%AF%DB%8C%D9%BE%D9%84%D9%85%D8%A7%D8%AA-%D9%87%D8%A7-%D8%AE%D9%88%D9%86-%D8%AE%D9%88%D8%A7%D9%87%DB%8C-%D8%B1%D8%A7-%D8%A8%D8%A7-%D8%A7%D8%B3%D8%AA%D9%81%D8%A7%D8%AF%D9%87-%D8%A7%D8%B2-%D8%A7%D8%A8%D8%B2%D8%A7%D8%B1-%D8%AD%D9%82%D9%88%D9%82%DB%8C-%D9%BE%DB%8C%DA%AF%DB%8C%D8%B1%DB%8C-%DA%A9%D9%86%D9%86%D8%AF-%D8%B1%D8%A7%D8%AC%D8%B9-%D8%A8%D9%87-%D8%AC%D9%86%DA%AF-%D8%B1%D9%88%D8%B2%D9%87-%D9%BE%D8%B1%D9%88%D9%86%D8%AF%D9%87-%D8%B9%D9%84%DB%8C%D9%87-%D8%B4%D8%AE%D8%B5-%D8%AA%D8%B1%D8%A7%D9%85%D9%BE-%D8%A8%D9%87-%D8%AC%D8%B1%DB%8C%D8%A7%D9%86-%D8%A7%D9%81%D8%AA%D8%A7%D8%AF%D9%87-%D8%A7%D8%B3%D8%AA-%D8%AF%D8%B1-%D8%A2%D8%B3%D8%AA%D8%A7%D9%86%D9%87-%D8%AA%D9%86%D8%B8%DB%8C%D9%85-%D8%AF%D8%A7%D8%AF%D8%AE%D9%88%D8%A7%D8%B3%D8%AA-%D8%AF%D9%88%D9%85-%D8%AF%D8%B1-%D8%AE%D8%B5%D9%88%D8%B5-%D8%AC%D9%86%DA%AF-%D8%B1%D9%85%D8%B6%D8%A7%D9%86-%D9%87%D8%B3%D8%AA%DB%8C%D9%85"
+      },
+      {
+        "headline_fa": "تحلیل ولی نصر درباره ازسرگیری جنگ و حمله آمریکا به ایران؛ تهران حفظ کنترل بر تنگه هرمز…",
+        "headline_en": "Vali Nasr's analysis about the resumption of war and the American attack on Iran; Tehran maintains control over the Strait of Hormuz...",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%DB%8C%D9%86-%D8%A7%D9%84%D9%85%D9%84%D9%84-15/1718528-%D8%AA%D8%AD%D9%84%DB%8C%D9%84-%D9%88%D9%84%DB%8C-%D9%86%D8%B5%D8%B1-%D8%AF%D8%B1%D8%A8%D8%A7%D8%B1%D9%87-%D8%A7%D8%B2%D8%B3%D8%B1%DA%AF%DB%8C%D8%B1%DB%8C-%D8%AC%D9%86%DA%AF-%D8%AD%D9%85%D9%84%D9%87-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%A8%D9%87-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%AA%D9%87%D8%B1%D8%A7%D9%86-%D8%AD%D9%81%D8%B8-%DA%A9%D9%86%D8%AA%D8%B1%D9%84-%D8%A8%D8%B1-%D8%AA%D9%86%DA%AF%D9%87-%D9%87%D8%B1%D9%85%D8%B2-%D8%B1%D8%A7-%D8%B4%D8%B1%D8%B7-%D8%AA%D8%B6%D9%85%DB%8C%D9%86-%D8%AF%D8%B3%D8%AA%D8%A7%D9%88%D8%B1%D8%AF%D9%87%D8%A7%DB%8C-%D8%A2%DB%8C%D9%86%D8%AF%D9%87-%D8%AF%D8%B1-%D9%85%D8%B0%D8%A7%DA%A9%D8%B1%D8%A7%D8%AA-%D9%85%DB%8C-%D8%AF%D8%A7%D9%86%D8%AF"
+      },
+      {
+        "headline_fa": "حاج علی اکبری: مذاکره و تفاهم نامه سوخت و از دور خارج شد/ انتقام یک خواست همگانی و قطعی…",
+        "headline_en": "Haj Ali Akbari: Negotiations and memorandum of understanding burned and went away/revenge is a universal and definite demand...",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%D8%A7%D8%B2%D9%86%D8%B4%D8%B1-59/1718523-%D8%AD%D8%A7%D8%AC-%D8%B9%D9%84%DB%8C-%D8%A7%DA%A9%D8%A8%D8%B1%DB%8C-%D9%85%D8%B0%D8%A7%DA%A9%D8%B1%D9%87-%D8%AA%D9%81%D8%A7%D9%87%D9%85-%D9%86%D8%A7%D9%85%D9%87-%D8%B3%D9%88%D8%AE%D8%AA-%D8%A7%D8%B2-%D8%AF%D9%88%D8%B1-%D8%AE%D8%A7%D8%B1%D8%AC-%D8%B4%D8%AF-%D8%A7%D9%86%D8%AA%D9%82%D8%A7%D9%85-%DB%8C%DA%A9-%D8%AE%D9%88%D8%A7%D8%B3%D8%AA-%D9%87%D9%85%DA%AF%D8%A7%D9%86%DB%8C-%D9%82%D8%B7%D8%B9%DB%8C-%D8%A7%D8%B3%D8%AA-%D8%A7%D8%AE%D8%B1%D8%A7%D8%AC-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%A7%D8%B2-%D9%85%D9%86%D8%B7%D9%82%D9%87-%D8%A7%D8%B2%D8%A7%D9%84%D9%87-%D8%B1%DA%98%DB%8C%D9%85-%D8%B5%D9%87%DB%8C%D9%88%D9%86%DB%8C%D8%B3%D8%AA%DB%8C-%D8%A8%D8%AE%D8%B4%DB%8C-%D8%A7%D8%B2-%D8%A7%D9%86%D8%AA%D9%82%D8%A7%D9%85-%D9%85%D9%84%D8%AA-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%A7%D8%B3%D8%AA-%D8%A8%D9%87%D8%AA%D8%B1%DB%8C%D9%86-%D9%88%D8%B3%DB%8C%D9%84%D9%87-%D9%85%D8%A7-%D8%A8%D8%B1%D8%A7%DB%8C-%DA%AF%D8%B1%D9%81%D8%AA%D9%86-%D8%A7%D9%86%D8%AA%D9%82%D8%A7%D9%85-%D8%AA%D9%86%DA%AF%D9%87-%D9%87%D8%B1%D9%85%D8%B2-%D8%A7%D8%B3%D8%AA-%D9%85%D8%AC%D8%B1%DB%8C-%D8%A8%D8%B1%D8%A7%DB%8C-%D8%A7%D8%AC%D8%B1%D8%A7%DB%8C-%D8%AD%DA%A9%D9%85-%D8%A7%D9%86%D8%AA%D9%82%D8%A7%D9%85-%D9%81%D8%B1%D8%A7%D9%88%D8%A7%D9%86-%D8%A7%D8%B3%D8%AA"
+      },
+      {
+        "headline_fa": "سپاه: حمله غافلگیرانه به مرکز فرماندهی عملیات ویژه دشمن در سوریه/ رادارهای دریایی و…",
+        "headline_en": "IRGC: surprise attack on the enemy's special operations command center in Syria/marine radars and...",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%D8%A7%D8%B2%D9%86%D8%B4%D8%B1-59/1718502-%D8%B3%D9%BE%D8%A7%D9%87-%D8%AD%D9%85%D9%84%D9%87-%D8%BA%D8%A7%D9%81%D9%84%DA%AF%DB%8C%D8%B1%D8%A7%D9%86%D9%87-%D8%A8%D9%87-%D9%85%D8%B1%DA%A9%D8%B2-%D9%81%D8%B1%D9%85%D8%A7%D9%86%D8%AF%D9%87%DB%8C-%D8%B9%D9%85%D9%84%DB%8C%D8%A7%D8%AA-%D9%88%DB%8C%DA%98%D9%87-%D8%AF%D8%B4%D9%85%D9%86-%D8%AF%D8%B1-%D8%B3%D9%88%D8%B1%DB%8C%D9%87-%D8%B1%D8%A7%D8%AF%D8%A7%D8%B1%D9%87%D8%A7%DB%8C-%D8%AF%D8%B1%DB%8C%D8%A7%DB%8C%DB%8C-%D9%87%D9%88%D8%A7%DB%8C%DB%8C-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%AF%D8%B1-%D8%B9%D9%85%D8%A7%D9%86-%D8%B1%D8%A7-%D9%85%D9%86%D9%87%D8%AF%D9%85-%DA%A9%D8%B1%D8%AF%DB%8C%D9%85-%D8%AC%D9%86%DA%AF%D9%86%D8%AF%D9%87-%D9%87%D8%A7-%D8%B3%D9%88%D8%AE%D8%AA-%D8%B1%D8%B3%D8%A7%D9%86-%D9%87%D8%A7%DB%8C-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%AF%D8%B1-%D8%A7%D8%B1%D8%AF%D9%86-%D9%87%D8%AF%D9%81-%D9%82%D8%B1%D8%A7%D8%B1-%DA%AF%D8%B1%D9%81%D8%AA%D9%86%D8%AF-%D8%B3%DA%A9%D9%88-%D9%85%D9%88%D8%B4%DA%A9-%D9%87%D8%A7%DB%8C-%D9%87%DB%8C%D9%85%D8%A7%D8%B1%D8%B3-%D8%AF%D8%B1-%DA%A9%D9%88%DB%8C%D8%AA-%D8%AF%D8%B1%D9%87%D9%85-%DA%A9%D9%88%D8%A8%DB%8C%D8%AF%D9%87-%D8%B4%D8%AF%D9%86%D8%AF"
+      },
+      {
+        "headline_fa": "سپاه: سامانه راداری برد بلند و چندین فروند هواپیمای راهبردی سوخت‌رسان آمریکا منهدم شد",
+        "headline_en": "IRGC: The long-range radar system and several American strategic refueling planes were destroyed",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%D8%A7%D8%B2%D9%86%D8%B4%D8%B1-59/1718516-%D8%B3%D9%BE%D8%A7%D9%87-%D8%B3%D8%A7%D9%85%D8%A7%D9%86%D9%87-%D8%B1%D8%A7%D8%AF%D8%A7%D8%B1%DB%8C-%D8%A8%D8%B1%D8%AF-%D8%A8%D9%84%D9%86%D8%AF-%DA%86%D9%86%D8%AF%DB%8C%D9%86-%D9%81%D8%B1%D9%88%D9%86%D8%AF-%D9%87%D9%88%D8%A7%D9%BE%DB%8C%D9%85%D8%A7%DB%8C-%D8%B1%D8%A7%D9%87%D8%A8%D8%B1%D8%AF%DB%8C-%D8%B3%D9%88%D8%AE%D8%AA-%D8%B1%D8%B3%D8%A7%D9%86-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D9%85%D9%86%D9%87%D8%AF%D9%85-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "چین برنده نبرد وجهه شد؛ آیا جایگاه جهانی آمریکا رو به افول است؟",
+        "headline_en": "China won the image battle; Is America's global position declining?",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%DB%8C%D9%86-%D8%A7%D9%84%D9%85%D9%84%D9%84-15/1718534-%DA%86%DB%8C%D9%86-%D8%A8%D8%B1%D9%86%D8%AF%D9%87-%D9%86%D8%A8%D8%B1%D8%AF-%D9%88%D8%AC%D9%87%D9%87-%D8%B4%D8%AF-%D8%A2%DB%8C%D8%A7-%D8%AC%D8%A7%DB%8C%DA%AF%D8%A7%D9%87-%D8%AC%D9%87%D8%A7%D9%86%DB%8C-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%B1%D9%88-%D8%A8%D9%87-%D8%A7%D9%81%D9%88%D9%84-%D8%A7%D8%B3%D8%AA"
+      }
+    ],
+    "loaded_terms": [
+      {
+        "fa": "تفاهم‌نامه",
+        "translit": "tafāhom-nāmeh",
+        "gloss": "memorandum of understanding (MOU)",
+        "signal": "Non-binding. Deliberately weaker than a treaty — signals nothing binding was conceded.",
+        "count": 1
+      },
+      {
+        "fa": "تفاهم",
+        "translit": "tafāhom",
+        "gloss": "understanding",
+        "signal": "Mutual understanding. Non-binding; no obligations created.",
+        "count": 1,
+        "subsumed_by": "تفاهم‌نامه"
+      }
+    ]
+  },
+  {
+    "outlet": "Tasnim",
+    "faction": "irgc",
+    "url": "https://www.tasnimnews.ir",
+    "status": "failed",
+    "error": "HTTP 502"
+  },
+  {
+    "outlet": "Fars News",
+    "faction": "irgc",
+    "url": "https://farsnews.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "عضوی از فارس هستید؟",
+        "headline_en": "Are you a member of Fars?",
+        "url": ""
+      },
+      {
+        "headline_fa": "اخبار برگزیده",
+        "headline_en": "selected news",
+        "url": ""
+      },
+      {
+        "headline_fa": "دیگر رسانه ها",
+        "headline_en": "Other media",
+        "url": ""
+      },
+      {
+        "headline_fa": "ارتش چگونه پایگاه‌های آمریکا در منطقه را هدف گرفت",
+        "headline_en": "How did the military target American bases in the region?",
+        "url": ""
+      },
+      {
+        "headline_fa": "جام جهانی ۲۰۲۶",
+        "headline_en": "World Cup 2026",
+        "url": ""
+      },
+      {
+        "headline_fa": "#باید_برخاست",
+        "headline_en": "#must_rise",
+        "url": ""
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Javan",
+    "faction": "irgc",
+    "url": "https://www.javanonline.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "نفوذ اسرائیل در آمریکا به زودی بر ملا خواهد شد",
+        "headline_en": "Israel's influence in America will soon be over",
+        "url": "https://www.javanonline.ir/fa/news/1369158/نفوذ-اسرائیل-در-آمریکا-به-زودی-بر-ملا-خواهد-شد"
+      },
+      {
+        "headline_fa": "انهدام چند فروند سوخت‌رسان و جنگنده آمریکایی با موشک بالستیک و پهپاد‌های متعدد",
+        "headline_en": "Destruction of several refueling planes and American fighters with ballistic missiles and numerous drones",
+        "url": "https://www.javanonline.ir/fa/news/1369134/انهدام-چند-فروند-سوخت-رسان-و-جنگنده-آمریکایی-با-موشک-بالستیک-و-پهپاد-های-متعدد"
+      },
+      {
+        "headline_fa": "پیوند زدن اشغال قدس با بحران قدرت در جهان اسلام",
+        "headline_en": "Linking the occupation of Jerusalem with the crisis of power in the Islamic world",
+        "url": "https://www.javanonline.ir/fa/news/1368983/پیوند-زدن-اشغال-قدس-با-بحران-قدرت-در-جهان-اسلام"
+      },
+      {
+        "headline_fa": "ریشه‌های تاریخی مدرسه و آینده آموزش/ هنوز نمی‌دانیم خروجی مدارس ما قرار است چه باشد!",
+        "headline_en": "The historical roots of the school and the future of education/ we still don't know what the output of our schools is going to be!",
+        "url": "https://www.javanonline.ir/fa/news/1368722/هنوز-نمی-دانیم-خروجی-مدارس-ما-قرار-است-چه-باشد"
+      },
+      {
+        "headline_fa": "جزئیاتی از هشدارها نسبت به «درازای آرزو»/ آرزوهای‌مان را از طول و عرض به ارتفاع ببریم",
+        "headline_en": "Details of warnings about the \"length of desire\" / to increase our desires from length and breadth",
+        "url": "https://www.javanonline.ir/fa/news/1368720/آرزوهای-مان-را-از-طول-و-عرض-به-ارتفاع-ببریم"
+      },
+      {
+        "headline_fa": "هم برای سید قطب هم برای عبدالناصر گریستم!",
+        "headline_en": "I cried for both Seyyed Qutb and Abdul Nasser!",
+        "url": "https://www.javanonline.ir/fa/news/1368723/هم-برای-سید-قطب-هم-برای-عبدالناصر-گریستم"
+      }
+    ],
+    "loaded_terms": [
+      {
+        "fa": "نفوذ",
+        "translit": "nofuz",
+        "gloss": "'infiltration'",
+        "signal": "Used to smear negotiators/reformists as foreign agents — a hardline attack term.",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "outlet": "Mashregh",
+    "faction": "irgc",
+    "url": "https://www.mashreghnews.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "نخست وزیر جدید انگلیس معرفی شد",
+        "headline_en": "The new Prime Minister of England was announced",
+        "url": "https://www.mashreghnews.ir/news/1826391/%D9%86%D8%AE%D8%B3%D8%AA-%D9%88%D8%B2%DB%8C%D8%B1-%D8%AC%D8%AF%DB%8C%D8%AF-%D8%A7%D9%86%DA%AF%D9%84%DB%8C%D8%B3-%D9%85%D8%B9%D8%B1%D9%81%DB%8C-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "قالیباف: ایرانی میراث پرافتخار خود را به آسانی واگذار نمی‌کند",
+        "headline_en": "Ghalibaf: Iranians do not give up their proud heritage easily",
+        "url": "https://www.mashreghnews.ir/news/1826383/%D9%82%D8%A7%D9%84%DB%8C%D8%A8%D8%A7%D9%81-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86%DB%8C-%D9%85%DB%8C%D8%B1%D8%A7%D8%AB-%D9%BE%D8%B1%D8%A7%D9%81%D8%AA%D8%AE%D8%A7%D8%B1-%D8%AE%D9%88%D8%AF-%D8%B1%D8%A7-%D8%A8%D9%87-%D8%A2%D8%B3%D8%A7%D9%86%DB%8C-%D9%88%D8%A7%DA%AF%D8%B0%D8%A7%D8%B1-%D9%86%D9%85%DB%8C-%DA%A9%D9%86%D8%AF"
+      },
+      {
+        "headline_fa": "۸ کشته در حمله به مقر احزاب تجزیه‌طلب در عراق",
+        "headline_en": "8 killed in the attack on the headquarters of the separatist parties in Iraq",
+        "url": "https://www.mashreghnews.ir/news/1826381/%DB%B8-%DA%A9%D8%B4%D8%AA%D9%87-%D8%AF%D8%B1-%D8%AD%D9%85%D9%84%D9%87-%D8%A8%D9%87-%D9%85%D9%82%D8%B1-%D8%A7%D8%AD%D8%B2%D8%A7%D8%A8-%D8%AA%D8%AC%D8%B2%DB%8C%D9%87-%D8%B7%D9%84%D8%A8-%D8%AF%D8%B1-%D8%B9%D8%B1%D8%A7%D9%82"
+      },
+      {
+        "headline_fa": "رمزگشایی عراقچی از جریان نفوذ اسرائیلی در آمریکا",
+        "headline_en": "Araghchi's decoding of the flow of Israeli influence in America",
+        "url": "https://www.mashreghnews.ir/news/1826380/%D8%B1%D9%85%D8%B2%DA%AF%D8%B4%D8%A7%DB%8C%DB%8C-%D8%B9%D8%B1%D8%A7%D9%82%DA%86%DB%8C-%D8%A7%D8%B2-%D8%AC%D8%B1%DB%8C%D8%A7%D9%86-%D9%86%D9%81%D9%88%D8%B0-%D8%A7%D8%B3%D8%B1%D8%A7%D8%A6%DB%8C%D9%84%DB%8C-%D8%AF%D8%B1-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7"
+      },
+      {
+        "headline_fa": "حادثه برای یک نفتکش در نزدیکی جزیره خارک",
+        "headline_en": "Accident for an oil tanker near Khark Island",
+        "url": "https://www.mashreghnews.ir/news/1826377/%D8%AD%D8%A7%D8%AF%D8%AB%D9%87-%D8%A8%D8%B1%D8%A7%DB%8C-%DB%8C%DA%A9-%D9%86%D9%81%D8%AA%DA%A9%D8%B4-%D8%AF%D8%B1-%D9%86%D8%B2%D8%AF%DB%8C%DA%A9%DB%8C-%D8%AC%D8%B2%DB%8C%D8%B1%D9%87-%D8%AE%D8%A7%D8%B1%DA%A9"
+      },
+      {
+        "headline_fa": "افشای دروغ‌گویی اردنی‌ها در رهگیری موشک‌های ایرانی",
+        "headline_en": "Exposing the lies of the Jordanians in the interception of Iranian missiles",
+        "url": "https://www.mashreghnews.ir/photo/1826375/%D8%B9%DA%A9%D8%B3-%D8%A7%D9%81%D8%B4%D8%A7%DB%8C-%D8%AF%D8%B1%D9%88%D8%BA-%DA%AF%D9%88%DB%8C%DB%8C-%D8%A7%D8%B1%D8%AF%D9%86%DB%8C-%D9%87%D8%A7-%D8%AF%D8%B1-%D8%B1%D9%87%DA%AF%DB%8C%D8%B1%DB%8C-%D9%85%D9%88%D8%B4%DA%A9-%D9%87%D8%A7%DB%8C-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86%DB%8C"
+      }
+    ],
+    "loaded_terms": [
+      {
+        "fa": "نفوذ",
+        "translit": "nofuz",
+        "gloss": "'infiltration'",
+        "signal": "Used to smear negotiators/reformists as foreign agents — a hardline attack term.",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "outlet": "Kayhan",
+    "faction": "hardline",
+    "url": "https://kayhan.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "ایندیپندنت: ترامپ 32 بار ادعای پیروزی کرده ولی نمی‌تواند پیروز شود",
+        "headline_en": "Independent: Trump has claimed victory 32 times, but he cannot win",
+        "url": "https://kayhan.ir/fa/news/334231/ایندیپندنت-ترامپ-32-بار-ادعای-پیروزی-کرده-ولی-نمی‌تواند-پیروز-شود"
+      },
+      {
+        "headline_fa": "اگر باب‌المندب و تنگه هرمز با هم مسدود شوند چه اتفاقی رخ می‌دهد؟",
+        "headline_en": "What will happen if Bab al-Mandab and Strait of Hormuz are blocked together?",
+        "url": "https://kayhan.ir/fa/news/334234/اگر-باب‌المندب-و-تنگه-هرمز-با-هم-مسدود-شوند-چه-اتفاقی-رخ-می‌دهد"
+      },
+      {
+        "headline_fa": "عملکرد موفق شهرداری تهران از توسعه حمل‌ونقل عمومی و عمران تا خدمات‌رسانی در جنگ",
+        "headline_en": "The successful performance of Tehran Municipality from the development of public and civil transportation to providing services in the war",
+        "url": "https://kayhan.ir/fa/news/334208/عملکرد-موفق-شهرداری-تهران-از-توسعه-حمل‌ونقل-عمومی-و-عمران-تا-خدمات‌رسانی-در-جنگ"
+      },
+      {
+        "headline_fa": "«ما ترامپ را می‌کُشیم» قاتل امام شهید و کودکان میناب و لامِرد در تابوت",
+        "headline_en": "\"We will kill Trump\" the killer of Imam Shahid and the children of Minab and Lamerd in the coffin",
+        "url": "https://kayhan.ir/fa/news/334184/ما-ترامپ-را-می‌کُشیم-قاتل-امام-شهید-و-کودکان-میناب-و-لامِرد-در-تابوت"
+      },
+      {
+        "headline_fa": "بسته شدن یکی از مسیرهای دور زدن تنگه هرمز همزمان با کاهش تاریخی ذخایر انرژی جهان",
+        "headline_en": "The closure of one of the routes to bypass the Strait of Hormuz at the same time as the historic reduction of the world's energy reserves",
+        "url": "https://kayhan.ir/fa/news/334193/بسته-شدن-یکی-از-مسیرهای-دور-زدن-تنگه-هرمز-همزمان-با-کاهش-تاریخی-ذخایر-انرژی-جهان"
+      },
+      {
+        "headline_fa": "تقویت انسجام ملی و ارتقای هماهنگی دستگاه‌ها زمینه‌ساز کارآمدی کشور است",
+        "headline_en": "Strengthening national cohesion and promoting the coordination of institutions is the foundation of the country's efficiency",
+        "url": "https://kayhan.ir/fa/news/334181/تقویت-انسجام-ملی-و-ارتقای-هماهنگی-دستگاه‌ها-زمینه‌ساز-کارآمدی-کشور-است"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Vatan-e Emrooz",
+    "faction": "hardline",
+    "url": "https://vatanemrooz.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "سپاه: رادارهای دریایی و هوایی آمریکا را در عمان منهدم کردیم",
+        "headline_en": "IRGC: We destroyed American naval and air radars in Oman",
+        "url": "https://vatanemrooz.ir/fa/news/419693/سپاه-رادارهای-دریایی-و-هوایی-آمریکا-را-در-عمان-منهدم-کردیم"
+      },
+      {
+        "headline_fa": "پایگاه‌ دشمن در کویت به آتش کشیده شد",
+        "headline_en": "The enemy's base in Kuwait was set on fire",
+        "url": "https://vatanemrooz.ir/fa/news/419692/پایگاه-دشمن-در-کویت-به-آتش-کشیده-شد"
+      },
+      {
+        "headline_fa": "ایروانی: حملات آمریکا به زیر‌ساخت‌ها جنایت جنگی است",
+        "headline_en": "Irani: US attacks on infrastructure are war crimes",
+        "url": "https://vatanemrooz.ir/fa/news/419691/ایروانی-حملات-آمریکا-به-زیر-ساخت-ها-جنایت-جنگی-است"
+      },
+      {
+        "headline_fa": "حمله غافلگیرانه به مرکز فرماندهی عملیات ویژه دشمن در سوریه",
+        "headline_en": "A surprise attack on the enemy's special operations command center in Syria",
+        "url": "https://vatanemrooz.ir/fa/news/419690/حمله-غافلگیرانه-به-مرکز-فرماندهی-عملیات-ویژه-دشمن-در-سوریه"
+      },
+      {
+        "headline_fa": "ادعای جدید فرماندهی مرکزی ارتش تروریست آمریکا",
+        "headline_en": "The new claim of the central command of the American terrorist army",
+        "url": "https://vatanemrooz.ir/fa/news/419689/ادعای-جدید-فرماندهی-مرکزی-ارتش-تروریست-آمریکا"
+      },
+      {
+        "headline_fa": "مرحله دوازدهم عملیات صاعقه ارتش انجام شد",
+        "headline_en": "The twelfth stage of the army's lightning operation was carried out",
+        "url": "https://vatanemrooz.ir/fa/news/419688/مرحله-دوازدهم-عملیات-صاعقه-ارتش-انجام-شد"
+      }
+    ],
+    "loaded_terms": []
+  }
+]

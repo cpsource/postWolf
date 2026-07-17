@@ -1,0 +1,28 @@
+[
+  {
+    "outlet": "vatanemrooz.ir",
+    "faction": "unknown",
+    "url": "https://vatanemrooz.ir/fa/news/419691/%D8%A7%DB%8C%D8%B1%D9%88%D8%A7%D9%86%DB%8C-%D8%AD%D9%85%D9%84%D8%A7%D8%AA-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%A8%D9%87-%D8%B2%DB%8C%D8%B1-%D8%B3%D8%A7%D8%AE%D8%AA-%D9%87%D8%A7-%D8%AC%D9%86%D8%A7%DB%8C%D8%AA-%D8%AC%D9%86%DA%AF%DB%8C-%D8%A7%D8%B3%D8%AA",
+    "status": "ok",
+    "headline_fa": "",
+    "headline_en": "",
+    "article_fa": "امیرسعید ایروانی نماینده دائم ایران در سازمان ملل با اشاره به حملات اخیر ارتش تروریستی آمریکا علیه زیرساخت‌های کشورمان در نامه‌ای به شورای امنیت و دبیر کل سازمان ملل حملات تجاوزکارانه آمریکا به زیر‌ساخت‌ها را محکوم کرد. ایروانی در این نامه نوشت این حملات نقض جدی قوانین بین‌المللی بشردوستانه و مصداق جنایات جنگی است.",
+    "article_en": "In a letter to the Security Council and the Secretary General of the United Nations, Amir Saeed Irwani, Iran's Permanent Representative to the United Nations, condemned the aggressive attacks of the United States on the infrastructures, referring to the recent attacks of the American terrorist army against the infrastructures of our country. In this letter, Irvani wrote that these attacks are a serious violation of international humanitarian laws and examples of war crimes.",
+    "loaded_terms": [
+      {
+        "fa": "تجاوز",
+        "translit": "tajāvoz",
+        "gloss": "aggression / assault",
+        "signal": "Casts the other side as the aggressor (vs neutral حمله 'attack'). Editorial.",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "outlet": "www.sharghdaily.com",
+    "faction": "unknown",
+    "url": "https://www.sharghdaily.com/بخش-%D8%AC%D9%87%D8%A7%D9%86-219/1115580",
+    "status": "failed",
+    "error": "HTTP 404"
+  }
+]
