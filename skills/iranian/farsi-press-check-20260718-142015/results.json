@@ -36,7 +36,8 @@
         "url": "https://irannewspaper.ir/9076/1/158813"
       }
     ],
-    "loaded_terms": []
+    "loaded_terms": [],
+    "jalali_dates": []
   },
   {
     "outlet": "IRNA",
@@ -55,7 +56,8 @@
         "url": ""
       }
     ],
-    "loaded_terms": []
+    "loaded_terms": [],
+    "jalali_dates": []
   },
   {
     "outlet": "IRNA English",
@@ -74,7 +76,8 @@
         "url": ""
       }
     ],
-    "loaded_terms": []
+    "loaded_terms": [],
+    "jalali_dates": []
   },
   {
     "outlet": "Shargh",
@@ -109,11 +112,22 @@
       },
       {
         "headline_fa": "پیش‌بینی بورس یکشنبه ۲۸ تیر ۱۴۰۵/ سیگنال منفی ارزش معاملات به بورس",
-        "headline_en": "Stock market forecast for Sunday, July 28, 1405/ negative signal of trading value to the stock market",
+        "headline_en": "Stock market forecast for Sunday, 19 July 2026 (Gregorian; source: 28 Tir 1405 Jalali)/ negative signal of trading value to the stock market",
         "url": "https://www.sharghdaily.com/بخش-%D8%A7%D9%82%D8%AA%D8%B5%D8%A7%D8%AF%DB%8C-12/1115856-%D9%BE%DB%8C%D8%B4-%D8%A8%DB%8C%D9%86%DB%8C-%D8%A8%D9%88%D8%B1%D8%B3-%DB%8C%DA%A9%D8%B4%D9%86%D8%A8%D9%87-%D8%AA%DB%8C%D8%B1-%D8%B3%DB%8C%DA%AF%D9%86%D8%A7%D9%84-%D9%85%D9%86%D9%81%DB%8C-%D8%A7%D8%B1%D8%B2%D8%B4-%D9%85%D8%B9%D8%A7%D9%85%D9%84%D8%A7%D8%AA-%D8%A8%D9%87-%D8%A8%D9%88%D8%B1%D8%B3"
       }
     ],
-    "loaded_terms": []
+    "loaded_terms": [],
+    "jalali_dates": [
+      {
+        "raw": "28 تیر 1405",
+        "jalali": "28 Tir 1405",
+        "gregorian": "19 July 2026",
+        "gregorian_iso": "2026-07-19",
+        "day": 28,
+        "jmonth": 4,
+        "jyear": 1405
+      }
+    ]
   },
   {
     "outlet": "Etemad",
@@ -175,7 +189,8 @@
         "count": 1,
         "subsumed_by": "تفاهم‌نامه"
       }
-    ]
+    ],
+    "jalali_dates": []
   },
   {
     "outlet": "Tasnim",
@@ -229,7 +244,8 @@
         "signal": "A halt — can be unilateral, temporary, conditional. Weaker than a ceasefire.",
         "count": 1
       }
-    ]
+    ],
+    "jalali_dates": []
   },
   {
     "outlet": "Fars News",
@@ -268,7 +284,8 @@
         "url": ""
       }
     ],
-    "loaded_terms": []
+    "loaded_terms": [],
+    "jalali_dates": []
   },
   {
     "outlet": "Javan",
@@ -315,7 +332,8 @@
         "signal": "Casts the other side as the aggressor (vs neutral حمله 'attack'). Editorial.",
         "count": 1
       }
-    ]
+    ],
+    "jalali_dates": []
   },
   {
     "outlet": "Mashregh",
@@ -362,7 +380,8 @@
         "signal": "Casts the other side as the aggressor (vs neutral حمله 'attack'). Editorial.",
         "count": 1
       }
-    ]
+    ],
+    "jalali_dates": []
   },
   {
     "outlet": "Kayhan",
@@ -401,7 +420,8 @@
         "url": "https://kayhan.ir/fa/news/334270/آژانس-بین‌المللی-انرژی-جهان-باید-نگران-امنیت-انرژی-باشد"
       }
     ],
-    "loaded_terms": []
+    "loaded_terms": [],
+    "jalali_dates": []
   },
   {
     "outlet": "Vatan-e Emrooz",
@@ -440,7 +460,8 @@
         "url": "https://vatanemrooz.ir/fa/news/419713/حملات-موشکی-ایران-به-عربستان-و-اردن"
       }
     ],
-    "loaded_terms": []
+    "loaded_terms": [],
+    "jalali_dates": []
   },
   {
     "outlet": "Donya-ye Eqtesad",
@@ -465,7 +486,7 @@
       },
       {
         "headline_fa": "قیمت طلا امروز شنبه ۲۷ تیر ۱۴۰۵/افزایش قیمت طلا",
-        "headline_en": "Gold price today, Saturday, July 27, 1405/increase in gold price",
+        "headline_en": "Gold price today, Saturday, 18 July 2026 (Gregorian; source: 27 Tir 1405 Jalali)/increase in gold price",
         "url": "https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4282898-%D9%82%DB%8C%D9%85%D8%AA-%D8%B7%D9%84%D8%A7-%D8%A7%D9%85%D8%B1%D9%88%D8%B2-%D8%B4%D9%86%D8%A8%D9%87-%D8%AA%DB%8C%D8%B1-%D8%A7%D9%81%D8%B2%D8%A7%DB%8C%D8%B4-%D9%82%DB%8C%D9%85%D8%AA-%D8%B7%D9%84%D8%A7"
       },
       {
@@ -479,6 +500,17 @@
         "url": "https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4282959-%D9%BE%D9%84%D9%88%D8%B3%DB%8C-%D8%A8%D9%87-%D8%B1%D8%A6%DB%8C%D8%B3-%D8%AC%D9%85%D9%87%D9%88%D8%B1-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%AA%D8%A7%D8%AE%D8%AA-%D8%A8%D9%87-%D8%AE%D8%A7%D8%B7%D8%B1-%D8%AC%D9%86%DA%AF-%D9%87%D8%A7%DB%8C-%D8%AA%D8%B1%D8%A7%D9%85%D9%BE-%DA%A9%D8%A7%D8%B1%DA%AF%D8%B1%D8%A7%D9%86-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7%DB%8C%DB%8C-%D8%A8%D8%B1%D8%A7%DB%8C-%D8%B2%D9%86%D8%AF%D9%87-%D9%85%D8%A7%D9%86%D8%AF%D9%86-%D8%AA%D9%82%D9%84%D8%A7-%D9%85%DB%8C-%DA%A9%D9%86%D9%86%D8%AF"
       }
     ],
-    "loaded_terms": []
+    "loaded_terms": [],
+    "jalali_dates": [
+      {
+        "raw": "27 تیر 1405",
+        "jalali": "27 Tir 1405",
+        "gregorian": "18 July 2026",
+        "gregorian_iso": "2026-07-18",
+        "day": 27,
+        "jmonth": 4,
+        "jyear": 1405
+      }
+    ]
   }
 ]

@@ -90,8 +90,12 @@ Link: https://www.sharghdaily.com/بخش-%D8%B1%D9%88%D8%B2%D9%86%D8%A7%D9%85%D9
 Link: https://www.sharghdaily.com/بخش-%D8%B1%D9%88%D8%B2%D9%86%D8%A7%D9%85%D9%87-100/1115675-%D8%AD%D9%85%D9%84%D9%87-%D8%A8%D9%87-%D9%86%D8%A8%D8%B6-%D8%AA%D8%AC%D8%A7%D8%B1%D8%AA
 
 ### پیش‌بینی بورس یکشنبه ۲۸ تیر ۱۴۰۵/ سیگنال منفی ارزش معاملات به بورس
-*Translation: Stock market forecast for Sunday, July 28, 1405/ negative signal of trading value to the stock market*
+*Translation: Stock market forecast for Sunday, 19 July 2026 (Gregorian; source: 28 Tir 1405 Jalali)/ negative signal of trading value to the stock market*
 Link: https://www.sharghdaily.com/بخش-%D8%A7%D9%82%D8%AA%D8%B5%D8%A7%D8%AF%DB%8C-12/1115856-%D9%BE%DB%8C%D8%B4-%D8%A8%DB%8C%D9%86%DB%8C-%D8%A8%D9%88%D8%B1%D8%B3-%DB%8C%DA%A9%D8%B4%D9%86%D8%A8%D9%87-%D8%AA%DB%8C%D8%B1-%D8%B3%DB%8C%DA%AF%D9%86%D8%A7%D9%84-%D9%85%D9%86%D9%81%DB%8C-%D8%A7%D8%B1%D8%B2%D8%B4-%D9%85%D8%B9%D8%A7%D9%85%D9%84%D8%A7%D8%AA-%D8%A8%D9%87-%D8%A8%D9%88%D8%B1%D8%B3
+
+**Persian-calendar dates** (machine translation mislabels these — Jalali month/year are kept verbatim; corrected Gregorian below):
+
+- 28 Tir 1405 (Jalali) = **19 July 2026** (2026-07-19)
 
 ---
 
@@ -328,7 +332,7 @@ Link: https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D
 Link: https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4282967-%D8%A7%D8%B8%D9%87%D8%A7%D8%B1%D8%A7%D8%AA-%D9%85%D9%87%D9%85-%D8%BA%D8%B1%DB%8C%D8%A8-%D8%A2%D8%A8%D8%A7%D8%AF%DB%8C-%D8%AF%D8%B1%D8%A8%D8%A7%D8%B1%D9%87-%D8%A2%DB%8C%D9%86%D8%AF%D9%87-%D9%85%D8%B0%D8%A7%DA%A9%D8%B1%D8%A7%D8%AA-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D9%85%D8%A7-%D8%AF%D8%B1-%D8%AD%D8%A7%D9%84-%D8%AF%D9%81%D8%A7%D8%B9-%D8%A7%D8%B2-%DA%A9%D8%B4%D9%88%D8%B1-%D9%87%D8%B3%D8%AA%DB%8C%D9%85
 
 ### قیمت طلا امروز شنبه ۲۷ تیر ۱۴۰۵/افزایش قیمت طلا
-*Translation: Gold price today, Saturday, July 27, 1405/increase in gold price*
+*Translation: Gold price today, Saturday, 18 July 2026 (Gregorian; source: 27 Tir 1405 Jalali)/increase in gold price*
 Link: https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4282898-%D9%82%DB%8C%D9%85%D8%AA-%D8%B7%D9%84%D8%A7-%D8%A7%D9%85%D8%B1%D9%88%D8%B2-%D8%B4%D9%86%D8%A8%D9%87-%D8%AA%DB%8C%D8%B1-%D8%A7%D9%81%D8%B2%D8%A7%DB%8C%D8%B4-%D9%82%DB%8C%D9%85%D8%AA-%D8%B7%D9%84%D8%A7
 
 ### انهدام یکی از مهم‌ترین تأسیسات تولید برق و آب شیرین‌کن کویت+ تصاویر
@@ -338,6 +342,10 @@ Link: https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D
 ### پلوسی به رئیس جمهور آمریکا تاخت/ به خاطر جنگ‌های ترامپ، کارگران آمریکایی برای زنده‌ ماندن تقلا می‌کنند
 *Translation: Pelosi attacked the American president/ American workers are struggling to survive because of Trump's wars*
 Link: https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4282959-%D9%BE%D9%84%D9%88%D8%B3%DB%8C-%D8%A8%D9%87-%D8%B1%D8%A6%DB%8C%D8%B3-%D8%AC%D9%85%D9%87%D9%88%D8%B1-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%AA%D8%A7%D8%AE%D8%AA-%D8%A8%D9%87-%D8%AE%D8%A7%D8%B7%D8%B1-%D8%AC%D9%86%DA%AF-%D9%87%D8%A7%DB%8C-%D8%AA%D8%B1%D8%A7%D9%85%D9%BE-%DA%A9%D8%A7%D8%B1%DA%AF%D8%B1%D8%A7%D9%86-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7%DB%8C%DB%8C-%D8%A8%D8%B1%D8%A7%DB%8C-%D8%B2%D9%86%D8%AF%D9%87-%D9%85%D8%A7%D9%86%D8%AF%D9%86-%D8%AA%D9%82%D9%84%D8%A7-%D9%85%DB%8C-%DA%A9%D9%86%D9%86%D8%AF
+
+**Persian-calendar dates** (machine translation mislabels these — Jalali month/year are kept verbatim; corrected Gregorian below):
+
+- 27 Tir 1405 (Jalali) = **18 July 2026** (2026-07-18)
 
 ---
 
@@ -358,6 +366,7 @@ Machine translation collapses Farsi distinctions that are often the actual story
 
 - Machine translation above is rough. For dense political/religious essays, send the Farsi original to Claude.ai for a careful read.
 - **Terminology:** if a Western 'deal/ceasefire/lift sanctions' maps to a weaker Farsi word (تفاهم‌نامه / توقف / تعلیق), say so explicitly — that gap is a finding. See the Terminology gap check above and `references/loaded_terms_glossary.md`.
+- **Dates:** any 'Persian-calendar dates' block gives the *corrected* Gregorian date, computed from the Farsi original. Machine translation mangles Jalali dates (it keeps the Jalali month and year, e.g. '۲۷ تیر ۱۴۰۵' → 'July 27, 1405', which is really 18 July 2026) — trust the corrected block and `results.json` (`jalali_dates`), never a date read out of the translation.
 - Compare factional spread: does establishment, reformist, IRGC, hardline all agree, or do they diverge?
 - Note what's *missing*: a story prominent in Western press that's silent in Iranian press (or vice versa) is itself informative.
 - Check whether any outlets failed to respond — Iranian sites are sometimes intermittent.

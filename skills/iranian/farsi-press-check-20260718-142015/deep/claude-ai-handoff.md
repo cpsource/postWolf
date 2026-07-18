@@ -87,6 +87,7 @@ Machine translation collapses Farsi distinctions that are often the actual story
 
 - Machine translation above is rough. For dense political/religious essays, send the Farsi original to Claude.ai for a careful read.
 - **Terminology:** if a Western 'deal/ceasefire/lift sanctions' maps to a weaker Farsi word (تفاهم‌نامه / توقف / تعلیق), say so explicitly — that gap is a finding. See the Terminology gap check above and `references/loaded_terms_glossary.md`.
+- **Dates:** any 'Persian-calendar dates' block gives the *corrected* Gregorian date, computed from the Farsi original. Machine translation mangles Jalali dates (it keeps the Jalali month and year, e.g. '۲۷ تیر ۱۴۰۵' → 'July 27, 1405', which is really 18 July 2026) — trust the corrected block and `results.json` (`jalali_dates`), never a date read out of the translation.
 - Compare factional spread: does establishment, reformist, IRGC, hardline all agree, or do they diverge?
 - Note what's *missing*: a story prominent in Western press that's silent in Iranian press (or vice versa) is itself informative.
 - Check whether any outlets failed to respond — Iranian sites are sometimes intermittent.
