@@ -85,6 +85,21 @@ The fetch script scans fetched text against `references/loaded_terms_glossary.md
 in the handoff. Read those sections before packaging, and surface any real gap to the user.
 See `references/loaded_terms_glossary.md` for the full term tables and the report format.
 
+### Step 3.55: Persian-calendar dates (machine translation gets these wrong)
+
+Google Translate mangles Solar Hijri (Jalali) dates: it keeps the Jalali **month and year
+verbatim** and only approximates the month name, so **۲۷ تیر ۱۴۰۵** comes out as
+*"July 27, 1405"* — which is really **18 July 2026** (off by ~9 days and ~1600 years). A date
+read out of the translation is simply wrong.
+
+The fetch script fixes this at the source: it detects Jalali dates in the **Farsi original**,
+converts them with a proper Jalali→Gregorian algorithm, **repairs the mangled date inline in the
+translation**, and emits a **"Persian-calendar dates"** block per outlet/article (`X Tir 1405 =
+18 July 2026`). The corrected, machine-readable dates are also in `results.json` under
+`jalali_dates` (with `gregorian_iso`). **Trust that block and the JSON — never a date parsed out
+of the raw translation.** Year-less dates (e.g. "۵ مرداد") are flagged with a month span only, no
+false precision.
+
 ### Step 3.6: Quantitative strait-traffic questions need the tracker supplement
 
 The Iranian press publishes **no ship-transit counts** — questions like "how many ships

@@ -217,6 +217,157 @@ def claim_gap_checks(claim: str) -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Persian (Solar Hijri / Jalali) calendar handling
+#
+# Machine translators mangle Jalali dates. Google renders "۲۷ تیر ۱۴۰۵" as
+# "July 27, 1405" — it keeps the day number and the Jalali YEAR (1405) verbatim
+# and only approximates the month, so a date parsed out of the translation is
+# wrong (here by ~9 days and ~1600 years). We instead detect the date in the
+# *Farsi source* (authoritative), convert it correctly, then both annotate it in
+# the handoff and repair the English translation inline.
+# ---------------------------------------------------------------------------
+
+PERSIAN_MONTHS = {
+    "فروردین": 1, "اردیبهشت": 2, "خرداد": 3, "تیر": 4, "مرداد": 5, "شهریور": 6,
+    "مهر": 7, "آبان": 8, "آذر": 9, "دی": 10, "بهمن": 11, "اسفند": 12,
+}
+PERSIAN_MONTHS_EN = ["", "Farvardin", "Ordibehesht", "Khordad", "Tir", "Mordad",
+                     "Shahrivar", "Mehr", "Aban", "Azar", "Dey", "Bahman", "Esfand"]
+GREGORIAN_MONTHS_EN = ["", "January", "February", "March", "April", "May", "June",
+                       "July", "August", "September", "October", "November", "December"]
+# Rough Gregorian span for a Jalali month, used only when the year is unstated
+# (so we can flag the month without inventing false precision).
+JALALI_MONTH_SPAN = ["", "late Mar–Apr", "Apr–May", "May–Jun", "Jun–Jul", "Jul–Aug",
+                     "Aug–Sep", "Sep–Oct", "Oct–Nov", "Nov–Dec", "Dec–Jan",
+                     "Jan–Feb", "Feb–Mar"]
+
+# Persian and Arabic-Indic digits -> ASCII.
+_DIGIT_MAP = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def _normalize_digits(s: str) -> str:
+    return s.translate(_DIGIT_MAP)
+
+
+def jalali_to_gregorian(jy: int, jm: int, jd: int) -> tuple[int, int, int]:
+    """Convert a Solar Hijri (Jalali) date to Gregorian (proleptic). Standard
+    algorithm via a day count; returns (gy, gm, gd). E.g. 1405/4/27 -> 2026/7/18."""
+    jy += 1595
+    days = -355668 + (365 * jy) + ((jy // 33) * 8) + (((jy % 33) + 3) // 4) + jd
+    if jm < 7:
+        days += (jm - 1) * 31
+    else:
+        days += ((jm - 7) * 30) + 186
+    gy = 400 * (days // 146097)
+    days %= 146097
+    if days > 36524:
+        days -= 1
+        gy += 100 * (days // 36524)
+        days %= 36524
+        if days >= 365:
+            days += 1
+    gy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        gy += (days - 1) // 365
+        days = (days - 1) % 365
+    gd = days + 1
+    leap = (gy % 4 == 0 and gy % 100 != 0) or (gy % 400 == 0)
+    month_len = [0, 31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    gm = 1
+    while gm <= 12 and gd > month_len[gm]:
+        gd -= month_len[gm]
+        gm += 1
+    return gy, gm, gd
+
+
+_JALALI_DATE_RE = re.compile(
+    r"(?<![0-9])(?P<day>[0-9]{1,2})\s+(?P<month>"
+    + "|".join(sorted(PERSIAN_MONTHS, key=len, reverse=True))
+    + r")(?:\s+(?P<year>1[0-9]{3}))?"
+)
+
+
+def detect_jalali_dates(farsi_text: str) -> list[dict]:
+    """Find Solar Hijri dates in Farsi text and convert them. Deduplicated, in
+    document order. Dates with a 4-digit year get a precise Gregorian equivalent;
+    year-less dates get a month-span note only (no false precision)."""
+    if not farsi_text:
+        return []
+    norm = _normalize_digits(farsi_text)
+    out = []
+    seen = set()
+    for m in _JALALI_DATE_RE.finditer(norm):
+        day = int(m.group("day"))
+        if not 1 <= day <= 31:
+            continue
+        jm = PERSIAN_MONTHS[m.group("month")]
+        mon_fa = m.group("month")
+        yr = m.group("year")
+        if yr:
+            jy = int(yr)
+            key = (jy, jm, day)
+            if key in seen:
+                continue
+            seen.add(key)
+            gy, gm, gd = jalali_to_gregorian(jy, jm, day)
+            out.append({
+                "raw": f"{day} {mon_fa} {jy}",
+                "jalali": f"{day} {PERSIAN_MONTHS_EN[jm]} {jy}",
+                "gregorian": f"{gd} {GREGORIAN_MONTHS_EN[gm]} {gy}",
+                "gregorian_iso": f"{gy:04d}-{gm:02d}-{gd:02d}",
+                "day": day, "jmonth": jm, "jyear": jy,
+            })
+        else:
+            key = (None, jm, day)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "raw": f"{day} {mon_fa}",
+                "jalali": f"{day} {PERSIAN_MONTHS_EN[jm]} (year unstated)",
+                "gregorian": f"≈ {JALALI_MONTH_SPAN[jm]} (year unstated — not converted)",
+                "gregorian_iso": None,
+                "day": day, "jmonth": jm, "jyear": None,
+            })
+    return out
+
+
+def repair_translation_dates(english_text: str, jalali_dates: list[dict]) -> str:
+    """Rewrite mangled Jalali dates in a machine translation. Google keeps the day
+    number and the Jalali year and only mis-maps the month name, so a date is
+    keyed reliably by (day, jalali-year). Replace both month-first ("July 27,
+    1405") and day-first ("27 July 1405") manglings with the correct Gregorian."""
+    if not english_text or not jalali_dates:
+        return english_text
+    for d in jalali_dates:
+        if not d.get("gregorian_iso"):
+            continue
+        day, yr = str(d["day"]), str(d["jyear"])
+        repl = f"{d['gregorian']} (Gregorian; source: {d['jalali']} Jalali)"
+        # One pass matching both manglings — month-first ("July 27, 1405") and
+        # day-first ("27 July 1405"). A single re.sub never re-scans the text it
+        # just inserted, so the Jalali date inside `repl` can't be re-matched.
+        pattern = (r"\b(?:[A-Z][a-z]+\.?\s+" + day + r"(?:st|nd|rd|th)?"
+                   r"|" + day + r"(?:st|nd|rd|th)?\s+[A-Z][a-z]+\.?)"
+                   r",?\s*" + yr + r"\b")
+        english_text = re.sub(pattern, repl, english_text)
+    return english_text
+
+
+def _dedup_jalali(dates: list[dict]) -> list[dict]:
+    """Deduplicate aggregated Jalali dates by their raw Farsi form, order-stable."""
+    seen = set()
+    out = []
+    for d in dates:
+        if d["raw"] in seen:
+            continue
+        seen.add(d["raw"])
+        out.append(d)
+    return out
+
+
 DEFAULT_SPREAD = [
     ("IRNA", "https://www.irna.ir", "https://www.irna.ir/rss"),
     ("Shargh", "https://www.sharghdaily.com", None),
@@ -502,10 +653,15 @@ def main():
                 continue
             article_text = extract_article_text(body)
             translated = translate(article_text) if not args.no_translate else ""
+            jalali_dates = detect_jalali_dates(article_text)
+            translated = repair_translation_dates(translated, jalali_dates)
             loaded = scan_loaded_terms(article_text)
             if loaded:
                 print(f"    [terms] {len(loaded)} loaded term(s): "
                       f"{', '.join(h['translit'] for h in loaded[:5])}")
+            if jalali_dates:
+                print(f"    [dates] {len(jalali_dates)} Jalali date(s) converted: "
+                      f"{', '.join(d['gregorian_iso'] or d['raw'] for d in jalali_dates[:5])}")
             results.append({
                 "outlet": urllib.parse.urlparse(url).netloc,
                 "faction": "unknown",
@@ -516,6 +672,7 @@ def main():
                 "article_fa": article_text,
                 "article_en": translated,
                 "loaded_terms": loaded,
+                "jalali_dates": jalali_dates,
             })
             # Save raw HTML
             (outdir / f"{sanitize(urllib.parse.urlparse(url).netloc)}.html").write_text(body, encoding="utf-8")
@@ -553,9 +710,13 @@ def main():
                 "status": "ok",
                 "headlines": [],
             }
+            outlet_jalali = []
             for h in headlines:
                 fa = h["headline"]
                 en = translate(fa) if (not args.no_translate and fa) else ""
+                hd_dates = detect_jalali_dates(fa)
+                en = repair_translation_dates(en, hd_dates)
+                outlet_jalali.extend(hd_dates)
                 outlet_result["headlines"].append({
                     "headline_fa": fa,
                     "headline_en": en,
@@ -566,7 +727,12 @@ def main():
             if loaded:
                 print(f"    [terms] {len(loaded)} loaded term(s): "
                       f"{', '.join(h['translit'] for h in loaded[:5])}")
+            outlet_jalali = _dedup_jalali(outlet_jalali)
+            if outlet_jalali:
+                print(f"    [dates] {len(outlet_jalali)} Jalali date(s) converted: "
+                      f"{', '.join(d['gregorian_iso'] or d['raw'] for d in outlet_jalali[:5])}")
             outlet_result["loaded_terms"] = loaded
+            outlet_result["jalali_dates"] = outlet_jalali
             results.append(outlet_result)
             time.sleep(SLEEP_BETWEEN)
 
@@ -592,6 +758,22 @@ def faction_of(outlet_name: str) -> str:
 
 def sanitize(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]", "_", name)
+
+
+def render_jalali_block(lines: list[str], jdates: list[dict]) -> None:
+    """Append a corrected-dates block. Machine translation keeps the Jalali month
+    and year verbatim, so this is where the real (Gregorian) dates live."""
+    if not jdates:
+        return
+    lines.append("**Persian-calendar dates** (machine translation mislabels these — "
+                 "Jalali month/year are kept verbatim; corrected Gregorian below):")
+    lines.append("")
+    for d in jdates:
+        if d.get("gregorian_iso"):
+            lines.append(f"- {d['jalali']} (Jalali) = **{d['gregorian']}** ({d['gregorian_iso']})")
+        else:
+            lines.append(f"- {d['jalali']} — {d['gregorian']}")
+    lines.append("")
 
 
 def write_handoff(path: Path, claim: str, results: list[dict], timestamp: str) -> None:
@@ -651,6 +833,9 @@ def write_handoff(path: Path, claim: str, results: list[dict], timestamp: str) -
                     f"\"{h['gloss']}\". {h['signal']}{note}"
                 )
             lines.append("")
+
+        render_jalali_block(lines, r.get("jalali_dates") or [])
+
         lines.append("---")
         lines.append("")
 
@@ -692,6 +877,7 @@ def write_handoff(path: Path, claim: str, results: list[dict], timestamp: str) -
     lines.append("")
     lines.append("- Machine translation above is rough. For dense political/religious essays, send the Farsi original to Claude.ai for a careful read.")
     lines.append("- **Terminology:** if a Western 'deal/ceasefire/lift sanctions' maps to a weaker Farsi word (تفاهم‌نامه / توقف / تعلیق), say so explicitly — that gap is a finding. See the Terminology gap check above and `references/loaded_terms_glossary.md`.")
+    lines.append("- **Dates:** any 'Persian-calendar dates' block gives the *corrected* Gregorian date, computed from the Farsi original. Machine translation mangles Jalali dates (it keeps the Jalali month and year, e.g. '۲۷ تیر ۱۴۰۵' → 'July 27, 1405', which is really 18 July 2026) — trust the corrected block and `results.json` (`jalali_dates`), never a date read out of the translation.")
     lines.append("- Compare factional spread: does establishment, reformist, IRGC, hardline all agree, or do they diverge?")
     lines.append("- Note what's *missing*: a story prominent in Western press that's silent in Iranian press (or vice versa) is itself informative.")
     lines.append("- Check whether any outlets failed to respond — Iranian sites are sometimes intermittent.")
