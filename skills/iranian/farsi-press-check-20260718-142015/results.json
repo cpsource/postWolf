@@ -1,0 +1,484 @@
+[
+  {
+    "outlet": "Iran Newspaper",
+    "faction": "establishment",
+    "url": "https://irannewspaper.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "تمام شماره ها",
+        "headline_en": "All numbers",
+        "url": "https://irannewspaper.ir/archive/main"
+      },
+      {
+        "headline_fa": "تمام ویژه نامه ها",
+        "headline_en": "All special letters",
+        "url": "https://irannewspaper.ir/archive/specials"
+      },
+      {
+        "headline_fa": "سازمان آگهی‌ها",
+        "headline_en": "Ads organization",
+        "url": "https://irannewspaper.ir/ads"
+      },
+      {
+        "headline_fa": "دستیار هوش مصنوعی",
+        "headline_en": "Artificial intelligence assistant",
+        "url": "https://chat.irannewspaper.ir"
+      },
+      {
+        "headline_fa": "حمله به زیرساخت تلافی شکست راهبردی",
+        "headline_en": "Attacking infrastructure to retaliate against strategic failure",
+        "url": "https://irannewspaper.ir/9076/1/158812"
+      },
+      {
+        "headline_fa": "مجله فارن افرز، جنگ‌طلبی رئیس‌جمهوری آمریکا را نشانه ضعف خواند",
+        "headline_en": "Foreign Affairs magazine called the warmongering of the American president a sign of weakness",
+        "url": "https://irannewspaper.ir/9076/1/158813"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "IRNA",
+    "faction": "establishment",
+    "url": "https://www.irna.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "Transferring to the website...",
+        "headline_en": "Transferring to the website...",
+        "url": ""
+      },
+      {
+        "headline_fa": "در ﺣﺎل اﻧﺘﻘﺎل ﺑﻪ ﺳﺎﯾﺖ ﻣﻮرد ﻧﻈﺮ ﻫﺴﺘﯿﺪ...",
+        "headline_en": "You are moving to the site in question...",
+        "url": ""
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "IRNA English",
+    "faction": "establishment",
+    "url": "https://en.irna.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "Transferring to the website...",
+        "headline_en": "Transferring to the website...",
+        "url": ""
+      },
+      {
+        "headline_fa": "در ﺣﺎل اﻧﺘﻘﺎل ﺑﻪ ﺳﺎﯾﺖ ﻣﻮرد ﻧﻈﺮ ﻫﺴﺘﯿﺪ...",
+        "headline_en": "You are moving to the site in question...",
+        "url": ""
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Shargh",
+    "faction": "reformist",
+    "url": "https://www.sharghdaily.com/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "داوطلبان اتاق ۳۰۹",
+        "headline_en": "Room 309 volunteers",
+        "url": "https://www.sharghdaily.com/بخش-%D8%AC%D8%A7%D9%85%D8%B9%D9%87-220/1115634-%D8%AF%D8%A7%D9%88%D8%B7%D9%84%D8%A8%D8%A7%D9%86-%D8%A7%D8%AA%D8%A7%D9%82"
+      },
+      {
+        "headline_fa": "سؤال‌پیچ شدن بوش و بلر در مصاحبه مشترک در کاخ سفید",
+        "headline_en": "Bush and Blair's questioning in the joint interview in the White House",
+        "url": "https://www.sharghdaily.com/بخش-%D8%B3%DB%8C%D8%A7%D8%B3%D8%AA-6/1115718-%D8%B3%D8%A4%D8%A7%D9%84-%D9%BE%DB%8C%DA%86-%D8%B4%D8%AF%D9%86-%D8%A8%D9%88%D8%B4-%D8%A8%D9%84%D8%B1-%D8%AF%D8%B1-%D9%85%D8%B5%D8%A7%D8%AD%D8%A8%D9%87-%D9%85%D8%B4%D8%AA%D8%B1%DA%A9-%D8%AF%D8%B1-%DA%A9%D8%A7%D8%AE-%D8%B3%D9%81%DB%8C%D8%AF"
+      },
+      {
+        "headline_fa": "از تخلیه بیماران تا تعویق امتحانات",
+        "headline_en": "From the evacuation of patients to the postponement of exams",
+        "url": "https://www.sharghdaily.com/بخش-%D8%B1%D9%88%D8%B2%D9%86%D8%A7%D9%85%D9%87-100/1115653-%D8%A7%D8%B2-%D8%AA%D8%AE%D9%84%DB%8C%D9%87-%D8%A8%DB%8C%D9%85%D8%A7%D8%B1%D8%A7%D9%86-%D8%AA%D8%A7-%D8%AA%D8%B9%D9%88%DB%8C%D9%82-%D8%A7%D9%85%D8%AA%D8%AD%D8%A7%D9%86%D8%A7%D8%AA"
+      },
+      {
+        "headline_fa": "بازیگر جهانی نیستیم",
+        "headline_en": "We are not a global actor",
+        "url": "https://www.sharghdaily.com/بخش-%D8%B1%D9%88%D8%B2%D9%86%D8%A7%D9%85%D9%87-100/1115647-%D8%A8%D8%A7%D8%B2%DB%8C%DA%AF%D8%B1-%D8%AC%D9%87%D8%A7%D9%86%DB%8C-%D9%86%DB%8C%D8%B3%D8%AA%DB%8C%D9%85"
+      },
+      {
+        "headline_fa": "حمله به نبض تجارت",
+        "headline_en": "Attacking the pulse of business",
+        "url": "https://www.sharghdaily.com/بخش-%D8%B1%D9%88%D8%B2%D9%86%D8%A7%D9%85%D9%87-100/1115675-%D8%AD%D9%85%D9%84%D9%87-%D8%A8%D9%87-%D9%86%D8%A8%D8%B6-%D8%AA%D8%AC%D8%A7%D8%B1%D8%AA"
+      },
+      {
+        "headline_fa": "پیش‌بینی بورس یکشنبه ۲۸ تیر ۱۴۰۵/ سیگنال منفی ارزش معاملات به بورس",
+        "headline_en": "Stock market forecast for Sunday, July 28, 1405/ negative signal of trading value to the stock market",
+        "url": "https://www.sharghdaily.com/بخش-%D8%A7%D9%82%D8%AA%D8%B5%D8%A7%D8%AF%DB%8C-12/1115856-%D9%BE%DB%8C%D8%B4-%D8%A8%DB%8C%D9%86%DB%8C-%D8%A8%D9%88%D8%B1%D8%B3-%DB%8C%DA%A9%D8%B4%D9%86%D8%A8%D9%87-%D8%AA%DB%8C%D8%B1-%D8%B3%DB%8C%DA%AF%D9%86%D8%A7%D9%84-%D9%85%D9%86%D9%81%DB%8C-%D8%A7%D8%B1%D8%B2%D8%B4-%D9%85%D8%B9%D8%A7%D9%85%D9%84%D8%A7%D8%AA-%D8%A8%D9%87-%D8%A8%D9%88%D8%B1%D8%B3"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Etemad",
+    "faction": "reformist",
+    "url": "https://www.etemadnewspaper.ir",
+    "status": "failed",
+    "error": "Request failed: HTTPSConnectionPool(host='www.etemadnewspaper.ir', port=443): Max retries exceeded with url: / (Caused by ConnectTimeoutError(<HTTPSConnection(host='www.etemadnewspaper.ir', port=443) at 0x7633af137410>, 'Connection to www.etemadnewspaper.ir timed out. (connect timeout=60)'))"
+  },
+  {
+    "outlet": "Jamaran",
+    "faction": "reformist",
+    "url": "https://www.jamaran.news/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "فایننشال تایمز: ایران با تکیه بر اهرم هرمز، برای تشدید تقابل با آمریکا آماده می‌شود",
+        "headline_en": "Financial Times: Relying on the Hormuz lever, Iran is preparing to intensify the confrontation with the United States.",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%DB%8C%D9%86-%D8%A7%D9%84%D9%85%D9%84%D9%84-15/1718713-%D9%81%D8%A7%DB%8C%D9%86%D9%86%D8%B4%D8%A7%D9%84-%D8%AA%D8%A7%DB%8C%D9%85%D8%B2-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%A8%D8%A7-%D8%AA%DA%A9%DB%8C%D9%87-%D8%A8%D8%B1-%D8%A7%D9%87%D8%B1%D9%85-%D9%87%D8%B1%D9%85%D8%B2-%D8%A8%D8%B1%D8%A7%DB%8C-%D8%AA%D8%B4%D8%AF%DB%8C%D8%AF-%D8%AA%D9%82%D8%A7%D8%A8%D9%84-%D8%A8%D8%A7-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%A2%D9%85%D8%A7%D8%AF%D9%87-%D9%85%DB%8C-%D8%B4%D9%88%D8%AF"
+      },
+      {
+        "headline_fa": "دانش جعفری، عضو مجمع تشخیص مصلحت نظام: انتقام خون رهبر شهید منافاتی با دیپلماسی ندارد/…",
+        "headline_en": "Danesh Jafari, a member of the Expediency Council: Revenge for the blood of the martyred leader does not conflict with diplomacy/...",
+        "url": "https://www.jamaran.news/بخش-%D8%B3%DB%8C%D8%A7%D8%B3%D8%AA-12/1718663-%D8%AF%D8%A7%D9%86%D8%B4-%D8%AC%D8%B9%D9%81%D8%B1%DB%8C-%D8%B9%D8%B6%D9%88-%D9%85%D8%AC%D9%85%D8%B9-%D8%AA%D8%B4%D8%AE%DB%8C%D8%B5-%D9%85%D8%B5%D9%84%D8%AD%D8%AA-%D9%86%D8%B8%D8%A7%D9%85-%D8%A7%D9%86%D8%AA%D9%82%D8%A7%D9%85-%D8%AE%D9%88%D9%86-%D8%B1%D9%87%D8%A8%D8%B1-%D8%B4%D9%87%DB%8C%D8%AF-%D9%85%D9%86%D8%A7%D9%81%D8%A7%D8%AA%DB%8C-%D8%A8%D8%A7-%D8%AF%DB%8C%D9%BE%D9%84%D9%85%D8%A7%D8%B3%DB%8C-%D9%86%D8%AF%D8%A7%D8%B1%D8%AF-%D8%A8%D8%A7%DB%8C%D8%AF-%D8%AA%D8%B1%D8%A7%D9%85%D9%BE-%D8%AC%D9%86%D8%A7%DB%8C%D8%AA%DA%A9%D8%A7%D8%B1-%D8%B1%D8%A7-%D8%A8%D9%87-%DB%8C%DA%A9-%D9%85%D8%AD%DA%A9%D9%85%D9%87-%D8%A8%DB%8C%D9%86-%D8%A7%D9%84%D9%85%D9%84%D9%84%DB%8C-%DA%A9%D8%B4%D8%A7%D9%86%D8%AF"
+      },
+      {
+        "headline_fa": "آیا ترامپ برای اشغال جزایر ایران آماده می‌شود؟ الجزیره: تصرف جزایر به‌خودی‌خود توان…",
+        "headline_en": "Is Trump preparing to occupy the Iranian islands? Al Jazeera: The capture of the islands by itself...",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%DB%8C%D9%86-%D8%A7%D9%84%D9%85%D9%84%D9%84-15/1718721-%D8%A2%DB%8C%D8%A7-%D8%AA%D8%B1%D8%A7%D9%85%D9%BE-%D8%A8%D8%B1%D8%A7%DB%8C-%D8%A7%D8%B4%D8%BA%D8%A7%D9%84-%D8%AC%D8%B2%D8%A7%DB%8C%D8%B1-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%A2%D9%85%D8%A7%D8%AF%D9%87-%D9%85%DB%8C-%D8%B4%D9%88%D8%AF-%D8%A7%D9%84%D8%AC%D8%B2%DB%8C%D8%B1%D9%87-%D8%AA%D8%B5%D8%B1%D9%81-%D8%AC%D8%B2%D8%A7%DB%8C%D8%B1-%D8%A8%D9%87-%D8%AE%D9%88%D8%AF%DB%8C-%D8%AE%D9%88%D8%AF-%D8%AA%D9%88%D8%A7%D9%86-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%A8%D8%B1%D8%A7%DB%8C-%D9%85%D8%AE%D8%AA%D9%84-%DA%A9%D8%B1%D8%AF%D9%86-%D8%AA%D8%B1%D8%AF%D8%AF-%D8%AF%D8%B1-%D8%AA%D9%86%DA%AF%D9%87-%D9%87%D8%B1%D9%85%D8%B2-%D8%B1%D8%A7-%D8%A7%D8%B2-%D8%A8%DB%8C%D9%86-%D9%86%D8%AE%D9%88%D8%A7%D9%87%D8%AF-%D8%A8%D8%B1%D8%AF"
+      },
+      {
+        "headline_fa": "وال‌استریت ژورنال: تمایل ترامپ به گسترش جنگ در ایران؛ از تصرف جزایر تا حمله به سایت…",
+        "headline_en": "Wall Street Journal: Trump's desire to expand the war in Iran; From capturing the islands to attacking the site...",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%DB%8C%D9%86-%D8%A7%D9%84%D9%85%D9%84%D9%84-15/1718684-%D9%88%D8%A7%D9%84-%D8%A7%D8%B3%D8%AA%D8%B1%DB%8C%D8%AA-%DA%98%D9%88%D8%B1%D9%86%D8%A7%D9%84-%D8%AA%D9%85%D8%A7%DB%8C%D9%84-%D8%AA%D8%B1%D8%A7%D9%85%D9%BE-%D8%A8%D9%87-%DA%AF%D8%B3%D8%AA%D8%B1%D8%B4-%D8%AC%D9%86%DA%AF-%D8%AF%D8%B1-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%A7%D8%B2-%D8%AA%D8%B5%D8%B1%D9%81-%D8%AC%D8%B2%D8%A7%DB%8C%D8%B1-%D8%AA%D8%A7-%D8%AD%D9%85%D9%84%D9%87-%D8%A8%D9%87-%D8%B3%D8%A7%DB%8C%D8%AA-%D9%87%D8%B3%D8%AA%D9%87-%D8%A7%DB%8C-%D8%B2%DB%8C%D8%B1%D8%B2%D9%85%DB%8C%D9%86%DB%8C"
+      },
+      {
+        "headline_fa": "فارن‌پالیسی: سوءتفاهم‌نامه ایران و آمریکا به یک بمب ساعتی تبدیل شد",
+        "headline_en": "Foreign Policy: The misunderstanding between Iran and the United States has turned into a time bomb",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%DB%8C%D9%86-%D8%A7%D9%84%D9%85%D9%84%D9%84-15/1718718-%D9%81%D8%A7%D8%B1%D9%86-%D9%BE%D8%A7%D9%84%DB%8C%D8%B3%DB%8C-%D8%B3%D9%88%D8%A1%D8%AA%D9%81%D8%A7%D9%87%D9%85-%D9%86%D8%A7%D9%85%D9%87-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%A8%D9%87-%DB%8C%DA%A9-%D8%A8%D9%85%D8%A8-%D8%B3%D8%A7%D8%B9%D8%AA%DB%8C-%D8%AA%D8%A8%D8%AF%DB%8C%D9%84-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "هشدار آیت‌الله العظمی جوادی آملی درباره توطئه دائمی دشمنان/ هیچ کس فکر نمی‌کرد ایران این‌چنین در مقابل دو قدرت جهانی بایستد و آنها را رسوا گرداند/ نامه امام خمینی به گورباچف، نامه‌ای سیاسی و دیپلماتیک نبود؛ ما آنها را قانع کردیم که نامه‌ای تعلیمی است",
+        "headline_en": "Grand Ayatollah Javadi Amoli's warning about the constant conspiracy of enemies/ No one thought that Iran would stand up to two world powers like this and disgrace them/ Imam Khomeini's letter to Gorbachev was not a political or diplomatic letter; We convinced them that it was an educational letter",
+        "url": "https://www.jamaran.news/بخش-%D8%A8%D8%A7%D8%B2%D9%86%D8%B4%D8%B1-59/1718732-%D9%87%D8%B4%D8%AF%D8%A7%D8%B1-%D8%A2%DB%8C%D8%AA-%D8%A7%D9%84%D9%84%D9%87-%D8%A7%D9%84%D8%B9%D8%B8%D9%85%DB%8C-%D8%AC%D9%88%D8%A7%D8%AF%DB%8C-%D8%A2%D9%85%D9%84%DB%8C-%D8%AF%D8%B1%D8%A8%D8%A7%D8%B1%D9%87-%D8%AA%D9%88%D8%B7%D8%A6%D9%87-%D8%AF%D8%A7%D8%A6%D9%85%DB%8C-%D8%AF%D8%B4%D9%85%D9%86%D8%A7%D9%86-%D9%87%DB%8C%DA%86-%DA%A9%D8%B3-%D9%81%DA%A9%D8%B1-%D9%86%D9%85%DB%8C-%DA%A9%D8%B1%D8%AF-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%A7%DB%8C%D9%86-%DA%86%D9%86%DB%8C%D9%86-%D8%AF%D8%B1-%D9%85%D9%82%D8%A7%D8%A8%D9%84-%D8%AF%D9%88-%D9%82%D8%AF%D8%B1%D8%AA-%D8%AC%D9%87%D8%A7%D9%86%DB%8C-%D8%A8%D8%A7%DB%8C%D8%B3%D8%AA%D8%AF-%D8%A2%D9%86%D9%87%D8%A7-%D8%B1%D8%A7-%D8%B1%D8%B3%D9%88%D8%A7-%DA%AF%D8%B1%D8%AF%D8%A7%D9%86%D8%AF-%D9%86%D8%A7%D9%85%D9%87-%D8%A7%D9%85%D8%A7%D9%85-%D8%AE%D9%85%DB%8C%D9%86%DB%8C-%D8%A8%D9%87-%DA%AF%D9%88%D8%B1%D8%A8%D8%A7%DA%86%D9%81-%D9%86%D8%A7%D9%85%D9%87-%D8%A7%DB%8C-%D8%B3%DB%8C%D8%A7%D8%B3%DB%8C-%D8%AF%DB%8C%D9%BE%D9%84%D9%85%D8%A7%D8%AA%DB%8C%DA%A9-%D9%86%D8%A8%D9%88%D8%AF-%D9%85%D8%A7-%D8%A2%D9%86%D9%87%D8%A7-%D8%B1%D8%A7-%D9%82%D8%A7%D9%86%D8%B9-%DA%A9%D8%B1%D8%AF%DB%8C%D9%85-%DA%A9%D9%87-%D9%86%D8%A7%D9%85%D9%87-%D8%A7%DB%8C-%D8%AA%D8%B9%D9%84%DB%8C%D9%85%DB%8C-%D8%A7%D8%B3%D8%AA"
+      }
+    ],
+    "loaded_terms": [
+      {
+        "fa": "تفاهم‌نامه",
+        "translit": "tafāhom-nāmeh",
+        "gloss": "memorandum of understanding (MOU)",
+        "signal": "Non-binding. Deliberately weaker than a treaty — signals nothing binding was conceded.",
+        "count": 1
+      },
+      {
+        "fa": "تفاهم",
+        "translit": "tafāhom",
+        "gloss": "understanding",
+        "signal": "Mutual understanding. Non-binding; no obligations created.",
+        "count": 1,
+        "subsumed_by": "تفاهم‌نامه"
+      }
+    ]
+  },
+  {
+    "outlet": "Tasnim",
+    "faction": "irgc",
+    "url": "https://www.tasnimnews.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "آخرین اخبار روز ایران و جهان ؛ خبرهای امروز | خبرگزاری تسنیم | Tasnim",
+        "headline_en": "The latest news of Iran and the world; Today's news Tasnim news agency Tasnim",
+        "url": ""
+      },
+      {
+        "headline_fa": "غریب آبادی: تعهداتمان در تفاهمنامه اسلام‌آباد را متوقف کرده‌ایم",
+        "headline_en": "Gharibabadi: We have stopped our commitments in the Islamabad MoU",
+        "url": ""
+      },
+      {
+        "headline_fa": "معاون وزیر امور خارجه ایران بیان کرد که فعلا خبری از مذاکرات نیست و راهکار ایران دفاع از کشور است.",
+        "headline_en": "Iran's Deputy Minister of Foreign Affairs stated that there is no news of negotiations at the moment and Iran's solution is to defend the country.",
+        "url": ""
+      },
+      {
+        "headline_fa": "مرز صلح و شرافت در ذهن رئیس دولت اصلاحات!",
+        "headline_en": "The border of peace and honor in the mind of the head of the reform government!",
+        "url": ""
+      },
+      {
+        "headline_fa": "انهدام دو جنگندهٔ آمریکایی طی حملات سپاه به پایگاه دشمن در اردن",
+        "headline_en": "The destruction of two American fighters during the IRGC attacks on the enemy base in Jordan",
+        "url": ""
+      },
+      {
+        "headline_fa": "«عارف خوشکار» قاتل شهید سلمان امیراحمدی قصاص شد",
+        "headline_en": "\"Arif Khoshkar\" the murderer of martyr Salman Amir Ahmadi was avenged",
+        "url": ""
+      }
+    ],
+    "loaded_terms": [
+      {
+        "fa": "تفاهم",
+        "translit": "tafāhom",
+        "gloss": "understanding",
+        "signal": "Mutual understanding. Non-binding; no obligations created.",
+        "count": 1
+      },
+      {
+        "fa": "توقف",
+        "translit": "tavaqof",
+        "gloss": "halt / stoppage",
+        "signal": "A halt — can be unilateral, temporary, conditional. Weaker than a ceasefire.",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "outlet": "Fars News",
+    "faction": "irgc",
+    "url": "https://farsnews.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "عضوی از فارس هستید؟",
+        "headline_en": "Are you a member of Fars?",
+        "url": ""
+      },
+      {
+        "headline_fa": "اخبار برگزیده",
+        "headline_en": "selected news",
+        "url": ""
+      },
+      {
+        "headline_fa": "دیگر رسانه ها",
+        "headline_en": "Other media",
+        "url": ""
+      },
+      {
+        "headline_fa": "هشدار یک مقام نظامی درباره پیامدهای حمله آمریکا به زیرساخت‌های ایران",
+        "headline_en": "A military official's warning about the consequences of the US attack on Iran's infrastructure",
+        "url": ""
+      },
+      {
+        "headline_fa": "جام جهانی ۲۰۲۶",
+        "headline_en": "World Cup 2026",
+        "url": ""
+      },
+      {
+        "headline_fa": "#باید_برخاست",
+        "headline_en": "#must_rise",
+        "url": ""
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Javan",
+    "faction": "irgc",
+    "url": "https://www.javanonline.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "با شکست طرح کریدور جنوبی، نقشه شوم دشمن آمریکایی در نطفه خفه شد",
+        "headline_en": "With the failure of the Southern Corridor plan, the sinister plan of the American enemy was nipped in the bud",
+        "url": "https://www.javanonline.ir/fa/news/1369313/با-شکست-طرح-کریدور-جنوبی-نقشه-شوم-دشمن-آمریکایی-در-نطفه-خفه-شد"
+      },
+      {
+        "headline_fa": "کشور‌های میزبان نظامیان متجاوز آمریکا آماده دریافت پاسخ متناظر باشند",
+        "headline_en": "The countries that host the aggressive US troops should be ready to receive a corresponding response",
+        "url": "https://www.javanonline.ir/fa/news/1369239/کشور-های-میزبان-نظامیان-متجاوز-آمریکا-آماده-دریافت-پاسخ-متناظر-باشند"
+      },
+      {
+        "headline_fa": "خونخواهی رهبر شهید در امتداد نگاه تمدنی عاشورا است",
+        "headline_en": "The bloodlust of the martyred leader is in line with Ashura's civilizational view",
+        "url": "https://www.javanonline.ir/fa/news/1369178/خونخواهی-رهبر-شهید-در-امتداد-نگاه-تمدنی-عاشورا-است"
+      },
+      {
+        "headline_fa": "معماری عروج از جهان به سان بوییدن یک گل",
+        "headline_en": "Ascension architecture from the world is like smelling a flower",
+        "url": "https://www.javanonline.ir/fa/news/1369179/معماری-عروج-از-جهان-به-سان-بوییدن-یک-گل"
+      },
+      {
+        "headline_fa": "پیوند زدن اشغال قدس با بحران قدرت در جهان اسلام",
+        "headline_en": "Linking the occupation of Jerusalem with the crisis of power in the Islamic world",
+        "url": "https://www.javanonline.ir/fa/news/1368983/پیوند-زدن-اشغال-قدس-با-بحران-قدرت-در-جهان-اسلام"
+      },
+      {
+        "headline_fa": "ریشه‌های تاریخی مدرسه و آینده آموزش/ هنوز نمی‌دانیم خروجی مدارس ما قرار است چه باشد!",
+        "headline_en": "The historical roots of the school and the future of education/ we still don't know what the output of our schools is going to be!",
+        "url": "https://www.javanonline.ir/fa/news/1368722/هنوز-نمی-دانیم-خروجی-مدارس-ما-قرار-است-چه-باشد"
+      }
+    ],
+    "loaded_terms": [
+      {
+        "fa": "تجاوز",
+        "translit": "tajāvoz",
+        "gloss": "aggression / assault",
+        "signal": "Casts the other side as the aggressor (vs neutral حمله 'attack'). Editorial.",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "outlet": "Mashregh",
+    "faction": "irgc",
+    "url": "https://www.mashreghnews.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "حکم قصاص قاتل شهید سلمان امیراحمدی اجرا شد",
+        "headline_en": "The sentence of revenge for the murderer of martyr Salman Amir Ahmadi was executed",
+        "url": "https://www.mashreghnews.ir/news/1826610/%D8%AD%DA%A9%D9%85-%D9%82%D8%B5%D8%A7%D8%B5-%D9%82%D8%A7%D8%AA%D9%84-%D8%B4%D9%87%DB%8C%D8%AF-%D8%B3%D9%84%D9%85%D8%A7%D9%86-%D8%A7%D9%85%DB%8C%D8%B1%D8%A7%D8%AD%D9%85%D8%AF%DB%8C-%D8%A7%D8%AC%D8%B1%D8%A7-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "آخرین وضعیت ذخایر کالاهای اساسی ایران",
+        "headline_en": "The latest status of Iran's basic commodity reserves",
+        "url": "https://www.mashreghnews.ir/news/1826593/%D8%A2%D8%AE%D8%B1%DB%8C%D9%86-%D9%88%D8%B6%D8%B9%DB%8C%D8%AA-%D8%B0%D8%AE%D8%A7%DB%8C%D8%B1-%DA%A9%D8%A7%D9%84%D8%A7%D9%87%D8%A7%DB%8C-%D8%A7%D8%B3%D8%A7%D8%B3%DB%8C-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86"
+      },
+      {
+        "headline_fa": "آمریکا زخمی شدن نظامیانش در حملات ایران را تأیید کرد",
+        "headline_en": "America confirmed that its soldiers were wounded in Iran's attacks",
+        "url": "https://www.mashreghnews.ir/news/1826492/%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%B2%D8%AE%D9%85%DB%8C-%D8%B4%D8%AF%D9%86-%D9%86%D8%B8%D8%A7%D9%85%DB%8C%D8%A7%D9%86%D8%B4-%D8%AF%D8%B1-%D8%AD%D9%85%D9%84%D8%A7%D8%AA-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%B1%D8%A7-%D8%AA%D8%A3%DB%8C%DB%8C%D8%AF-%DA%A9%D8%B1%D8%AF"
+      },
+      {
+        "headline_fa": "رای نهایی پرونده کرسنت صادر نشده است",
+        "headline_en": "The final verdict of the Crescent case has not been issued",
+        "url": "https://www.mashreghnews.ir/news/1826604/%D9%82%D9%88%D9%87-%D9%82%D8%B6%D8%A7%D8%A6%DB%8C%D9%87-%D8%B1%D8%A7%DB%8C-%D9%86%D9%87%D8%A7%DB%8C%DB%8C-%D9%BE%D8%B1%D9%88%D9%86%D8%AF%D9%87-%DA%A9%D8%B1%D8%B3%D9%86%D8%AA-%D8%B5%D8%A7%D8%AF%D8%B1-%D9%86%D8%B4%D8%AF%D9%87-%D8%A7%D8%B3%D8%AA"
+      },
+      {
+        "headline_fa": "پهپاد متجاوز MQ۹ آمریکا در آسمان عسلویه منهدم شد",
+        "headline_en": "The American MQ9 aggressor drone was destroyed in the sky of Asaluyeh",
+        "url": "https://www.mashreghnews.ir/news/1826481/%D9%BE%D9%87%D9%BE%D8%A7%D8%AF-%D9%85%D8%AA%D8%AC%D8%A7%D9%88%D8%B2-MQ%DB%B9-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%AF%D8%B1-%D8%A2%D8%B3%D9%85%D8%A7%D9%86-%D8%B9%D8%B3%D9%84%D9%88%DB%8C%D9%87-%D9%85%D9%86%D9%87%D8%AF%D9%85-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "حملات موشکی ایران به عربستان و اردن",
+        "headline_en": "Iran's missile attacks on Saudi Arabia and Jordan",
+        "url": "https://www.mashreghnews.ir/news/1826483/%D8%AD%D9%85%D9%84%D8%A7%D8%AA-%D9%85%D9%88%D8%B4%DA%A9%DB%8C-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%A8%D9%87-%D8%B9%D8%B1%D8%A8%D8%B3%D8%AA%D8%A7%D9%86-%D9%88-%D8%A7%D8%B1%D8%AF%D9%86"
+      }
+    ],
+    "loaded_terms": [
+      {
+        "fa": "تجاوز",
+        "translit": "tajāvoz",
+        "gloss": "aggression / assault",
+        "signal": "Casts the other side as the aggressor (vs neutral حمله 'attack'). Editorial.",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "outlet": "Kayhan",
+    "faction": "hardline",
+    "url": "https://kayhan.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "زیرساخت در برابر زیرساخت اسرائیل هم به بانک اهداف اضافه شود",
+        "headline_en": "Infrastructure against Israel's infrastructure should be added to the bank of goals",
+        "url": "https://kayhan.ir/fa/news/334297/زیرساخت-در-برابر-زیرساخت-اسرائیل-هم-به-بانک-اهداف-اضافه-شود"
+      },
+      {
+        "headline_fa": "قدردانی میلیون‌ها یمنی از ایران برای شکستن محاصره",
+        "headline_en": "The gratitude of millions of Yemenis to Iran for breaking the blockade",
+        "url": "https://kayhan.ir/fa/news/334267/قدردانی-میلیون‌ها-یمنی-از-ایران-برای-شکستن-محاصره"
+      },
+      {
+        "headline_fa": "وطن‌فروش؛ هموطن ندارد(یادداشت روز)",
+        "headline_en": "patriot; He does not have a compatriot (note of the day)",
+        "url": "https://kayhan.ir/fa/news/334296/وطن‌فروش-هموطن-نداردیادداشت-روز"
+      },
+      {
+        "headline_fa": "ایران می‌تواند آمریکا را فلج کند محاصره دریایی به نتیجه نخواهد رسید",
+        "headline_en": "Iran can paralyze America, the naval blockade will not succeed",
+        "url": "https://kayhan.ir/fa/news/334291/ایران-می‌تواند-آمریکا-را-فلج-کند-محاصره-دریایی-به-نتیجه-نخواهد-رسید"
+      },
+      {
+        "headline_fa": "نهمین قهرمانی جهان و کسب سهمیه پارالمپیک برای والیبال نشسته ایران رضایی: جام را به شهدا و مردم جنوب کشور تقدیم می‌کنیم",
+        "headline_en": "The 9th world championship and Paralympic quota for Iranian sitting volleyball Rezaei: We present the trophy to the martyrs and the people of the south of the country.",
+        "url": "https://kayhan.ir/fa/news/334251/نهمین-قهرمانی-جهان-و-کسب-سهمیه-پارالمپیک-برای-والیبال-نشسته-ایران-رضایی-جام-را-به-شهدا-و-مردم-جنوب-کشور-تقدیم-می‌کنیم"
+      },
+      {
+        "headline_fa": "آژانس بین‌المللی انرژی: جهان باید نگران امنیت انرژی باشد",
+        "headline_en": "International Energy Agency: The world should be concerned about energy security",
+        "url": "https://kayhan.ir/fa/news/334270/آژانس-بین‌المللی-انرژی-جهان-باید-نگران-امنیت-انرژی-باشد"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Vatan-e Emrooz",
+    "faction": "hardline",
+    "url": "https://vatanemrooz.ir/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "اصابت دقیق موشک‌های ایران به پایگاه ارتش تروریست آمریکا",
+        "headline_en": "Accurate hitting of Iranian missiles on the base of the American terrorist army",
+        "url": "https://vatanemrooz.ir/fa/news/419716/اصابت-دقیق-موشک-های-ایران-به-پایگاه-ارتش-تروریست-آمریکا"
+      },
+      {
+        "headline_fa": "پایگاه‌های آمریکا در اردن و کویت آماج حملات پهپادی ارتش",
+        "headline_en": "American bases in Jordan and Kuwait are targets of army drone attacks",
+        "url": "https://vatanemrooz.ir/fa/news/419715/پایگاه-های-آمریکا-در-اردن-و-کویت-آماج-حملات-پهپادی-ارتش"
+      },
+      {
+        "headline_fa": "حمله دشمن به جزیره لارک/ اصابت موشک به دکل مرکز کنترل دریایی",
+        "headline_en": "Enemy attack on Lark Island/ Missile hit the tower of Marine Control Center",
+        "url": "https://vatanemrooz.ir/fa/news/419712/حمله-دشمن-به-جزیره-لارک-اصابت-موشک-به-دکل-مرکز-کنترل-دریایی"
+      },
+      {
+        "headline_fa": "سی‌بی‌اس: چند نظامی آمریکایی در حملات ایران در اردن زخمی شدند",
+        "headline_en": "CBS: Several American soldiers were injured in Iran's attacks in Jordan",
+        "url": "https://vatanemrooz.ir/fa/news/419711/سی-بی-اس-چند-نظامی-آمریکایی-در-حملات-ایران-در-اردن-زخمی-شدند"
+      },
+      {
+        "headline_fa": "سپاه پاسداران: ۲ کشتی با عبور از مسیر مین‌گذاری‌شده دچار حریق شدند",
+        "headline_en": "IRGC: 2 ships caught fire while crossing the mine-laid route",
+        "url": "https://vatanemrooz.ir/fa/news/419708/سپاه-پاسداران-2-کشتی-با-عبور-از-مسیر-مین-گذاری-شده-دچار-حریق-شدند"
+      },
+      {
+        "headline_fa": "حملات موشکی ایران به عربستان و اردن",
+        "headline_en": "Iran's missile attacks on Saudi Arabia and Jordan",
+        "url": "https://vatanemrooz.ir/fa/news/419713/حملات-موشکی-ایران-به-عربستان-و-اردن"
+      }
+    ],
+    "loaded_terms": []
+  },
+  {
+    "outlet": "Donya-ye Eqtesad",
+    "faction": "economic",
+    "url": "https://donya-e-eqtesad.com/",
+    "status": "ok",
+    "headlines": [
+      {
+        "headline_fa": "نسخه کامل شماره امروز روزنامه «دنیای‌ اقتصاد» را اینجا بخوانید",
+        "headline_en": "Read the full version of today's edition of \"Duniya Ekhtaz\" newspaper here",
+        "url": "https://donya-e-eqtesad.com/بخش-%D8%A7%D8%AE%D8%A8%D8%A7%D8%B1-2/4282865-%D9%86%D8%B3%D8%AE%D9%87-%DA%A9%D8%A7%D9%85%D9%84-%D8%B4%D9%85%D8%A7%D8%B1%D9%87-%D8%A7%D9%85%D8%B1%D9%88%D8%B2-%D8%B1%D9%88%D8%B2%D9%86%D8%A7%D9%85%D9%87-%D8%AF%D9%86%DB%8C%D8%A7%DB%8C-%D8%A7%D9%82%D8%AA%D8%B5%D8%A7%D8%AF-%D8%B1%D8%A7-%D8%A7%DB%8C%D9%86%D8%AC%D8%A7-%D8%A8%D8%AE%D9%88%D8%A7%D9%86%DB%8C%D8%AF"
+      },
+      {
+        "headline_fa": "یکی از تونل‌ های آسیب دیده بندرعباس در پی حمله آمریکا بازگشایی شد",
+        "headline_en": "One of the damaged tunnels of Bandar Abbas was reopened after the American attack",
+        "url": "https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4282958-%DB%8C%DA%A9%DB%8C-%D8%A7%D8%B2-%D8%AA%D9%88%D9%86%D9%84-%D9%87%D8%A7%DB%8C-%D8%A2%D8%B3%DB%8C%D8%A8-%D8%AF%DB%8C%D8%AF%D9%87-%D8%A8%D9%86%D8%AF%D8%B1%D8%B9%D8%A8%D8%A7%D8%B3-%D8%AF%D8%B1-%D9%BE%DB%8C-%D8%AD%D9%85%D9%84%D9%87-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%A8%D8%A7%D8%B2%DA%AF%D8%B4%D8%A7%DB%8C%DB%8C-%D8%B4%D8%AF"
+      },
+      {
+        "headline_fa": "اظهارات مهم غریب آبادی درباره آینده مذاکرات ایران و آمریکا/ ما در حال دفاع از کشور هستیم",
+        "headline_en": "Gharib Abadi's important statements about the future of Iran-US talks/ We are defending the country",
+        "url": "https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4282967-%D8%A7%D8%B8%D9%87%D8%A7%D8%B1%D8%A7%D8%AA-%D9%85%D9%87%D9%85-%D8%BA%D8%B1%DB%8C%D8%A8-%D8%A2%D8%A8%D8%A7%D8%AF%DB%8C-%D8%AF%D8%B1%D8%A8%D8%A7%D8%B1%D9%87-%D8%A2%DB%8C%D9%86%D8%AF%D9%87-%D9%85%D8%B0%D8%A7%DA%A9%D8%B1%D8%A7%D8%AA-%D8%A7%DB%8C%D8%B1%D8%A7%D9%86-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D9%85%D8%A7-%D8%AF%D8%B1-%D8%AD%D8%A7%D9%84-%D8%AF%D9%81%D8%A7%D8%B9-%D8%A7%D8%B2-%DA%A9%D8%B4%D9%88%D8%B1-%D9%87%D8%B3%D8%AA%DB%8C%D9%85"
+      },
+      {
+        "headline_fa": "قیمت طلا امروز شنبه ۲۷ تیر ۱۴۰۵/افزایش قیمت طلا",
+        "headline_en": "Gold price today, Saturday, July 27, 1405/increase in gold price",
+        "url": "https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4282898-%D9%82%DB%8C%D9%85%D8%AA-%D8%B7%D9%84%D8%A7-%D8%A7%D9%85%D8%B1%D9%88%D8%B2-%D8%B4%D9%86%D8%A8%D9%87-%D8%AA%DB%8C%D8%B1-%D8%A7%D9%81%D8%B2%D8%A7%DB%8C%D8%B4-%D9%82%DB%8C%D9%85%D8%AA-%D8%B7%D9%84%D8%A7"
+      },
+      {
+        "headline_fa": "انهدام یکی از مهم‌ترین تأسیسات تولید برق و آب شیرین‌کن کویت+ تصاویر",
+        "headline_en": "Destruction of one of the most important electricity production and water desalination facilities in Kuwait + images",
+        "url": "https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4282970-%D8%A7%D9%86%D9%87%D8%AF%D8%A7%D9%85-%DB%8C%DA%A9%DB%8C-%D8%A7%D8%B2-%D9%85%D9%87%D9%85-%D8%AA%D8%B1%DB%8C%D9%86-%D8%AA%D8%A3%D8%B3%DB%8C%D8%B3%D8%A7%D8%AA-%D8%AA%D9%88%D9%84%DB%8C%D8%AF-%D8%A8%D8%B1%D9%82-%D8%A2%D8%A8-%D8%B4%DB%8C%D8%B1%DB%8C%D9%86-%DA%A9%D9%86-%DA%A9%D9%88%DB%8C%D8%AA-%D8%AA%D8%B5%D8%A7%D9%88%DB%8C%D8%B1"
+      },
+      {
+        "headline_fa": "پلوسی به رئیس جمهور آمریکا تاخت/ به خاطر جنگ‌های ترامپ، کارگران آمریکایی برای زنده‌ ماندن تقلا می‌کنند",
+        "headline_en": "Pelosi attacked the American president/ American workers are struggling to survive because of Trump's wars",
+        "url": "https://donya-e-eqtesad.com/بخش-%D8%B3%D8%A7%DB%8C%D8%AA-%D8%AE%D9%88%D8%A7%D9%86-62/4282959-%D9%BE%D9%84%D9%88%D8%B3%DB%8C-%D8%A8%D9%87-%D8%B1%D8%A6%DB%8C%D8%B3-%D8%AC%D9%85%D9%87%D9%88%D8%B1-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7-%D8%AA%D8%A7%D8%AE%D8%AA-%D8%A8%D9%87-%D8%AE%D8%A7%D8%B7%D8%B1-%D8%AC%D9%86%DA%AF-%D9%87%D8%A7%DB%8C-%D8%AA%D8%B1%D8%A7%D9%85%D9%BE-%DA%A9%D8%A7%D8%B1%DA%AF%D8%B1%D8%A7%D9%86-%D8%A2%D9%85%D8%B1%DB%8C%DA%A9%D8%A7%DB%8C%DB%8C-%D8%A8%D8%B1%D8%A7%DB%8C-%D8%B2%D9%86%D8%AF%D9%87-%D9%85%D8%A7%D9%86%D8%AF%D9%86-%D8%AA%D9%82%D9%84%D8%A7-%D9%85%DB%8C-%DA%A9%D9%86%D9%86%D8%AF"
+      }
+    ],
+    "loaded_terms": []
+  }
+]
